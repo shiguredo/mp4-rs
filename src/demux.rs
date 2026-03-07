@@ -100,6 +100,13 @@ pub struct Sample<'a> {
 
     /// サンプルデータのサイズ（バイト単位）
     pub data_size: usize,
+
+    /// コンポジション時間オフセット（トラックのタイムスケール単位）
+    ///
+    /// `ctts` ボックスが存在する場合に設定される。
+    /// PTS = timestamp + composition_time_offset で計算できる。
+    /// `ctts` ボックスがない場合は `None` となる。
+    pub composition_time_offset: Option<i64>,
 }
 
 /// デマルチプレックスに必要な入力データの情報を表す構造体
@@ -484,12 +491,6 @@ impl Mp4FileDemuxer {
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
                 _ => continue,
             };
-            // TODO: 将来 ctts（PTS/DTS 差分）に対応したらこの reject は撤去する。
-            if trak_box.mdia_box.minf_box.stbl_box.ctts_box.is_some() {
-                return Err(DemuxError::DecodeError(Error::unsupported(format!(
-                    "ctts box is not supported yet in Mp4FileDemuxer (track_id={track_id})",
-                ))));
-            }
             let timescale = trak_box.mdia_box.mdhd_box.timescale;
             let table = SampleTableAccessor::new(trak_box.mdia_box.minf_box.stbl_box)?;
             self.track_infos.push(TrackInfo {
@@ -664,6 +665,7 @@ impl Mp4FileDemuxer {
             duration: sample_accessor.duration(),
             data_offset: sample_accessor.data_offset(),
             data_size: sample_accessor.data_size() as usize,
+            composition_time_offset: sample_accessor.composition_time_offset(),
         }
     }
 
@@ -696,14 +698,9 @@ fn duration_to_timestamp(duration: Duration, timescale: NonZeroU32) -> Result<u6
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec;
-
     use super::*;
 
-    use crate::{
-        Decode, Encode, ErrorKind, Mp4File,
-        boxes::{CttsBox, CttsEntry, RootBox},
-    };
+    use crate::ErrorKind;
 
     fn read_tracks_from_file_data(file_data: &[u8]) -> Vec<TrackInfo> {
         let input = Input {
@@ -760,25 +757,11 @@ mod tests {
 
     #[test]
     fn test_read_h265_video() {
-        let file_data = include_bytes!("../tests/testdata/black-h265-video.mp4");
-        let input = Input {
-            position: 0,
-            data: file_data,
-        };
-        let mut demuxer = Mp4FileDemuxer::new();
-        demuxer.handle_input(input);
+        let tracks =
+            read_tracks_from_file_data(include_bytes!("../tests/testdata/black-h265-video.mp4"));
 
-        let Err(DemuxError::DecodeError(error)) = demuxer.tracks() else {
-            panic!("expected unsupported error for ctts box");
-        };
-        assert_eq!(error.kind, ErrorKind::Unsupported);
-        assert!(
-            error
-                .reason
-                .contains("ctts box is not supported yet in Mp4FileDemuxer"),
-            "unexpected error reason: {}",
-            error.reason
-        );
+        assert_eq!(tracks.len(), 1);
+        assert!(matches!(tracks[0].kind, TrackKind::Video));
     }
 
     #[test]
@@ -797,55 +780,6 @@ mod tests {
 
         assert_eq!(tracks.len(), 1);
         assert!(matches!(tracks[0].kind, TrackKind::Video));
-    }
-
-    #[test]
-    fn test_reject_ctts_box() {
-        let (mut file, _) =
-            Mp4File::decode(include_bytes!("../tests/testdata/black-h264-video.mp4"))
-                .expect("failed to decode test mp4");
-
-        let mut updated = false;
-        for root_box in &mut file.boxes {
-            let RootBox::Moov(moov_box) = root_box else {
-                continue;
-            };
-            for trak_box in &mut moov_box.trak_boxes {
-                if trak_box.mdia_box.hdlr_box.handler_type != HdlrBox::HANDLER_TYPE_VIDE {
-                    continue;
-                }
-                trak_box.mdia_box.minf_box.stbl_box.ctts_box = Some(CttsBox {
-                    version: 0,
-                    entries: vec![CttsEntry {
-                        sample_count: 1,
-                        sample_offset: 0,
-                    }],
-                });
-                updated = true;
-                break;
-            }
-        }
-
-        assert!(updated, "failed to inject ctts box into test mp4");
-
-        let encoded = file.encode_to_vec().expect("failed to encode test mp4");
-        let mut demuxer = Mp4FileDemuxer::new();
-        demuxer.handle_input(Input {
-            position: 0,
-            data: &encoded,
-        });
-
-        let Err(DemuxError::DecodeError(error)) = demuxer.tracks() else {
-            panic!("expected unsupported error for ctts box");
-        };
-        assert_eq!(error.kind, ErrorKind::Unsupported);
-        assert!(
-            error
-                .reason
-                .contains("ctts box is not supported yet in Mp4FileDemuxer"),
-            "unexpected error reason: {}",
-            error.reason
-        );
     }
 
     #[test]

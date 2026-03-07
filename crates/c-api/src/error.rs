@@ -2,7 +2,8 @@
 //!
 //! C API で細かくエラー方が分かれていると煩雑なので、ひとつに集約している
 use shiguredo_mp4::{
-    Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, mux::MuxError,
+    Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, demux_fmp4::Fmp4DemuxError,
+    mux::MuxError, mux_fmp4::Fmp4MuxError,
 };
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
@@ -76,6 +77,31 @@ impl From<MuxError> for Mp4Error {
             MuxError::PositionMismatch { .. }
             | MuxError::MissingSampleEntry { .. }
             | MuxError::TimescaleMismatch { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            _ => Self::MP4_ERROR_OTHER,
+        }
+    }
+}
+
+impl From<Fmp4MuxError> for Mp4Error {
+    fn from(e: Fmp4MuxError) -> Self {
+        match e {
+            Fmp4MuxError::EncodeError(e) => e.into(),
+            Fmp4MuxError::EmptyTracks
+            | Fmp4MuxError::EmptySamples
+            | Fmp4MuxError::InvalidTrackIndex { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            _ => Self::MP4_ERROR_OTHER,
+        }
+    }
+}
+
+impl From<Fmp4DemuxError> for Mp4Error {
+    fn from(e: Fmp4DemuxError) -> Self {
+        match e {
+            Fmp4DemuxError::DecodeError(e) => e.into(),
+            Fmp4DemuxError::NotInitialized | Fmp4DemuxError::AlreadyInitialized => {
+                Self::MP4_ERROR_INVALID_STATE
+            }
+            Fmp4DemuxError::UnknownTrackId(_) => Self::MP4_ERROR_INVALID_DATA,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

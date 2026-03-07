@@ -9,6 +9,27 @@
 - FIX
   - バグ修正
 
+## feature/fmp4
+
+- [FIX] `Fmp4Muxer` の moof サイズ計算を 2 パスエンコード方式に変更する
+  - `compute_moof_size()` による手動計算を廃止し、仮の `data_offset=0` でエンコードした結果からサイズを確定させる
+  - `build_moof` との手動同期が不要になり、将来の変更でオフセット計算がずれるリスクを排除する
+- [FIX] `create_media_segment_with_sidx` で空の `samples` を渡した場合に panic する問題を修正する
+  - `build_media_segment_bytes` の `EmptySamples` チェックより前に `.expect()` で unwrap していた
+  - 明示的な空チェックを先に行うように変更する
+- [FIX] `mp4_fmp4_demuxer_get_tracks` のキャッシュ判定を修正する
+  - `demuxer.tracks.is_empty()` でキャッシュ済みかどうかを判断していたため、トラック数が 0 の場合に毎回 `inner.tracks()` を呼び出していた
+  - `tracks_cache: Option<Vec<Mp4Fmp4TrackInfo>>` に変更し、初期化済みかどうかを正確に判定する
+- [FIX] `create_media_segment_with_sidx` の重複バリデーションを削除する
+  - `build_media_segment_bytes` でも同じ検証を行うため、`create_media_segment_with_sidx` 側の重複チェックを削除する
+- [FIX] `mp4_fmp4_bytes_free` と `mp4_fmp4_demuxer_free_samples` の不正なガード条件を修正する
+  - `data` が非 NULL かつ `size == 0` / `count == 0` の場合にメモリリークが発生しうる問題を修正する
+  - NULL チェックのみで十分なため `size == 0` / `count == 0` の早期リターンを削除する
+- [FIX] C API の `Mp4Fmp4DemuxSample.data_size` フィールドへの変換を checked conversion に変更する
+  - `s.data_size as u32` という暗黙のキャストを `u32::try_from` に変更して意図を明示する
+- [FIX] WASM API の `data_size` フィールドで暗黙のキャストを checked conversion に変更する
+  - `data_size as usize` と `data_size as u32` を `usize::try_from` / `u32::try_from` に変更する
+
 ## develop
 
 - [UPDATE] マルチプレックス・デマルチプレックス関連の構造体やエラー型に `Clone` トレイトを実装する
@@ -69,10 +90,27 @@
   - 指定した時刻にシークできるようにする
   - C API に mp4_file_demuxer_seek() を追加する
   - @sile
+- [ADD] `Mp4FileDemuxer` で `ctts` ボックスをサポートする
+  - `SampleAccessor::composition_time_offset()` メソッドを追加する
+  - `Sample` 構造体に `composition_time_offset: Option<i64>` フィールドを追加する
+  - `ctts` を含むトラック（H.265 など B フレームを持つコーデック）も正常にデマルチプレックスできるようになる
+  - @voluntas
+- [ADD] `Fmp4DemuxSample` に `composition_time_offset: Option<i32>` フィールドを追加する
+  - `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される
+  - C API の `Mp4Fmp4DemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
+  - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
+  - @voluntas
+- [ADD] `Fmp4Muxer::mfra_bytes()` を追加する
+  - `mfra` (Movie Fragment Random Access) ボックスのバイト列を生成する
+  - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
+  - ファイル末尾に付加することでランダムアクセスに対応できる
+  - @voluntas
+- [ADD] `Fmp4Demuxer` で `default_base_is_moof=false` の traf に対応する
+  - ISO 14496-12 に従い、最初の traf は moof 先頭、後続の traf は前の traf のデータ末尾を base_data_offset として使用する
+  - @voluntas
 - [ADD] B フレーム関連 box (`ctts` / `cslg` / `sdtp`) の構造体対応を追加する
   - `StblBox` で `ctts` / `cslg` / `sdtp` を decode / encode できるようにする
   - `UnknownBox` 扱いだった `ctts` / `cslg` / `sdtp` を通常 box として扱うようにする
-  - `Mp4FileDemuxer` は現時点では `ctts` を unsupported として扱い、`ctts` を含むトラックをデマルチプレックスしようとするとエラーを返す
   - @sile
 - [CHANGE] C API の `mp4_file_muxer_set_reserved_moov_box_size()` の `size` 引数の型を `u64` から `u32` に変更する
   - 理由:

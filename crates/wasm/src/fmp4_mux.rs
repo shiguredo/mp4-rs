@@ -82,7 +82,10 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_from_json(
         .collect();
 
     let result = unsafe {
-        c_api::fmp4_mux::mp4_fmp4_muxer_new(track_configs_c.as_ptr(), track_configs_c.len() as u32)
+        c_api::fmp4_mux::mp4_fmp4_muxer_new(
+            track_configs_c.as_ptr(),
+            u32::try_from(track_configs_c.len()).expect("track count exceeds u32::MAX"),
+        )
     };
 
     // sample_entry の Box を解放する（muxer が内部でコピー済みのため）
@@ -185,7 +188,9 @@ fn write_segment_impl(
     let mut c_samples: Vec<c_api::fmp4_mux::Mp4Fmp4Sample> = Vec::new();
     let mut data_offset = 0usize;
     for meta in &sample_metas {
-        let end = data_offset + meta.data_size;
+        let Some(end) = data_offset.checked_add(meta.data_size) else {
+            return std::ptr::null_mut();
+        };
         if end > sample_data_slice.len() {
             return std::ptr::null_mut();
         }
@@ -210,7 +215,7 @@ fn write_segment_impl(
             c_api::fmp4_mux::mp4_fmp4_muxer_write_media_segment_with_sidx(
                 muxer,
                 c_samples.as_ptr(),
-                c_samples.len() as u32,
+                u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),
                 &mut out_data,
                 &mut out_size,
             )
@@ -220,7 +225,7 @@ fn write_segment_impl(
             c_api::fmp4_mux::mp4_fmp4_muxer_write_media_segment(
                 muxer,
                 c_samples.as_ptr(),
-                c_samples.len() as u32,
+                u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),
                 &mut out_data,
                 &mut out_size,
             )

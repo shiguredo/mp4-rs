@@ -412,6 +412,7 @@ impl Fmp4Demuxer {
             let mut traf_data_end = base_data_offset;
 
             for trun in &traf.trun_boxes {
+                // i32 -> isize: 常に安全
                 let trun_data_start = base_data_offset
                     .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
                     .ok_or_else(|| {

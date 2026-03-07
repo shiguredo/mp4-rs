@@ -209,10 +209,13 @@ impl Fmp4Muxer {
         let tracks: Vec<TrackEntry> = tracks
             .into_iter()
             .enumerate()
-            .map(|(i, config)| TrackEntry {
-                config,
-                track_id: i as u32 + 1,
-                decode_time: 0,
+            .map(|(i, config)| {
+                let track_id = u32::try_from(i + 1).expect("track count exceeds u32::MAX");
+                TrackEntry {
+                    config,
+                    track_id,
+                    decode_time: 0,
+                }
             })
             .collect();
 
@@ -418,7 +421,7 @@ impl Fmp4Muxer {
             let entry = TfraSegmentEntry {
                 time: self.tracks[ti].decode_time,
                 moof_offset,
-                traf_number: (traf_pos + 1) as u32,
+                traf_number: u32::try_from(traf_pos + 1).expect("traf count exceeds u32::MAX"),
             };
             self.tfra_entries[ti].push(entry);
         }
@@ -587,7 +590,8 @@ impl Fmp4Muxer {
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
-            next_track_id: self.tracks.len() as u32 + 1,
+            next_track_id: u32::try_from(self.tracks.len() + 1)
+                .expect("track count exceeds u32::MAX"),
         };
 
         Ok(MoovBox {

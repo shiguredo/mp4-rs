@@ -73,7 +73,7 @@ fn dummy_video_frame(keyframe: bool, size: usize) -> Vec<u8> {
     let nal_size = size.saturating_sub(4);
     let mut data = vec![0u8; size];
     // NAL unit length
-    let len = nal_size as u32;
+    let len = u32::try_from(nal_size).expect("NAL unit size exceeds u32::MAX");
     data[0] = (len >> 24) as u8;
     data[1] = (len >> 16) as u8;
     data[2] = (len >> 8) as u8;
@@ -231,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .expect("mfra は末尾 4 バイトに mfro.size を持つ"),
     );
     assert_eq!(
-        mfro_size as usize,
+        mfro_size as usize, // u32 -> usize: 常に安全
         mfra.len(),
         "mfro.size が mfra サイズと一致しない"
     );

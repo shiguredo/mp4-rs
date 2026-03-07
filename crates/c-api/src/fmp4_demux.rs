@@ -260,7 +260,7 @@ pub unsafe extern "C" fn mp4_fmp4_demuxer_handle_media_segment(
                     keyframe: s.keyframe,
                     has_composition_time_offset: s.composition_time_offset.is_some(),
                     composition_time_offset: s.composition_time_offset.unwrap_or(0),
-                    data_offset: s.data_offset as u64,
+                    data_offset: s.data_offset as u64, // usize -> u64: 常に安全
                     data_size: u32::try_from(s.data_size)
                         .expect("data_size exceeds u32::MAX; single sample cannot be that large"),
                 })

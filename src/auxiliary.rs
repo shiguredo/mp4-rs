@@ -405,6 +405,24 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
         })
     }
 
+    /// サンプルのコンポジション時間オフセットを取得する
+    ///
+    /// `ctts` ボックスが存在する場合に、このサンプルに対応するオフセット値を返す。
+    /// `ctts` ボックスがない場合は `None` を返す。
+    pub fn composition_time_offset(&self) -> Option<i64> {
+        let ctts = self.sample_table.stbl_box().ctts_box.as_ref()?;
+        let sample_idx = self.index.get() - 1; // 0-based
+        let mut count = 0u32;
+        for entry in &ctts.entries {
+            let end = count.checked_add(entry.sample_count)?;
+            if sample_idx >= count && sample_idx < end {
+                return Some(entry.sample_offset);
+            }
+            count = end;
+        }
+        None
+    }
+
     /// サンプルが属するチャンクの情報を返す
     pub fn chunk(&self) -> ChunkAccessor<'a, T> {
         let i = self

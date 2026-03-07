@@ -182,7 +182,7 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_init_segment(
     match muxer.inner.init_segment_bytes() {
         Ok(bytes) => {
             let mut boxed = bytes.into_boxed_slice();
-            let len = boxed.len() as u32;
+            let len = u32::try_from(boxed.len()).expect("init segment size exceeds u32::MAX");
             let ptr = boxed.as_mut_ptr();
             std::mem::forget(boxed);
             unsafe {
@@ -240,7 +240,7 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment(
     match muxer.inner.create_media_segment(&fmp4_samples) {
         Ok(bytes) => {
             let mut boxed = bytes.into_boxed_slice();
-            let len = boxed.len() as u32;
+            let len = u32::try_from(boxed.len()).expect("media segment size exceeds u32::MAX");
             let ptr = boxed.as_mut_ptr();
             std::mem::forget(boxed);
             unsafe {
@@ -290,7 +290,8 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment_with_sidx(
     match muxer.inner.create_media_segment_with_sidx(&fmp4_samples) {
         Ok(bytes) => {
             let mut boxed = bytes.into_boxed_slice();
-            let len = boxed.len() as u32;
+            let len =
+                u32::try_from(boxed.len()).expect("media segment with sidx size exceeds u32::MAX");
             let ptr = boxed.as_mut_ptr();
             std::mem::forget(boxed);
             unsafe {
@@ -317,7 +318,7 @@ unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4Sample]) -> Vec<Fmp4Sample<'a
     samples
         .iter()
         .map(|s| Fmp4Sample {
-            track_index: s.track_index as usize,
+            track_index: s.track_index as usize, // u32 -> usize: 常に安全
             duration: s.duration,
             keyframe: s.keyframe,
             composition_time_offset: if s.has_composition_time_offset {

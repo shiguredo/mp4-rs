@@ -213,7 +213,7 @@ pub unsafe extern "C" fn mp4_fmp4_demuxer_get_tracks(
         .expect("tracks_cache is initialized above");
     unsafe {
         *out_tracks = cached.as_ptr();
-        *out_count = cached.len() as u32;
+        *out_count = u32::try_from(cached.len()).expect("track count exceeds u32::MAX");
     }
     Mp4Error::MP4_ERROR_OK
 }
@@ -266,7 +266,7 @@ pub unsafe extern "C" fn mp4_fmp4_demuxer_handle_media_segment(
                 })
                 .collect();
 
-            let count = c_samples.len() as u32;
+            let count = u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX");
             let mut boxed = c_samples.into_boxed_slice();
             let ptr = boxed.as_mut_ptr();
             std::mem::forget(boxed);

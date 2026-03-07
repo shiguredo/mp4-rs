@@ -105,6 +105,10 @@
   - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
   - ファイル末尾に付加することでランダムアクセスに対応できる
   - @voluntas
+- [ADD] `Fmp4FileDemuxer` を追加する
+  - 完全な fMP4 ファイルのバイト列を受け取り、サンプルを順番に取り出す
+  - `tfhd` に絶対オフセット形式の `base_data_offset` が含まれる場合はエラーを返す
+  - @voluntas
 - [ADD] `Fmp4Demuxer` で `default_base_is_moof=false` の traf に対応する
   - ISO 14496-12 に従い、最初の traf は moof 先頭、後続の traf は前の traf のデータ末尾を base_data_offset として使用する
   - @voluntas

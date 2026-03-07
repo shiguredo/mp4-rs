@@ -185,21 +185,28 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
         }
 
         let (header, _) = BoxHeader::decode(&data[offset..])?;
-        let box_size = header.box_size.get() as usize;
+        let Some(box_size) = usize::try_from(header.box_size.get()).ok() else {
+            return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                "box size exceeds usize::MAX",
+            )));
+        };
         if box_size == 0 {
             break;
         }
-        if offset + box_size > data.len() {
+        let box_end = offset.checked_add(box_size).ok_or_else(|| {
+            Fmp4DemuxError::DecodeError(crate::Error::invalid_data("box offset overflow"))
+        })?;
+        if box_end > data.len() {
             return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
                 "box size exceeds file length",
             )));
         }
 
         if header.box_type == MoovBox::TYPE {
-            moov_end = Some(offset + box_size);
+            moov_end = Some(box_end);
         } else if header.box_type == MoofBox::TYPE {
             // moof を一度デコードして tfhd の base_data_offset を確認する
-            let (moof, _) = MoofBox::decode(&data[offset..offset + box_size])?;
+            let (moof, _) = MoofBox::decode(&data[offset..box_end])?;
             for traf in &moof.traf_boxes {
                 if traf.tfhd_box.base_data_offset.is_some() {
                     return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
@@ -209,7 +216,7 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
             }
 
             let moof_start = offset;
-            let mdat_start = offset + box_size;
+            let mdat_start = box_end;
 
             if mdat_start >= data.len() || data.len() - mdat_start < BoxHeader::MIN_SIZE {
                 return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
@@ -224,11 +231,18 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
                 )));
             }
 
-            let mdat_size = mdat_header.box_size.get() as usize;
-            segment_ranges.push(moof_start..mdat_start + mdat_size);
+            let mdat_size = usize::try_from(mdat_header.box_size.get()).map_err(|_| {
+                Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                    "mdat box size exceeds usize::MAX",
+                ))
+            })?;
+            let segment_end = mdat_start.checked_add(mdat_size).ok_or_else(|| {
+                Fmp4DemuxError::DecodeError(crate::Error::invalid_data("mdat offset overflow"))
+            })?;
+            segment_ranges.push(moof_start..segment_end);
         }
 
-        offset += box_size;
+        offset = box_end;
     }
 
     let init_end = moov_end.ok_or_else(|| {

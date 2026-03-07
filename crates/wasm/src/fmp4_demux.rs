@@ -128,7 +128,7 @@ pub unsafe extern "C" fn mp4_fmp4_demuxer_handle_media_segment_json(
     })
     .to_string();
 
-    if !out_samples.is_null() && out_count > 0 {
+    if !out_samples.is_null() {
         unsafe { c_api::fmp4_demux::mp4_fmp4_demuxer_free_samples(out_samples, out_count) };
     }
 

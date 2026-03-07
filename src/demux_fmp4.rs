@@ -202,13 +202,19 @@ impl Fmp4Demuxer {
                 let (moov, _) = MoovBox::decode(&data[offset..])?;
                 break moov;
             }
-            let box_size = header.box_size.get() as usize;
+            let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
+                Fmp4DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+            })?;
             if box_size == 0 {
                 return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
                     "found box with size=0 before moov in init segment",
                 )));
             }
-            offset += box_size;
+            offset = offset.checked_add(box_size).ok_or_else(|| {
+                Fmp4DemuxError::DecodeError(Error::invalid_data(
+                    "box offset overflow in init segment",
+                ))
+            })?;
         };
 
         // mvex が必須
@@ -311,13 +317,19 @@ impl Fmp4Demuxer {
         if data.len() >= BoxHeader::MAX_SIZE {
             let (header, _) = BoxHeader::decode(&data[offset..])?;
             if header.box_type == SidxBox::TYPE {
-                let box_size = header.box_size.get() as usize;
+                let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
+                    Fmp4DemuxError::DecodeError(Error::invalid_data(
+                        "sidx box size exceeds usize::MAX",
+                    ))
+                })?;
                 if box_size == 0 {
                     return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
                         "sidx box has size=0",
                     )));
                 }
-                offset += box_size;
+                offset = offset.checked_add(box_size).ok_or_else(|| {
+                    Fmp4DemuxError::DecodeError(Error::invalid_data("sidx box offset overflow"))
+                })?;
             }
         }
 
@@ -336,7 +348,9 @@ impl Fmp4Demuxer {
         }
         let moof_offset = offset;
         let (moof, moof_size) = MoofBox::decode(&data[offset..])?;
-        offset += moof_size;
+        offset = offset.checked_add(moof_size).ok_or_else(|| {
+            Fmp4DemuxError::DecodeError(Error::invalid_data("moof offset overflow"))
+        })?;
 
         // mdat ボックスを確認する（オフセット計算のためにヘッダーだけ読む）
         if offset >= data.len() {
@@ -382,7 +396,11 @@ impl Fmp4Demuxer {
             //      - 2 番目以降: 前の traf のデータ末尾
             let base_data_offset: usize =
                 if let Some(explicit_offset) = traf.tfhd_box.base_data_offset {
-                    explicit_offset as usize
+                    usize::try_from(explicit_offset).map_err(|_| {
+                        Fmp4DemuxError::DecodeError(Error::invalid_data(
+                            "base_data_offset exceeds usize::MAX",
+                        ))
+                    })?
                 } else if traf.tfhd_box.default_base_is_moof {
                     moof_offset
                 } else {
@@ -412,11 +430,17 @@ impl Fmp4Demuxer {
                         .unwrap_or(track.trex.default_sample_duration);
 
                     // size: trun > tfhd > trex の優先順位で解決する
-                    let size = trun_sample
-                        .size
-                        .or(traf.tfhd_box.default_sample_size)
-                        .unwrap_or(track.trex.default_sample_size)
-                        as usize;
+                    let size = usize::try_from(
+                        trun_sample
+                            .size
+                            .or(traf.tfhd_box.default_sample_size)
+                            .unwrap_or(track.trex.default_sample_size),
+                    )
+                    .map_err(|_| {
+                        Fmp4DemuxError::DecodeError(Error::invalid_data(
+                            "sample size exceeds usize::MAX",
+                        ))
+                    })?;
 
                     // flags: first_sample_flags (i=0 かつ存在する場合) > trun > tfhd > trex
                     let flags = if i == 0

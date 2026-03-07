@@ -171,7 +171,7 @@ struct TfraSegmentEntry {
 /// fMP4 ファイルを生成するマルチプレックス処理を行うための構造体
 ///
 /// この構造体は、複数のメディアトラック（音声・映像）からのサンプルを
-//  fMP4 形式の初期化セグメントとメディアセグメントに変換する。
+///  fMP4 形式の初期化セグメントとメディアセグメントに変換する。
 ///
 /// 基本的な使用フロー：
 /// 1. [`new()`](Self::new) でインスタンスを作成（トラック設定を指定）
@@ -732,17 +732,23 @@ impl Fmp4Muxer {
 
             let trun_samples: Vec<TrunSample> = track_samples
                 .iter()
-                .map(|s| TrunSample {
-                    duration: Some(s.duration),
-                    size: Some(s.data.len() as u32),
-                    flags: Some(build_sample_flags(s.keyframe)),
-                    composition_time_offset: if has_any_cto {
-                        Some(s.composition_time_offset.unwrap_or(0))
-                    } else {
-                        None
-                    },
+                .map(|s| -> Result<TrunSample, Fmp4MuxError> {
+                    Ok(TrunSample {
+                        duration: Some(s.duration),
+                        size: Some(u32::try_from(s.data.len()).map_err(|_| {
+                            Fmp4MuxError::EncodeError(Error::invalid_data(
+                                "sample data size exceeds u32::MAX",
+                            ))
+                        })?),
+                        flags: Some(build_sample_flags(s.keyframe)),
+                        composition_time_offset: if has_any_cto {
+                            Some(s.composition_time_offset.unwrap_or(0))
+                        } else {
+                            None
+                        },
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
 
             let trun_box = TrunBox {
                 data_offset: Some(data_offsets[ti]),

@@ -414,7 +414,7 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
         let sample_idx = self.index.get() - 1; // 0-based
         let mut count = 0u32;
         for entry in &ctts.entries {
-            let end = count + entry.sample_count;
+            let end = count.checked_add(entry.sample_count)?;
             if sample_idx >= count && sample_idx < end {
                 return Some(entry.sample_offset);
             }

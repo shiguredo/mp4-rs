@@ -458,6 +458,18 @@ impl Fmp4Demuxer {
                     // sample_is_non_sync_sample が false のとき = キーフレーム
                     let keyframe = !flags.sample_is_non_sync_sample();
 
+                    let sample_data_end =
+                        sample_data_offset.checked_add(size).ok_or_else(|| {
+                            Fmp4DemuxError::DecodeError(Error::invalid_data(
+                                "sample data offset overflow",
+                            ))
+                        })?;
+                    if sample_data_end > data.len() {
+                        return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
+                            "sample data range exceeds segment boundary",
+                        )));
+                    }
+
                     samples.push(Fmp4DemuxSample {
                         track_id,
                         base_media_decode_time: trun_decode_time,
@@ -469,11 +481,7 @@ impl Fmp4Demuxer {
                     });
 
                     trun_decode_time = trun_decode_time.saturating_add(duration as u64);
-                    sample_data_offset = sample_data_offset.checked_add(size).ok_or_else(|| {
-                        Fmp4DemuxError::DecodeError(Error::invalid_data(
-                            "sample data offset overflow",
-                        ))
-                    })?;
+                    sample_data_offset = sample_data_end;
                 }
 
                 // この trun のデータ末尾を更新する

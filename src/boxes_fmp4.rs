@@ -15,7 +15,7 @@ use crate::{
 /// ムービーフラグメントのコンテナボックス。
 /// fMP4 のメディアセグメントはこのボックスと mdat ボックスで構成される。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MoofBox {
     pub mfhd_box: MfhdBox,
     pub traf_boxes: Vec<TrafBox>,
@@ -101,7 +101,7 @@ impl BaseBox for MoofBox {
 /// フラグメントのシーケンス番号を格納する。
 /// シーケンス番号は 1 から始まり、フラグメントごとに 1 ずつ増加する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MfhdBox {
     pub sequence_number: u32,
 }
@@ -165,7 +165,7 @@ impl FullBox for MfhdBox {
 ///
 /// トラックフラグメントのコンテナボックス。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TrafBox {
     pub tfhd_box: TfhdBox,
     pub tfdt_box: Option<TfdtBox>,
@@ -261,7 +261,7 @@ impl BaseBox for TrafBox {
 /// トラックフラグメントのヘッダー情報を格納する。
 /// フラグによって存在するフィールドが異なる。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TfhdBox {
     pub track_id: u32,
     pub base_data_offset: Option<u64>,
@@ -437,7 +437,7 @@ impl FullBox for TfhdBox {
 ///
 /// トラックフラグメントのベースデコード時間を格納する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TfdtBox {
     /// FullBox バージョン (0 または 1)
     ///
@@ -524,7 +524,7 @@ impl FullBox for TfdtBox {
 ///
 /// サンプルのリストを格納する。フラグによって存在するフィールドが異なる。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TrunBox {
     pub data_offset: Option<i32>,
     pub first_sample_flags: Option<SampleFlags>,
@@ -598,7 +598,9 @@ impl Encode for TrunBox {
         let flags = self.compute_flags();
 
         // sample_count
-        offset += (self.samples.len() as u32).encode(&mut buf[offset..])?;
+        let sample_count = u32::try_from(self.samples.len())
+            .map_err(|_| crate::Error::invalid_data("TrunBox sample count exceeds u32::MAX"))?;
+        offset += sample_count.encode(&mut buf[offset..])?;
 
         if let Some(v) = self.data_offset {
             offset += v.encode(&mut buf[offset..])?;
@@ -776,7 +778,7 @@ impl FullBox for TrunBox {
 
 /// [`TrunBox`] のサンプル情報
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TrunSample {
     pub duration: Option<u32>,
     pub size: Option<u32>,
@@ -789,7 +791,7 @@ pub struct TrunSample {
 /// セグメントインデックスボックス。DASH などで使用される。
 /// メディアセグメントへの参照情報を格納する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct SidxBox {
     pub reference_id: u32,
     pub timescale: u32,
@@ -824,7 +826,9 @@ impl Encode for SidxBox {
         offset += 0u16.encode(&mut buf[offset..])?;
 
         // reference_count
-        offset += (self.references.len() as u16).encode(&mut buf[offset..])?;
+        let reference_count = u16::try_from(self.references.len())
+            .map_err(|_| crate::Error::invalid_data("SidxBox reference count exceeds u16::MAX"))?;
+        offset += reference_count.encode(&mut buf[offset..])?;
 
         for reference in &self.references {
             // reference_type (1 bit) | referenced_size (31 bits)
@@ -873,6 +877,14 @@ impl Decode for SidxBox {
             let _reserved = u16::decode_at(payload, &mut offset)?;
 
             let reference_count = u16::decode_at(payload, &mut offset)?;
+
+            // 各 reference は 12 バイト (3 x u32)
+            let required_bytes = usize::from(reference_count) * 12;
+            if offset + required_bytes > payload.len() {
+                return Err(crate::Error::invalid_data(
+                    "SidxBox reference_count exceeds remaining payload",
+                ));
+            }
 
             let mut references = Vec::new();
             for _ in 0..reference_count {
@@ -938,7 +950,6 @@ impl FullBox for SidxBox {
 
 /// [`SidxBox`] の参照情報
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct SidxReference {
     /// true の場合は sidx への参照、false の場合はメディアセグメントへの参照
     pub reference_type: bool,
@@ -959,7 +970,7 @@ pub struct SidxReference {
 /// ムービーフラグメントのランダムアクセス情報を格納するボックス。
 /// ファイルの末尾に配置される。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MfraBox {
     pub tfra_boxes: Vec<TfraBox>,
     pub mfro_box: MfroBox,
@@ -1008,7 +1019,9 @@ impl Decode for MfraBox {
                     }
                     _ => {
                         // 未知のボックスはスキップ
-                        offset += child_header.box_size.get() as usize;
+                        offset += usize::try_from(child_header.box_size.get()).map_err(|_| {
+                            crate::Error::invalid_data("MfraBox child box size exceeds usize::MAX")
+                        })?;
                     }
                 }
             }
@@ -1047,7 +1060,7 @@ impl BaseBox for MfraBox {
 ///
 /// トラックフラグメントのランダムアクセス情報を格納するボックス。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TfraBox {
     /// FullBox バージョン (0 または 1)
     ///
@@ -1084,7 +1097,8 @@ impl Encode for TfraBox {
             | (self.length_size_of_sample_num as u32 & 0x3);
         offset += lengths.encode(&mut buf[offset..])?;
 
-        let number_of_entry = self.entries.len() as u32;
+        let number_of_entry = u32::try_from(self.entries.len())
+            .map_err(|_| crate::Error::invalid_data("TfraBox entry count exceeds u32::MAX"))?;
         offset += number_of_entry.encode(&mut buf[offset..])?;
 
         let version = self.full_box_version();
@@ -1137,6 +1151,25 @@ impl Decode for TfraBox {
             let length_size_of_sample_num = (lengths & 0x3) as u8;
 
             let number_of_entry = u32::decode_at(payload, &mut offset)?;
+
+            // エントリごとの最小バイト数を計算してペイロード残量と照合する
+            let time_moof_size: usize = if version == 1 { 16 } else { 8 };
+            let variable_size: usize = (length_size_of_traf_num as usize + 1)
+                + (length_size_of_trun_num as usize + 1)
+                + (length_size_of_sample_num as usize + 1);
+            let entry_size = time_moof_size + variable_size;
+            let remaining = payload.len().saturating_sub(offset);
+            if let Some(required) = (number_of_entry as usize).checked_mul(entry_size) {
+                if required > remaining {
+                    return Err(crate::Error::invalid_data(
+                        "TfraBox number_of_entry exceeds remaining payload",
+                    ));
+                }
+            } else {
+                return Err(crate::Error::invalid_data(
+                    "TfraBox number_of_entry causes overflow",
+                ));
+            }
 
             let mut entries = Vec::new();
             for _ in 0..number_of_entry {
@@ -1213,7 +1246,7 @@ impl FullBox for TfraBox {
 
 /// [`TfraBox`] のエントリ
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TfraEntry {
     pub time: u64,
     pub moof_offset: u64,
@@ -1227,7 +1260,6 @@ pub struct TfraEntry {
 /// mfra ボックスのサイズを格納するボックス。
 /// ファイル末尾から逆方向にシークするために使用される。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct MfroBox {
     /// mfra ボックスのサイズ
     pub size: u32,

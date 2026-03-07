@@ -278,6 +278,10 @@ pub unsafe extern "C" fn mp4_fmp4_demuxer_handle_media_segment(
             Mp4Error::MP4_ERROR_OK
         }
         Err(e) => {
+            unsafe {
+                *out_samples = std::ptr::null_mut();
+                *out_count = 0;
+            }
             demuxer.set_last_error(&format!("[mp4_fmp4_demuxer_handle_media_segment] {e}"));
             e.into()
         }

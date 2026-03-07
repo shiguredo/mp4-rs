@@ -135,8 +135,16 @@ impl Fmp4FileDemuxer {
     pub fn next_sample(&mut self) -> Result<Option<Fmp4FileSample>, Fmp4DemuxError> {
         loop {
             if let Some((raw, segment_start)) = self.pending_samples.pop_front() {
-                let abs_start = segment_start + raw.data_offset;
-                let abs_end = abs_start + raw.data_size;
+                let abs_start = segment_start.checked_add(raw.data_offset).ok_or_else(|| {
+                    Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                        "sample data absolute offset overflow",
+                    ))
+                })?;
+                let abs_end = abs_start.checked_add(raw.data_size).ok_or_else(|| {
+                    Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                        "sample data absolute end overflow",
+                    ))
+                })?;
                 if abs_end > self.data.len() {
                     return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
                         "sample data offset out of file bounds",

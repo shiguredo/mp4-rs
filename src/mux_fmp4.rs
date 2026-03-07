@@ -23,7 +23,7 @@
 //! let sample_entry = todo!("使用するコーデックに合わせたサンプルエントリーを構築する");
 //! let tracks = vec![Fmp4TrackConfig {
 //!     track_kind: TrackKind::Video,
-//!     timescale: NonZeroU32::new(90000).unwrap(),
+//!     timescale: NonZeroU32::new(90000).expect("non-zero"),
 //!     sample_entry,
 //! }];
 //!
@@ -80,6 +80,9 @@ pub enum Fmp4MuxError {
         /// 有効なトラック数
         track_count: usize,
     },
+
+    /// 内部カウンタのオーバーフロー
+    Overflow,
 }
 
 impl core::fmt::Display for Fmp4MuxError {
@@ -94,6 +97,7 @@ impl core::fmt::Display for Fmp4MuxError {
                     "track_index {index} is out of range (track count: {track_count})",
                 )
             }
+            Fmp4MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
     }
 }
@@ -236,7 +240,10 @@ impl Fmp4Muxer {
 
         let mut bytes = ftyp.encode_to_vec()?;
         bytes.extend_from_slice(&moov.encode_to_vec()?);
-        self.bytes_written = self.bytes_written.saturating_add(bytes.len() as u64);
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(bytes.len() as u64)
+            .ok_or(Fmp4MuxError::Overflow)?;
         Ok(bytes)
     }
 
@@ -433,11 +440,16 @@ impl Fmp4Muxer {
                 .filter(|s| s.track_index == ti)
                 .map(|s| s.duration as u64)
                 .sum();
-            self.tracks[ti].decode_time =
-                self.tracks[ti].decode_time.saturating_add(total_duration);
+            self.tracks[ti].decode_time = self.tracks[ti]
+                .decode_time
+                .checked_add(total_duration)
+                .ok_or(Fmp4MuxError::Overflow)?;
         }
 
-        self.bytes_written = self.bytes_written.saturating_add(segment.len() as u64);
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(segment.len() as u64)
+            .ok_or(Fmp4MuxError::Overflow)?;
         Ok(segment)
     }
 

@@ -76,7 +76,9 @@ pub unsafe extern "C" fn mp4_vec_len(v: *const Vec<u8>) -> u32 {
     if v.is_null() {
         return 0;
     }
-    unsafe { (*v).len() as u32 }
+    unsafe {
+        u32::try_from((*v).len()).expect("vec length should not exceed u32::MAX in wasm32 target")
+    }
 }
 
 /// `Vec<u8>` を解放する

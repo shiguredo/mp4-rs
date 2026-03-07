@@ -192,6 +192,10 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_init_segment(
             Mp4Error::MP4_ERROR_OK
         }
         Err(e) => {
+            unsafe {
+                *out_data = std::ptr::null_mut();
+                *out_size = 0;
+            }
             muxer.set_last_error(&format!("[mp4_fmp4_muxer_write_init_segment] {e}"));
             e.into()
         }
@@ -250,6 +254,10 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment(
             Mp4Error::MP4_ERROR_OK
         }
         Err(e) => {
+            unsafe {
+                *out_data = std::ptr::null_mut();
+                *out_size = 0;
+            }
             muxer.set_last_error(&format!("[mp4_fmp4_muxer_write_media_segment] {e}"));
             e.into()
         }
@@ -301,6 +309,10 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment_with_sidx(
             Mp4Error::MP4_ERROR_OK
         }
         Err(e) => {
+            unsafe {
+                *out_data = std::ptr::null_mut();
+                *out_size = 0;
+            }
             muxer.set_last_error(&format!(
                 "[mp4_fmp4_muxer_write_media_segment_with_sidx] {e}"
             ));

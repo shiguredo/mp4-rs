@@ -157,6 +157,10 @@
 - [ADD] fuzz/ 以下に cargo-fuzz 用のターゲットを追加
   - make fuzzing で全ターゲットを 30 秒ずつ実行できる
   - @voluntas
+- [CHANGE] Slack 通知を shiguredo/github-actions の slack-notify に移行する
+  - rtCamp/action-slack-notify から Docker レスの Composite Action に変更
+  - failure_and_fixed モードで failure と fixed のみ通知する
+  - @voluntas
 
 ## 2026.1.0
 

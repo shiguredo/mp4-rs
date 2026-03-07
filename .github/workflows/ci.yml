@@ -182,17 +182,17 @@ jobs:
           name: wasm
           path: artifacts/
 
-  slack_notify_failed:
+  slack_notify:
     needs: [ci, test-wasm, build-c-api, build-wasm]
-    runs-on: ubuntu-24.04
-    if: ${{ failure() }}
+    runs-on: ubuntu-slim
+    if: ${{ always() }}
+    permissions:
+      actions: read
     steps:
       - name: Slack Notification
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_CHANNEL: hisui
-          SLACK_COLOR: danger
-          SLACK_ICON_EMOJI: ":japanese_ogre:"
-          SLACK_TITLE: "FAILED"
-          SLACK_MESSAGE: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{github.event.head_commit.message || 'Scheduled run'}}>
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: hisui
+          notify_mode: failure_and_fixed

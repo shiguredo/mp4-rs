@@ -52,10 +52,9 @@
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の公開導線を `demux` に集約する
   - `demux_fmp4_file` / `demux_fmp4_segment` / `demux_mp4_file` は内部実装モジュールとして扱う
   - @voluntas
-- [CHANGE] fMP4 segment demux の補助型名を整理する
-  - `Fmp4SegmentDemuxError` を `SegmentDemuxError` に変更する
-  - `Fmp4SegmentDemuxSample` を `SegmentSample` に変更する
-  - `Fmp4SegmentTrackInfo` を `SegmentTrackInfo` に変更する
+- [CHANGE] `mux` モジュールを facade 化する
+  - `Mp4FileMuxer` と `Fmp4SegmentMuxer` の公開導線を `mux` に集約する
+  - `mux_fmp4_segment` と `mux_mp4_file` は内部実装モジュールとして扱う
   - @voluntas
 
 ### misc

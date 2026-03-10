@@ -17,7 +17,8 @@ mod demux_fmp4_segment;
 mod demux_mp4_file;
 pub mod descriptors;
 pub mod mux;
-pub mod mux_fmp4_segment;
+mod mux_fmp4_segment;
+mod mux_mp4_file;
 
 pub use basic_types::{
     BaseBox, BoxHeader, BoxSize, BoxType, Either, FixedPointNumber, FullBox, FullBoxFlags,

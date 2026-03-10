@@ -13,7 +13,7 @@ use shiguredo_mp4::{
         VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
-    mux_fmp4_segment::{Fmp4SegmentMuxer, Fmp4SegmentSample, Fmp4SegmentTrackConfig},
+    mux::{Fmp4SegmentMuxer, SegmentSample, SegmentTrackConfig},
 };
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -130,7 +130,7 @@ proptest! {
         height in 64u16..1081,
         samples in prop::collection::vec(arb_video_sample(0), 1..10),
     ) {
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: NonZeroU32::new(90000).expect("non-zero"),
             sample_entry: create_avc1_sample_entry(width, height),
@@ -139,9 +139,9 @@ proptest! {
         let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
-        let fmp4_samples: Vec<Fmp4SegmentSample> = samples
+        let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|s| Fmp4SegmentSample {
+            .map(|s| SegmentSample {
                 track_index: s.track_index,
                 duration: s.duration,
                 keyframe: s.keyframe,
@@ -185,7 +185,7 @@ proptest! {
     fn audio_only_roundtrip(
         samples in prop::collection::vec(arb_audio_sample(0), 1..10),
     ) {
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Audio,
             timescale: NonZeroU32::new(48000).expect("non-zero"),
             sample_entry: create_opus_sample_entry(),
@@ -194,9 +194,9 @@ proptest! {
         let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
-        let fmp4_samples: Vec<Fmp4SegmentSample> = samples
+        let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|s| Fmp4SegmentSample {
+            .map(|s| SegmentSample {
                 track_index: s.track_index,
                 duration: s.duration,
                 keyframe: s.keyframe,
@@ -240,12 +240,12 @@ proptest! {
         audio_samples in prop::collection::vec(arb_audio_sample(1), 1..5),
     ) {
         let tracks = vec![
-            Fmp4SegmentTrackConfig {
+            SegmentTrackConfig {
                 track_kind: TrackKind::Video,
                 timescale: NonZeroU32::new(90000).expect("non-zero"),
                 sample_entry: create_avc1_sample_entry(width, height),
             },
-            Fmp4SegmentTrackConfig {
+            SegmentTrackConfig {
                 track_kind: TrackKind::Audio,
                 timescale: NonZeroU32::new(48000).expect("non-zero"),
                 sample_entry: create_opus_sample_entry(),
@@ -266,9 +266,9 @@ proptest! {
             }
         }
 
-        let fmp4_samples: Vec<Fmp4SegmentSample> = all_samples
+        let fmp4_samples: Vec<SegmentSample> = all_samples
             .iter()
-            .map(|s| Fmp4SegmentSample {
+            .map(|s| SegmentSample {
                 track_index: s.track_index,
                 duration: s.duration,
                 keyframe: s.keyframe,
@@ -315,7 +315,7 @@ proptest! {
     fn composition_time_offset_roundtrip(
         samples_with_cto in prop::collection::vec(arb_video_sample_with_cto(0), 1..10),
     ) {
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: NonZeroU32::new(90000).expect("non-zero"),
             sample_entry: create_avc1_sample_entry(320, 240),
@@ -324,9 +324,9 @@ proptest! {
         let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
-        let fmp4_samples: Vec<Fmp4SegmentSample> = samples_with_cto
+        let fmp4_samples: Vec<SegmentSample> = samples_with_cto
             .iter()
-            .map(|(s, cto)| Fmp4SegmentSample {
+            .map(|(s, cto)| SegmentSample {
                 track_index: s.track_index,
                 duration: s.duration,
                 keyframe: s.keyframe,
@@ -374,7 +374,7 @@ proptest! {
         use shiguredo_mp4::boxes::MfraBox;
         use shiguredo_mp4::Decode;
 
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: NonZeroU32::new(90000).expect("non-zero"),
             sample_entry: create_avc1_sample_entry(320, 240),
@@ -384,9 +384,9 @@ proptest! {
         muxer.init_segment_bytes().expect("failed to build init segment");
 
         for segment_samples in &segments {
-            let fmp4_samples: Vec<Fmp4SegmentSample> = segment_samples
+            let fmp4_samples: Vec<SegmentSample> = segment_samples
                 .iter()
-                .map(|s| Fmp4SegmentSample {
+                .map(|s| SegmentSample {
                     track_index: 0,
                     duration: s.duration,
                     keyframe: s.keyframe,
@@ -418,7 +418,7 @@ proptest! {
         height in 64u16..1081,
         samples in prop::collection::vec(arb_video_sample(0), 1..5),
     ) {
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: NonZeroU32::new(90000).expect("non-zero"),
             sample_entry: create_avc1_sample_entry(width, height),
@@ -427,9 +427,9 @@ proptest! {
         let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
-        let fmp4_samples: Vec<Fmp4SegmentSample> = samples
+        let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|s| Fmp4SegmentSample {
+            .map(|s| SegmentSample {
                 track_index: s.track_index,
                 duration: s.duration,
                 keyframe: s.keyframe,
@@ -475,7 +475,7 @@ proptest! {
             1..4,
         ),
     ) {
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: std::num::NonZeroU32::new(90000).expect("non-zero"),
             sample_entry: create_avc1_sample_entry(width, height),
@@ -489,9 +489,9 @@ proptest! {
         let mut all_samples: Vec<TestSample> = Vec::new();
 
         for segment_samples in &segments {
-            let fmp4_samples: Vec<Fmp4SegmentSample> = segment_samples
+            let fmp4_samples: Vec<SegmentSample> = segment_samples
                 .iter()
-                .map(|s| Fmp4SegmentSample {
+                .map(|s| SegmentSample {
                     track_index: 0,
                     duration: s.duration,
                     keyframe: s.keyframe,
@@ -556,7 +556,7 @@ proptest! {
             2..5,
         ),
     ) {
-        let track_config = Fmp4SegmentTrackConfig {
+        let track_config = SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: NonZeroU32::new(90000).expect("non-zero"),
             sample_entry: create_avc1_sample_entry(320, 240),
@@ -573,9 +573,9 @@ proptest! {
         let mut expected_decode_time: u64 = 0;
 
         for segment_samples in &samples_per_segment {
-            let fmp4_samples: Vec<Fmp4SegmentSample> = segment_samples
+            let fmp4_samples: Vec<SegmentSample> = segment_samples
                 .iter()
-                .map(|s| Fmp4SegmentSample {
+                .map(|s| SegmentSample {
                     track_index: 0,
                     duration: s.duration,
                     keyframe: s.keyframe,

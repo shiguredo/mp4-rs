@@ -2,9 +2,7 @@
 use std::ffi::{CString, c_char};
 use std::num::NonZeroU32;
 
-use shiguredo_mp4::mux_fmp4_segment::{
-    Fmp4SegmentMuxError, Fmp4SegmentMuxer, Fmp4SegmentSample, Fmp4SegmentTrackConfig,
-};
+use shiguredo_mp4::mux::{Fmp4SegmentMuxer, SegmentMuxError, SegmentSample, SegmentTrackConfig};
 
 use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
 
@@ -91,7 +89,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_new(
     }
 
     let track_slice = unsafe { std::slice::from_raw_parts(tracks, track_count as usize) };
-    let mut track_configs: Vec<Fmp4SegmentTrackConfig> = Vec::new();
+    let mut track_configs: Vec<SegmentTrackConfig> = Vec::new();
 
     for t in track_slice {
         let Some(timescale) = NonZeroU32::new(t.timescale) else {
@@ -106,7 +104,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_new(
                 Err(_) => return std::ptr::null_mut(),
             }
         };
-        track_configs.push(Fmp4SegmentTrackConfig {
+        track_configs.push(SegmentTrackConfig {
             track_kind: t.track_kind.into(),
             timescale,
             sample_entry,
@@ -280,14 +278,14 @@ unsafe fn write_media_segment_impl(
     unsafe { write_bytes_result(muxer, result, func_name, out_data, out_size) }
 }
 
-/// `Result<Vec<u8>, Fmp4SegmentMuxError>` を C の出力ポインタに書き込む共通ヘルパー
+/// `Result<Vec<u8>, SegmentMuxError>` を C の出力ポインタに書き込む共通ヘルパー
 ///
 /// # Safety
 ///
 /// `out_data` と `out_size` は有効なポインタでなければならない。
 unsafe fn write_bytes_result(
     muxer: &mut Mp4Fmp4SegmentMuxer,
-    result: Result<Vec<u8>, Fmp4SegmentMuxError>,
+    result: Result<Vec<u8>, SegmentMuxError>,
     func_name: &str,
     out_data: *mut *mut u8,
     out_size: *mut u32,
@@ -325,15 +323,15 @@ unsafe fn write_bytes_result(
     }
 }
 
-/// `Mp4Fmp4SegmentSample` のスライスを `Fmp4SegmentSample` の `Vec` に変換するヘルパー
+/// `Mp4Fmp4SegmentSample` のスライスを `SegmentSample` の `Vec` に変換するヘルパー
 ///
 /// # Safety
 ///
 /// `samples` の各要素の `data` ポインタは、返された `Vec` が使われている間は有効でなければならない。
-unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4SegmentSample]) -> Vec<Fmp4SegmentSample<'a>> {
+unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4SegmentSample]) -> Vec<SegmentSample<'a>> {
     samples
         .iter()
-        .map(|s| Fmp4SegmentSample {
+        .map(|s| SegmentSample {
             track_index: s.track_index as usize, // u32 -> usize: 常に安全
             duration: s.duration,
             keyframe: s.keyframe,

@@ -3,7 +3,7 @@
 //! C API で細かくエラー方が分かれていると煩雑なので、ひとつに集約している
 use shiguredo_mp4::{
     Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, demux::SegmentDemuxError,
-    mux::MuxError, mux_fmp4_segment::Fmp4SegmentMuxError,
+    mux::MuxError, mux::SegmentMuxError,
 };
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
@@ -82,13 +82,13 @@ impl From<MuxError> for Mp4Error {
     }
 }
 
-impl From<Fmp4SegmentMuxError> for Mp4Error {
-    fn from(e: Fmp4SegmentMuxError) -> Self {
+impl From<SegmentMuxError> for Mp4Error {
+    fn from(e: SegmentMuxError) -> Self {
         match e {
-            Fmp4SegmentMuxError::EncodeError(e) => e.into(),
-            Fmp4SegmentMuxError::EmptyTracks
-            | Fmp4SegmentMuxError::EmptySamples
-            | Fmp4SegmentMuxError::InvalidTrackIndex { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            SegmentMuxError::EncodeError(e) => e.into(),
+            SegmentMuxError::EmptyTracks
+            | SegmentMuxError::EmptySamples
+            | SegmentMuxError::InvalidTrackIndex { .. } => Self::MP4_ERROR_INVALID_INPUT,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

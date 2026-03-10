@@ -18,7 +18,7 @@ use shiguredo_mp4::{
         VisualSampleEntryFields,
     },
     demux::Fmp4SegmentDemuxer,
-    mux_fmp4_segment::{Fmp4SegmentMuxer, Fmp4SegmentSample, Fmp4SegmentTrackConfig},
+    mux::{Fmp4SegmentMuxer, SegmentSample, SegmentTrackConfig},
 };
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -98,12 +98,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // トラック設定: 映像 (track_index=0) + 音声 (track_index=1)
     let track_configs = vec![
-        Fmp4SegmentTrackConfig {
+        SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: video_timescale,
             sample_entry: create_avc1_sample_entry(width, height),
         },
-        Fmp4SegmentTrackConfig {
+        SegmentTrackConfig {
             track_kind: TrackKind::Audio,
             timescale: audio_timescale,
             sample_entry: create_opus_sample_entry(),
@@ -125,14 +125,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let audio_data = dummy_audio_frame(256);
 
             let samples = vec![
-                Fmp4SegmentSample {
+                SegmentSample {
                     track_index: 0,
                     duration: video_frame_duration,
                     keyframe: seg_idx == 0,
                     composition_time_offset: None,
                     data: &video_data,
                 },
-                Fmp4SegmentSample {
+                SegmentSample {
                     track_index: 1,
                     duration: audio_frame_duration,
                     keyframe: true,
@@ -158,14 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let video_data = dummy_video_frame(false, 1024);
     let audio_data = dummy_audio_frame(128);
     let sidx_samples = vec![
-        Fmp4SegmentSample {
+        SegmentSample {
             track_index: 0,
             duration: video_frame_duration,
             keyframe: false,
             composition_time_offset: None,
             data: &video_data,
         },
-        Fmp4SegmentSample {
+        SegmentSample {
             track_index: 1,
             duration: audio_frame_duration,
             keyframe: true,

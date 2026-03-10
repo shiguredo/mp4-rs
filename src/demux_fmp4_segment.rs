@@ -204,7 +204,8 @@ impl Fmp4SegmentDemuxer {
     /// # 制限事項
     ///
     /// 1 回の呼び出しで処理できるのは単一の `moof` + `mdat` ペアのみ。
-    /// セグメント内に複数の `moof` + `mdat` ペアが含まれる場合は未対応。
+    /// セグメント内に複数の `moof` + `mdat` ペアが含まれる場合や、
+    /// `mdat` の末尾に追加データが存在する場合はエラーになる。
     /// 先頭に `sidx` ボックスが存在する場合は自動的にスキップされる。
     ///
     /// # サポートする `base_data_offset` モード
@@ -261,6 +262,22 @@ impl Fmp4SegmentDemuxer {
                 "expected mdat box after moof but got {:?}",
                 mdat_header.box_type
             ))));
+        }
+        let mdat_end = if mdat_header.box_size.get() == 0 {
+            data.len()
+        } else {
+            offset
+                .checked_add(usize::try_from(mdat_header.box_size.get()).map_err(|_| {
+                    DemuxError::DecodeError(Error::invalid_data("mdat box size exceeds usize::MAX"))
+                })?)
+                .ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data("mdat box end overflow"))
+                })?
+        };
+        if mdat_end > data.len() {
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "mdat box exceeds segment boundary",
+            )));
         }
 
         let pending_samples = {
@@ -365,9 +382,9 @@ impl Fmp4SegmentDemuxer {
                                     "sample data offset overflow",
                                 ))
                             })?;
-                        if sample_data_end > data.len() {
+                        if sample_data_end > mdat_end {
                             return Err(DemuxError::DecodeError(Error::invalid_data(
-                                "sample data range exceeds segment boundary",
+                                "sample data range exceeds mdat boundary",
                             )));
                         }
 
@@ -406,6 +423,12 @@ impl Fmp4SegmentDemuxer {
 
             pending_samples
         };
+
+        if mdat_end != data.len() {
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "media segment contains trailing data after mdat",
+            )));
+        }
 
         let track_runtimes = self
             .track_runtimes

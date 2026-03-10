@@ -772,6 +772,66 @@ proptest! {
         }
     }
 
+    /// `handle_media_segment()` が複数の `moof` + `mdat` ペアを 1 回で受け取った場合に
+    /// 末尾データを黙って無視せずエラーを返すことを確認する
+    #[test]
+    fn rejects_multiple_moof_mdat_pairs_in_one_input(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        first_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
+        second_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
+    ) {
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entries: vec![create_avc1_sample_entry(width, height)],
+        };
+
+        let mut muxer =
+            Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+
+        let first_segment_input: Vec<SegmentSample> = first_segment_samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                sample_entry_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let second_segment_input: Vec<SegmentSample> = second_segment_samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                sample_entry_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+
+        let mut concatenated = muxer
+            .create_media_segment(&first_segment_input)
+            .expect("failed to create first media segment");
+        concatenated.extend_from_slice(
+            &muxer
+                .create_media_segment(&second_segment_input)
+                .expect("failed to create second media segment"),
+        );
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+
+        let result = demuxer.handle_media_segment(&concatenated);
+        prop_assert!(matches!(result, Err(DemuxError::DecodeError(_))));
+    }
+
     /// Fmp4FileDemuxer でも sample entry の切り替わりが反映されることを確認する
     #[test]
     fn fmp4_file_demuxer_propagates_sample_entry_changes(

@@ -10,6 +10,18 @@
 //! - **初期化セグメント**: `ftyp` + `moov` (サンプルテーブルの代わりに `mvex/trex` を含む)
 //! - **メディアセグメント**: `moof` + `mdat` のペア（繰り返し）
 //!
+//! # `Mp4FileMuxer` との主な違い
+//!
+//! [`crate::mux::Mp4FileMuxer`] は、既にどこかへ書き込まれたサンプルデータを
+//! `data_offset` と `data_size` で参照する構造になっている。
+//! 一方で [`Fmp4SegmentMuxer`] は、セグメント本体の `mdat` をその場で構築するため、
+//! サンプルデータそのものを受け取る。
+//!
+//! また fMP4 では、サンプル投入前に `stsd` を含む init segment を確定させる必要がある。
+//! そのため [`Fmp4SegmentMuxer`] は、`Mp4FileMuxer` のようにサンプルごとに
+//! `sample_entry` を受け取るのではなく、トラックごとの `sample_entries` を
+//! 事前に受け取る設計になっている。
+//!
 //! # Examples
 //!
 //! ```no_run
@@ -172,6 +184,11 @@ pub struct SegmentTrackConfig {
     pub timescale: NonZeroU32,
 
     /// サンプルエントリー（コーデック情報）の一覧
+    ///
+    /// [`crate::mux::Sample`] では、最初のサンプルや sample entry が切り替わるタイミングで
+    /// `sample_entry` を与える。
+    /// 一方で fMP4 segment mux では、init segment の `stsd` を先に確定する必要があるため、
+    /// 利用しうる sample entry をここで事前登録しておく。
     pub sample_entries: Vec<SampleEntry>,
 }
 
@@ -179,9 +196,17 @@ pub struct SegmentTrackConfig {
 #[derive(Debug, Clone)]
 pub struct SegmentSample<'a> {
     /// `Fmp4SegmentMuxer::new()` に渡したトラックリストのインデックス
+    ///
+    /// [`crate::mux::Sample::track_kind`] と異なり index を使うのは、
+    /// fMP4 segment mux ではトラック定義が事前に固定されており、
+    /// 同じ `TrackKind` のトラックを複数持てるため。
     pub track_index: usize,
 
     /// `SegmentTrackConfig::sample_entries` に対する 0-based index
+    ///
+    /// [`crate::mux::Sample::sample_entry`] と異なり index を使うのは、
+    /// init segment に書き込んだ `stsd` のどの entry をこのセグメントで使うかを
+    /// `tfhd.sample_description_index` と対応付けて指定するため。
     pub sample_entry_index: usize,
 
     /// サンプルの尺（トラックのタイムスケール単位）
@@ -197,6 +222,9 @@ pub struct SegmentSample<'a> {
     pub composition_time_offset: Option<i32>,
 
     /// サンプルのデータ
+    ///
+    /// [`crate::mux::Sample`] の `data_offset` / `data_size` と異なり、
+    /// fMP4 segment mux は `mdat` をその場で構築するため payload 自体を受け取る。
     pub data: &'a [u8],
 }
 
@@ -224,6 +252,10 @@ struct TfraSegmentEntry {
 /// この構造体は、複数のメディアトラック（音声・映像）からのサンプルを
 ///  fMP4 形式の初期化セグメントとメディアセグメントに変換する。
 ///
+/// [`crate::mux::Mp4FileMuxer`] と違って、init segment をサンプル投入前に生成できる必要がある。
+/// そのためトラック情報と sample entry 群は [`new()`](Self::new) 時点で確定している必要があり、
+/// 各サンプルでは `track_index` と `sample_entry_index` を指定する。
+///
 /// 基本的な使用フロー：
 /// 1. [`new()`](Self::new) でインスタンスを作成（トラック設定を指定）
 /// 2. [`init_segment_bytes()`](Self::init_segment_bytes) で初期化セグメントを取得
@@ -242,6 +274,9 @@ pub struct Fmp4SegmentMuxer {
 
 impl Fmp4SegmentMuxer {
     /// [`Fmp4SegmentMuxer`] インスタンスを生成する
+    ///
+    /// [`crate::mux::Mp4FileMuxer`] とは異なり、
+    /// init segment を構築するためのトラック情報と sample entry 群をここで受け取る。
     ///
     /// `tracks` は空にできない。空の場合は [`SegmentMuxError::EmptyTracks`] が返される。
     pub fn new(tracks: Vec<SegmentTrackConfig>) -> Result<Self, SegmentMuxError> {
@@ -301,6 +336,10 @@ impl Fmp4SegmentMuxer {
     ///
     /// `samples` に含まれるサンプルは `track_index` でグループ化される。
     /// 同一セグメント内の同一トラックのサンプルは、渡された順序で `mdat` に格納される。
+    ///
+    /// [`crate::mux::Mp4FileMuxer::append_sample()`] と異なり、
+    /// ここではファイル上の offset ではなくサンプル payload 自体を受け取って
+    /// セグメントを構築する。
     pub fn create_media_segment(
         &mut self,
         samples: &[SegmentSample],

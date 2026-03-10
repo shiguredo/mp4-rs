@@ -393,7 +393,32 @@ mod boundary_tests {
 // ===== RequiredInput のテスト =====
 
 mod required_input_tests {
+    use proptest::prelude::*;
     use shiguredo_mp4::demux::{Input, RequiredInput};
+
+    fn reference_is_satisfied_by(
+        required: RequiredInput,
+        input_position: u64,
+        input_len: usize,
+    ) -> bool {
+        let Some(offset) = required.position.checked_sub(input_position) else {
+            return false;
+        };
+
+        if offset > input_len as u64 {
+            return false;
+        }
+
+        let Some(required_size) = required.size else {
+            return true;
+        };
+
+        let Some(end) = offset.checked_add(required_size as u64) else {
+            return false;
+        };
+
+        end <= input_len as u64
+    }
 
     /// 要求が完全に満たされる場合
     #[test]
@@ -521,6 +546,31 @@ mod required_input_tests {
         // offset > data.len() ではなく offset == data.len() なので、
         // size が 10 で end が 110 になり、110 > 100 なので false
         assert!(!required.is_satisfied_by(input));
+    }
+
+    proptest! {
+        #[test]
+        fn is_satisfied_by_matches_reference_implementation(
+            required_position in any::<u64>(),
+            required_size in prop::option::of(0usize..2048),
+            input_position in any::<u64>(),
+            input_len in 0usize..2048,
+        ) {
+            let data = vec![0u8; input_len];
+            let required = RequiredInput {
+                position: required_position,
+                size: required_size,
+            };
+            let input = Input {
+                position: input_position,
+                data: &data,
+            };
+
+            prop_assert_eq!(
+                required.is_satisfied_by(input),
+                reference_is_satisfied_by(required, input_position, input_len),
+            );
+        }
     }
 }
 

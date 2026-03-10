@@ -9,8 +9,8 @@ use shiguredo_mp4::{
     BoxSize, BoxType, Either,
     aux::{SampleTableAccessor, SampleTableAccessorError},
     boxes::{
-        Co64Box, SampleEntry, StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-        SttsBox, SttsEntry, UnknownBox,
+        Co64Box, CttsBox, CttsEntry, SampleEntry, StblBox, StcoBox, StscBox, StscEntry, StsdBox,
+        StssBox, StszBox, SttsBox, SttsEntry, UnknownBox,
     },
 };
 
@@ -343,6 +343,59 @@ mod error_cases {
             result
         );
     }
+
+    /// stts と ctts でサンプル数が異なるケース
+    #[test]
+    fn inconsistent_sample_count_stts_vs_ctts() {
+        let stbl_box = StblBox {
+            stsd_box: StsdBox {
+                entries: vec![dummy_sample_entry()],
+            },
+            stts_box: SttsBox {
+                entries: vec![SttsEntry {
+                    sample_count: 5,
+                    sample_delta: 1,
+                }],
+            },
+            stsc_box: StscBox {
+                entries: vec![StscEntry {
+                    first_chunk: nz(1),
+                    sample_per_chunk: 5,
+                    sample_description_index: nz(1),
+                }],
+            },
+            stsz_box: StszBox::Variable {
+                entry_sizes: vec![100; 5],
+            },
+            stco_or_co64_box: Either::A(StcoBox {
+                chunk_offsets: vec![0],
+            }),
+            stss_box: None,
+            ctts_box: Some(CttsBox {
+                version: 0,
+                entries: vec![CttsEntry {
+                    sample_count: 4,
+                    sample_offset: 10,
+                }],
+            }),
+            cslg_box: None,
+            sdtp_box: None,
+            unknown_boxes: Vec::new(),
+        };
+
+        let result = SampleTableAccessor::new(&stbl_box);
+        assert!(
+            matches!(
+                result,
+                Err(SampleTableAccessorError::InconsistentSampleCount {
+                    other_box_type,
+                    ..
+                }) if other_box_type == CttsBox::TYPE
+            ),
+            "Expected InconsistentSampleCount error for ctts, got {:?}",
+            result
+        );
+    }
 }
 
 // ===== get_sample_by_timestamp のテスト =====
@@ -509,6 +562,115 @@ mod timestamp_tests {
         let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
         assert_eq!(accessor.sample_count(), 20);
         assert_eq!(accessor.chunk_count(), 4);
+    }
+}
+
+mod composition_time_offset_tests {
+    use super::*;
+
+    proptest! {
+        #[test]
+        fn composition_time_offset_matches_ctts_entries(
+            entries in prop::collection::vec((1u32..5, -100i32..101), 1..6)
+        ) {
+            let sample_count: u32 = entries.iter().map(|(sample_count, _)| *sample_count).sum();
+            let expected_offsets: Vec<i64> = entries
+                .iter()
+                .flat_map(|(sample_count, sample_offset)| {
+                    core::iter::repeat_n(*sample_offset as i64, *sample_count as usize)
+                })
+                .collect();
+            let ctts_version = if entries.iter().any(|(_, sample_offset)| *sample_offset < 0) {
+                1
+            } else {
+                0
+            };
+
+            let stbl_box = StblBox {
+                stsd_box: StsdBox {
+                    entries: vec![dummy_sample_entry()],
+                },
+                stts_box: SttsBox {
+                    entries: vec![SttsEntry {
+                        sample_count,
+                        sample_delta: 10,
+                    }],
+                },
+                stsc_box: StscBox {
+                    entries: vec![StscEntry {
+                        first_chunk: nz(1),
+                        sample_per_chunk: sample_count,
+                        sample_description_index: nz(1),
+                    }],
+                },
+                stsz_box: StszBox::Variable {
+                    entry_sizes: vec![100; sample_count as usize],
+                },
+                stco_or_co64_box: Either::A(StcoBox {
+                    chunk_offsets: vec![0],
+                }),
+                stss_box: None,
+                ctts_box: Some(CttsBox {
+                    version: ctts_version,
+                    entries: entries
+                        .iter()
+                        .map(|(sample_count, sample_offset)| CttsEntry {
+                            sample_count: *sample_count,
+                            sample_offset: *sample_offset as i64,
+                        })
+                        .collect(),
+                }),
+                cslg_box: None,
+                sdtp_box: None,
+                unknown_boxes: Vec::new(),
+            };
+
+            let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+
+            for (i, expected_offset) in expected_offsets.iter().enumerate() {
+                let sample = accessor
+                    .get_sample(nz(i as u32 + 1))
+                    .expect("sample not found");
+                prop_assert_eq!(sample.composition_time_offset(), Some(*expected_offset));
+            }
+        }
+    }
+
+    #[test]
+    fn composition_time_offset_returns_none_without_ctts() {
+        let stbl_box = StblBox {
+            stsd_box: StsdBox {
+                entries: vec![dummy_sample_entry()],
+            },
+            stts_box: SttsBox {
+                entries: vec![SttsEntry {
+                    sample_count: 3,
+                    sample_delta: 10,
+                }],
+            },
+            stsc_box: StscBox {
+                entries: vec![StscEntry {
+                    first_chunk: nz(1),
+                    sample_per_chunk: 3,
+                    sample_description_index: nz(1),
+                }],
+            },
+            stsz_box: StszBox::Variable {
+                entry_sizes: vec![100; 3],
+            },
+            stco_or_co64_box: Either::A(StcoBox {
+                chunk_offsets: vec![0],
+            }),
+            stss_box: None,
+            ctts_box: None,
+            cslg_box: None,
+            sdtp_box: None,
+            unknown_boxes: Vec::new(),
+        };
+
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let sample = accessor.get_sample(nz(1)).expect("sample not found");
+        assert_eq!(sample.composition_time_offset(), None);
     }
 }
 

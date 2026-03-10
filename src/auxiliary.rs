@@ -4,7 +4,7 @@ use core::num::NonZeroU32;
 
 use crate::{
     BoxType, Either,
-    boxes::{SampleEntry, StblBox, StscBox, StscEntry, StszBox},
+    boxes::{CttsBox, SampleEntry, StblBox, StscBox, StscEntry, StszBox},
 };
 
 /// [`StblBox`] をラップして、その中の情報を簡単かつ効率的に取り出せるようにするための構造体
@@ -14,6 +14,7 @@ pub struct SampleTableAccessor<T> {
     chunk_count: u32,
     sample_count: u32,
     sample_durations: Vec<(u32, u32, u64)>, // (累計サンプル数、尺、累計尺）
+    sample_composition_offsets: Option<Vec<(u32, i64)>>, // (累計サンプル数、オフセット)
     sample_index_offsets: Vec<NonZeroU32>,  // チャンク先頭のサンプルインデックス
     sample_data_offsets: Vec<u64>,
 }
@@ -41,6 +42,25 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                 other_sample_count: entry_sizes.len() as u32,
             });
         }
+
+        let sample_composition_offsets = if let Some(ctts_box) = &stbl_box_ref.ctts_box {
+            let mut ctts_sample_count = 0;
+            let mut sample_composition_offsets = Vec::new();
+            for entry in &ctts_box.entries {
+                sample_composition_offsets.push((ctts_sample_count, entry.sample_offset));
+                ctts_sample_count += entry.sample_count;
+            }
+            if ctts_sample_count != sample_count {
+                return Err(SampleTableAccessorError::InconsistentSampleCount {
+                    stts_sample_count: sample_count,
+                    other_box_type: CttsBox::TYPE,
+                    other_sample_count: ctts_sample_count,
+                });
+            }
+            Some(sample_composition_offsets)
+        } else {
+            None
+        };
 
         let chunk_count = match &stbl_box_ref.stco_or_co64_box {
             Either::A(b) => b.chunk_offsets.len() as u32,
@@ -122,6 +142,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             chunk_count,
             sample_count,
             sample_durations,
+            sample_composition_offsets,
             sample_index_offsets,
             sample_data_offsets: Vec::new(),
         };
@@ -410,17 +431,12 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
     /// `ctts` ボックスが存在する場合に、このサンプルに対応するオフセット値を返す。
     /// `ctts` ボックスがない場合は `None` を返す。
     pub fn composition_time_offset(&self) -> Option<i64> {
-        let ctts = self.sample_table.stbl_box().ctts_box.as_ref()?;
-        let sample_idx = self.index.get() - 1; // 0-based
-        let mut count = 0u32;
-        for entry in &ctts.entries {
-            let end = count.checked_add(entry.sample_count)?;
-            if sample_idx >= count && sample_idx < end {
-                return Some(entry.sample_offset);
-            }
-            count = end;
-        }
-        None
+        let sample_idx = self.index.get() - 1;
+        let sample_composition_offsets = self.sample_table.sample_composition_offsets.as_ref()?;
+        let i = sample_composition_offsets
+            .binary_search_by_key(&sample_idx, |x| x.0)
+            .unwrap_or_else(|i| i.checked_sub(1).expect("unreachable"));
+        Some(sample_composition_offsets[i].1)
     }
 
     /// サンプルが属するチャンクの情報を返す

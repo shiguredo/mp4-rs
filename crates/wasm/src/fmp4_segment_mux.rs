@@ -174,46 +174,6 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_with_sidx_js
     )
 }
 
-/// `mfra` ボックスを生成して `Vec<u8>` として返す
-///
-/// `mp4_fmp4_segment_muxer_write_media_segment_json()` などで
-/// メディアセグメントを生成した後に利用する。
-///
-/// # 引数
-///
-/// - `muxer`: インスタンスへのポインタ
-///
-/// # 戻り値
-///
-/// 成功時は `Vec<u8>` へのポインタ、エラー時は NULL
-///
-/// 返されたポインタは `mp4_vec_free()` で解放する必要がある
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_mfra(
-    muxer: *mut Mp4Fmp4SegmentMuxer,
-) -> *mut Vec<u8> {
-    if muxer.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    let mut out_data: *mut u8 = std::ptr::null_mut();
-    let mut out_size: u32 = 0;
-    let result = unsafe {
-        c_api::fmp4_segment_mux::mp4_fmp4_segment_muxer_write_mfra(
-            muxer,
-            &mut out_data,
-            &mut out_size,
-        )
-    };
-
-    if !matches!(result, c_api::error::Mp4Error::MP4_ERROR_OK) || out_data.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    let bytes = unsafe { Vec::from_raw_parts(out_data, out_size as usize, out_size as usize) };
-    Box::into_raw(Box::new(bytes))
-}
-
 fn write_segment_impl(
     muxer: *mut Mp4Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,

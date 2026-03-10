@@ -62,6 +62,7 @@ pub struct Mp4Fmp4SegmentSample {
 /// - `mp4_fmp4_segment_muxer_write_init_segment()`: 初期化セグメントを生成する
 /// - `mp4_fmp4_segment_muxer_write_media_segment()`: メディアセグメントを生成する
 /// - `mp4_fmp4_segment_muxer_write_media_segment_with_sidx()`: sidx 付きメディアセグメントを生成する
+/// - `mp4_fmp4_segment_muxer_write_mfra()`: `mfra` ボックスを生成する
 pub struct Mp4Fmp4SegmentMuxer {
     inner: Fmp4SegmentMuxer,
     last_error_string: Option<CString>,
@@ -247,6 +248,46 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_with_sidx(
     out_size: *mut u32,
 ) -> Mp4Error {
     unsafe { write_media_segment_impl(muxer, samples, sample_count, out_data, out_size, true) }
+}
+
+/// ランダムアクセスインデックス（`mfra`）のバイト列を生成する
+///
+/// `mfra` はファイル末尾に付加することで、fragmented MP4 のランダムアクセスを補助する。
+/// `mp4_fmp4_segment_muxer_write_init_segment()` と
+/// `mp4_fmp4_segment_muxer_write_media_segment()` ないし
+/// `mp4_fmp4_segment_muxer_write_media_segment_with_sidx()` を呼び出した後に使うこと。
+///
+/// # 引数
+///
+/// - `muxer`: インスタンスへのポインタ
+/// - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
+///   - 返されたポインタは `mp4_fmp4_bytes_free()` で解放する必要がある
+/// - `out_size`: バイト列のサイズを受け取るポインタ
+///
+/// # 戻り値
+///
+/// - `MP4_ERROR_OK`: 正常に生成された
+/// - その他のエラー: 生成に失敗した
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_mfra(
+    muxer: *mut Mp4Fmp4SegmentMuxer,
+    out_data: *mut *mut u8,
+    out_size: *mut u32,
+) -> Mp4Error {
+    if muxer.is_null() || out_data.is_null() || out_size.is_null() {
+        return Mp4Error::MP4_ERROR_NULL_POINTER;
+    }
+    let muxer = unsafe { &mut *muxer };
+    let result = muxer.inner.mfra_bytes();
+    unsafe {
+        write_bytes_result(
+            muxer,
+            result,
+            "mp4_fmp4_segment_muxer_write_mfra",
+            out_data,
+            out_size,
+        )
+    }
 }
 
 /// メディアセグメント生成の共通実装

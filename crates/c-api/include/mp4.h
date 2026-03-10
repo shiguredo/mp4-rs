@@ -330,6 +330,7 @@ typedef struct Mp4Fmp4SegmentDemuxer Mp4Fmp4SegmentDemuxer;
  * - `mp4_fmp4_segment_muxer_write_init_segment()`: 初期化セグメントを生成する
  * - `mp4_fmp4_segment_muxer_write_media_segment()`: メディアセグメントを生成する
  * - `mp4_fmp4_segment_muxer_write_media_segment_with_sidx()`: sidx 付きメディアセグメントを生成する
+ * - `mp4_fmp4_segment_muxer_write_mfra()`: `mfra` ボックスを生成する
  */
 typedef struct Mp4Fmp4SegmentMuxer Mp4Fmp4SegmentMuxer;
 
@@ -1704,6 +1705,30 @@ enum Mp4Error mp4_fmp4_segment_muxer_write_media_segment_with_sidx(struct Mp4Fmp
                                                                    uint32_t sample_count,
                                                                    uint8_t **out_data,
                                                                    uint32_t *out_size);
+
+/**
+ * ランダムアクセスインデックス（`mfra`）のバイト列を生成する
+ *
+ * `mfra` はファイル末尾に付加することで、fragmented MP4 のランダムアクセスを補助する。
+ * `mp4_fmp4_segment_muxer_write_init_segment()` と
+ * `mp4_fmp4_segment_muxer_write_media_segment()` ないし
+ * `mp4_fmp4_segment_muxer_write_media_segment_with_sidx()` を呼び出した後に使うこと。
+ *
+ * # 引数
+ *
+ * - `muxer`: インスタンスへのポインタ
+ * - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
+ *   - 返されたポインタは `mp4_fmp4_bytes_free()` で解放する必要がある
+ * - `out_size`: バイト列のサイズを受け取るポインタ
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に生成された
+ * - その他のエラー: 生成に失敗した
+ */
+enum Mp4Error mp4_fmp4_segment_muxer_write_mfra(struct Mp4Fmp4SegmentMuxer *muxer,
+                                                uint8_t **out_data,
+                                                uint32_t *out_size);
 
 /**
  * `mp4_fmp4_segment_muxer_write_init_segment()` や `mp4_fmp4_segment_muxer_write_media_segment()` で

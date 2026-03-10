@@ -413,5 +413,6 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_free_samples(
     if samples.is_null() {
         return;
     }
-    let _ = unsafe { Vec::from_raw_parts(samples, count as usize, count as usize) };
+    let samples = unsafe { std::slice::from_raw_parts_mut(samples, count as usize) };
+    let _ = unsafe { Box::from_raw(samples) };
 }

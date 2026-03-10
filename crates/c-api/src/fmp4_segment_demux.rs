@@ -1,7 +1,7 @@
 //! fMP4 デマルチプレックス処理の C API を定義するモジュール
 use std::ffi::{CString, c_char};
 
-use shiguredo_mp4::demux_fmp4_segment::Fmp4SegmentDemuxer;
+use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
 
 use crate::{basic_types::Mp4TrackKind, error::Mp4Error};
 

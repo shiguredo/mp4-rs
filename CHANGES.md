@@ -21,7 +21,8 @@
   - `default_base_is_moof=false` の traf に対応する
   - @voluntas
 - [ADD] fMP4 のファイルベースデマルチプレックス機能 (`Fmp4FileDemuxer`) を追加する
-  - 完全な fMP4 ファイルのバイト列を受け取り、サンプルを順番に取り出す
+  - `required_input()` / `handle_input()` ベースで完全な fMP4 ファイルを段階的に読み進める
+  - 返り値のサンプル型には既存の `Sample` を再利用する
   - `tfhd` に絶対オフセット形式の `base_data_offset` が含まれる場合はエラーを返す
   - @voluntas
 - [ADD] `Fmp4SegmentMuxer::mfra_bytes()` を追加する
@@ -29,7 +30,7 @@
   - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
   - ファイル末尾に付加することでランダムアクセスに対応できる
   - @voluntas
-- [ADD] `Fmp4SegmentDemuxSample` に `composition_time_offset: Option<i32>` フィールドを追加する
+- [ADD] `SegmentSample` に `composition_time_offset: Option<i32>` フィールドを追加する
   - `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される
   - C API の `Mp4Fmp4SegmentDemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
   - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
@@ -46,6 +47,15 @@
 - [ADD] fMP4 の WASM API を追加する
   - C API と同等の機能を wasm32-unknown-unknown ターゲットで利用可能にする
   - JSON ベースのトラック設定とサンプル情報のやりとりに対応する
+  - @voluntas
+- [CHANGE] `demux` モジュールを facade 化する
+  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の公開導線を `demux` に集約する
+  - `demux_fmp4_file` / `demux_fmp4_segment` / `demux_mp4_file` は内部実装モジュールとして扱う
+  - @voluntas
+- [CHANGE] fMP4 segment demux の補助型名を整理する
+  - `Fmp4SegmentDemuxError` を `SegmentDemuxError` に変更する
+  - `Fmp4SegmentDemuxSample` を `SegmentSample` に変更する
+  - `Fmp4SegmentTrackInfo` を `SegmentTrackInfo` に変更する
   - @voluntas
 
 ### misc

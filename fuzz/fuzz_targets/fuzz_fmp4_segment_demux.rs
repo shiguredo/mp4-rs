@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_mp4::demux_fmp4_segment::Fmp4SegmentDemuxer;
+use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
 
 fuzz_target!(|data: &[u8]| {
     // 任意のバイト列を init segment + media segment として処理してもパニックしないことを確認する

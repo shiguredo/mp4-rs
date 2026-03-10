@@ -17,7 +17,7 @@ use shiguredo_mp4::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry,
         VisualSampleEntryFields,
     },
-    demux_fmp4_segment::Fmp4SegmentDemuxer,
+    demux::Fmp4SegmentDemuxer,
     mux_fmp4_segment::{Fmp4SegmentMuxer, Fmp4SegmentSample, Fmp4SegmentTrackConfig},
 };
 

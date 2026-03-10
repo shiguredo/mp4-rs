@@ -2,9 +2,8 @@
 //!
 //! C API で細かくエラー方が分かれていると煩雑なので、ひとつに集約している
 use shiguredo_mp4::{
-    Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError,
-    demux_fmp4_segment::Fmp4SegmentDemuxError, mux::MuxError,
-    mux_fmp4_segment::Fmp4SegmentMuxError,
+    Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, demux::SegmentDemuxError,
+    mux::MuxError, mux_fmp4_segment::Fmp4SegmentMuxError,
 };
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
@@ -95,14 +94,14 @@ impl From<Fmp4SegmentMuxError> for Mp4Error {
     }
 }
 
-impl From<Fmp4SegmentDemuxError> for Mp4Error {
-    fn from(e: Fmp4SegmentDemuxError) -> Self {
+impl From<SegmentDemuxError> for Mp4Error {
+    fn from(e: SegmentDemuxError) -> Self {
         match e {
-            Fmp4SegmentDemuxError::DecodeError(e) => e.into(),
-            Fmp4SegmentDemuxError::NotInitialized | Fmp4SegmentDemuxError::AlreadyInitialized => {
+            SegmentDemuxError::DecodeError(e) => e.into(),
+            SegmentDemuxError::NotInitialized | SegmentDemuxError::AlreadyInitialized => {
                 Self::MP4_ERROR_INVALID_STATE
             }
-            Fmp4SegmentDemuxError::UnknownTrackId(_) => Self::MP4_ERROR_INVALID_DATA,
+            SegmentDemuxError::UnknownTrackId(_) => Self::MP4_ERROR_INVALID_DATA,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

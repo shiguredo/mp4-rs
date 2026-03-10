@@ -12,8 +12,7 @@ use shiguredo_mp4::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry,
         VisualSampleEntryFields,
     },
-    demux_file_fmp4::Fmp4FileDemuxer,
-    demux_fmp4_segment::Fmp4SegmentDemuxer,
+    demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
     mux_fmp4_segment::{Fmp4SegmentMuxer, Fmp4SegmentSample, Fmp4SegmentTrackConfig},
 };
 
@@ -104,6 +103,21 @@ fn arb_audio_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
             data,
         }
     })
+}
+
+fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
+    while let Some(required) = demuxer.required_input() {
+        let start = required.position as usize;
+        let Some(required_size) = required.size else {
+            panic!("bug: Fmp4FileDemuxer::required_input() must always return size");
+        };
+        let end = start.saturating_add(required_size).min(file_data.len());
+        let data = file_data.get(start..end).unwrap_or(&[]);
+        demuxer.handle_input(Input {
+            position: required.position,
+            data,
+        });
+    }
 }
 
 proptest! {
@@ -492,8 +506,8 @@ proptest! {
             all_samples.extend_from_slice(segment_samples);
         }
 
-        let mut demuxer =
-            Fmp4FileDemuxer::new(file_data).expect("Fmp4FileDemuxer::new failed");
+        let mut demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
 
         // トラック情報の確認
         let tracks = demuxer.tracks().expect("failed to get tracks");
@@ -503,22 +517,33 @@ proptest! {
 
         // サンプルを順番に取り出して元データと照合する
         let mut expected_decode_time: u64 = 0;
-        for orig in &all_samples {
-            let sample = demuxer
-                .next_sample()
-                .expect("next_sample error")
-                .expect("unexpected end of samples");
+        for (i, orig) in all_samples.iter().enumerate() {
+            let sample = loop {
+                match demuxer.next_sample() {
+                    Ok(Some(sample)) => break sample,
+                    Ok(None) => panic!("unexpected end of samples"),
+                    Err(DemuxError::InputRequired(_)) => {
+                        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
+                    }
+                    Err(error) => panic!("next_sample error: {error}"),
+                }
+            };
 
-            prop_assert_eq!(sample.track_id, 1);
+            prop_assert_eq!(sample.track.track_id, 1);
             prop_assert_eq!(sample.timestamp, expected_decode_time);
             prop_assert_eq!(sample.duration, orig.duration);
             prop_assert_eq!(sample.keyframe, orig.keyframe);
-            prop_assert_eq!(sample.data, orig.data.as_slice());
+            prop_assert_eq!(
+                &file_data[sample.data_offset as usize..sample.data_offset as usize + sample.data_size],
+                orig.data.as_slice(),
+            );
+            prop_assert_eq!(sample.sample_entry.is_some(), i == 0);
 
             expected_decode_time += orig.duration as u64;
         }
 
         // 全サンプルを読み終えたら None が返ることを確認する
+        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
         let last = demuxer.next_sample().expect("next_sample error");
         prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);
     }

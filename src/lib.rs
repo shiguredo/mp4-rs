@@ -15,6 +15,7 @@ pub mod demux;
 mod demux_fmp4_file;
 mod demux_fmp4_segment;
 mod demux_mp4_file;
+mod demux_mp4_file_kind_detector;
 pub mod descriptors;
 pub mod mux;
 mod mux_fmp4_segment;

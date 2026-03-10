@@ -34,3 +34,4 @@ pub use crate::demux_fmp4_segment::{
 pub use crate::demux_mp4_file::{
     DemuxError, Input, Mp4FileDemuxer, RequiredInput, Sample, TrackInfo,
 };
+pub use crate::demux_mp4_file_kind_detector::{Mp4FileKind, Mp4FileKindDetector};

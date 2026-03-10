@@ -25,6 +25,10 @@
   - 返り値のサンプル型には既存の `Sample` を再利用する
   - `tfhd` に絶対オフセット形式の `base_data_offset` が含まれる場合はエラーを返す
   - @voluntas
+- [ADD] MP4 / fMP4 のファイル種別判定機能 (`Mp4FileKindDetector`) を追加する
+  - `required_input()` / `handle_input()` ベースで巨大ファイルや non-faststart なファイルも段階的に判定できる
+  - `moov` 内の `mvex` の有無に基づいて `Mp4` / `FragmentedMp4` を判定する
+  - @voluntas
 - [ADD] `Fmp4SegmentMuxer::mfra_bytes()` を追加する
   - `mfra` (Movie Fragment Random Access) ボックスのバイト列を生成する
   - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する

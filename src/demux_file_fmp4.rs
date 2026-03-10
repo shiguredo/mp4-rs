@@ -28,7 +28,7 @@
 //!     println!(
 //!         "track_id={}, decode_time={}, size={}",
 //!         sample.track_id,
-//!         sample.base_media_decode_time,
+//!         sample.timestamp,
 //!         sample.data.len(),
 //!     );
 //! }
@@ -55,8 +55,11 @@ pub struct Fmp4FileSample {
     /// サンプルが属するトラックの ID
     pub track_id: u32,
 
-    /// ベースデコード時間（タイムスケール単位）
-    pub base_media_decode_time: u64,
+    /// サンプルのタイムスタンプ（トラックのタイムスケール単位）
+    ///
+    /// この値は decode timestamp を表す。
+    /// PTS は `timestamp + composition_time_offset` で計算できる。
+    pub timestamp: u64,
 
     /// サンプルの尺（タイムスケール単位）
     pub duration: u32,
@@ -66,6 +69,7 @@ pub struct Fmp4FileSample {
 
     /// コンポジション時間オフセット（B フレーム向け）
     ///
+    /// PTS = timestamp + composition_time_offset で計算できる。
     /// B フレームを含まない場合は `None`。
     pub composition_time_offset: Option<i32>,
 
@@ -154,7 +158,7 @@ impl Fmp4FileDemuxer {
                 }
                 return Ok(Some(Fmp4FileSample {
                     track_id: raw.track_id,
-                    base_media_decode_time: raw.base_media_decode_time,
+                    timestamp: raw.timestamp,
                     duration: raw.duration,
                     keyframe: raw.keyframe,
                     composition_time_offset: raw.composition_time_offset,

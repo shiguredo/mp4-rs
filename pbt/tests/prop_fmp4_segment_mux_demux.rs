@@ -510,7 +510,7 @@ proptest! {
                 .expect("unexpected end of samples");
 
             prop_assert_eq!(sample.track_id, 1);
-            prop_assert_eq!(sample.base_media_decode_time, expected_decode_time);
+            prop_assert_eq!(sample.timestamp, expected_decode_time);
             prop_assert_eq!(sample.duration, orig.duration);
             prop_assert_eq!(sample.keyframe, orig.keyframe);
             prop_assert_eq!(sample.data, orig.data.as_slice());
@@ -523,9 +523,9 @@ proptest! {
         prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);
     }
 
-    /// decode_time が複数セグメントにわたって正しく累積されることを確認する
+    /// timestamp が複数セグメントにわたって正しく累積されることを確認する
     #[test]
-    fn decode_time_accumulation(
+    fn timestamp_accumulation(
         samples_per_segment in prop::collection::vec(
             prop::collection::vec(arb_video_sample(0), 1..5),
             2..5,
@@ -567,7 +567,7 @@ proptest! {
                 .handle_media_segment(&segment_bytes)
                 .expect("failed to handle media segment");
 
-            prop_assert_eq!(demuxed[0].base_media_decode_time, expected_decode_time);
+            prop_assert_eq!(demuxed[0].timestamp, expected_decode_time);
 
             expected_decode_time +=
                 segment_samples.iter().map(|s| s.duration as u64).sum::<u64>();

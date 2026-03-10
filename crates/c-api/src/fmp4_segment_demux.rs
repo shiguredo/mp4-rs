@@ -24,8 +24,10 @@ pub struct Mp4Fmp4SegmentDemuxSample {
     /// サンプルが属するトラックの ID
     pub track_id: u32,
 
-    /// ベースデコード時間（タイムスケール単位）
-    pub base_media_decode_time: u64,
+    /// サンプルのタイムスタンプ（タイムスケール単位）
+    ///
+    /// この値は decode timestamp を表す。
+    pub timestamp: u64,
 
     /// サンプルの尺（タイムスケール単位）
     pub duration: u32,
@@ -39,7 +41,7 @@ pub struct Mp4Fmp4SegmentDemuxSample {
     /// コンポジション時間オフセット（タイムスケール単位）
     ///
     /// `has_composition_time_offset` が true の場合のみ有効。
-    /// PTS = base_media_decode_time + composition_time_offset で計算できる。
+    /// PTS = timestamp + composition_time_offset で計算できる。
     pub composition_time_offset: i32,
 
     /// セグメントデータ内のサンプルデータ開始位置（バイト単位）
@@ -287,7 +289,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                 };
                 c_samples.push(Mp4Fmp4SegmentDemuxSample {
                     track_id: s.track_id,
-                    base_media_decode_time: s.base_media_decode_time,
+                    timestamp: s.timestamp,
                     duration: s.duration,
                     keyframe: s.keyframe,
                     has_composition_time_offset: s.composition_time_offset.is_some(),

@@ -928,9 +928,11 @@ typedef struct Mp4Fmp4SegmentDemuxSample {
    */
   uint32_t track_id;
   /**
-   * ベースデコード時間（タイムスケール単位）
+   * サンプルのタイムスタンプ（タイムスケール単位）
+   *
+   * この値は decode timestamp を表す。
    */
-  uint64_t base_media_decode_time;
+  uint64_t timestamp;
   /**
    * サンプルの尺（タイムスケール単位）
    */
@@ -947,7 +949,7 @@ typedef struct Mp4Fmp4SegmentDemuxSample {
    * コンポジション時間オフセット（タイムスケール単位）
    *
    * `has_composition_time_offset` が true の場合のみ有効。
-   * PTS = base_media_decode_time + composition_time_offset で計算できる。
+   * PTS = timestamp + composition_time_offset で計算できる。
    */
   int32_t composition_time_offset;
   /**

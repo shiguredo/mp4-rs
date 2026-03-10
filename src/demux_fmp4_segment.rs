@@ -66,12 +66,13 @@ pub struct Fmp4SegmentDemuxSample {
     /// サンプルが属するトラックの ID
     pub track_id: u32,
 
-    /// ベースデコード時間（タイムスケール単位）
+    /// サンプルのタイムスタンプ（トラックのタイムスケール単位）
     ///
-    /// `tfdt` ボックスの `base_media_decode_time` に対応する。
-    /// このサンプルが属する `trun` 内の先行サンプルの尺を累積した値を加算することで、
-    /// このサンプル自身のデコード時間を計算できる。
-    pub base_media_decode_time: u64,
+    /// `tfdt` ボックスの `base_media_decode_time` を起点に、
+    /// このサンプルが属する `trun` 内の先行サンプルの尺を累積した値である。
+    /// すなわち、この値はこのサンプル自身の decode timestamp を表す。
+    /// PTS は `timestamp + composition_time_offset` で計算できる。
+    pub timestamp: u64,
 
     /// サンプルの尺（タイムスケール単位）
     pub duration: u32,
@@ -90,7 +91,7 @@ pub struct Fmp4SegmentDemuxSample {
     /// コンポジション時間オフセット（B フレーム向け）
     ///
     /// `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される。
-    /// PTS = base_media_decode_time + `composition_time_offset` で計算できる。
+    /// PTS = timestamp + `composition_time_offset` で計算できる。
     /// B フレームを含まない場合は `None` となる。
     pub composition_time_offset: Option<i32>,
 }
@@ -489,7 +490,7 @@ impl Fmp4SegmentDemuxer {
 
                     samples.push(Fmp4SegmentDemuxSample {
                         track_id,
-                        base_media_decode_time: trun_decode_time,
+                        timestamp: trun_decode_time,
                         duration,
                         keyframe,
                         data_offset: sample_data_offset,

@@ -79,7 +79,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks_json(
 /// [
 ///   {
 ///     "track_id": 1,
-///     "base_media_decode_time": 0,
+///     "timestamp": 0,
 ///     "duration": 3000,
 ///     "keyframe": true,
 ///     "data_offset": 1234,
@@ -163,7 +163,7 @@ fn fmt_json_demux_sample(
 ) -> std::fmt::Result {
     f.object(|f| {
         f.member("track_id", sample.track_id)?;
-        f.member("base_media_decode_time", sample.base_media_decode_time)?;
+        f.member("timestamp", sample.timestamp)?;
         f.member("duration", sample.duration)?;
         f.member("keyframe", sample.keyframe)?;
         let cto: Option<i32> = if sample.has_composition_time_offset {

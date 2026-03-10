@@ -196,9 +196,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  セグメント {}:", i + 1);
         for sample in &demuxed {
             println!(
-                "    track_id={}, decode_time={}, duration={}, keyframe={}, size={}",
+                "    track_id={}, timestamp={}, duration={}, keyframe={}, size={}",
                 sample.track_id,
-                sample.base_media_decode_time,
+                sample.timestamp,
                 sample.duration,
                 sample.keyframe,
                 sample.data_size
@@ -211,8 +211,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  sidx 付きセグメント:");
     for sample in &sidx_demuxed {
         println!(
-            "    track_id={}, decode_time={}, duration={}, size={}",
-            sample.track_id, sample.base_media_decode_time, sample.duration, sample.data_size
+            "    track_id={}, timestamp={}, duration={}, size={}",
+            sample.track_id, sample.timestamp, sample.duration, sample.data_size
         );
     }
 

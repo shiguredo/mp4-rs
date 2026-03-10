@@ -15,10 +15,13 @@ pub struct Mp4Fmp4SegmentTrackConfig {
     /// タイムスケール（0 は無効）
     pub timescale: u32,
 
-    /// サンプルエントリー（コーデック情報）へのポインタ
+    /// サンプルエントリー（コーデック情報）へのポインタ配列
     ///
     /// NULL を渡すことはできない
-    pub sample_entry: *const Mp4SampleEntry,
+    pub sample_entries: *const *const Mp4SampleEntry,
+
+    /// `sample_entries` の要素数
+    pub sample_entry_count: u32,
 }
 
 /// fMP4 メディアセグメントに追加するサンプルを表す C 構造体
@@ -26,6 +29,9 @@ pub struct Mp4Fmp4SegmentTrackConfig {
 pub struct Mp4Fmp4SegmentSample {
     /// `mp4_fmp4_segment_muxer_new()` に渡したトラック配列のインデックス
     pub track_index: u32,
+
+    /// `Mp4Fmp4SegmentTrackConfig.sample_entries` に対する 0-based index
+    pub sample_entry_index: u32,
 
     /// サンプルの尺（トラックのタイムスケール単位）
     pub duration: u32,
@@ -95,19 +101,28 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_new(
         let Some(timescale) = NonZeroU32::new(t.timescale) else {
             return std::ptr::null_mut();
         };
-        if t.sample_entry.is_null() {
+        if t.sample_entries.is_null() || t.sample_entry_count == 0 {
             return std::ptr::null_mut();
         }
-        let sample_entry = unsafe {
-            match (&*t.sample_entry).to_sample_entry() {
-                Ok(entry) => entry,
-                Err(_) => return std::ptr::null_mut(),
+        let sample_entry_ptrs =
+            unsafe { std::slice::from_raw_parts(t.sample_entries, t.sample_entry_count as usize) };
+        let mut sample_entries = Vec::new();
+        for sample_entry_ptr in sample_entry_ptrs {
+            if sample_entry_ptr.is_null() {
+                return std::ptr::null_mut();
             }
-        };
+            let sample_entry = unsafe {
+                match (&**sample_entry_ptr).to_sample_entry() {
+                    Ok(entry) => entry,
+                    Err(_) => return std::ptr::null_mut(),
+                }
+            };
+            sample_entries.push(sample_entry);
+        }
         track_configs.push(SegmentTrackConfig {
             track_kind: t.track_kind.into(),
             timescale,
-            sample_entry,
+            sample_entries,
         });
     }
 
@@ -333,6 +348,7 @@ unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4SegmentSample]) -> Vec<Segmen
         .iter()
         .map(|s| SegmentSample {
             track_index: s.track_index as usize, // u32 -> usize: 常に安全
+            sample_entry_index: s.sample_entry_index as usize, // u32 -> usize: 常に安全
             duration: s.duration,
             keyframe: s.keyframe,
             composition_time_offset: if s.has_composition_time_offset {

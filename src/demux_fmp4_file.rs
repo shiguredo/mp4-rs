@@ -49,7 +49,7 @@ use core::cmp::Ordering;
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
     boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry},
-    demux_fmp4_segment::{Fmp4SegmentDemuxer, SegmentDemuxError, SegmentSample},
+    demux_fmp4_segment::Fmp4SegmentDemuxer,
     demux_mp4_file::{DemuxError, Input, RequiredInput, Sample, TrackInfo},
 };
 
@@ -336,9 +336,7 @@ impl Fmp4FileDemuxer {
                 .push(TrackRuntime { sample_entry: None });
         }
 
-        self.inner
-            .handle_init_segment(&data[..box_size])
-            .map_err(map_segment_error)?;
+        self.inner.handle_init_segment(&data[..box_size])?;
         self.phase = Phase::ReadTopLevelBoxHeader {
             offset: offset.checked_add(box_size as u64).ok_or_else(|| {
                 DemuxError::DecodeError(Error::invalid_data("moov offset overflow"))
@@ -486,11 +484,12 @@ impl Fmp4FileDemuxer {
         };
 
         let data = self.available_bytes(input, moof_offset, segment_size)?;
-        let raw_samples = self
-            .inner
-            .handle_media_segment(&data[..segment_size])
-            .map_err(map_segment_error)?;
-        self.enqueue_segment_samples(moof_offset, raw_samples)?;
+        let pending_samples = {
+            let track_infos = &self.track_infos;
+            let raw_samples = self.inner.handle_media_segment(&data[..segment_size])?;
+            Self::build_pending_samples(track_infos, moof_offset, raw_samples)?
+        };
+        self.pending_samples.extend(pending_samples);
 
         self.phase = Phase::ReadTopLevelBoxHeader {
             offset: next_offset,
@@ -543,26 +542,25 @@ impl Fmp4FileDemuxer {
         )
     }
 
-    fn enqueue_segment_samples(
-        &mut self,
+    fn build_pending_samples(
+        track_infos: &[TrackInfo],
         segment_offset: u64,
-        raw_samples: Vec<SegmentSample>,
-    ) -> Result<(), DemuxError> {
+        raw_samples: Vec<Sample<'_>>,
+    ) -> Result<Vec<PendingSample>, DemuxError> {
         let mut pending_samples = Vec::new();
 
         for raw_sample in raw_samples {
-            let track_index = self
-                .track_infos
+            let track_index = track_infos
                 .iter()
-                .position(|track_info| track_info.track_id == raw_sample.track_id)
+                .position(|track_info| track_info.track_id == raw_sample.track.track_id)
                 .ok_or_else(|| {
                     DemuxError::DecodeError(Error::invalid_data(format!(
                         "track_id={} not found in init segment",
-                        raw_sample.track_id
+                        raw_sample.track.track_id
                     )))
                 })?;
             let data_offset = segment_offset
-                .checked_add(raw_sample.data_offset as u64)
+                .checked_add(raw_sample.data_offset)
                 .ok_or_else(|| {
                     DemuxError::DecodeError(Error::invalid_data(
                         "sample data absolute offset overflow",
@@ -576,14 +574,13 @@ impl Fmp4FileDemuxer {
                 keyframe: raw_sample.keyframe,
                 data_offset,
                 data_size: raw_sample.data_size,
-                composition_time_offset: raw_sample.composition_time_offset.map(i64::from),
-                sample_entry: raw_sample.sample_entry,
+                composition_time_offset: raw_sample.composition_time_offset,
+                sample_entry: raw_sample.sample_entry.cloned(),
             });
         }
 
-        pending_samples.sort_by(|lhs, rhs| compare_pending_samples(&self.track_infos, lhs, rhs));
-        self.pending_samples.extend(pending_samples);
-        Ok(())
+        pending_samples.sort_by(|lhs, rhs| compare_pending_samples(track_infos, lhs, rhs));
+        Ok(pending_samples)
     }
 
     fn build_sample(&mut self, pending: PendingSample) -> Sample<'_> {
@@ -638,16 +635,4 @@ fn compare_pending_samples(
         .cmp(&rhs_scaled)
         .then_with(|| lhs.track_index.cmp(&rhs.track_index))
         .then_with(|| lhs.data_offset.cmp(&rhs.data_offset))
-}
-
-fn map_segment_error(error: SegmentDemuxError) -> DemuxError {
-    match error {
-        SegmentDemuxError::DecodeError(error) => DemuxError::DecodeError(error),
-        SegmentDemuxError::NotInitialized | SegmentDemuxError::AlreadyInitialized => {
-            DemuxError::DecodeError(Error::invalid_data("unexpected fMP4 segment demuxer state"))
-        }
-        SegmentDemuxError::UnknownTrackId(track_id) => DemuxError::DecodeError(
-            Error::invalid_data(format!("unknown track_id in media segment: {track_id}")),
-        ),
-    }
 }

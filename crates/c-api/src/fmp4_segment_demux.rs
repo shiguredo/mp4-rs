@@ -290,7 +290,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
         Ok(samples) => {
             let mut c_samples: Vec<Mp4Fmp4SegmentDemuxSample> = Vec::new();
             for s in &samples {
-                let sample_entry = if let Some(sample_entry) = &s.sample_entry {
+                let sample_entry = if let Some(sample_entry) = s.sample_entry {
                     let sample_entry_box_type = sample_entry.box_type();
                     if let Some(entry) = demuxer
                         .sample_entries
@@ -332,17 +332,33 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                         return Mp4Error::MP4_ERROR_OTHER;
                     }
                 };
+                let composition_time_offset = match s.composition_time_offset {
+                    Some(value) => match i32::try_from(value) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            unsafe {
+                                *out_samples = std::ptr::null_mut();
+                                *out_count = 0;
+                            }
+                            demuxer.set_last_error(
+                                "[mp4_fmp4_segment_demuxer_handle_media_segment] composition_time_offset exceeds i32::MAX",
+                            );
+                            return Mp4Error::MP4_ERROR_OTHER;
+                        }
+                    },
+                    None => 0,
+                };
                 c_samples.push(Mp4Fmp4SegmentDemuxSample {
                     sample_entry: sample_entry
                         .map(|entry| entry as *const _)
                         .unwrap_or(std::ptr::null()),
-                    track_id: s.track_id,
+                    track_id: s.track.track_id,
                     timestamp: s.timestamp,
                     duration: s.duration,
                     keyframe: s.keyframe,
                     has_composition_time_offset: s.composition_time_offset.is_some(),
-                    composition_time_offset: s.composition_time_offset.unwrap_or(0),
-                    data_offset: s.data_offset as u64, // usize -> u64: 常に安全
+                    composition_time_offset,
+                    data_offset: s.data_offset,
                     data_size,
                 });
             }

@@ -2,8 +2,8 @@
 //!
 //! C API で細かくエラー方が分かれていると煩雑なので、ひとつに集約している
 use shiguredo_mp4::{
-    Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, demux::SegmentDemuxError,
-    mux::MuxError, mux::SegmentMuxError,
+    Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, mux::MuxError,
+    mux::SegmentMuxError,
 };
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
@@ -63,6 +63,7 @@ impl From<DemuxError> for Mp4Error {
         match e {
             DemuxError::DecodeError(e) => e.into(),
             DemuxError::SampleTableError(e) => e.into(),
+            DemuxError::InvalidState(_) => Self::MP4_ERROR_INVALID_STATE,
             DemuxError::InputRequired(_) => Self::MP4_ERROR_INPUT_REQUIRED,
             _ => Self::MP4_ERROR_OTHER,
         }
@@ -88,20 +89,10 @@ impl From<SegmentMuxError> for Mp4Error {
             SegmentMuxError::EncodeError(e) => e.into(),
             SegmentMuxError::EmptyTracks
             | SegmentMuxError::EmptySamples
-            | SegmentMuxError::InvalidTrackIndex { .. } => Self::MP4_ERROR_INVALID_INPUT,
-            _ => Self::MP4_ERROR_OTHER,
-        }
-    }
-}
-
-impl From<SegmentDemuxError> for Mp4Error {
-    fn from(e: SegmentDemuxError) -> Self {
-        match e {
-            SegmentDemuxError::DecodeError(e) => e.into(),
-            SegmentDemuxError::NotInitialized | SegmentDemuxError::AlreadyInitialized => {
-                Self::MP4_ERROR_INVALID_STATE
-            }
-            SegmentDemuxError::UnknownTrackId(_) => Self::MP4_ERROR_INVALID_DATA,
+            | SegmentMuxError::InvalidTrackIndex { .. }
+            | SegmentMuxError::EmptySampleEntries { .. }
+            | SegmentMuxError::InvalidSampleEntryIndex { .. }
+            | SegmentMuxError::MixedSampleEntryIndices { .. } => Self::MP4_ERROR_INVALID_INPUT,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

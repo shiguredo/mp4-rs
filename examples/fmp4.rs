@@ -101,12 +101,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SegmentTrackConfig {
             track_kind: TrackKind::Video,
             timescale: video_timescale,
-            sample_entry: create_avc1_sample_entry(width, height),
+            sample_entries: vec![create_avc1_sample_entry(width, height)],
         },
         SegmentTrackConfig {
             track_kind: TrackKind::Audio,
             timescale: audio_timescale,
-            sample_entry: create_opus_sample_entry(),
+            sample_entries: vec![create_opus_sample_entry()],
         },
     ];
 
@@ -127,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let samples = vec![
                 SegmentSample {
                     track_index: 0,
+                    sample_entry_index: 0,
                     duration: video_frame_duration,
                     keyframe: seg_idx == 0,
                     composition_time_offset: None,
@@ -134,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 SegmentSample {
                     track_index: 1,
+                    sample_entry_index: 0,
                     duration: audio_frame_duration,
                     keyframe: true,
                     composition_time_offset: None,
@@ -160,6 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sidx_samples = vec![
         SegmentSample {
             track_index: 0,
+            sample_entry_index: 0,
             duration: video_frame_duration,
             keyframe: false,
             composition_time_offset: None,
@@ -167,6 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         SegmentSample {
             track_index: 1,
+            sample_entry_index: 0,
             duration: audio_frame_duration,
             keyframe: true,
             composition_time_offset: None,
@@ -182,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tracks = demuxer.tracks()?;
     println!("\nトラック数: {}", tracks.len());
-    for track in &tracks {
+    for track in tracks {
         println!(
             "  track_id={}, kind={:?}, timescale={}",
             track.track_id, track.kind, track.timescale
@@ -197,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for sample in &demuxed {
             println!(
                 "    track_id={}, timestamp={}, duration={}, keyframe={}, size={}",
-                sample.track_id,
+                sample.track.track_id,
                 sample.timestamp,
                 sample.duration,
                 sample.keyframe,
@@ -212,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for sample in &sidx_demuxed {
         println!(
             "    track_id={}, timestamp={}, duration={}, size={}",
-            sample.track_id, sample.timestamp, sample.duration, sample.data_size
+            sample.track.track_id, sample.timestamp, sample.duration, sample.data_size
         );
     }
 

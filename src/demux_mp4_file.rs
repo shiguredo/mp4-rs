@@ -66,9 +66,9 @@ pub struct TrackInfo {
     pub timescale: NonZeroU32,
 }
 
-/// MP4 ファイルから抽出されたメディアサンプルを表す構造体
+/// デマルチプレックス処理で抽出されたメディアサンプルを表す構造体
 ///
-/// この構造体は MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）の
+/// この構造体は各サンプル（フレーム単位の音声または映像データ）の
 /// メタデータとデータ位置情報を保持する
 #[derive(Debug, Clone)]
 pub struct Sample<'a> {
@@ -97,7 +97,10 @@ pub struct Sample<'a> {
     /// 秒単位の尺は、この値を `track.timescale` で割ることで求められる
     pub duration: u32,
 
-    /// ファイル内におけるサンプルデータの開始位置（バイト単位）
+    /// 入力データ内におけるサンプルデータの開始位置（バイト単位）
+    ///
+    /// file demuxer ではファイル先頭からの絶対位置、
+    /// segment demuxer では `handle_media_segment()` に渡した入力バッファ先頭からの相対位置を表す。
     pub data_offset: u64,
 
     /// サンプルデータのサイズ（バイト単位）
@@ -225,6 +228,9 @@ pub enum DemuxError {
     /// サンプルテーブル処理中に発生したエラー
     SampleTableError(SampleTableAccessorError),
 
+    /// 操作に対する内部状態が不正
+    InvalidState(&'static str),
+
     /// 入力データの読み込みが必要なことを示すエラー
     ///
     /// このエラーが返された場合、呼び出し元は指定された位置とサイズのファイルデータを
@@ -268,6 +274,7 @@ impl core::fmt::Display for DemuxError {
             DemuxError::SampleTableError(error) => {
                 write!(f, "Sample table error: {error}")
             }
+            DemuxError::InvalidState(message) => write!(f, "{message}"),
             DemuxError::InputRequired(required) => match required.size {
                 Some(s) => write!(
                     f,

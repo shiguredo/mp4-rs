@@ -7,12 +7,12 @@
 //!   {
 //!     "track_kind": "video",
 //!     "timescale": 90000,
-//!     "sample_entry": { ... }
+//!     "sample_entries": [{ ... }]
 //!   },
 //!   {
 //!     "track_kind": "audio",
 //!     "timescale": 48000,
-//!     "sample_entry": { ... }
+//!     "sample_entries": [{ ... }]
 //!   }
 //! ]
 //! ```
@@ -23,6 +23,7 @@
 //! [
 //!   {
 //!     "track_index": 0,
+//!     "sample_entry_index": 0,
 //!     "duration": 3000,
 //!     "keyframe": true,
 //!     "composition_time_offset": null,
@@ -34,6 +35,12 @@
 //! `data_size` の合計が `sample_data` バイト列の長さと一致する必要がある。
 //! サンプルデータはサンプルの出現順に連結されていること。
 use c_api::fmp4_segment_mux::Mp4Fmp4SegmentMuxer;
+
+struct ParsedTrackConfig {
+    kind: c_api::basic_types::Mp4TrackKind,
+    timescale: u32,
+    entry_ptrs: Vec<*mut c_api::boxes::Mp4SampleEntry>,
+}
 
 /// JSON 形式のトラック設定から `Mp4Fmp4SegmentMuxer` インスタンスを生成する
 ///
@@ -70,13 +77,26 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_from_json(
         return std::ptr::null_mut();
     };
 
+    let sample_entry_ptr_arrays: Vec<Vec<*const c_api::boxes::Mp4SampleEntry>> = entries
+        .iter()
+        .map(|entry| {
+            entry
+                .entry_ptrs
+                .iter()
+                .map(|ptr| *ptr as *const _)
+                .collect()
+        })
+        .collect();
     let track_configs_c: Vec<c_api::fmp4_segment_mux::Mp4Fmp4SegmentTrackConfig> = entries
         .iter()
+        .zip(sample_entry_ptr_arrays.iter())
         .map(
-            |(kind, timescale, entry_ptr)| c_api::fmp4_segment_mux::Mp4Fmp4SegmentTrackConfig {
-                track_kind: *kind,
-                timescale: *timescale,
-                sample_entry: *entry_ptr as *const _,
+            |(entry, sample_entry_ptrs)| c_api::fmp4_segment_mux::Mp4Fmp4SegmentTrackConfig {
+                track_kind: entry.kind,
+                timescale: entry.timescale,
+                sample_entries: sample_entry_ptrs.as_ptr(),
+                sample_entry_count: u32::try_from(sample_entry_ptrs.len())
+                    .expect("sample entry count exceeds u32::MAX"),
             },
         )
         .collect();
@@ -89,8 +109,10 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_from_json(
     };
 
     // sample_entry の Box を解放する（muxer が内部でコピー済みのため）
-    for (_, _, entry_ptr) in entries {
-        let _ = unsafe { Box::from_raw(entry_ptr) };
+    for entry in entries {
+        for entry_ptr in entry.entry_ptrs {
+            let _ = unsafe { Box::from_raw(entry_ptr) };
+        }
     }
 
     result
@@ -196,6 +218,7 @@ fn write_segment_impl(
         }
         c_samples.push(c_api::fmp4_segment_mux::Mp4Fmp4SegmentSample {
             track_index: meta.track_index,
+            sample_entry_index: meta.sample_entry_index,
             duration: meta.duration,
             keyframe: meta.keyframe,
             has_composition_time_offset: meta.composition_time_offset.is_some(),
@@ -242,6 +265,7 @@ fn write_segment_impl(
 
 struct SampleMeta {
     track_index: u32,
+    sample_entry_index: u32,
     duration: u32,
     keyframe: bool,
     composition_time_offset: Option<i32>,
@@ -255,6 +279,10 @@ fn parse_json_sample_metas(
         .to_array()?
         .map(|item| {
             let track_index: u32 = item.to_member("track_index")?.required()?.try_into()?;
+            let sample_entry_index: u32 = item
+                .to_member("sample_entry_index")?
+                .required()?
+                .try_into()?;
             let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
             let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
             let composition_time_offset: Option<i32> =
@@ -272,6 +300,7 @@ fn parse_json_sample_metas(
             })?;
             Ok(SampleMeta {
                 track_index,
+                sample_entry_index,
                 duration,
                 keyframe,
                 composition_time_offset,
@@ -283,20 +312,13 @@ fn parse_json_sample_metas(
 
 fn parse_json_track_configs(
     value: nojson::RawJsonValue<'_, '_>,
-) -> Result<
-    Vec<(
-        c_api::basic_types::Mp4TrackKind,
-        u32,
-        *mut c_api::boxes::Mp4SampleEntry,
-    )>,
-    nojson::JsonParseError,
-> {
+) -> Result<Vec<ParsedTrackConfig>, nojson::JsonParseError> {
     // Box::into_raw を行う前に全エントリの解析を完了させる。
     // エラー時に生 ポインタが漏洩しないよう、成功後のみ raw ポインタに変換する。
     let parsed: Vec<(
         c_api::basic_types::Mp4TrackKind,
         u32,
-        c_api::boxes::Mp4SampleEntry,
+        Vec<c_api::boxes::Mp4SampleEntry>,
     )> = value
         .to_array()?
         .map(|item| {
@@ -315,14 +337,31 @@ fn parse_json_track_configs(
                 }
             };
             let timescale: u32 = item.to_member("timescale")?.required()?.try_into()?;
-            let entry_value = item.to_member("sample_entry")?.required()?;
-            let entry = crate::boxes::parse_json_mp4_sample_entry(entry_value)?;
-            Ok((kind, timescale, entry))
+            let entries = item
+                .to_member("sample_entries")?
+                .required()?
+                .to_array()?
+                .map(crate::boxes::parse_json_mp4_sample_entry)
+                .collect::<Result<Vec<_>, _>>()?;
+            if entries.is_empty() {
+                return Err(item
+                    .to_member("sample_entries")?
+                    .required()?
+                    .invalid("must contain at least one sample entry"));
+            }
+            Ok((kind, timescale, entries))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(parsed
         .into_iter()
-        .map(|(kind, timescale, entry)| (kind, timescale, Box::into_raw(Box::new(entry))))
+        .map(|(kind, timescale, entries)| ParsedTrackConfig {
+            kind,
+            timescale,
+            entry_ptrs: entries
+                .into_iter()
+                .map(|entry| Box::into_raw(Box::new(entry)))
+                .collect(),
+        })
         .collect())
 }

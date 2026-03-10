@@ -7,7 +7,7 @@
 //!
 //! fMP4 は以下の 2 種類のセグメントで構成される:
 //!
-//! - **初期化セグメント**: `ftyp` + `moov` (サンプルテーブルの代わりに `mvex/trex` を含む)
+//! - **初期化セグメント**: `ftyp` + `moov` (`mvex` / `trex` を含む)
 //! - **メディアセグメント**: `moof` + `mdat` のペア（繰り返し）
 //!
 //! # Examples
@@ -29,116 +29,39 @@
 //! let segment_data: &[u8] = todo!("メディアセグメントのバイト列");
 //! let samples = demuxer.handle_media_segment(segment_data)?;
 //! for sample in &samples {
-//!     let data = &segment_data[sample.data_offset as usize..
-//!                              sample.data_offset as usize + sample.data_size];
+//!     let data = &segment_data[sample.data_offset as usize
+//!         ..sample.data_offset as usize + sample.data_size];
 //!     // data を処理...
 //! }
 //! # Ok(())
 //! # }
 //! ```
-use crate::{
-    BoxHeader, Decode, Error, TrackKind,
-    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, SidxBox, TrexBox},
-    demux_mp4_file::TrackInfo,
-};
 use alloc::{format, vec::Vec};
 
-/// fMP4 メディアセグメントから取り出されたサンプル
-#[derive(Debug, Clone)]
-pub struct SegmentSample {
-    /// サンプルが属するトラックの ID
-    pub track_id: u32,
-
-    /// サンプルのタイムスタンプ（トラックのタイムスケール単位）
-    ///
-    /// `tfdt` ボックスの `base_media_decode_time` を起点に、
-    /// このサンプルが属する `trun` 内の先行サンプルの尺を累積した値である。
-    /// すなわち、この値はこのサンプル自身の decode timestamp を表す。
-    /// PTS は `timestamp + composition_time_offset` で計算できる。
-    pub timestamp: u64,
-
-    /// サンプルの尺（タイムスケール単位）
-    pub duration: u32,
-
-    /// キーフレームかどうか
-    pub keyframe: bool,
-
-    /// セグメントデータ内のサンプルデータ開始位置（バイト単位）
-    ///
-    /// `handle_media_segment()` に渡したスライスの先頭からのバイトオフセット
-    pub data_offset: usize,
-
-    /// サンプルデータのサイズ（バイト単位）
-    pub data_size: usize,
-
-    /// コンポジション時間オフセット（B フレーム向け）
-    ///
-    /// `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される。
-    /// PTS = timestamp + `composition_time_offset` で計算できる。
-    /// B フレームを含まない場合は `None` となる。
-    pub composition_time_offset: Option<i32>,
-
-    /// サンプルの詳細情報
-    ///
-    /// 前のサンプルから変更がない場合には `None` になる
-    /// （各トラックの最初のサンプルは常に `Some` となる）。
-    pub sample_entry: Option<SampleEntry>,
-}
-
-/// デマルチプレックス処理中に発生するエラー
-#[non_exhaustive]
-#[derive(Clone, Debug)]
-pub enum SegmentDemuxError {
-    /// MP4 ボックスのデコード処理中に発生したエラー
-    DecodeError(Error),
-
-    /// 初期化セグメントが未処理
-    NotInitialized,
-
-    /// 既に初期化済み
-    AlreadyInitialized,
-
-    /// 指定された track_id に対応するトラックが見つからない
-    UnknownTrackId(u32),
-}
-
-impl core::fmt::Display for SegmentDemuxError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            SegmentDemuxError::DecodeError(e) => write!(f, "Failed to decode MP4 box: {e}"),
-            SegmentDemuxError::NotInitialized => {
-                write!(f, "Init segment has not been processed yet")
-            }
-            SegmentDemuxError::AlreadyInitialized => {
-                write!(f, "Init segment has already been processed")
-            }
-            SegmentDemuxError::UnknownTrackId(id) => write!(f, "Unknown track_id: {id}"),
-        }
-    }
-}
-
-impl core::error::Error for SegmentDemuxError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        if let SegmentDemuxError::DecodeError(e) = self {
-            Some(e)
-        } else {
-            None
-        }
-    }
-}
-
-impl From<Error> for SegmentDemuxError {
-    fn from(e: Error) -> Self {
-        Self::DecodeError(e)
-    }
-}
+use crate::{
+    BoxHeader, Decode, Error, TrackKind,
+    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, SidxBox, TfhdBox, TrexBox},
+    demux_mp4_file::{DemuxError, Sample, TrackInfo},
+};
 
 #[derive(Debug, Clone)]
-struct TrackEntry {
-    track_info: TrackInfo,
+struct TrackRuntime {
     sample_entries: Vec<SampleEntry>,
     trex: TrexBox,
     current_sample_description_index: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingSample {
+    track_index: usize,
+    sample_entry_index: usize,
+    emit_sample_entry: bool,
+    timestamp: u64,
+    duration: u32,
+    keyframe: bool,
+    data_offset: u64,
+    data_size: usize,
+    composition_time_offset: Option<i64>,
 }
 
 /// fMP4 デマルチプレックス処理を行うための構造体
@@ -149,28 +72,33 @@ struct TrackEntry {
 /// 3. [`handle_media_segment()`](Self::handle_media_segment) を繰り返し呼び出してサンプルを取得
 #[derive(Debug, Clone)]
 pub struct Fmp4SegmentDemuxer {
-    tracks: Option<Vec<TrackEntry>>,
+    track_infos: Vec<TrackInfo>,
+    track_runtimes: Option<Vec<TrackRuntime>>,
 }
 
 impl Fmp4SegmentDemuxer {
     /// 新しい [`Fmp4SegmentDemuxer`] インスタンスを生成する
     #[expect(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self { tracks: None }
+        Self {
+            track_infos: Vec::new(),
+            track_runtimes: None,
+        }
     }
 
     /// 初期化セグメント（`ftyp` + `moov`）を処理する
     ///
     /// このメソッドはトラック情報と `trex` のデフォルト値を初期化する。
-    /// 2 回目以降の呼び出しは [`SegmentDemuxError::AlreadyInitialized`] を返す。
-    pub fn handle_init_segment(&mut self, data: &[u8]) -> Result<(), SegmentDemuxError> {
-        if self.tracks.is_some() {
-            return Err(SegmentDemuxError::AlreadyInitialized);
+    /// 2 回目以降の呼び出しは [`DemuxError::InvalidState`] を返す。
+    pub fn handle_init_segment(&mut self, data: &[u8]) -> Result<(), DemuxError> {
+        if self.track_runtimes.is_some() {
+            return Err(DemuxError::InvalidState(
+                "Init segment has already been processed",
+            ));
         }
 
         let mut offset = 0;
 
-        // ftyp ボックスを読み飛ばす（存在しない場合はスキップ）
         if data.len() >= BoxHeader::MIN_SIZE {
             let (header, _) = BoxHeader::decode(data)?;
             if header.box_type == FtypBox::TYPE {
@@ -179,10 +107,9 @@ impl Fmp4SegmentDemuxer {
             }
         }
 
-        // moov ボックスを見つけて解析する
         let moov_box = loop {
             if offset >= data.len() {
-                return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+                return Err(DemuxError::DecodeError(Error::invalid_data(
                     "moov box not found in init segment",
                 )));
             }
@@ -192,92 +119,83 @@ impl Fmp4SegmentDemuxer {
                 break moov;
             }
             let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
-                SegmentDemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+                DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
             })?;
             if box_size == 0 {
-                return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+                return Err(DemuxError::DecodeError(Error::invalid_data(
                     "found box with size=0 before moov in init segment",
                 )));
             }
             offset = offset.checked_add(box_size).ok_or_else(|| {
-                SegmentDemuxError::DecodeError(Error::invalid_data(
-                    "box offset overflow in init segment",
-                ))
+                DemuxError::DecodeError(Error::invalid_data("box offset overflow in init segment"))
             })?;
         };
 
-        // mvex が必須
         let mvex_box = moov_box.mvex_box.ok_or_else(|| {
-            SegmentDemuxError::DecodeError(Error::invalid_data(
+            DemuxError::DecodeError(Error::invalid_data(
                 "moov box does not contain mvex box (not an fMP4 init segment)",
             ))
         })?;
-
-        // trex を track_id でインデックス化する
         let trex_list = mvex_box.trex_boxes;
 
-        // trak から各トラックの情報を収集する
-        let mut tracks = Vec::new();
+        let mut track_infos = Vec::new();
+        let mut track_runtimes = Vec::new();
         for trak in moov_box.trak_boxes {
             let track_id = trak.tkhd_box.track_id;
-
             let kind = match trak.mdia_box.hdlr_box.handler_type {
                 HdlrBox::HANDLER_TYPE_VIDE => TrackKind::Video,
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
                 _ => continue,
             };
 
-            let timescale = trak.mdia_box.mdhd_box.timescale;
-            let duration = trak.mdia_box.mdhd_box.duration;
             let sample_entries = trak.mdia_box.minf_box.stbl_box.stsd_box.entries;
             if sample_entries.is_empty() {
-                return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
-                    format!("stsd box is empty for track_id={track_id}"),
-                )));
+                return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+                    "stsd box is empty for track_id={track_id}",
+                ))));
             }
 
-            // 対応する trex を探す
             let trex = trex_list
                 .iter()
-                .find(|t| t.track_id == track_id)
+                .find(|trex_box| trex_box.track_id == track_id)
                 .cloned()
                 .ok_or_else(|| {
-                    SegmentDemuxError::DecodeError(Error::invalid_data(format!(
-                        "trex not found for track_id={track_id}"
+                    DemuxError::DecodeError(Error::invalid_data(format!(
+                        "trex not found for track_id={track_id}",
                     )))
                 })?;
 
-            tracks.push(TrackEntry {
-                track_info: TrackInfo {
-                    track_id,
-                    kind,
-                    duration,
-                    timescale,
-                },
+            track_infos.push(TrackInfo {
+                track_id,
+                kind,
+                duration: trak.mdia_box.mdhd_box.duration,
+                timescale: trak.mdia_box.mdhd_box.timescale,
+            });
+            track_runtimes.push(TrackRuntime {
                 sample_entries,
                 trex,
                 current_sample_description_index: None,
             });
         }
 
-        self.tracks = Some(tracks);
+        self.track_infos = track_infos;
+        self.track_runtimes = Some(track_runtimes);
         Ok(())
     }
 
     /// 初期化済みのトラック情報を返す
-    ///
-    /// 初期化セグメントを処理していない場合は [`SegmentDemuxError::NotInitialized`] を返す。
-    pub fn tracks(&self) -> Result<Vec<TrackInfo>, SegmentDemuxError> {
-        let tracks = self
-            .tracks
-            .as_ref()
-            .ok_or(SegmentDemuxError::NotInitialized)?;
-        Ok(tracks.iter().map(|t| t.track_info.clone()).collect())
+    pub fn tracks(&self) -> Result<&[TrackInfo], DemuxError> {
+        if self.track_runtimes.is_none() {
+            return Err(DemuxError::InvalidState(
+                "Init segment has not been processed yet",
+            ));
+        }
+        Ok(&self.track_infos)
     }
 
     /// メディアセグメント（`moof` + `mdat`）を処理してサンプルのリストを返す
     ///
-    /// 返される [`SegmentSample`] の `data_offset` は、
+    /// 返される [`Sample`] の `data_offset` は、
     /// `data` スライスの先頭からのバイトオフセットである。
     ///
     /// `sample_entry` は各トラックの最初のサンプル、または
@@ -294,109 +212,101 @@ impl Fmp4SegmentDemuxer {
     /// - `tfhd` に `base_data_offset` が明示されている場合: その値を `data` スライス先頭からの相対値として使用する
     /// - `default_base_is_moof = true` かつ `base_data_offset` なし: moof 先頭を基準とする
     /// - `default_base_is_moof = false` かつ `base_data_offset` なし: 最初の `traf` は moof 先頭、2 番目以降は前の `traf` のデータ末尾を基準とする（ISO 14496-12 Section 8.8.8）
-    pub fn handle_media_segment(
-        &mut self,
-        data: &[u8],
-    ) -> Result<Vec<SegmentSample>, SegmentDemuxError> {
-        let tracks = self
-            .tracks
-            .as_mut()
-            .ok_or(SegmentDemuxError::NotInitialized)?;
-
+    pub fn handle_media_segment(&mut self, data: &[u8]) -> Result<Vec<Sample<'_>>, DemuxError> {
         let mut offset = 0;
 
-        // sidx ボックスが存在する場合は読み飛ばす
         if data.len().saturating_sub(offset) >= BoxHeader::MIN_SIZE {
             let (header, _) = BoxHeader::decode(&data[offset..])?;
             if header.box_type == SidxBox::TYPE {
                 let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
-                    SegmentDemuxError::DecodeError(Error::invalid_data(
-                        "sidx box size exceeds usize::MAX",
-                    ))
+                    DemuxError::DecodeError(Error::invalid_data("sidx box size exceeds usize::MAX"))
                 })?;
                 if box_size == 0 {
-                    return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+                    return Err(DemuxError::DecodeError(Error::invalid_data(
                         "sidx box has size=0",
                     )));
                 }
                 offset = offset.checked_add(box_size).ok_or_else(|| {
-                    SegmentDemuxError::DecodeError(Error::invalid_data("sidx box offset overflow"))
+                    DemuxError::DecodeError(Error::invalid_data("sidx box offset overflow"))
                 })?;
             }
         }
 
-        // moof ボックスを解析する
         if offset >= data.len() {
-            return Err(SegmentDemuxError::DecodeError(Error::invalid_input(
+            return Err(DemuxError::DecodeError(Error::invalid_input(
                 "empty media segment",
             )));
         }
         let (header, _) = BoxHeader::decode(&data[offset..])?;
         if header.box_type != MoofBox::TYPE {
-            return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
-                format!("expected moof box but got {:?}", header.box_type),
-            )));
+            return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+                "expected moof box but got {:?}",
+                header.box_type
+            ))));
         }
         let moof_offset = offset;
         let (moof, moof_size) = MoofBox::decode(&data[offset..])?;
-        offset = offset.checked_add(moof_size).ok_or_else(|| {
-            SegmentDemuxError::DecodeError(Error::invalid_data("moof offset overflow"))
-        })?;
+        offset = offset
+            .checked_add(moof_size)
+            .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("moof offset overflow")))?;
 
-        // mdat ボックスを確認する（オフセット計算のためにヘッダーだけ読む）
         if offset >= data.len() {
-            return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+            return Err(DemuxError::DecodeError(Error::invalid_data(
                 "mdat box not found after moof",
             )));
         }
         let (mdat_header, _) = BoxHeader::decode(&data[offset..])?;
         if mdat_header.box_type != MdatBox::TYPE {
-            return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
-                format!(
-                    "expected mdat box after moof but got {:?}",
-                    mdat_header.box_type
-                ),
-            )));
+            return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+                "expected mdat box after moof but got {:?}",
+                mdat_header.box_type
+            ))));
         }
 
-        let mut samples = Vec::new();
+        let pending_samples = {
+            let track_infos = &self.track_infos;
+            let track_runtimes = self
+                .track_runtimes
+                .as_mut()
+                .ok_or(DemuxError::InvalidState(
+                    "Init segment has not been processed yet",
+                ))?;
 
-        // ISO 14496-12: default_base_is_moof=false の場合、2 番目以降の traf の
-        // base_data_offset は前の traf のデータ末尾を使用する
-        let mut prev_traf_data_end: Option<usize> = None;
+            let mut pending_samples = Vec::new();
+            let mut prev_traf_data_end: Option<usize> = None;
 
-        for traf in &moof.traf_boxes {
-            let track_id = traf.tfhd_box.track_id;
-            let track = tracks
-                .iter_mut()
-                .find(|t| t.track_info.track_id == track_id)
-                .ok_or(SegmentDemuxError::UnknownTrackId(track_id))?;
+            for traf in &moof.traf_boxes {
+                let track_index = track_infos
+                    .iter()
+                    .position(|track_info| track_info.track_id == traf.tfhd_box.track_id)
+                    .ok_or_else(|| {
+                        DemuxError::DecodeError(Error::invalid_data(format!(
+                            "unknown track_id in media segment: {}",
+                            traf.tfhd_box.track_id
+                        )))
+                    })?;
+                let track_runtime = &mut track_runtimes[track_index];
 
-            let sample_description_index =
-                resolve_sample_description_index(&traf.tfhd_box, &track.trex)?;
-            let sample_entry = get_sample_entry(track, sample_description_index)?.clone();
-            let mut needs_sample_entry =
-                track.current_sample_description_index != Some(sample_description_index);
+                let sample_description_index =
+                    resolve_sample_description_index(&traf.tfhd_box, &track_runtime.trex)?;
+                let sample_entry_index = checked_sample_entry_index(
+                    track_runtime,
+                    sample_description_index,
+                    track_infos[track_index].track_id,
+                )?;
+                let mut emit_sample_entry = track_runtime.current_sample_description_index
+                    != Some(sample_description_index);
 
-            // base_media_decode_time を tfdt から取得する（なければ 0）
-            let base_media_decode_time = traf
-                .tfdt_box
-                .as_ref()
-                .map(|b| b.base_media_decode_time)
-                .unwrap_or(0);
+                let base_media_decode_time = traf
+                    .tfdt_box
+                    .as_ref()
+                    .map(|tfdt_box| tfdt_box.base_media_decode_time)
+                    .unwrap_or(0);
 
-            // base_data_offset を決定する
-            //
-            // 優先順位:
-            //   1. tfhd に base_data_offset が明示されている場合はそれを使う
-            //   2. default_base_is_moof が true の場合は moof 先頭位置を使う
-            //   3. default_base_is_moof が false の場合:
-            //      - 最初の traf: moof 先頭位置
-            //      - 2 番目以降: 前の traf のデータ末尾
-            let base_data_offset: usize =
-                if let Some(explicit_offset) = traf.tfhd_box.base_data_offset {
+                let base_data_offset = if let Some(explicit_offset) = traf.tfhd_box.base_data_offset
+                {
                     usize::try_from(explicit_offset).map_err(|_| {
-                        SegmentDemuxError::DecodeError(Error::invalid_data(
+                        DemuxError::DecodeError(Error::invalid_data(
                             "base_data_offset exceeds usize::MAX",
                         ))
                     })?
@@ -406,132 +316,157 @@ impl Fmp4SegmentDemuxer {
                     prev_traf_data_end.unwrap_or(moof_offset)
                 };
 
-            // trun 内のサンプルを解析する
-            let mut trun_decode_time = base_media_decode_time;
-            let mut traf_data_end = base_data_offset;
+                let mut trun_decode_time = base_media_decode_time;
+                let mut traf_data_end = base_data_offset;
 
-            for trun in &traf.trun_boxes {
-                // i32 -> isize: 常に安全
-                let trun_data_start = base_data_offset
-                    .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
-                    .ok_or_else(|| {
-                        SegmentDemuxError::DecodeError(Error::invalid_data(
-                            "data_offset calculation overflow",
-                        ))
-                    })?;
-
-                let mut sample_data_offset = trun_data_start;
-
-                for (i, trun_sample) in trun.samples.iter().enumerate() {
-                    // duration: trun > tfhd > trex の優先順位で解決する
-                    let duration = trun_sample
-                        .duration
-                        .or(traf.tfhd_box.default_sample_duration)
-                        .unwrap_or(track.trex.default_sample_duration);
-
-                    // size: trun > tfhd > trex の優先順位で解決する
-                    let size = usize::try_from(
-                        trun_sample
-                            .size
-                            .or(traf.tfhd_box.default_sample_size)
-                            .unwrap_or(track.trex.default_sample_size),
-                    )
-                    .map_err(|_| {
-                        SegmentDemuxError::DecodeError(Error::invalid_data(
-                            "sample size exceeds usize::MAX",
-                        ))
-                    })?;
-
-                    // flags: first_sample_flags (i=0 かつ存在する場合) > trun > tfhd > trex
-                    let flags = if i == 0
-                        && let Some(first_flags) = trun.first_sample_flags
-                    {
-                        first_flags
-                    } else {
-                        trun_sample
-                            .flags
-                            .or(traf.tfhd_box.default_sample_flags)
-                            .unwrap_or(track.trex.default_sample_flags)
-                    };
-
-                    // sample_is_non_sync_sample が false のとき = キーフレーム
-                    let keyframe = !flags.sample_is_non_sync_sample();
-
-                    let sample_data_end =
-                        sample_data_offset.checked_add(size).ok_or_else(|| {
-                            SegmentDemuxError::DecodeError(Error::invalid_data(
-                                "sample data offset overflow",
+                for trun in &traf.trun_boxes {
+                    let trun_data_start = base_data_offset
+                        .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
+                        .ok_or_else(|| {
+                            DemuxError::DecodeError(Error::invalid_data(
+                                "data_offset calculation overflow",
                             ))
                         })?;
-                    if sample_data_end > data.len() {
-                        return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
-                            "sample data range exceeds segment boundary",
-                        )));
-                    }
 
-                    samples.push(SegmentSample {
-                        track_id,
-                        timestamp: trun_decode_time,
-                        duration,
-                        keyframe,
-                        data_offset: sample_data_offset,
-                        data_size: size,
-                        composition_time_offset: trun_sample.composition_time_offset,
-                        sample_entry: needs_sample_entry.then(|| sample_entry.clone()),
-                    });
-                    track.current_sample_description_index = Some(sample_description_index);
-                    needs_sample_entry = false;
+                    let mut sample_data_offset = trun_data_start;
 
-                    trun_decode_time =
-                        trun_decode_time
+                    for (i, trun_sample) in trun.samples.iter().enumerate() {
+                        let duration = trun_sample
+                            .duration
+                            .or(traf.tfhd_box.default_sample_duration)
+                            .unwrap_or(track_runtime.trex.default_sample_duration);
+                        let size = usize::try_from(
+                            trun_sample
+                                .size
+                                .or(traf.tfhd_box.default_sample_size)
+                                .unwrap_or(track_runtime.trex.default_sample_size),
+                        )
+                        .map_err(|_| {
+                            DemuxError::DecodeError(Error::invalid_data(
+                                "sample size exceeds usize::MAX",
+                            ))
+                        })?;
+
+                        let flags = if i == 0
+                            && let Some(first_sample_flags) = trun.first_sample_flags
+                        {
+                            first_sample_flags
+                        } else {
+                            trun_sample
+                                .flags
+                                .or(traf.tfhd_box.default_sample_flags)
+                                .unwrap_or(track_runtime.trex.default_sample_flags)
+                        };
+                        let keyframe = !flags.sample_is_non_sync_sample();
+
+                        let sample_data_end =
+                            sample_data_offset.checked_add(size).ok_or_else(|| {
+                                DemuxError::DecodeError(Error::invalid_data(
+                                    "sample data offset overflow",
+                                ))
+                            })?;
+                        if sample_data_end > data.len() {
+                            return Err(DemuxError::DecodeError(Error::invalid_data(
+                                "sample data range exceeds segment boundary",
+                            )));
+                        }
+
+                        pending_samples.push(PendingSample {
+                            track_index,
+                            sample_entry_index,
+                            emit_sample_entry,
+                            timestamp: trun_decode_time,
+                            duration,
+                            keyframe,
+                            data_offset: sample_data_offset as u64,
+                            data_size: size,
+                            composition_time_offset: trun_sample
+                                .composition_time_offset
+                                .map(i64::from),
+                        });
+                        track_runtime.current_sample_description_index =
+                            Some(sample_description_index);
+                        emit_sample_entry = false;
+
+                        trun_decode_time = trun_decode_time
                             .checked_add(duration as u64)
                             .ok_or_else(|| {
-                                SegmentDemuxError::DecodeError(Error::invalid_data(
+                                DemuxError::DecodeError(Error::invalid_data(
                                     "trun decode time overflow",
                                 ))
                             })?;
-                    sample_data_offset = sample_data_end;
+                        sample_data_offset = sample_data_end;
+                    }
+
+                    traf_data_end = traf_data_end.max(sample_data_offset);
                 }
 
-                // この trun のデータ末尾を更新する
-                traf_data_end = traf_data_end.max(sample_data_offset);
+                prev_traf_data_end = Some(traf_data_end);
             }
 
-            prev_traf_data_end = Some(traf_data_end);
-        }
+            pending_samples
+        };
 
-        Ok(samples)
+        let track_runtimes = self
+            .track_runtimes
+            .as_ref()
+            .expect("bug: track_runtimes must exist after initialization");
+        Ok(pending_samples
+            .into_iter()
+            .map(|pending| {
+                let track = &self.track_infos[pending.track_index];
+                let sample_entry = if pending.emit_sample_entry {
+                    Some(
+                        &track_runtimes[pending.track_index].sample_entries
+                            [pending.sample_entry_index],
+                    )
+                } else {
+                    None
+                };
+                Sample {
+                    track,
+                    sample_entry,
+                    keyframe: pending.keyframe,
+                    timestamp: pending.timestamp,
+                    duration: pending.duration,
+                    data_offset: pending.data_offset,
+                    data_size: pending.data_size,
+                    composition_time_offset: pending.composition_time_offset,
+                }
+            })
+            .collect())
     }
 }
 
 fn resolve_sample_description_index(
-    tfhd_box: &crate::boxes::TfhdBox,
+    tfhd_box: &TfhdBox,
     trex_box: &TrexBox,
-) -> Result<u32, SegmentDemuxError> {
+) -> Result<u32, DemuxError> {
     let sample_description_index = tfhd_box
         .sample_description_index
         .unwrap_or(trex_box.default_sample_description_index);
     if sample_description_index == 0 {
-        return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+        return Err(DemuxError::DecodeError(Error::invalid_data(
             "sample_description_index must be greater than zero",
         )));
     }
     Ok(sample_description_index)
 }
 
-fn get_sample_entry(
-    track: &TrackEntry,
+fn checked_sample_entry_index(
+    track_runtime: &TrackRuntime,
     sample_description_index: u32,
-) -> Result<&SampleEntry, SegmentDemuxError> {
+    track_id: u32,
+) -> Result<usize, DemuxError> {
     let Some(sample_entry_index) = usize::try_from(sample_description_index - 1).ok() else {
-        return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+        return Err(DemuxError::DecodeError(Error::invalid_data(
             "sample_description_index exceeds usize::MAX",
         )));
     };
-    track.sample_entries.get(sample_entry_index).ok_or_else(|| {
-        SegmentDemuxError::DecodeError(Error::invalid_data(format!(
-            "sample_description_index={sample_description_index} is out of range for track_id={}",
-            track.track_info.track_id
-        )))
-    })
+    if sample_entry_index >= track_runtime.sample_entries.len() {
+        return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+            "sample_description_index={sample_description_index} is out of range for track_id={track_id}",
+        ))));
+    }
+    Ok(sample_entry_index)
 }

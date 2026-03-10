@@ -117,7 +117,7 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
     let mut muxer = Fmp4SegmentMuxer::new(vec![SegmentTrackConfig {
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(90_000).expect("non-zero"),
-        sample_entry: create_avc1_sample_entry(width, height),
+        sample_entries: vec![create_avc1_sample_entry(width, height)],
     }])
     .expect("failed to create Fmp4SegmentMuxer");
     let mut file_data = muxer
@@ -130,6 +130,7 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
         .enumerate()
         .map(|(index, payload)| SegmentSample {
             track_index: 0,
+            sample_entry_index: 0,
             duration: 3_000,
             keyframe: index == 0,
             composition_time_offset: None,

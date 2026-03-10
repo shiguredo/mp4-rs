@@ -983,11 +983,15 @@ typedef struct Mp4Fmp4SegmentTrackConfig {
    */
   uint32_t timescale;
   /**
-   * サンプルエントリー（コーデック情報）へのポインタ
+   * サンプルエントリー（コーデック情報）へのポインタ配列
    *
    * NULL を渡すことはできない
    */
-  const struct Mp4SampleEntry *sample_entry;
+  const struct Mp4SampleEntry *const *sample_entries;
+  /**
+   * `sample_entries` の要素数
+   */
+  uint32_t sample_entry_count;
 } Mp4Fmp4SegmentTrackConfig;
 
 /**
@@ -998,6 +1002,10 @@ typedef struct Mp4Fmp4SegmentSample {
    * `mp4_fmp4_segment_muxer_new()` に渡したトラック配列のインデックス
    */
   uint32_t track_index;
+  /**
+   * `Mp4Fmp4SegmentTrackConfig.sample_entries` に対する 0-based index
+   */
+  uint32_t sample_entry_index;
   /**
    * サンプルの尺（トラックのタイムスケール単位）
    */

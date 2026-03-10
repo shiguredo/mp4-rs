@@ -24,7 +24,7 @@
 //! let tracks = vec![SegmentTrackConfig {
 //!     track_kind: TrackKind::Video,
 //!     timescale: NonZeroU32::new(90000).expect("non-zero"),
-//!     sample_entry,
+//!     sample_entries: vec![sample_entry],
 //! }];
 //!
 //! let mut muxer = Fmp4SegmentMuxer::new(tracks)?;
@@ -36,6 +36,7 @@
 //! let sample_data = vec![0u8; 1024];
 //! let samples = vec![SegmentSample {
 //!     track_index: 0,
+//!     sample_entry_index: 0,
 //!     duration: 3000,
 //!     keyframe: true,
 //!     composition_time_offset: None,
@@ -81,6 +82,30 @@ pub enum SegmentMuxError {
         track_count: usize,
     },
 
+    /// トラックにサンプルエントリーが指定されていない
+    EmptySampleEntries {
+        /// 指定されたトラックのインデックス
+        track_index: usize,
+    },
+
+    /// sample_entry_index が範囲外
+    InvalidSampleEntryIndex {
+        /// 対象トラックのインデックス
+        track_index: usize,
+
+        /// 指定された sample_entry_index
+        sample_entry_index: usize,
+
+        /// 有効な sample entry 数
+        sample_entry_count: usize,
+    },
+
+    /// 同一セグメント内の同一トラックで複数の sample_entry_index が混在している
+    MixedSampleEntryIndices {
+        /// 対象トラックのインデックス
+        track_index: usize,
+    },
+
     /// 内部カウンタのオーバーフロー
     Overflow,
 }
@@ -95,6 +120,25 @@ impl core::fmt::Display for SegmentMuxError {
                 write!(
                     f,
                     "track_index {index} is out of range (track count: {track_count})",
+                )
+            }
+            SegmentMuxError::EmptySampleEntries { track_index } => {
+                write!(f, "track {track_index} has no sample entries")
+            }
+            SegmentMuxError::InvalidSampleEntryIndex {
+                track_index,
+                sample_entry_index,
+                sample_entry_count,
+            } => {
+                write!(
+                    f,
+                    "sample_entry_index {sample_entry_index} is out of range for track {track_index} (sample entry count: {sample_entry_count})",
+                )
+            }
+            SegmentMuxError::MixedSampleEntryIndices { track_index } => {
+                write!(
+                    f,
+                    "track {track_index} uses multiple sample_entry_index values within one segment",
                 )
             }
             SegmentMuxError::Overflow => write!(f, "Internal counter overflow"),
@@ -127,8 +171,8 @@ pub struct SegmentTrackConfig {
     /// タイムスケール
     pub timescale: NonZeroU32,
 
-    /// サンプルエントリー（コーデック情報）
-    pub sample_entry: SampleEntry,
+    /// サンプルエントリー（コーデック情報）の一覧
+    pub sample_entries: Vec<SampleEntry>,
 }
 
 /// fMP4 メディアセグメントに追加するサンプル
@@ -136,6 +180,9 @@ pub struct SegmentTrackConfig {
 pub struct SegmentSample<'a> {
     /// `Fmp4SegmentMuxer::new()` に渡したトラックリストのインデックス
     pub track_index: usize,
+
+    /// `SegmentTrackConfig::sample_entries` に対する 0-based index
+    pub sample_entry_index: usize,
 
     /// サンプルの尺（トラックのタイムスケール単位）
     pub duration: u32,
@@ -214,14 +261,17 @@ impl Fmp4SegmentMuxer {
             .into_iter()
             .enumerate()
             .map(|(i, config)| {
+                if config.sample_entries.is_empty() {
+                    return Err(SegmentMuxError::EmptySampleEntries { track_index: i });
+                }
                 let track_id = u32::try_from(i + 1).expect("track count exceeds u32::MAX");
-                TrackEntry {
+                Ok(TrackEntry {
                     config,
                     track_id,
                     decode_time: 0,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let track_count = tracks.len();
         Ok(Self {
@@ -343,6 +393,14 @@ impl Fmp4SegmentMuxer {
                 return Err(SegmentMuxError::InvalidTrackIndex {
                     index: sample.track_index,
                     track_count: self.tracks.len(),
+                });
+            }
+            let sample_entry_count = self.tracks[sample.track_index].config.sample_entries.len();
+            if sample.sample_entry_index >= sample_entry_count {
+                return Err(SegmentMuxError::InvalidSampleEntryIndex {
+                    track_index: sample.track_index,
+                    sample_entry_index: sample.sample_entry_index,
+                    sample_entry_count,
                 });
             }
         }
@@ -534,12 +592,14 @@ impl Fmp4SegmentMuxer {
         let mut has_av01 = false;
 
         for track in &self.tracks {
-            match &track.config.sample_entry {
-                SampleEntry::Avc1(_) => has_avc1 = true,
-                SampleEntry::Hev1(_) => has_hev1 = true,
-                SampleEntry::Hvc1(_) => has_hvc1 = true,
-                SampleEntry::Av01(_) => has_av01 = true,
-                _ => {}
+            for sample_entry in &track.config.sample_entries {
+                match sample_entry {
+                    SampleEntry::Avc1(_) => has_avc1 = true,
+                    SampleEntry::Hev1(_) => has_hev1 = true,
+                    SampleEntry::Hvc1(_) => has_hvc1 = true,
+                    SampleEntry::Av01(_) => has_av01 = true,
+                    _ => {}
+                }
             }
         }
 
@@ -619,7 +679,11 @@ impl Fmp4SegmentMuxer {
         entry: &TrackEntry,
         creation_time: Mp4FileTime,
     ) -> Result<TrakBox, SegmentMuxError> {
-        let visual = match &entry.config.sample_entry {
+        let sample_entry =
+            entry.config.sample_entries.first().expect(
+                "bug: SegmentTrackConfig::sample_entries must be non-empty after validation",
+            );
+        let visual = match sample_entry {
             SampleEntry::Avc1(b) => Some(&b.visual),
             SampleEntry::Hev1(b) => Some(&b.visual),
             SampleEntry::Hvc1(b) => Some(&b.visual),
@@ -689,7 +753,7 @@ impl Fmp4SegmentMuxer {
         // 他のサンプルテーブルは空にする
         let stbl_box = StblBox {
             stsd_box: StsdBox {
-                entries: vec![entry.config.sample_entry.clone()],
+                entries: entry.config.sample_entries.clone(),
             },
             stts_box: SttsBox::from_sample_deltas(core::iter::empty()),
             ctts_box: None,
@@ -751,6 +815,8 @@ impl Fmp4SegmentMuxer {
             let track = &self.tracks[ti];
             let track_samples: Vec<&SegmentSample> =
                 samples.iter().filter(|s| s.track_index == ti).collect();
+            let sample_description_index =
+                resolve_sample_description_index(ti, track, &track_samples)?;
 
             // いずれかのサンプルに CTO がある場合は全サンプルに明示的な値を設定する
             // (TrunBox のフラグは trun 全体に適用されるため)
@@ -787,7 +853,7 @@ impl Fmp4SegmentMuxer {
             let tfhd_box = TfhdBox {
                 track_id: track.track_id,
                 base_data_offset: None,
-                sample_description_index: None,
+                sample_description_index,
                 default_sample_duration: None,
                 default_sample_size: None,
                 default_sample_flags: None,
@@ -817,6 +883,42 @@ impl Fmp4SegmentMuxer {
             traf_boxes,
             unknown_boxes: Vec::new(),
         })
+    }
+}
+
+fn resolve_sample_description_index(
+    track_index: usize,
+    track: &TrackEntry,
+    track_samples: &[&SegmentSample<'_>],
+) -> Result<Option<u32>, SegmentMuxError> {
+    let Some(first_sample) = track_samples.first() else {
+        return Ok(None);
+    };
+
+    let sample_entry_index = first_sample.sample_entry_index;
+    if sample_entry_index >= track.config.sample_entries.len() {
+        return Err(SegmentMuxError::InvalidSampleEntryIndex {
+            track_index,
+            sample_entry_index,
+            sample_entry_count: track.config.sample_entries.len(),
+        });
+    }
+    if track_samples
+        .iter()
+        .any(|sample| sample.sample_entry_index != sample_entry_index)
+    {
+        return Err(SegmentMuxError::MixedSampleEntryIndices { track_index });
+    }
+
+    if sample_entry_index == 0 {
+        Ok(None)
+    } else {
+        let sample_description_index = u32::try_from(sample_entry_index + 1).map_err(|_| {
+            SegmentMuxError::EncodeError(Error::invalid_data(
+                "sample_description_index exceeds u32::MAX",
+            ))
+        })?;
+        Ok(Some(sample_description_index))
     }
 }
 

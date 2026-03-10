@@ -28,9 +28,7 @@
 //! }
 //! ```
 pub use crate::demux_fmp4_file::Fmp4FileDemuxer;
-pub use crate::demux_fmp4_segment::{
-    Fmp4SegmentDemuxer, SegmentDemuxError, SegmentSample, SegmentTrackInfo,
-};
+pub use crate::demux_fmp4_segment::{Fmp4SegmentDemuxer, SegmentDemuxError, SegmentSample};
 pub use crate::demux_mp4_file::{
     DemuxError, Input, Mp4FileDemuxer, RequiredInput, Sample, TrackInfo,
 };

@@ -1,9 +1,14 @@
 //! fMP4 デマルチプレックス処理の C API を定義するモジュール
 use std::ffi::{CString, c_char};
 
+use shiguredo_mp4::BaseBox;
 use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
 
-use crate::{basic_types::Mp4TrackKind, error::Mp4Error};
+use crate::{
+    basic_types::Mp4TrackKind,
+    boxes::{Mp4SampleEntry, Mp4SampleEntryOwned},
+    error::Mp4Error,
+};
 
 /// fMP4 のトラック情報を表す C 構造体
 #[repr(C)]
@@ -21,6 +26,11 @@ pub struct Mp4Fmp4SegmentTrackInfo {
 /// fMP4 メディアセグメントから取り出されたサンプルを表す C 構造体
 #[repr(C)]
 pub struct Mp4Fmp4SegmentDemuxSample {
+    /// サンプルの詳細情報（コーデック設定など）へのポインタ
+    ///
+    /// 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
+    pub sample_entry: *const Mp4SampleEntry,
+
     /// サンプルが属するトラックの ID
     pub track_id: u32,
 
@@ -68,6 +78,11 @@ pub struct Mp4Fmp4SegmentDemuxer {
     inner: Fmp4SegmentDemuxer,
     /// キャッシュ済みのトラック情報。`None` は未初期化または未取得を表す。
     tracks_cache: Option<Vec<Mp4Fmp4SegmentTrackInfo>>,
+    sample_entries: Vec<(
+        shiguredo_mp4::boxes::SampleEntry,
+        Mp4SampleEntryOwned,
+        Box<Mp4SampleEntry>,
+    )>,
     last_error_string: Option<CString>,
 }
 
@@ -87,6 +102,7 @@ pub extern "C" fn mp4_fmp4_segment_demuxer_new() -> *mut Mp4Fmp4SegmentDemuxer {
     Box::into_raw(Box::new(Mp4Fmp4SegmentDemuxer {
         inner: Fmp4SegmentDemuxer::new(),
         tracks_cache: None,
+        sample_entries: Vec::new(),
         last_error_string: None,
     }))
 }
@@ -274,6 +290,35 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
         Ok(samples) => {
             let mut c_samples: Vec<Mp4Fmp4SegmentDemuxSample> = Vec::new();
             for s in &samples {
+                let sample_entry = if let Some(sample_entry) = &s.sample_entry {
+                    let sample_entry_box_type = sample_entry.box_type();
+                    if let Some(entry) = demuxer
+                        .sample_entries
+                        .iter()
+                        .find_map(|entry| (entry.0 == *sample_entry).then_some(&entry.2))
+                    {
+                        Some(&**entry)
+                    } else {
+                        let Some(entry_owned) = Mp4SampleEntryOwned::new(sample_entry.clone())
+                        else {
+                            unsafe {
+                                *out_samples = std::ptr::null_mut();
+                                *out_count = 0;
+                            }
+                            demuxer.set_last_error(&format!(
+                                "[mp4_fmp4_segment_demuxer_handle_media_segment] Unsupported sample entry box type: {sample_entry_box_type}",
+                            ));
+                            return Mp4Error::MP4_ERROR_UNSUPPORTED;
+                        };
+                        let entry = Box::new(entry_owned.to_mp4_sample_entry());
+                        demuxer
+                            .sample_entries
+                            .push((sample_entry.clone(), entry_owned, entry));
+                        demuxer.sample_entries.last().map(|entry| &*entry.2)
+                    }
+                } else {
+                    None
+                };
                 let data_size = match u32::try_from(s.data_size) {
                     Ok(v) => v,
                     Err(_) => {
@@ -288,6 +333,9 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                     }
                 };
                 c_samples.push(Mp4Fmp4SegmentDemuxSample {
+                    sample_entry: sample_entry
+                        .map(|entry| entry as *const _)
+                        .unwrap_or(std::ptr::null()),
                     track_id: s.track_id,
                     timestamp: s.timestamp,
                     duration: s.duration,

@@ -55,8 +55,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 struct TrackRuntime {
-    sample_entry: SampleEntry,
-    needs_sample_entry: bool,
+    sample_entry: Option<SampleEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +67,7 @@ struct PendingSample {
     data_offset: u64,
     data_size: usize,
     composition_time_offset: Option<i64>,
+    sample_entry: Option<SampleEntry>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -326,30 +326,14 @@ impl Fmp4FileDemuxer {
             let track_id = trak.tkhd_box.track_id;
             let timescale = trak.mdia_box.mdhd_box.timescale;
             let duration = trak.mdia_box.mdhd_box.duration;
-            let sample_entry = trak
-                .mdia_box
-                .minf_box
-                .stbl_box
-                .stsd_box
-                .entries
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    DemuxError::DecodeError(Error::invalid_data(format!(
-                        "stsd box is empty for track_id={track_id}"
-                    )))
-                })?;
-
             self.track_infos.push(TrackInfo {
                 track_id,
                 kind,
                 duration,
                 timescale,
             });
-            self.track_runtimes.push(TrackRuntime {
-                sample_entry,
-                needs_sample_entry: true,
-            });
+            self.track_runtimes
+                .push(TrackRuntime { sample_entry: None });
         }
 
         self.inner
@@ -593,6 +577,7 @@ impl Fmp4FileDemuxer {
                 data_offset,
                 data_size: raw_sample.data_size,
                 composition_time_offset: raw_sample.composition_time_offset.map(i64::from),
+                sample_entry: raw_sample.sample_entry,
             });
         }
 
@@ -602,21 +587,39 @@ impl Fmp4FileDemuxer {
     }
 
     fn build_sample(&mut self, pending: PendingSample) -> Sample<'_> {
-        let is_new_sample_entry = self.track_runtimes[pending.track_index].needs_sample_entry;
-        self.track_runtimes[pending.track_index].needs_sample_entry = false;
+        let PendingSample {
+            track_index,
+            timestamp,
+            duration,
+            keyframe,
+            data_offset,
+            data_size,
+            composition_time_offset,
+            sample_entry,
+        } = pending;
 
-        let track_info = &self.track_infos[pending.track_index];
-        let track_runtime = &self.track_runtimes[pending.track_index];
+        let has_sample_entry = sample_entry.is_some();
+        if let Some(sample_entry) = sample_entry {
+            self.track_runtimes[track_index].sample_entry = Some(sample_entry);
+        }
+
+        let track_info = &self.track_infos[track_index];
+        let track_runtime = &self.track_runtimes[track_index];
 
         Sample {
             track: track_info,
-            sample_entry: is_new_sample_entry.then_some(&track_runtime.sample_entry),
-            keyframe: pending.keyframe,
-            timestamp: pending.timestamp,
-            duration: pending.duration,
-            data_offset: pending.data_offset,
-            data_size: pending.data_size,
-            composition_time_offset: pending.composition_time_offset,
+            sample_entry: has_sample_entry.then_some(
+                track_runtime
+                    .sample_entry
+                    .as_ref()
+                    .expect("bug: sample entry must be cached before borrowing"),
+            ),
+            keyframe,
+            timestamp,
+            duration,
+            data_offset,
+            data_size,
+            composition_time_offset,
         }
     }
 }

@@ -36,29 +36,12 @@
 //! # Ok(())
 //! # }
 //! ```
-use alloc::{format, vec::Vec};
-use core::num::NonZeroU32;
-
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
     boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, SidxBox, TrexBox},
+    demux_mp4_file::TrackInfo,
 };
-
-/// fMP4 のトラック情報
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SegmentTrackInfo {
-    /// トラック ID
-    pub track_id: u32,
-
-    /// トラックの種類
-    pub kind: TrackKind,
-
-    /// タイムスケール
-    pub timescale: NonZeroU32,
-
-    /// サンプルエントリー（コーデック情報）
-    pub sample_entry: SampleEntry,
-}
+use alloc::{format, vec::Vec};
 
 /// fMP4 メディアセグメントから取り出されたサンプル
 #[derive(Debug, Clone)]
@@ -94,6 +77,12 @@ pub struct SegmentSample {
     /// PTS = timestamp + `composition_time_offset` で計算できる。
     /// B フレームを含まない場合は `None` となる。
     pub composition_time_offset: Option<i32>,
+
+    /// サンプルの詳細情報
+    ///
+    /// 前のサンプルから変更がない場合には `None` になる
+    /// （各トラックの最初のサンプルは常に `Some` となる）。
+    pub sample_entry: Option<SampleEntry>,
 }
 
 /// デマルチプレックス処理中に発生するエラー
@@ -146,11 +135,10 @@ impl From<Error> for SegmentDemuxError {
 
 #[derive(Debug, Clone)]
 struct TrackEntry {
-    track_id: u32,
-    kind: TrackKind,
-    timescale: NonZeroU32,
-    sample_entry: SampleEntry,
+    track_info: TrackInfo,
+    sample_entries: Vec<SampleEntry>,
     trex: TrexBox,
+    current_sample_description_index: Option<u32>,
 }
 
 /// fMP4 デマルチプレックス処理を行うための構造体
@@ -240,21 +228,13 @@ impl Fmp4SegmentDemuxer {
             };
 
             let timescale = trak.mdia_box.mdhd_box.timescale;
-
-            // stsd の最初のエントリーをサンプルエントリーとして使用する
-            let sample_entry = trak
-                .mdia_box
-                .minf_box
-                .stbl_box
-                .stsd_box
-                .entries
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    SegmentDemuxError::DecodeError(Error::invalid_data(format!(
-                        "stsd box is empty for track_id={track_id}"
-                    )))
-                })?;
+            let duration = trak.mdia_box.mdhd_box.duration;
+            let sample_entries = trak.mdia_box.minf_box.stbl_box.stsd_box.entries;
+            if sample_entries.is_empty() {
+                return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+                    format!("stsd box is empty for track_id={track_id}"),
+                )));
+            }
 
             // 対応する trex を探す
             let trex = trex_list
@@ -268,11 +248,15 @@ impl Fmp4SegmentDemuxer {
                 })?;
 
             tracks.push(TrackEntry {
-                track_id,
-                kind,
-                timescale,
-                sample_entry,
+                track_info: TrackInfo {
+                    track_id,
+                    kind,
+                    duration,
+                    timescale,
+                },
+                sample_entries,
                 trex,
+                current_sample_description_index: None,
             });
         }
 
@@ -283,26 +267,21 @@ impl Fmp4SegmentDemuxer {
     /// 初期化済みのトラック情報を返す
     ///
     /// 初期化セグメントを処理していない場合は [`SegmentDemuxError::NotInitialized`] を返す。
-    pub fn tracks(&self) -> Result<Vec<SegmentTrackInfo>, SegmentDemuxError> {
+    pub fn tracks(&self) -> Result<Vec<TrackInfo>, SegmentDemuxError> {
         let tracks = self
             .tracks
             .as_ref()
             .ok_or(SegmentDemuxError::NotInitialized)?;
-        Ok(tracks
-            .iter()
-            .map(|t| SegmentTrackInfo {
-                track_id: t.track_id,
-                kind: t.kind,
-                timescale: t.timescale,
-                sample_entry: t.sample_entry.clone(),
-            })
-            .collect())
+        Ok(tracks.iter().map(|t| t.track_info.clone()).collect())
     }
 
     /// メディアセグメント（`moof` + `mdat`）を処理してサンプルのリストを返す
     ///
     /// 返される [`SegmentSample`] の `data_offset` は、
     /// `data` スライスの先頭からのバイトオフセットである。
+    ///
+    /// `sample_entry` は各トラックの最初のサンプル、または
+    /// sample description index が変わったサンプルでのみ `Some` になる。
     ///
     /// # 制限事項
     ///
@@ -316,12 +295,12 @@ impl Fmp4SegmentDemuxer {
     /// - `default_base_is_moof = true` かつ `base_data_offset` なし: moof 先頭を基準とする
     /// - `default_base_is_moof = false` かつ `base_data_offset` なし: 最初の `traf` は moof 先頭、2 番目以降は前の `traf` のデータ末尾を基準とする（ISO 14496-12 Section 8.8.8）
     pub fn handle_media_segment(
-        &self,
+        &mut self,
         data: &[u8],
     ) -> Result<Vec<SegmentSample>, SegmentDemuxError> {
         let tracks = self
             .tracks
-            .as_ref()
+            .as_mut()
             .ok_or(SegmentDemuxError::NotInitialized)?;
 
         let mut offset = 0;
@@ -389,9 +368,15 @@ impl Fmp4SegmentDemuxer {
         for traf in &moof.traf_boxes {
             let track_id = traf.tfhd_box.track_id;
             let track = tracks
-                .iter()
-                .find(|t| t.track_id == track_id)
+                .iter_mut()
+                .find(|t| t.track_info.track_id == track_id)
                 .ok_or(SegmentDemuxError::UnknownTrackId(track_id))?;
+
+            let sample_description_index =
+                resolve_sample_description_index(&traf.tfhd_box, &track.trex)?;
+            let sample_entry = get_sample_entry(track, sample_description_index)?.clone();
+            let mut needs_sample_entry =
+                track.current_sample_description_index != Some(sample_description_index);
 
             // base_media_decode_time を tfdt から取得する（なければ 0）
             let base_media_decode_time = traf
@@ -492,7 +477,10 @@ impl Fmp4SegmentDemuxer {
                         data_offset: sample_data_offset,
                         data_size: size,
                         composition_time_offset: trun_sample.composition_time_offset,
+                        sample_entry: needs_sample_entry.then(|| sample_entry.clone()),
                     });
+                    track.current_sample_description_index = Some(sample_description_index);
+                    needs_sample_entry = false;
 
                     trun_decode_time =
                         trun_decode_time
@@ -514,4 +502,36 @@ impl Fmp4SegmentDemuxer {
 
         Ok(samples)
     }
+}
+
+fn resolve_sample_description_index(
+    tfhd_box: &crate::boxes::TfhdBox,
+    trex_box: &TrexBox,
+) -> Result<u32, SegmentDemuxError> {
+    let sample_description_index = tfhd_box
+        .sample_description_index
+        .unwrap_or(trex_box.default_sample_description_index);
+    if sample_description_index == 0 {
+        return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+            "sample_description_index must be greater than zero",
+        )));
+    }
+    Ok(sample_description_index)
+}
+
+fn get_sample_entry(
+    track: &TrackEntry,
+    sample_description_index: u32,
+) -> Result<&SampleEntry, SegmentDemuxError> {
+    let Some(sample_entry_index) = usize::try_from(sample_description_index - 1).ok() else {
+        return Err(SegmentDemuxError::DecodeError(Error::invalid_data(
+            "sample_description_index exceeds usize::MAX",
+        )));
+    };
+    track.sample_entries.get(sample_entry_index).ok_or_else(|| {
+        SegmentDemuxError::DecodeError(Error::invalid_data(format!(
+            "sample_description_index={sample_description_index} is out of range for track_id={}",
+            track.track_info.track_id
+        )))
+    })
 }

@@ -924,6 +924,12 @@ typedef struct Mp4Fmp4SegmentTrackInfo {
  */
 typedef struct Mp4Fmp4SegmentDemuxSample {
   /**
+   * サンプルの詳細情報（コーデック設定など）へのポインタ
+   *
+   * 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
+   */
+  const struct Mp4SampleEntry *sample_entry;
+  /**
    * サンプルが属するトラックの ID
    */
   uint32_t track_id;

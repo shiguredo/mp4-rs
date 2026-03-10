@@ -7,12 +7,12 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    FixedPointNumber, TrackKind, Uint,
+    Decode, Encode, FixedPointNumber, TrackKind, Uint,
     boxes::{
-        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry,
-        VisualSampleEntryFields,
+        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MoofBox, MoovBox, OpusBox,
+        SampleEntry, VisualSampleEntryFields,
     },
-    demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
+    demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, SegmentDemuxError},
     mux::{Fmp4SegmentMuxer, SegmentSample, SegmentTrackConfig},
 };
 
@@ -118,6 +118,71 @@ fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
             data,
         });
     }
+}
+
+fn rewrite_init_segment(init_segment: &[u8], f: impl FnOnce(&mut MoovBox)) -> Vec<u8> {
+    let (ftyp_box, ftyp_box_size) =
+        FtypBox::decode(init_segment).expect("failed to decode ftyp from init segment");
+    let (mut moov_box, moov_box_size) = MoovBox::decode(&init_segment[ftyp_box_size..])
+        .expect("failed to decode moov from init segment");
+    assert_eq!(
+        ftyp_box_size + moov_box_size,
+        init_segment.len(),
+        "init segment must contain only ftyp + moov in this test"
+    );
+    f(&mut moov_box);
+
+    let mut rewritten = ftyp_box
+        .encode_to_vec()
+        .expect("failed to encode ftyp while rewriting init segment");
+    let moov_bytes = moov_box
+        .encode_to_vec()
+        .expect("failed to encode moov while rewriting init segment");
+    rewritten.extend_from_slice(&moov_bytes);
+    rewritten
+}
+
+fn append_sample_entry_and_set_trex_default(
+    init_segment: &[u8],
+    sample_entry: SampleEntry,
+    default_sample_description_index: u32,
+) -> Vec<u8> {
+    rewrite_init_segment(init_segment, move |moov_box| {
+        let track_id = moov_box.trak_boxes[0].tkhd_box.track_id;
+        moov_box.trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box
+            .stsd_box
+            .entries
+            .push(sample_entry.clone());
+        let trex_box = moov_box
+            .mvex_box
+            .as_mut()
+            .expect("muxer-generated init segment must contain mvex")
+            .trex_boxes
+            .iter_mut()
+            .find(|trex_box| trex_box.track_id == track_id)
+            .expect("trex for first track must exist");
+        trex_box.default_sample_description_index = default_sample_description_index;
+    })
+}
+
+fn rewrite_media_segment_tfhd_sample_description_index(
+    media_segment: &[u8],
+    sample_description_index: Option<u32>,
+) -> Vec<u8> {
+    let (mut moof_box, moof_box_size) =
+        MoofBox::decode(media_segment).expect("failed to decode moof from media segment");
+    for traf_box in &mut moof_box.traf_boxes {
+        traf_box.tfhd_box.sample_description_index = sample_description_index;
+    }
+
+    let mut rewritten = moof_box
+        .encode_to_vec()
+        .expect("failed to encode moof while rewriting media segment");
+    rewritten.extend_from_slice(&media_segment[moof_box_size..]);
+    rewritten
 }
 
 proptest! {
@@ -463,6 +528,333 @@ proptest! {
             let actual = &segment_bytes[ds.data_offset..ds.data_offset + ds.data_size];
             prop_assert_eq!(actual, orig.data.as_slice());
         }
+    }
+
+    /// `trex.default_sample_description_index` が `stsd` の先頭以外を指す場合でも
+    /// 対応する sample entry が使われることを確認する
+    #[test]
+    fn sample_entry_uses_trex_default_index(
+        width1 in 64u16..1921,
+        width2 in 64u16..1921,
+        samples in prop::collection::vec(arb_video_sample(0), 1..5),
+    ) {
+        prop_assume!(width1 != width2);
+
+        let original_sample_entry = create_avc1_sample_entry(width1, 240);
+        let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entry: original_sample_entry.clone(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 2);
+
+        let fmp4_samples: Vec<SegmentSample> = samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let media_segment = muxer
+            .create_media_segment(&fmp4_samples)
+            .expect("failed to create media segment");
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+        let demuxed = demuxer
+            .handle_media_segment(&media_segment)
+            .expect("failed to handle media segment");
+
+        prop_assert_eq!(
+            demuxed[0].sample_entry.as_ref(),
+            Some(&alternative_sample_entry),
+        );
+        for sample in demuxed.iter().skip(1) {
+            prop_assert!(sample.sample_entry.is_none());
+        }
+    }
+
+    /// `tfhd.sample_description_index` が `trex.default_sample_description_index` より優先されることを確認する
+    #[test]
+    fn sample_entry_prefers_tfhd_index(
+        width1 in 64u16..1921,
+        width2 in 64u16..1921,
+        samples in prop::collection::vec(arb_video_sample(0), 1..5),
+    ) {
+        prop_assume!(width1 != width2);
+
+        let original_sample_entry = create_avc1_sample_entry(width1, 240);
+        let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entry: original_sample_entry.clone(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry, 2);
+
+        let fmp4_samples: Vec<SegmentSample> = samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let media_segment = muxer
+            .create_media_segment(&fmp4_samples)
+            .expect("failed to create media segment");
+        let media_segment =
+            rewrite_media_segment_tfhd_sample_description_index(&media_segment, Some(1));
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+        let demuxed = demuxer
+            .handle_media_segment(&media_segment)
+            .expect("failed to handle media segment");
+
+        prop_assert_eq!(demuxed[0].sample_entry.as_ref(), Some(&original_sample_entry));
+        for sample in demuxed.iter().skip(1) {
+            prop_assert!(sample.sample_entry.is_none());
+        }
+    }
+
+    /// sample description index が切り替わった最初のサンプルでだけ
+    /// `sample_entry` が再度 `Some` になることを確認する
+    #[test]
+    fn sample_entry_is_emitted_only_on_change(
+        width1 in 64u16..1921,
+        width2 in 64u16..1921,
+        first_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
+        second_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
+    ) {
+        prop_assume!(width1 != width2);
+
+        let original_sample_entry = create_avc1_sample_entry(width1, 240);
+        let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entry: original_sample_entry.clone(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 1);
+
+        let first_segment_input: Vec<SegmentSample> = first_segment_samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let second_segment_input: Vec<SegmentSample> = second_segment_samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+
+        let first_segment = muxer
+            .create_media_segment(&first_segment_input)
+            .expect("failed to create first media segment");
+        let second_segment = muxer
+            .create_media_segment(&second_segment_input)
+            .expect("failed to create second media segment");
+        let second_segment =
+            rewrite_media_segment_tfhd_sample_description_index(&second_segment, Some(2));
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+
+        let first_demuxed = demuxer
+            .handle_media_segment(&first_segment)
+            .expect("failed to handle first media segment");
+        prop_assert_eq!(
+            first_demuxed[0].sample_entry.as_ref(),
+            Some(&original_sample_entry),
+        );
+        for sample in first_demuxed.iter().skip(1) {
+            prop_assert!(sample.sample_entry.is_none());
+        }
+
+        let second_demuxed = demuxer
+            .handle_media_segment(&second_segment)
+            .expect("failed to handle second media segment");
+        prop_assert_eq!(
+            second_demuxed[0].sample_entry.as_ref(),
+            Some(&alternative_sample_entry),
+        );
+        for sample in second_demuxed.iter().skip(1) {
+            prop_assert!(sample.sample_entry.is_none());
+        }
+    }
+
+    /// Fmp4FileDemuxer でも sample entry の切り替わりが反映されることを確認する
+    #[test]
+    fn fmp4_file_demuxer_propagates_sample_entry_changes(
+        width1 in 64u16..1921,
+        width2 in 64u16..1921,
+        first_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
+        second_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
+    ) {
+        prop_assume!(width1 != width2);
+
+        let original_sample_entry = create_avc1_sample_entry(width1, 240);
+        let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entry: original_sample_entry.clone(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 1);
+
+        let first_segment_input: Vec<SegmentSample> = first_segment_samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let second_segment_input: Vec<SegmentSample> = second_segment_samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+
+        let first_segment = muxer
+            .create_media_segment(&first_segment_input)
+            .expect("failed to create first media segment");
+        let second_segment = muxer
+            .create_media_segment(&second_segment_input)
+            .expect("failed to create second media segment");
+        let second_segment =
+            rewrite_media_segment_tfhd_sample_description_index(&second_segment, Some(2));
+
+        let mut file_data = init_bytes;
+        file_data.extend_from_slice(&first_segment);
+        file_data.extend_from_slice(&second_segment);
+
+        let mut demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
+
+        let mut sample_entry_flags = Vec::new();
+        loop {
+            let sample = loop {
+                match demuxer.next_sample() {
+                    Ok(Some(sample)) => break Some(sample),
+                    Ok(None) => break None,
+                    Err(DemuxError::InputRequired(_)) => feed_fmp4_file_demuxer(&mut demuxer, &file_data),
+                    Err(error) => panic!("next_sample error: {error}"),
+                }
+            };
+
+            let Some(sample) = sample else {
+                break;
+            };
+            let sample_entry = sample.sample_entry.cloned();
+            sample_entry_flags.push(sample_entry);
+        }
+
+        prop_assert_eq!(sample_entry_flags.len(), first_segment_samples.len() + second_segment_samples.len());
+        prop_assert_eq!(sample_entry_flags[0].as_ref(), Some(&original_sample_entry));
+        for sample_entry in sample_entry_flags.iter().take(first_segment_samples.len()).skip(1) {
+            prop_assert!(sample_entry.is_none());
+        }
+        prop_assert_eq!(
+            sample_entry_flags[first_segment_samples.len()].as_ref(),
+            Some(&alternative_sample_entry),
+        );
+        for sample_entry in sample_entry_flags.iter().skip(first_segment_samples.len() + 1) {
+            prop_assert!(sample_entry.is_none());
+        }
+    }
+
+    /// 範囲外の sample description index はエラーになることを確認する
+    #[test]
+    fn invalid_sample_description_index_is_rejected(
+        width1 in 64u16..1921,
+        width2 in 64u16..1921,
+        samples in prop::collection::vec(arb_video_sample(0), 1..5),
+    ) {
+        prop_assume!(width1 != width2);
+
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entry: create_avc1_sample_entry(width1, 240),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = append_sample_entry_and_set_trex_default(
+            &init_bytes,
+            create_avc1_sample_entry(width2, 240),
+            1,
+        );
+
+        let fmp4_samples: Vec<SegmentSample> = samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let media_segment = muxer
+            .create_media_segment(&fmp4_samples)
+            .expect("failed to create media segment");
+        let media_segment =
+            rewrite_media_segment_tfhd_sample_description_index(&media_segment, Some(3));
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+        let result = demuxer.handle_media_segment(&media_segment);
+
+        prop_assert!(matches!(
+            result,
+            Err(SegmentDemuxError::DecodeError(_))
+        ));
     }
 
     /// Fmp4FileDemuxer が mux したファイルを正しく demux できることを確認する

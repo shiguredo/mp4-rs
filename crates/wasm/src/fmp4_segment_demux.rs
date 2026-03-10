@@ -5,6 +5,8 @@
 //! このモジュールでは WASM 固有の JSON 変換関数のみを定義する。
 use c_api::fmp4_segment_demux::{Mp4Fmp4SegmentDemuxer, Mp4Fmp4SegmentTrackInfo};
 
+use crate::boxes::fmt_json_mp4_sample_entry;
+
 /// トラック情報を JSON 形式で返す
 ///
 /// # 引数
@@ -162,6 +164,13 @@ fn fmt_json_demux_sample(
     sample: &c_api::fmp4_segment_demux::Mp4Fmp4SegmentDemuxSample,
 ) -> std::fmt::Result {
     f.object(|f| {
+        if !sample.sample_entry.is_null() {
+            let sample_entry = unsafe { &*sample.sample_entry };
+            f.member(
+                "sample_entry",
+                nojson::json(|f| fmt_json_mp4_sample_entry(f, sample_entry)),
+            )?;
+        }
         f.member("track_id", sample.track_id)?;
         f.member("timestamp", sample.timestamp)?;
         f.member("duration", sample.duration)?;

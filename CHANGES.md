@@ -11,12 +11,12 @@
 
 ## feature/fmp4-mux-demux
 
-- [ADD] fMP4 のマルチプレックス機能 (`Fmp4Muxer`) を追加する
+- [ADD] fMP4 のマルチプレックス機能 (`Fmp4SegmentMuxer`) を追加する
   - 複数のメディアトラックからのサンプルを初期化セグメントとメディアセグメントに分けて生成する
   - `sidx` ボックス付きメディアセグメントの生成に対応する
   - moof サイズ計算には 2 パスエンコード方式を採用し、手動でのサイズ同期を不要にする
   - @voluntas
-- [ADD] fMP4 のデマルチプレックス機能 (`Fmp4Demuxer`) を追加する
+- [ADD] fMP4 のデマルチプレックス機能 (`Fmp4SegmentDemuxer`) を追加する
   - 初期化セグメントとメディアセグメントを逐次処理してサンプルを取り出す
   - `default_base_is_moof=false` の traf に対応する
   - @voluntas
@@ -24,14 +24,14 @@
   - 完全な fMP4 ファイルのバイト列を受け取り、サンプルを順番に取り出す
   - `tfhd` に絶対オフセット形式の `base_data_offset` が含まれる場合はエラーを返す
   - @voluntas
-- [ADD] `Fmp4Muxer::mfra_bytes()` を追加する
+- [ADD] `Fmp4SegmentMuxer::mfra_bytes()` を追加する
   - `mfra` (Movie Fragment Random Access) ボックスのバイト列を生成する
   - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
   - ファイル末尾に付加することでランダムアクセスに対応できる
   - @voluntas
-- [ADD] `Fmp4DemuxSample` に `composition_time_offset: Option<i32>` フィールドを追加する
+- [ADD] `Fmp4SegmentDemuxSample` に `composition_time_offset: Option<i32>` フィールドを追加する
   - `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される
-  - C API の `Mp4Fmp4DemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
+  - C API の `Mp4Fmp4SegmentDemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
   - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
   - @voluntas
 - [ADD] `Mp4FileDemuxer` で `ctts` ボックスをサポートする
@@ -40,8 +40,8 @@
   - `ctts` を含むトラック（H.265 など B フレームを持つコーデック）も正常にデマルチプレックスできるようになる
   - @voluntas
 - [ADD] fMP4 の C API を追加する
-  - `mp4_fmp4_muxer_*` 関数群で fMP4 のマルチプレックスが可能になる
-  - `mp4_fmp4_demuxer_*` 関数群で fMP4 のデマルチプレックスが可能になる
+  - `mp4_fmp4_segment_muxer_*` 関数群で fMP4 のマルチプレックスが可能になる
+  - `mp4_fmp4_segment_demuxer_*` 関数群で fMP4 のデマルチプレックスが可能になる
   - @voluntas
 - [ADD] fMP4 の WASM API を追加する
   - C API と同等の機能を wasm32-unknown-unknown ターゲットで利用可能にする
@@ -55,7 +55,7 @@
 - [ADD] pbt/ 以下に fMP4 の PBT テストを追加する
   - @voluntas
 - [ADD] fuzz/ 以下に fMP4 のファジングターゲットを追加する
-  - `fuzz_fmp4_demux` と `fuzz_fmp4_file_demux` を追加する
+  - `fuzz_fmp4_segment_demux` と `fuzz_fmp4_file_demux` を追加する
   - @voluntas
 
 ## develop

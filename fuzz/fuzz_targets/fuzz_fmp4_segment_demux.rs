@@ -1,11 +1,11 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use shiguredo_mp4::demux_fmp4::Fmp4Demuxer;
+use shiguredo_mp4::demux_fmp4_segment::Fmp4SegmentDemuxer;
 
 fuzz_target!(|data: &[u8]| {
     // 任意のバイト列を init segment + media segment として処理してもパニックしないことを確認する
-    let mut demuxer = Fmp4Demuxer::new();
+    let mut demuxer = Fmp4SegmentDemuxer::new();
 
     // data の先半分を init segment、後半分を media segment として扱う
     if data.len() < 16 {

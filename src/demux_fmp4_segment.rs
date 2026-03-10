@@ -13,10 +13,10 @@
 //! # Examples
 //!
 //! ```no_run
-//! use shiguredo_mp4::demux_fmp4::Fmp4Demuxer;
+//! use shiguredo_mp4::demux_fmp4_segment::Fmp4SegmentDemuxer;
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
-//! let mut demuxer = Fmp4Demuxer::new();
+//! let mut demuxer = Fmp4SegmentDemuxer::new();
 //!
 //! // 初期化セグメントを処理する
 //! let init_data: &[u8] = todo!("初期化セグメントのバイト列");
@@ -46,7 +46,7 @@ use crate::{
 
 /// fMP4 のトラック情報
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Fmp4TrackInfo {
+pub struct Fmp4SegmentTrackInfo {
     /// トラック ID
     pub track_id: u32,
 
@@ -62,7 +62,7 @@ pub struct Fmp4TrackInfo {
 
 /// fMP4 メディアセグメントから取り出されたサンプル
 #[derive(Debug, Clone)]
-pub struct Fmp4DemuxSample {
+pub struct Fmp4SegmentDemuxSample {
     /// サンプルが属するトラックの ID
     pub track_id: u32,
 
@@ -98,7 +98,7 @@ pub struct Fmp4DemuxSample {
 /// デマルチプレックス処理中に発生するエラー
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub enum Fmp4DemuxError {
+pub enum Fmp4SegmentDemuxError {
     /// MP4 ボックスのデコード処理中に発生したエラー
     DecodeError(Error),
 
@@ -112,24 +112,24 @@ pub enum Fmp4DemuxError {
     UnknownTrackId(u32),
 }
 
-impl core::fmt::Display for Fmp4DemuxError {
+impl core::fmt::Display for Fmp4SegmentDemuxError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Fmp4DemuxError::DecodeError(e) => write!(f, "Failed to decode MP4 box: {e}"),
-            Fmp4DemuxError::NotInitialized => {
+            Fmp4SegmentDemuxError::DecodeError(e) => write!(f, "Failed to decode MP4 box: {e}"),
+            Fmp4SegmentDemuxError::NotInitialized => {
                 write!(f, "Init segment has not been processed yet")
             }
-            Fmp4DemuxError::AlreadyInitialized => {
+            Fmp4SegmentDemuxError::AlreadyInitialized => {
                 write!(f, "Init segment has already been processed")
             }
-            Fmp4DemuxError::UnknownTrackId(id) => write!(f, "Unknown track_id: {id}"),
+            Fmp4SegmentDemuxError::UnknownTrackId(id) => write!(f, "Unknown track_id: {id}"),
         }
     }
 }
 
-impl core::error::Error for Fmp4DemuxError {
+impl core::error::Error for Fmp4SegmentDemuxError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        if let Fmp4DemuxError::DecodeError(e) = self {
+        if let Fmp4SegmentDemuxError::DecodeError(e) = self {
             Some(e)
         } else {
             None
@@ -137,7 +137,7 @@ impl core::error::Error for Fmp4DemuxError {
     }
 }
 
-impl From<Error> for Fmp4DemuxError {
+impl From<Error> for Fmp4SegmentDemuxError {
     fn from(e: Error) -> Self {
         Self::DecodeError(e)
     }
@@ -159,12 +159,12 @@ struct TrackEntry {
 /// 2. [`handle_init_segment()`](Self::handle_init_segment) で初期化セグメント（`ftyp` + `moov`）を処理
 /// 3. [`handle_media_segment()`](Self::handle_media_segment) を繰り返し呼び出してサンプルを取得
 #[derive(Debug, Clone)]
-pub struct Fmp4Demuxer {
+pub struct Fmp4SegmentDemuxer {
     tracks: Option<Vec<TrackEntry>>,
 }
 
-impl Fmp4Demuxer {
-    /// 新しい [`Fmp4Demuxer`] インスタンスを生成する
+impl Fmp4SegmentDemuxer {
+    /// 新しい [`Fmp4SegmentDemuxer`] インスタンスを生成する
     #[expect(clippy::new_without_default)]
     pub fn new() -> Self {
         Self { tracks: None }
@@ -173,10 +173,10 @@ impl Fmp4Demuxer {
     /// 初期化セグメント（`ftyp` + `moov`）を処理する
     ///
     /// このメソッドはトラック情報と `trex` のデフォルト値を初期化する。
-    /// 2 回目以降の呼び出しは [`Fmp4DemuxError::AlreadyInitialized`] を返す。
-    pub fn handle_init_segment(&mut self, data: &[u8]) -> Result<(), Fmp4DemuxError> {
+    /// 2 回目以降の呼び出しは [`Fmp4SegmentDemuxError::AlreadyInitialized`] を返す。
+    pub fn handle_init_segment(&mut self, data: &[u8]) -> Result<(), Fmp4SegmentDemuxError> {
         if self.tracks.is_some() {
-            return Err(Fmp4DemuxError::AlreadyInitialized);
+            return Err(Fmp4SegmentDemuxError::AlreadyInitialized);
         }
 
         let mut offset = 0;
@@ -193,7 +193,7 @@ impl Fmp4Demuxer {
         // moov ボックスを見つけて解析する
         let moov_box = loop {
             if offset >= data.len() {
-                return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
+                return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                     "moov box not found in init segment",
                 )));
             }
@@ -203,15 +203,17 @@ impl Fmp4Demuxer {
                 break moov;
             }
             let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
-                Fmp4DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+                Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
+                    "box size exceeds usize::MAX",
+                ))
             })?;
             if box_size == 0 {
-                return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
+                return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                     "found box with size=0 before moov in init segment",
                 )));
             }
             offset = offset.checked_add(box_size).ok_or_else(|| {
-                Fmp4DemuxError::DecodeError(Error::invalid_data(
+                Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                     "box offset overflow in init segment",
                 ))
             })?;
@@ -219,7 +221,7 @@ impl Fmp4Demuxer {
 
         // mvex が必須
         let mvex_box = moov_box.mvex_box.ok_or_else(|| {
-            Fmp4DemuxError::DecodeError(Error::invalid_data(
+            Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                 "moov box does not contain mvex box (not an fMP4 init segment)",
             ))
         })?;
@@ -250,7 +252,7 @@ impl Fmp4Demuxer {
                 .into_iter()
                 .next()
                 .ok_or_else(|| {
-                    Fmp4DemuxError::DecodeError(Error::invalid_data(format!(
+                    Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(format!(
                         "stsd box is empty for track_id={track_id}"
                     )))
                 })?;
@@ -261,7 +263,7 @@ impl Fmp4Demuxer {
                 .find(|t| t.track_id == track_id)
                 .cloned()
                 .ok_or_else(|| {
-                    Fmp4DemuxError::DecodeError(Error::invalid_data(format!(
+                    Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(format!(
                         "trex not found for track_id={track_id}"
                     )))
                 })?;
@@ -281,12 +283,15 @@ impl Fmp4Demuxer {
 
     /// 初期化済みのトラック情報を返す
     ///
-    /// 初期化セグメントを処理していない場合は [`Fmp4DemuxError::NotInitialized`] を返す。
-    pub fn tracks(&self) -> Result<Vec<Fmp4TrackInfo>, Fmp4DemuxError> {
-        let tracks = self.tracks.as_ref().ok_or(Fmp4DemuxError::NotInitialized)?;
+    /// 初期化セグメントを処理していない場合は [`Fmp4SegmentDemuxError::NotInitialized`] を返す。
+    pub fn tracks(&self) -> Result<Vec<Fmp4SegmentTrackInfo>, Fmp4SegmentDemuxError> {
+        let tracks = self
+            .tracks
+            .as_ref()
+            .ok_or(Fmp4SegmentDemuxError::NotInitialized)?;
         Ok(tracks
             .iter()
-            .map(|t| Fmp4TrackInfo {
+            .map(|t| Fmp4SegmentTrackInfo {
                 track_id: t.track_id,
                 kind: t.kind,
                 timescale: t.timescale,
@@ -297,7 +302,7 @@ impl Fmp4Demuxer {
 
     /// メディアセグメント（`moof` + `mdat`）を処理してサンプルのリストを返す
     ///
-    /// 返される [`Fmp4DemuxSample`] の `data_offset` は、
+    /// 返される [`Fmp4SegmentDemuxSample`] の `data_offset` は、
     /// `data` スライスの先頭からのバイトオフセットである。
     ///
     /// # 制限事項
@@ -314,8 +319,11 @@ impl Fmp4Demuxer {
     pub fn handle_media_segment(
         &self,
         data: &[u8],
-    ) -> Result<Vec<Fmp4DemuxSample>, Fmp4DemuxError> {
-        let tracks = self.tracks.as_ref().ok_or(Fmp4DemuxError::NotInitialized)?;
+    ) -> Result<Vec<Fmp4SegmentDemuxSample>, Fmp4SegmentDemuxError> {
+        let tracks = self
+            .tracks
+            .as_ref()
+            .ok_or(Fmp4SegmentDemuxError::NotInitialized)?;
 
         let mut offset = 0;
 
@@ -324,52 +332,55 @@ impl Fmp4Demuxer {
             let (header, _) = BoxHeader::decode(&data[offset..])?;
             if header.box_type == SidxBox::TYPE {
                 let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
-                    Fmp4DemuxError::DecodeError(Error::invalid_data(
+                    Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                         "sidx box size exceeds usize::MAX",
                     ))
                 })?;
                 if box_size == 0 {
-                    return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
+                    return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                         "sidx box has size=0",
                     )));
                 }
                 offset = offset.checked_add(box_size).ok_or_else(|| {
-                    Fmp4DemuxError::DecodeError(Error::invalid_data("sidx box offset overflow"))
+                    Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
+                        "sidx box offset overflow",
+                    ))
                 })?;
             }
         }
 
         // moof ボックスを解析する
         if offset >= data.len() {
-            return Err(Fmp4DemuxError::DecodeError(Error::invalid_input(
+            return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_input(
                 "empty media segment",
             )));
         }
         let (header, _) = BoxHeader::decode(&data[offset..])?;
         if header.box_type != MoofBox::TYPE {
-            return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(format!(
-                "expected moof box but got {:?}",
-                header.box_type
-            ))));
+            return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
+                format!("expected moof box but got {:?}", header.box_type),
+            )));
         }
         let moof_offset = offset;
         let (moof, moof_size) = MoofBox::decode(&data[offset..])?;
         offset = offset.checked_add(moof_size).ok_or_else(|| {
-            Fmp4DemuxError::DecodeError(Error::invalid_data("moof offset overflow"))
+            Fmp4SegmentDemuxError::DecodeError(Error::invalid_data("moof offset overflow"))
         })?;
 
         // mdat ボックスを確認する（オフセット計算のためにヘッダーだけ読む）
         if offset >= data.len() {
-            return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
+            return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                 "mdat box not found after moof",
             )));
         }
         let (mdat_header, _) = BoxHeader::decode(&data[offset..])?;
         if mdat_header.box_type != MdatBox::TYPE {
-            return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(format!(
-                "expected mdat box after moof but got {:?}",
-                mdat_header.box_type
-            ))));
+            return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
+                format!(
+                    "expected mdat box after moof but got {:?}",
+                    mdat_header.box_type
+                ),
+            )));
         }
 
         let mut samples = Vec::new();
@@ -383,7 +394,7 @@ impl Fmp4Demuxer {
             let track = tracks
                 .iter()
                 .find(|t| t.track_id == track_id)
-                .ok_or(Fmp4DemuxError::UnknownTrackId(track_id))?;
+                .ok_or(Fmp4SegmentDemuxError::UnknownTrackId(track_id))?;
 
             // base_media_decode_time を tfdt から取得する（なければ 0）
             let base_media_decode_time = traf
@@ -403,7 +414,7 @@ impl Fmp4Demuxer {
             let base_data_offset: usize =
                 if let Some(explicit_offset) = traf.tfhd_box.base_data_offset {
                     usize::try_from(explicit_offset).map_err(|_| {
-                        Fmp4DemuxError::DecodeError(Error::invalid_data(
+                        Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                             "base_data_offset exceeds usize::MAX",
                         ))
                     })?
@@ -422,7 +433,7 @@ impl Fmp4Demuxer {
                 let trun_data_start = base_data_offset
                     .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
                     .ok_or_else(|| {
-                        Fmp4DemuxError::DecodeError(Error::invalid_data(
+                        Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                             "data_offset calculation overflow",
                         ))
                     })?;
@@ -444,7 +455,7 @@ impl Fmp4Demuxer {
                             .unwrap_or(track.trex.default_sample_size),
                     )
                     .map_err(|_| {
-                        Fmp4DemuxError::DecodeError(Error::invalid_data(
+                        Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                             "sample size exceeds usize::MAX",
                         ))
                     })?;
@@ -466,17 +477,17 @@ impl Fmp4Demuxer {
 
                     let sample_data_end =
                         sample_data_offset.checked_add(size).ok_or_else(|| {
-                            Fmp4DemuxError::DecodeError(Error::invalid_data(
+                            Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                                 "sample data offset overflow",
                             ))
                         })?;
                     if sample_data_end > data.len() {
-                        return Err(Fmp4DemuxError::DecodeError(Error::invalid_data(
+                        return Err(Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                             "sample data range exceeds segment boundary",
                         )));
                     }
 
-                    samples.push(Fmp4DemuxSample {
+                    samples.push(Fmp4SegmentDemuxSample {
                         track_id,
                         base_media_decode_time: trun_decode_time,
                         duration,
@@ -490,7 +501,7 @@ impl Fmp4Demuxer {
                         trun_decode_time
                             .checked_add(duration as u64)
                             .ok_or_else(|| {
-                                Fmp4DemuxError::DecodeError(Error::invalid_data(
+                                Fmp4SegmentDemuxError::DecodeError(Error::invalid_data(
                                     "trun decode time overflow",
                                 ))
                             })?;

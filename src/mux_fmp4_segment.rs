@@ -16,25 +16,25 @@
 //! use std::num::NonZeroU32;
 //!
 //! use shiguredo_mp4::TrackKind;
-//! use shiguredo_mp4::mux_fmp4::{Fmp4Muxer, Fmp4TrackConfig, Fmp4Sample};
+//! use shiguredo_mp4::mux_fmp4_segment::{Fmp4SegmentMuxer, Fmp4SegmentTrackConfig, Fmp4SegmentSample};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
 //! // トラック設定を定義する
 //! let sample_entry = todo!("使用するコーデックに合わせたサンプルエントリーを構築する");
-//! let tracks = vec![Fmp4TrackConfig {
+//! let tracks = vec![Fmp4SegmentTrackConfig {
 //!     track_kind: TrackKind::Video,
 //!     timescale: NonZeroU32::new(90000).expect("non-zero"),
 //!     sample_entry,
 //! }];
 //!
-//! let mut muxer = Fmp4Muxer::new(tracks)?;
+//! let mut muxer = Fmp4SegmentMuxer::new(tracks)?;
 //!
 //! // 初期化セグメントを取得する
 //! let init_bytes = muxer.init_segment_bytes()?;
 //!
 //! // メディアセグメントを生成する
 //! let sample_data = vec![0u8; 1024];
-//! let samples = vec![Fmp4Sample {
+//! let samples = vec![Fmp4SegmentSample {
 //!     track_index: 0,
 //!     duration: 3000,
 //!     keyframe: true,
@@ -62,7 +62,7 @@ use crate::{
 /// fMP4 マルチプレックス処理中に発生するエラー
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub enum Fmp4MuxError {
+pub enum Fmp4SegmentMuxError {
     /// MP4 ボックスのエンコード処理中に発生したエラー
     EncodeError(Error),
 
@@ -85,26 +85,26 @@ pub enum Fmp4MuxError {
     Overflow,
 }
 
-impl core::fmt::Display for Fmp4MuxError {
+impl core::fmt::Display for Fmp4SegmentMuxError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Fmp4MuxError::EncodeError(e) => write!(f, "Failed to encode MP4 box: {e}"),
-            Fmp4MuxError::EmptyTracks => write!(f, "No tracks specified"),
-            Fmp4MuxError::EmptySamples => write!(f, "No samples in segment"),
-            Fmp4MuxError::InvalidTrackIndex { index, track_count } => {
+            Fmp4SegmentMuxError::EncodeError(e) => write!(f, "Failed to encode MP4 box: {e}"),
+            Fmp4SegmentMuxError::EmptyTracks => write!(f, "No tracks specified"),
+            Fmp4SegmentMuxError::EmptySamples => write!(f, "No samples in segment"),
+            Fmp4SegmentMuxError::InvalidTrackIndex { index, track_count } => {
                 write!(
                     f,
                     "track_index {index} is out of range (track count: {track_count})",
                 )
             }
-            Fmp4MuxError::Overflow => write!(f, "Internal counter overflow"),
+            Fmp4SegmentMuxError::Overflow => write!(f, "Internal counter overflow"),
         }
     }
 }
 
-impl core::error::Error for Fmp4MuxError {
+impl core::error::Error for Fmp4SegmentMuxError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        if let Fmp4MuxError::EncodeError(e) = self {
+        if let Fmp4SegmentMuxError::EncodeError(e) = self {
             Some(e)
         } else {
             None
@@ -112,15 +112,15 @@ impl core::error::Error for Fmp4MuxError {
     }
 }
 
-impl From<Error> for Fmp4MuxError {
+impl From<Error> for Fmp4SegmentMuxError {
     fn from(e: Error) -> Self {
-        Fmp4MuxError::EncodeError(e)
+        Fmp4SegmentMuxError::EncodeError(e)
     }
 }
 
 /// fMP4 マルチプレックス時のトラック設定
 #[derive(Debug, Clone)]
-pub struct Fmp4TrackConfig {
+pub struct Fmp4SegmentTrackConfig {
     /// トラックの種類
     pub track_kind: TrackKind,
 
@@ -133,8 +133,8 @@ pub struct Fmp4TrackConfig {
 
 /// fMP4 メディアセグメントに追加するサンプル
 #[derive(Debug, Clone)]
-pub struct Fmp4Sample<'a> {
-    /// `Fmp4Muxer::new()` に渡したトラックリストのインデックス
+pub struct Fmp4SegmentSample<'a> {
+    /// `Fmp4SegmentMuxer::new()` に渡したトラックリストのインデックス
     pub track_index: usize,
 
     /// サンプルの尺（トラックのタイムスケール単位）
@@ -155,7 +155,7 @@ pub struct Fmp4Sample<'a> {
 
 #[derive(Debug, Clone)]
 struct TrackEntry {
-    config: Fmp4TrackConfig,
+    config: Fmp4SegmentTrackConfig,
     track_id: u32,
     /// 累積デコード時間（タイムスケール単位）
     decode_time: u64,
@@ -183,7 +183,7 @@ struct TfraSegmentEntry {
 /// 3. [`create_media_segment()`](Self::create_media_segment) を繰り返し呼び出してメディアセグメントを生成
 /// 4. 必要に応じて [`mfra_bytes()`](Self::mfra_bytes) でランダムアクセスインデックスを取得
 #[derive(Debug, Clone)]
-pub struct Fmp4Muxer {
+pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
     creation_timestamp: Duration,
     sequence_number: u32,
@@ -193,21 +193,21 @@ pub struct Fmp4Muxer {
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
 }
 
-impl Fmp4Muxer {
-    /// [`Fmp4Muxer`] インスタンスを生成する
+impl Fmp4SegmentMuxer {
+    /// [`Fmp4SegmentMuxer`] インスタンスを生成する
     ///
-    /// `tracks` は空にできない。空の場合は [`Fmp4MuxError::EmptyTracks`] が返される。
-    pub fn new(tracks: Vec<Fmp4TrackConfig>) -> Result<Self, Fmp4MuxError> {
+    /// `tracks` は空にできない。空の場合は [`Fmp4SegmentMuxError::EmptyTracks`] が返される。
+    pub fn new(tracks: Vec<Fmp4SegmentTrackConfig>) -> Result<Self, Fmp4SegmentMuxError> {
         Self::with_creation_timestamp(tracks, Duration::ZERO)
     }
 
-    /// 作成タイムスタンプを指定して [`Fmp4Muxer`] インスタンスを生成する
+    /// 作成タイムスタンプを指定して [`Fmp4SegmentMuxer`] インスタンスを生成する
     pub fn with_creation_timestamp(
-        tracks: Vec<Fmp4TrackConfig>,
+        tracks: Vec<Fmp4SegmentTrackConfig>,
         creation_timestamp: Duration,
-    ) -> Result<Self, Fmp4MuxError> {
+    ) -> Result<Self, Fmp4SegmentMuxError> {
         if tracks.is_empty() {
-            return Err(Fmp4MuxError::EmptyTracks);
+            return Err(Fmp4SegmentMuxError::EmptyTracks);
         }
 
         let tracks: Vec<TrackEntry> = tracks
@@ -234,7 +234,7 @@ impl Fmp4Muxer {
     }
 
     /// 初期化セグメント（`ftyp` + `moov`）のバイト列を返す
-    pub fn init_segment_bytes(&mut self) -> Result<Vec<u8>, Fmp4MuxError> {
+    pub fn init_segment_bytes(&mut self) -> Result<Vec<u8>, Fmp4SegmentMuxError> {
         let ftyp = self.build_ftyp();
         let moov = self.build_init_moov()?;
 
@@ -243,7 +243,7 @@ impl Fmp4Muxer {
         self.bytes_written = self
             .bytes_written
             .checked_add(bytes.len() as u64)
-            .ok_or(Fmp4MuxError::Overflow)?;
+            .ok_or(Fmp4SegmentMuxError::Overflow)?;
         Ok(bytes)
     }
 
@@ -253,8 +253,8 @@ impl Fmp4Muxer {
     /// 同一セグメント内の同一トラックのサンプルは、渡された順序で `mdat` に格納される。
     pub fn create_media_segment(
         &mut self,
-        samples: &[Fmp4Sample],
-    ) -> Result<Vec<u8>, Fmp4MuxError> {
+        samples: &[Fmp4SegmentSample],
+    ) -> Result<Vec<u8>, Fmp4SegmentMuxError> {
         self.build_media_segment_bytes(samples)
     }
 
@@ -266,11 +266,11 @@ impl Fmp4Muxer {
     /// `sidx` の `reference_id` は最初のトラックの track_id を使用する。
     pub fn create_media_segment_with_sidx(
         &mut self,
-        samples: &[Fmp4Sample],
-    ) -> Result<Vec<u8>, Fmp4MuxError> {
+        samples: &[Fmp4SegmentSample],
+    ) -> Result<Vec<u8>, Fmp4SegmentMuxError> {
         // sidx を構築するために必要な情報を build_media_segment_bytes の呼び出し前に確定する
         if samples.is_empty() {
-            return Err(Fmp4MuxError::EmptySamples);
+            return Err(Fmp4SegmentMuxError::EmptySamples);
         }
         let first_track_index = samples[0].track_index;
 
@@ -298,12 +298,12 @@ impl Fmp4Muxer {
         let reference_track = &self.tracks[first_track_index];
 
         let referenced_size = u32::try_from(media_segment_size).map_err(|_| {
-            Fmp4MuxError::EncodeError(Error::invalid_data(
+            Fmp4SegmentMuxError::EncodeError(Error::invalid_data(
                 "referenced_size overflow: media segment size exceeds u32 max",
             ))
         })?;
         let subsegment_duration_u32 = u32::try_from(subsegment_duration).map_err(|_| {
-            Fmp4MuxError::EncodeError(Error::invalid_data(
+            Fmp4SegmentMuxError::EncodeError(Error::invalid_data(
                 "subsegment_duration overflow: duration exceeds u32 max",
             ))
         })?;
@@ -331,16 +331,16 @@ impl Fmp4Muxer {
 
     fn build_media_segment_bytes(
         &mut self,
-        samples: &[Fmp4Sample],
-    ) -> Result<Vec<u8>, Fmp4MuxError> {
+        samples: &[Fmp4SegmentSample],
+    ) -> Result<Vec<u8>, Fmp4SegmentMuxError> {
         if samples.is_empty() {
-            return Err(Fmp4MuxError::EmptySamples);
+            return Err(Fmp4SegmentMuxError::EmptySamples);
         }
 
         // track_index の範囲チェック
         for sample in samples {
             if sample.track_index >= self.tracks.len() {
-                return Err(Fmp4MuxError::InvalidTrackIndex {
+                return Err(Fmp4SegmentMuxError::InvalidTrackIndex {
                     index: sample.track_index,
                     track_count: self.tracks.len(),
                 });
@@ -350,7 +350,7 @@ impl Fmp4Muxer {
         let moof_offset = self.bytes_written;
 
         self.sequence_number = self.sequence_number.checked_add(1).ok_or_else(|| {
-            Fmp4MuxError::EncodeError(Error::invalid_data("sequence number overflow"))
+            Fmp4SegmentMuxError::EncodeError(Error::invalid_data("sequence number overflow"))
         })?;
 
         // 出現するトラックの一覧を順序を保ちながら重複なく収集する（O(n) で処理する）
@@ -402,7 +402,7 @@ impl Fmp4Muxer {
 
         for &ti in &ordered_track_indices {
             track_data_offsets[ti] = i32::try_from(accumulated_data_size).map_err(|_| {
-                Fmp4MuxError::EncodeError(Error::invalid_data(
+                Fmp4SegmentMuxError::EncodeError(Error::invalid_data(
                     "data_offset overflow: moof + mdat header exceeds i32 max",
                 ))
             })?;
@@ -443,13 +443,13 @@ impl Fmp4Muxer {
             self.tracks[ti].decode_time = self.tracks[ti]
                 .decode_time
                 .checked_add(total_duration)
-                .ok_or(Fmp4MuxError::Overflow)?;
+                .ok_or(Fmp4SegmentMuxError::Overflow)?;
         }
 
         self.bytes_written = self
             .bytes_written
             .checked_add(segment.len() as u64)
-            .ok_or(Fmp4MuxError::Overflow)?;
+            .ok_or(Fmp4SegmentMuxError::Overflow)?;
         Ok(segment)
     }
 
@@ -461,7 +461,7 @@ impl Fmp4Muxer {
     /// [`init_segment_bytes()`](Self::init_segment_bytes) と
     /// [`create_media_segment()`](Self::create_media_segment) を呼び出した後でないと
     /// 正しいオフセット情報が得られないことに注意。
-    pub fn mfra_bytes(&self) -> Result<Vec<u8>, Fmp4MuxError> {
+    pub fn mfra_bytes(&self) -> Result<Vec<u8>, Fmp4SegmentMuxError> {
         let mut tfra_boxes = Vec::new();
 
         for (ti, entries) in self.tfra_entries.iter().enumerate() {
@@ -518,7 +518,7 @@ impl Fmp4Muxer {
         };
         let placeholder = mfra_box.encode_to_vec()?;
         let mfra_size = u32::try_from(placeholder.len()).map_err(|_| {
-            Fmp4MuxError::EncodeError(Error::invalid_data(
+            Fmp4SegmentMuxError::EncodeError(Error::invalid_data(
                 "mfra box size overflow: size exceeds u32 max",
             ))
         })?;
@@ -564,10 +564,10 @@ impl Fmp4Muxer {
         }
     }
 
-    fn build_init_moov(&self) -> Result<MoovBox, Fmp4MuxError> {
+    fn build_init_moov(&self) -> Result<MoovBox, Fmp4SegmentMuxError> {
         let creation_time = Mp4FileTime::from_unix_time(self.creation_timestamp);
 
-        let trak_boxes: Result<Vec<_>, Fmp4MuxError> = self
+        let trak_boxes: Result<Vec<_>, Fmp4SegmentMuxError> = self
             .tracks
             .iter()
             .map(|t| self.build_init_trak(t, creation_time))
@@ -618,7 +618,7 @@ impl Fmp4Muxer {
         &self,
         entry: &TrackEntry,
         creation_time: Mp4FileTime,
-    ) -> Result<TrakBox, Fmp4MuxError> {
+    ) -> Result<TrakBox, Fmp4SegmentMuxError> {
         let visual = match &entry.config.sample_entry {
             SampleEntry::Avc1(b) => Some(&b.visual),
             SampleEntry::Hev1(b) => Some(&b.visual),
@@ -631,12 +631,12 @@ impl Fmp4Muxer {
         let (volume, width, height) = match visual {
             Some(v) => {
                 let w = i16::try_from(v.width).map_err(|_| {
-                    Fmp4MuxError::EncodeError(crate::Error::invalid_data(
+                    Fmp4SegmentMuxError::EncodeError(crate::Error::invalid_data(
                         "video width exceeds i16::MAX",
                     ))
                 })?;
                 let h = i16::try_from(v.height).map_err(|_| {
-                    Fmp4MuxError::EncodeError(crate::Error::invalid_data(
+                    Fmp4SegmentMuxError::EncodeError(crate::Error::invalid_data(
                         "video height exceeds i16::MAX",
                     ))
                 })?;
@@ -738,10 +738,10 @@ impl Fmp4Muxer {
 
     fn build_moof(
         &self,
-        samples: &[Fmp4Sample],
+        samples: &[Fmp4SegmentSample],
         ordered_track_indices: &[usize],
         data_offsets: &[i32],
-    ) -> Result<MoofBox, Fmp4MuxError> {
+    ) -> Result<MoofBox, Fmp4SegmentMuxError> {
         let mfhd_box = MfhdBox {
             sequence_number: self.sequence_number,
         };
@@ -749,7 +749,7 @@ impl Fmp4Muxer {
         let mut traf_boxes = Vec::new();
         for &ti in ordered_track_indices {
             let track = &self.tracks[ti];
-            let track_samples: Vec<&Fmp4Sample> =
+            let track_samples: Vec<&Fmp4SegmentSample> =
                 samples.iter().filter(|s| s.track_index == ti).collect();
 
             // いずれかのサンプルに CTO がある場合は全サンプルに明示的な値を設定する
@@ -760,11 +760,11 @@ impl Fmp4Muxer {
 
             let trun_samples: Vec<TrunSample> = track_samples
                 .iter()
-                .map(|s| -> Result<TrunSample, Fmp4MuxError> {
+                .map(|s| -> Result<TrunSample, Fmp4SegmentMuxError> {
                     Ok(TrunSample {
                         duration: Some(s.duration),
                         size: Some(u32::try_from(s.data.len()).map_err(|_| {
-                            Fmp4MuxError::EncodeError(Error::invalid_data(
+                            Fmp4SegmentMuxError::EncodeError(Error::invalid_data(
                                 "sample data size exceeds u32::MAX",
                             ))
                         })?),

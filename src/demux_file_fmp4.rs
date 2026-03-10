@@ -3,14 +3,14 @@
 //! このモジュールは、`moov` + `moof`/`mdat` で構成される完全な fMP4 ファイルを
 //! 入力として受け取り、サンプルを順番に取り出すための機能を提供する。
 //!
-//! ストリーミング向けの [`crate::demux_fmp4::Fmp4Demuxer`] とは異なり、
+//! ストリーミング向けの [`crate::demux_fmp4_segment::Fmp4SegmentDemuxer`] とは異なり、
 //! ファイル全体のバイト列を一度に受け取って処理する。
 //!
 //! # 制限事項
 //!
 //! `tfhd` の `base_data_offset` フィールドにファイル先頭からの絶対オフセットが
 //! 記録されている形式には対応していない。
-//! この形式が検出された場合は [`Fmp4DemuxError`] を返す。
+//! この形式が検出された場合は [`Fmp4SegmentDemuxError`] を返す。
 //!
 //! # Examples
 //!
@@ -41,12 +41,14 @@ use core::ops::Range;
 use crate::{
     BoxHeader, Decode,
     boxes::{MdatBox, MoofBox, MoovBox},
-    demux_fmp4::{Fmp4DemuxError, Fmp4DemuxSample, Fmp4Demuxer, Fmp4TrackInfo},
+    demux_fmp4_segment::{
+        Fmp4SegmentDemuxError, Fmp4SegmentDemuxSample, Fmp4SegmentDemuxer, Fmp4SegmentTrackInfo,
+    },
 };
 
 /// [`Fmp4FileDemuxer::next_sample()`] が返すサンプル
 ///
-/// [`crate::demux_fmp4::Fmp4DemuxSample`] とは異なり、サンプルデータ本体 (`data`) を
+/// [`crate::demux_fmp4_segment::Fmp4SegmentDemuxSample`] とは異なり、サンプルデータ本体 (`data`) を
 /// 内包しているため、ファイルバイト列への参照を別途管理する必要がない。
 #[derive(Debug, Clone)]
 pub struct Fmp4FileSample {
@@ -86,7 +88,7 @@ pub struct Fmp4FileDemuxer {
     data: Vec<u8>,
 
     /// 内部で利用するストリーミング用デマルチプレクサ
-    inner: Fmp4Demuxer,
+    inner: Fmp4SegmentDemuxer,
 
     /// ファイル内の各 moof+mdat セグメントの範囲（data 先頭からのバイトオフセット）
     segment_ranges: Vec<Range<usize>>,
@@ -97,9 +99,9 @@ pub struct Fmp4FileDemuxer {
     /// 現在処理中のセグメントから未返却のサンプル
     ///
     /// タプルの第 2 要素は `self.data` 先頭からのセグメント開始オフセット。
-    /// `Fmp4DemuxSample::data_offset` はセグメントスライス先頭からの相対値なので、
+    /// `Fmp4SegmentDemuxSample::data_offset` はセグメントスライス先頭からの相対値なので、
     /// 絶対ファイルオフセットへの変換に使用する。
-    pending_samples: VecDeque<(Fmp4DemuxSample, usize)>,
+    pending_samples: VecDeque<(Fmp4SegmentDemuxSample, usize)>,
 }
 
 impl Fmp4FileDemuxer {
@@ -107,12 +109,12 @@ impl Fmp4FileDemuxer {
     ///
     /// `data` は `ftyp` + `moov` で始まり、その後に `moof`/`mdat` のペアが続く
     /// 完全な fMP4 ファイルのバイト列でなければならない。
-    pub fn new(data: impl Into<Vec<u8>>) -> Result<Self, Fmp4DemuxError> {
+    pub fn new(data: impl Into<Vec<u8>>) -> Result<Self, Fmp4SegmentDemuxError> {
         let data = data.into();
 
         let (init_end, segment_ranges) = scan_boxes(&data)?;
 
-        let mut inner = Fmp4Demuxer::new();
+        let mut inner = Fmp4SegmentDemuxer::new();
         inner.handle_init_segment(&data[..init_end])?;
 
         Ok(Self {
@@ -125,30 +127,30 @@ impl Fmp4FileDemuxer {
     }
 
     /// トラック情報を返す
-    pub fn tracks(&self) -> Result<Vec<Fmp4TrackInfo>, Fmp4DemuxError> {
+    pub fn tracks(&self) -> Result<Vec<Fmp4SegmentTrackInfo>, Fmp4SegmentDemuxError> {
         self.inner.tracks()
     }
 
     /// 次のサンプルを返す
     ///
     /// 全サンプルを返し終えた場合は `Ok(None)` を返す。
-    pub fn next_sample(&mut self) -> Result<Option<Fmp4FileSample>, Fmp4DemuxError> {
+    pub fn next_sample(&mut self) -> Result<Option<Fmp4FileSample>, Fmp4SegmentDemuxError> {
         loop {
             if let Some((raw, segment_start)) = self.pending_samples.pop_front() {
                 let abs_start = segment_start.checked_add(raw.data_offset).ok_or_else(|| {
-                    Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                    Fmp4SegmentDemuxError::DecodeError(crate::Error::invalid_data(
                         "sample data absolute offset overflow",
                     ))
                 })?;
                 let abs_end = abs_start.checked_add(raw.data_size).ok_or_else(|| {
-                    Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                    Fmp4SegmentDemuxError::DecodeError(crate::Error::invalid_data(
                         "sample data absolute end overflow",
                     ))
                 })?;
                 if abs_end > self.data.len() {
-                    return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
-                        "sample data offset out of file bounds",
-                    )));
+                    return Err(Fmp4SegmentDemuxError::DecodeError(
+                        crate::Error::invalid_data("sample data offset out of file bounds"),
+                    ));
                 }
                 return Ok(Some(Fmp4FileSample {
                     track_id: raw.track_id,
@@ -182,7 +184,7 @@ impl Fmp4FileDemuxer {
 /// - `ftyp` / `free` / `sidx` / `mfra` 等の認識外ボックスは読み飛ばす
 /// - `moof` を検出したら直後の `mdat` を確認してセグメント範囲を記録する
 /// - `tfhd` に絶対オフセット形式の `base_data_offset` が含まれる場合はエラーを返す
-fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError> {
+fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4SegmentDemuxError> {
     let mut offset = 0;
     let mut moov_end: Option<usize> = None;
     let mut segment_ranges = Vec::new();
@@ -194,20 +196,20 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
 
         let (header, _) = BoxHeader::decode(&data[offset..])?;
         let Some(box_size) = usize::try_from(header.box_size.get()).ok() else {
-            return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
-                "box size exceeds usize::MAX",
-            )));
+            return Err(Fmp4SegmentDemuxError::DecodeError(
+                crate::Error::invalid_data("box size exceeds usize::MAX"),
+            ));
         };
         if box_size == 0 {
             break;
         }
         let box_end = offset.checked_add(box_size).ok_or_else(|| {
-            Fmp4DemuxError::DecodeError(crate::Error::invalid_data("box offset overflow"))
+            Fmp4SegmentDemuxError::DecodeError(crate::Error::invalid_data("box offset overflow"))
         })?;
         if box_end > data.len() {
-            return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
-                "box size exceeds file length",
-            )));
+            return Err(Fmp4SegmentDemuxError::DecodeError(
+                crate::Error::invalid_data("box size exceeds file length"),
+            ));
         }
 
         if header.box_type == MoovBox::TYPE {
@@ -217,9 +219,11 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
             let (moof, _) = MoofBox::decode(&data[offset..box_end])?;
             for traf in &moof.traf_boxes {
                 if traf.tfhd_box.base_data_offset.is_some() {
-                    return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
-                        "tfhd with absolute base_data_offset is not supported in Fmp4FileDemuxer",
-                    )));
+                    return Err(Fmp4SegmentDemuxError::DecodeError(
+                        crate::Error::invalid_data(
+                            "tfhd with absolute base_data_offset is not supported in Fmp4FileDemuxer",
+                        ),
+                    ));
                 }
             }
 
@@ -227,25 +231,27 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
             let mdat_start = box_end;
 
             if mdat_start >= data.len() || data.len() - mdat_start < BoxHeader::MIN_SIZE {
-                return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
-                    "mdat box not found after moof",
-                )));
+                return Err(Fmp4SegmentDemuxError::DecodeError(
+                    crate::Error::invalid_data("mdat box not found after moof"),
+                ));
             }
 
             let (mdat_header, _) = BoxHeader::decode(&data[mdat_start..])?;
             if mdat_header.box_type != MdatBox::TYPE {
-                return Err(Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
-                    "expected mdat box after moof",
-                )));
+                return Err(Fmp4SegmentDemuxError::DecodeError(
+                    crate::Error::invalid_data("expected mdat box after moof"),
+                ));
             }
 
             let mdat_size = usize::try_from(mdat_header.box_size.get()).map_err(|_| {
-                Fmp4DemuxError::DecodeError(crate::Error::invalid_data(
+                Fmp4SegmentDemuxError::DecodeError(crate::Error::invalid_data(
                     "mdat box size exceeds usize::MAX",
                 ))
             })?;
             let segment_end = mdat_start.checked_add(mdat_size).ok_or_else(|| {
-                Fmp4DemuxError::DecodeError(crate::Error::invalid_data("mdat offset overflow"))
+                Fmp4SegmentDemuxError::DecodeError(crate::Error::invalid_data(
+                    "mdat offset overflow",
+                ))
             })?;
             segment_ranges.push(moof_start..segment_end);
         }
@@ -254,7 +260,7 @@ fn scan_boxes(data: &[u8]) -> Result<(usize, Vec<Range<usize>>), Fmp4DemuxError>
     }
 
     let init_end = moov_end.ok_or_else(|| {
-        Fmp4DemuxError::DecodeError(crate::Error::invalid_data("moov box not found in file"))
+        Fmp4SegmentDemuxError::DecodeError(crate::Error::invalid_data("moov box not found in file"))
     })?;
 
     Ok((init_end, segment_ranges))

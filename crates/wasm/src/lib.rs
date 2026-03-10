@@ -15,8 +15,8 @@ pub mod boxes_opus;
 pub mod boxes_vp08;
 pub mod boxes_vp09;
 pub mod demux;
-pub mod fmp4_demux;
-pub mod fmp4_mux;
+pub mod fmp4_segment_demux;
+pub mod fmp4_segment_mux;
 pub mod mux;
 
 use std::alloc::Layout;

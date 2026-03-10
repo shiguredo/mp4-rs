@@ -460,8 +460,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "fuzz_fmp4_demux"
-path = "fuzz_targets/fuzz_fmp4_demux.rs"
+name = "fuzz_fmp4_segment_demux"
+path = "fuzz_targets/fuzz_fmp4_segment_demux.rs"
 test = false
 doc = false
 bench = false

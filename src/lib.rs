@@ -13,10 +13,10 @@ mod boxes_sample_entry;
 mod codec;
 pub mod demux;
 pub mod demux_file_fmp4;
-pub mod demux_fmp4;
+pub mod demux_fmp4_segment;
 pub mod descriptors;
 pub mod mux;
-pub mod mux_fmp4;
+pub mod mux_fmp4_segment;
 
 pub use basic_types::{
     BaseBox, BoxHeader, BoxSize, BoxType, Either, FixedPointNumber, FullBox, FullBoxFlags,

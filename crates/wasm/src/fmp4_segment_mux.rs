@@ -1,6 +1,6 @@
 //! fMP4 マルチプレックス処理の WASM バインディング
 //!
-//! # トラック設定 JSON フォーマット (`mp4_fmp4_muxer_from_json`)
+//! # トラック設定 JSON フォーマット (`mp4_fmp4_segment_muxer_from_json`)
 //!
 //! ```json
 //! [
@@ -17,7 +17,7 @@
 //! ]
 //! ```
 //!
-//! # サンプルメタデータ JSON フォーマット (`mp4_fmp4_muxer_write_media_segment_json`)
+//! # サンプルメタデータ JSON フォーマット (`mp4_fmp4_segment_muxer_write_media_segment_json`)
 //!
 //! ```json
 //! [
@@ -33,9 +33,9 @@
 //!
 //! `data_size` の合計が `sample_data` バイト列の長さと一致する必要がある。
 //! サンプルデータはサンプルの出現順に連結されていること。
-use c_api::fmp4_mux::Mp4Fmp4Muxer;
+use c_api::fmp4_segment_mux::Mp4Fmp4SegmentMuxer;
 
-/// JSON 形式のトラック設定から `Mp4Fmp4Muxer` インスタンスを生成する
+/// JSON 形式のトラック設定から `Mp4Fmp4SegmentMuxer` インスタンスを生成する
 ///
 /// # 引数
 ///
@@ -46,12 +46,12 @@ use c_api::fmp4_mux::Mp4Fmp4Muxer;
 ///
 /// 成功時はインスタンスへのポインタ、エラー時は NULL
 ///
-/// 返されたポインタは `mp4_fmp4_muxer_free()` で解放する必要がある
+/// 返されたポインタは `mp4_fmp4_segment_muxer_free()` で解放する必要がある
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_muxer_from_json(
+pub unsafe extern "C" fn mp4_fmp4_segment_muxer_from_json(
     json_bytes: *const u8,
     json_bytes_len: u32,
-) -> *mut Mp4Fmp4Muxer {
+) -> *mut Mp4Fmp4SegmentMuxer {
     if json_bytes.is_null() {
         return std::ptr::null_mut();
     }
@@ -70,10 +70,10 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_from_json(
         return std::ptr::null_mut();
     };
 
-    let track_configs_c: Vec<c_api::fmp4_mux::Mp4Fmp4TrackConfig> = entries
+    let track_configs_c: Vec<c_api::fmp4_segment_mux::Mp4Fmp4SegmentTrackConfig> = entries
         .iter()
         .map(
-            |(kind, timescale, entry_ptr)| c_api::fmp4_mux::Mp4Fmp4TrackConfig {
+            |(kind, timescale, entry_ptr)| c_api::fmp4_segment_mux::Mp4Fmp4SegmentTrackConfig {
                 track_kind: *kind,
                 timescale: *timescale,
                 sample_entry: *entry_ptr as *const _,
@@ -82,7 +82,7 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_from_json(
         .collect();
 
     let result = unsafe {
-        c_api::fmp4_mux::mp4_fmp4_muxer_new(
+        c_api::fmp4_segment_mux::mp4_fmp4_segment_muxer_new(
             track_configs_c.as_ptr(),
             u32::try_from(track_configs_c.len()).expect("track count exceeds u32::MAX"),
         )
@@ -112,8 +112,8 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_from_json(
 ///
 /// 返されたポインタは `mp4_vec_free()` で解放する必要がある
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment_json(
-    muxer: *mut Mp4Fmp4Muxer,
+pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_json(
+    muxer: *mut Mp4Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
     sample_data: *const u8,
@@ -133,10 +133,10 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment_json(
 ///
 /// # 引数
 ///
-/// `mp4_fmp4_muxer_write_media_segment_json()` と同じ
+/// `mp4_fmp4_segment_muxer_write_media_segment_json()` と同じ
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment_with_sidx_json(
-    muxer: *mut Mp4Fmp4Muxer,
+pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_with_sidx_json(
+    muxer: *mut Mp4Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
     sample_data: *const u8,
@@ -153,7 +153,7 @@ pub unsafe extern "C" fn mp4_fmp4_muxer_write_media_segment_with_sidx_json(
 }
 
 fn write_segment_impl(
-    muxer: *mut Mp4Fmp4Muxer,
+    muxer: *mut Mp4Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
     sample_data: *const u8,
@@ -185,7 +185,7 @@ fn write_segment_impl(
     };
 
     // 各サンプルのデータ範囲を計算する
-    let mut c_samples: Vec<c_api::fmp4_mux::Mp4Fmp4Sample> = Vec::new();
+    let mut c_samples: Vec<c_api::fmp4_segment_mux::Mp4Fmp4SegmentSample> = Vec::new();
     let mut data_offset = 0usize;
     for meta in &sample_metas {
         let Some(end) = data_offset.checked_add(meta.data_size) else {
@@ -194,7 +194,7 @@ fn write_segment_impl(
         if end > sample_data_slice.len() {
             return std::ptr::null_mut();
         }
-        c_samples.push(c_api::fmp4_mux::Mp4Fmp4Sample {
+        c_samples.push(c_api::fmp4_segment_mux::Mp4Fmp4SegmentSample {
             track_index: meta.track_index,
             duration: meta.duration,
             keyframe: meta.keyframe,
@@ -212,7 +212,7 @@ fn write_segment_impl(
 
     let result = if with_sidx {
         unsafe {
-            c_api::fmp4_mux::mp4_fmp4_muxer_write_media_segment_with_sidx(
+            c_api::fmp4_segment_mux::mp4_fmp4_segment_muxer_write_media_segment_with_sidx(
                 muxer,
                 c_samples.as_ptr(),
                 u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),
@@ -222,7 +222,7 @@ fn write_segment_impl(
         }
     } else {
         unsafe {
-            c_api::fmp4_mux::mp4_fmp4_muxer_write_media_segment(
+            c_api::fmp4_segment_mux::mp4_fmp4_segment_muxer_write_media_segment(
                 muxer,
                 c_samples.as_ptr(),
                 u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),

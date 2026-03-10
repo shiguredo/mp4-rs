@@ -3,8 +3,8 @@ pub mod basic_types;
 pub mod boxes;
 pub mod demux;
 pub mod error;
-pub mod fmp4_demux;
-pub mod fmp4_mux;
+pub mod fmp4_segment_demux;
+pub mod fmp4_segment_mux;
 pub mod mux;
 
 /// ライブラリのバージョンを取得する

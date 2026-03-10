@@ -362,6 +362,12 @@ impl Fmp4SegmentMuxer {
             return Err(SegmentMuxError::EmptySamples);
         }
         let first_track_index = samples[0].track_index;
+        if first_track_index >= self.tracks.len() {
+            return Err(SegmentMuxError::InvalidTrackIndex {
+                index: first_track_index,
+                track_count: self.tracks.len(),
+            });
+        }
 
         // このセグメントに含まれるサンプルの合計尺
         let subsegment_duration: u64 = samples

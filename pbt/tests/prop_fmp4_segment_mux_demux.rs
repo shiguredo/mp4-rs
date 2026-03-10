@@ -541,6 +541,48 @@ proptest! {
         }
     }
 
+    /// `create_media_segment_with_sidx()` が範囲外の `track_index` で panic せず
+    /// `InvalidTrackIndex` を返すことを確認する
+    #[test]
+    fn sidx_rejects_invalid_first_track_index(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        invalid_track_index in 1usize..8,
+        duration in 1u32..3001,
+        keyframe in any::<bool>(),
+        data in prop::collection::vec(any::<u8>(), 1..256),
+    ) {
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90000).expect("non-zero"),
+            sample_entries: vec![create_avc1_sample_entry(width, height)],
+        };
+
+        let mut muxer =
+            Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let sample = SegmentSample {
+            track_index: invalid_track_index,
+            sample_entry_index: 0,
+            duration,
+            keyframe,
+            composition_time_offset: None,
+            data: &data,
+        };
+
+        let result = muxer.create_media_segment_with_sidx(&[sample]);
+
+        match result {
+            Err(shiguredo_mp4::mux::SegmentMuxError::InvalidTrackIndex {
+                index,
+                track_count,
+            }) => {
+                prop_assert_eq!(index, invalid_track_index);
+                prop_assert_eq!(track_count, 1);
+            }
+            other => prop_assert!(false, "unexpected result: {other:?}"),
+        }
+    }
+
     /// `trex.default_sample_description_index` が `stsd` の先頭以外を指す場合でも
     /// 対応する sample entry が使われることを確認する
     #[test]

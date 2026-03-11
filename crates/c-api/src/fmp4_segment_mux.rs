@@ -2,13 +2,15 @@
 use std::ffi::{CString, c_char};
 use std::num::NonZeroU32;
 
-use shiguredo_mp4::mux::{Fmp4SegmentMuxer, SegmentMuxError, SegmentSample, SegmentTrackConfig};
+use shiguredo_mp4::mux::{
+    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, SegmentMuxError, SegmentSample, SegmentTrackConfig,
+};
 
 use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
 
 /// fMP4 マルチプレックスのトラック設定を表す C 構造体
 #[repr(C)]
-pub struct Mp4Fmp4SegmentTrackConfig {
+pub struct Fmp4SegmentTrackConfig {
     /// トラックの種別
     pub track_kind: Mp4TrackKind,
 
@@ -26,11 +28,11 @@ pub struct Mp4Fmp4SegmentTrackConfig {
 
 /// fMP4 メディアセグメントに追加するサンプルを表す C 構造体
 #[repr(C)]
-pub struct Mp4Fmp4SegmentSample {
-    /// `mp4_fmp4_segment_muxer_new()` に渡したトラック配列のインデックス
+pub struct Fmp4SegmentSample {
+    /// `fmp4_segment_muxer_new()` に渡したトラック配列のインデックス
     pub track_index: u32,
 
-    /// `Mp4Fmp4SegmentTrackConfig.sample_entries` に対する 0-based index
+    /// `Fmp4SegmentTrackConfig.sample_entries` に対する 0-based index
     pub sample_entry_index: u32,
 
     /// サンプルの尺（トラックのタイムスケール単位）
@@ -56,25 +58,25 @@ pub struct Mp4Fmp4SegmentSample {
 ///
 /// # 関連関数
 ///
-/// - `mp4_fmp4_segment_muxer_new()`: インスタンスを生成する
-/// - `mp4_fmp4_segment_muxer_free()`: リソースを解放する
-/// - `mp4_fmp4_segment_muxer_get_last_error()`: 最後のエラーメッセージを取得する
-/// - `mp4_fmp4_segment_muxer_write_init_segment()`: 初期化セグメントを生成する
-/// - `mp4_fmp4_segment_muxer_write_media_segment()`: メディアセグメントを生成する
-/// - `mp4_fmp4_segment_muxer_write_media_segment_with_sidx()`: sidx 付きメディアセグメントを生成する
-/// - `mp4_fmp4_segment_muxer_write_mfra()`: `mfra` ボックスを生成する
-pub struct Mp4Fmp4SegmentMuxer {
-    inner: Fmp4SegmentMuxer,
+/// - `fmp4_segment_muxer_new()`: インスタンスを生成する
+/// - `fmp4_segment_muxer_free()`: リソースを解放する
+/// - `fmp4_segment_muxer_get_last_error()`: 最後のエラーメッセージを取得する
+/// - `fmp4_segment_muxer_write_init_segment()`: 初期化セグメントを生成する
+/// - `fmp4_segment_muxer_write_media_segment()`: メディアセグメントを生成する
+/// - `fmp4_segment_muxer_write_media_segment_with_sidx()`: sidx 付きメディアセグメントを生成する
+/// - `fmp4_segment_muxer_write_mfra()`: `mfra` ボックスを生成する
+pub struct Fmp4SegmentMuxer {
+    inner: RustFmp4SegmentMuxer,
     last_error_string: Option<CString>,
 }
 
-impl Mp4Fmp4SegmentMuxer {
+impl Fmp4SegmentMuxer {
     fn set_last_error(&mut self, message: &str) {
         self.last_error_string = CString::new(message).ok();
     }
 }
 
-/// 新しい `Mp4Fmp4SegmentMuxer` インスタンスを生成する
+/// 新しい `Fmp4SegmentMuxer` インスタンスを生成する
 ///
 /// # 引数
 ///
@@ -85,12 +87,12 @@ impl Mp4Fmp4SegmentMuxer {
 ///
 /// 成功時はインスタンスへのポインタ、失敗時は NULL
 ///
-/// 返されたポインタは `mp4_fmp4_segment_muxer_free()` で解放する必要がある
+/// 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_new(
-    tracks: *const Mp4Fmp4SegmentTrackConfig,
+pub unsafe extern "C" fn fmp4_segment_muxer_new(
+    tracks: *const Fmp4SegmentTrackConfig,
     track_count: u32,
-) -> *mut Mp4Fmp4SegmentMuxer {
+) -> *mut Fmp4SegmentMuxer {
     if tracks.is_null() {
         return std::ptr::null_mut();
     }
@@ -127,8 +129,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_new(
         });
     }
 
-    match Fmp4SegmentMuxer::new(track_configs) {
-        Ok(inner) => Box::into_raw(Box::new(Mp4Fmp4SegmentMuxer {
+    match RustFmp4SegmentMuxer::new(track_configs) {
+        Ok(inner) => Box::into_raw(Box::new(Fmp4SegmentMuxer {
             inner,
             last_error_string: None,
         })),
@@ -136,13 +138,13 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_new(
     }
 }
 
-/// `Mp4Fmp4SegmentMuxer` インスタンスを破棄してリソースを解放する
+/// `Fmp4SegmentMuxer` インスタンスを破棄してリソースを解放する
 ///
 /// # 引数
 ///
 /// - `muxer`: 破棄するインスタンスへのポインタ（NULL の場合は何もしない）
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_free(muxer: *mut Mp4Fmp4SegmentMuxer) {
+pub unsafe extern "C" fn fmp4_segment_muxer_free(muxer: *mut Fmp4SegmentMuxer) {
     if !muxer.is_null() {
         let _ = unsafe { Box::from_raw(muxer) };
     }
@@ -158,8 +160,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_free(muxer: *mut Mp4Fmp4SegmentM
 ///
 /// NULL 終端のエラーメッセージへのポインタ（エラーがない場合は空文字列）
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_get_last_error(
-    muxer: *const Mp4Fmp4SegmentMuxer,
+pub unsafe extern "C" fn fmp4_segment_muxer_get_last_error(
+    muxer: *const Fmp4SegmentMuxer,
 ) -> *const c_char {
     if muxer.is_null() {
         return c"".as_ptr();
@@ -177,7 +179,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_get_last_error(
 ///
 /// - `muxer`: インスタンスへのポインタ
 /// - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
-///   - 返されたポインタは `mp4_fmp4_bytes_free()` で解放する必要がある
+///   - 返されたポインタは `fmp4_bytes_free()` で解放する必要がある
 /// - `out_size`: バイト列のサイズを受け取るポインタ
 ///
 /// # 戻り値
@@ -185,8 +187,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_get_last_error(
 /// - `MP4_ERROR_OK`: 正常に生成された
 /// - その他のエラー: 生成に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_init_segment(
-    muxer: *mut Mp4Fmp4SegmentMuxer,
+pub unsafe extern "C" fn fmp4_segment_muxer_write_init_segment(
+    muxer: *mut Fmp4SegmentMuxer,
     out_data: *mut *mut u8,
     out_size: *mut u32,
 ) -> Mp4Error {
@@ -199,7 +201,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_init_segment(
         write_bytes_result(
             muxer,
             result,
-            "mp4_fmp4_segment_muxer_write_init_segment",
+            "fmp4_segment_muxer_write_init_segment",
             out_data,
             out_size,
         )
@@ -214,7 +216,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_init_segment(
 /// - `samples`: サンプル配列へのポインタ
 /// - `sample_count`: サンプル数
 /// - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
-///   - 返されたポインタは `mp4_fmp4_bytes_free()` で解放する必要がある
+///   - 返されたポインタは `fmp4_bytes_free()` で解放する必要がある
 /// - `out_size`: バイト列のサイズを受け取るポインタ
 ///
 /// # 戻り値
@@ -222,9 +224,9 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_init_segment(
 /// - `MP4_ERROR_OK`: 正常に生成された
 /// - その他のエラー: 生成に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment(
-    muxer: *mut Mp4Fmp4SegmentMuxer,
-    samples: *const Mp4Fmp4SegmentSample,
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment(
+    muxer: *mut Fmp4SegmentMuxer,
+    samples: *const Fmp4SegmentSample,
     sample_count: u32,
     out_data: *mut *mut u8,
     out_size: *mut u32,
@@ -234,15 +236,15 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment(
 
 /// `sidx` ボックス付きのメディアセグメントを生成する
 ///
-/// `mp4_fmp4_segment_muxer_write_media_segment()` と同じだが、先頭に `sidx` ボックスが付加される。
+/// `fmp4_segment_muxer_write_media_segment()` と同じだが、先頭に `sidx` ボックスが付加される。
 ///
 /// # 引数
 ///
-/// `mp4_fmp4_segment_muxer_write_media_segment()` と同じ
+/// `fmp4_segment_muxer_write_media_segment()` と同じ
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_with_sidx(
-    muxer: *mut Mp4Fmp4SegmentMuxer,
-    samples: *const Mp4Fmp4SegmentSample,
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_with_sidx(
+    muxer: *mut Fmp4SegmentMuxer,
+    samples: *const Fmp4SegmentSample,
     sample_count: u32,
     out_data: *mut *mut u8,
     out_size: *mut u32,
@@ -253,15 +255,15 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_with_sidx(
 /// ランダムアクセスインデックス（`mfra`）のバイト列を生成する
 ///
 /// `mfra` はファイル末尾に付加することで、fragmented MP4 のランダムアクセスを補助する。
-/// `mp4_fmp4_segment_muxer_write_init_segment()` と
-/// `mp4_fmp4_segment_muxer_write_media_segment()` ないし
-/// `mp4_fmp4_segment_muxer_write_media_segment_with_sidx()` を呼び出した後に使うこと。
+/// `fmp4_segment_muxer_write_init_segment()` と
+/// `fmp4_segment_muxer_write_media_segment()` ないし
+/// `fmp4_segment_muxer_write_media_segment_with_sidx()` を呼び出した後に使うこと。
 ///
 /// # 引数
 ///
 /// - `muxer`: インスタンスへのポインタ
 /// - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
-///   - 返されたポインタは `mp4_fmp4_bytes_free()` で解放する必要がある
+///   - 返されたポインタは `fmp4_bytes_free()` で解放する必要がある
 /// - `out_size`: バイト列のサイズを受け取るポインタ
 ///
 /// # 戻り値
@@ -269,8 +271,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_media_segment_with_sidx(
 /// - `MP4_ERROR_OK`: 正常に生成された
 /// - その他のエラー: 生成に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_mfra(
-    muxer: *mut Mp4Fmp4SegmentMuxer,
+pub unsafe extern "C" fn fmp4_segment_muxer_write_mfra(
+    muxer: *mut Fmp4SegmentMuxer,
     out_data: *mut *mut u8,
     out_size: *mut u32,
 ) -> Mp4Error {
@@ -283,7 +285,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_mfra(
         write_bytes_result(
             muxer,
             result,
-            "mp4_fmp4_segment_muxer_write_mfra",
+            "fmp4_segment_muxer_write_mfra",
             out_data,
             out_size,
         )
@@ -296,8 +298,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_muxer_write_mfra(
 ///
 /// 呼び出し元が全ポインタの有効性を保証すること。
 unsafe fn write_media_segment_impl(
-    muxer: *mut Mp4Fmp4SegmentMuxer,
-    samples: *const Mp4Fmp4SegmentSample,
+    muxer: *mut Fmp4SegmentMuxer,
+    samples: *const Fmp4SegmentSample,
     sample_count: u32,
     out_data: *mut *mut u8,
     out_size: *mut u32,
@@ -320,9 +322,9 @@ unsafe fn write_media_segment_impl(
     let fmp4_samples = unsafe { convert_samples(samples_slice) };
 
     let func_name = if with_sidx {
-        "mp4_fmp4_segment_muxer_write_media_segment_with_sidx"
+        "fmp4_segment_muxer_write_media_segment_with_sidx"
     } else {
-        "mp4_fmp4_segment_muxer_write_media_segment"
+        "fmp4_segment_muxer_write_media_segment"
     };
 
     let result = if with_sidx {
@@ -340,7 +342,7 @@ unsafe fn write_media_segment_impl(
 ///
 /// `out_data` と `out_size` は有効なポインタでなければならない。
 unsafe fn write_bytes_result(
-    muxer: &mut Mp4Fmp4SegmentMuxer,
+    muxer: &mut Fmp4SegmentMuxer,
     result: Result<Vec<u8>, SegmentMuxError>,
     func_name: &str,
     out_data: *mut *mut u8,
@@ -379,12 +381,12 @@ unsafe fn write_bytes_result(
     }
 }
 
-/// `Mp4Fmp4SegmentSample` のスライスを `SegmentSample` の `Vec` に変換するヘルパー
+/// `Fmp4SegmentSample` のスライスを `SegmentSample` の `Vec` に変換するヘルパー
 ///
 /// # Safety
 ///
 /// `samples` の各要素の `data` ポインタは、返された `Vec` が使われている間は有効でなければならない。
-unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4SegmentSample]) -> Vec<SegmentSample<'a>> {
+unsafe fn convert_samples<'a>(samples: &'a [Fmp4SegmentSample]) -> Vec<SegmentSample<'a>> {
     samples
         .iter()
         .map(|s| SegmentSample {
@@ -406,7 +408,7 @@ unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4SegmentSample]) -> Vec<Segmen
         .collect()
 }
 
-/// `mp4_fmp4_segment_muxer_write_init_segment()` や `mp4_fmp4_segment_muxer_write_media_segment()` で
+/// `fmp4_segment_muxer_write_init_segment()` や `fmp4_segment_muxer_write_media_segment()` で
 /// 割り当てられたバイト列を解放する
 ///
 /// # 引数
@@ -414,7 +416,7 @@ unsafe fn convert_samples<'a>(samples: &'a [Mp4Fmp4SegmentSample]) -> Vec<Segmen
 /// - `data`: 解放するバイト列へのポインタ（NULL の場合は何もしない）
 /// - `size`: バイト列のサイズ
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_bytes_free(data: *mut u8, size: u32) {
+pub unsafe extern "C" fn fmp4_bytes_free(data: *mut u8, size: u32) {
     if data.is_null() {
         return;
     }

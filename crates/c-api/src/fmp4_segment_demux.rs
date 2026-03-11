@@ -2,7 +2,7 @@
 use std::ffi::{CString, c_char};
 
 use shiguredo_mp4::BaseBox;
-use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+use shiguredo_mp4::demux::Fmp4SegmentDemuxer as RustFmp4SegmentDemuxer;
 
 use crate::{
     basic_types::Mp4TrackKind,
@@ -12,7 +12,7 @@ use crate::{
 
 /// fMP4 のトラック情報を表す C 構造体
 #[repr(C)]
-pub struct Mp4Fmp4SegmentTrackInfo {
+pub struct Fmp4SegmentTrackInfo {
     /// トラック ID
     pub track_id: u32,
 
@@ -25,7 +25,7 @@ pub struct Mp4Fmp4SegmentTrackInfo {
 
 /// fMP4 メディアセグメントから取り出されたサンプルを表す C 構造体
 #[repr(C)]
-pub struct Mp4Fmp4SegmentDemuxSample {
+pub struct Fmp4SegmentDemuxSample {
     /// サンプルの詳細情報（コーデック設定など）へのポインタ
     ///
     /// 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
@@ -56,7 +56,7 @@ pub struct Mp4Fmp4SegmentDemuxSample {
 
     /// セグメントデータ内のサンプルデータ開始位置（バイト単位）
     ///
-    /// `mp4_fmp4_segment_demuxer_handle_media_segment()` に渡したデータの先頭からのオフセット
+    /// `fmp4_segment_demuxer_handle_media_segment()` に渡したデータの先頭からのオフセット
     pub data_offset: u64,
 
     /// サンプルデータのサイズ（バイト単位）
@@ -67,17 +67,17 @@ pub struct Mp4Fmp4SegmentDemuxSample {
 ///
 /// # 関連関数
 ///
-/// - `mp4_fmp4_segment_demuxer_new()`: インスタンスを生成する
-/// - `mp4_fmp4_segment_demuxer_free()`: リソースを解放する
-/// - `mp4_fmp4_segment_demuxer_get_last_error()`: 最後のエラーメッセージを取得する
-/// - `mp4_fmp4_segment_demuxer_handle_init_segment()`: 初期化セグメントを処理する
-/// - `mp4_fmp4_segment_demuxer_get_tracks()`: トラック情報を取得する
-/// - `mp4_fmp4_segment_demuxer_handle_media_segment()`: メディアセグメントを処理する
-/// - `mp4_fmp4_segment_demuxer_free_samples()`: サンプル配列を解放する
-pub struct Mp4Fmp4SegmentDemuxer {
-    inner: Fmp4SegmentDemuxer,
+/// - `fmp4_segment_demuxer_new()`: インスタンスを生成する
+/// - `fmp4_segment_demuxer_free()`: リソースを解放する
+/// - `fmp4_segment_demuxer_get_last_error()`: 最後のエラーメッセージを取得する
+/// - `fmp4_segment_demuxer_handle_init_segment()`: 初期化セグメントを処理する
+/// - `fmp4_segment_demuxer_get_tracks()`: トラック情報を取得する
+/// - `fmp4_segment_demuxer_handle_media_segment()`: メディアセグメントを処理する
+/// - `fmp4_segment_demuxer_free_samples()`: サンプル配列を解放する
+pub struct Fmp4SegmentDemuxer {
+    inner: RustFmp4SegmentDemuxer,
     /// キャッシュ済みのトラック情報。`None` は未初期化または未取得を表す。
-    tracks_cache: Option<Vec<Mp4Fmp4SegmentTrackInfo>>,
+    tracks_cache: Option<Vec<Fmp4SegmentTrackInfo>>,
     sample_entries: Vec<(
         shiguredo_mp4::boxes::SampleEntry,
         Mp4SampleEntryOwned,
@@ -86,34 +86,34 @@ pub struct Mp4Fmp4SegmentDemuxer {
     last_error_string: Option<CString>,
 }
 
-impl Mp4Fmp4SegmentDemuxer {
+impl Fmp4SegmentDemuxer {
     fn set_last_error(&mut self, message: &str) {
         self.last_error_string = CString::new(message).ok();
     }
 }
 
-/// 新しい `Mp4Fmp4SegmentDemuxer` インスタンスを生成する
+/// 新しい `Fmp4SegmentDemuxer` インスタンスを生成する
 ///
 /// # 戻り値
 ///
-/// インスタンスへのポインタ（返されたポインタは `mp4_fmp4_segment_demuxer_free()` で解放する）
+/// インスタンスへのポインタ（返されたポインタは `fmp4_segment_demuxer_free()` で解放する）
 #[unsafe(no_mangle)]
-pub extern "C" fn mp4_fmp4_segment_demuxer_new() -> *mut Mp4Fmp4SegmentDemuxer {
-    Box::into_raw(Box::new(Mp4Fmp4SegmentDemuxer {
-        inner: Fmp4SegmentDemuxer::new(),
+pub extern "C" fn fmp4_segment_demuxer_new() -> *mut Fmp4SegmentDemuxer {
+    Box::into_raw(Box::new(Fmp4SegmentDemuxer {
+        inner: RustFmp4SegmentDemuxer::new(),
         tracks_cache: None,
         sample_entries: Vec::new(),
         last_error_string: None,
     }))
 }
 
-/// `Mp4Fmp4SegmentDemuxer` インスタンスを破棄してリソースを解放する
+/// `Fmp4SegmentDemuxer` インスタンスを破棄してリソースを解放する
 ///
 /// # 引数
 ///
 /// - `demuxer`: 破棄するインスタンスへのポインタ（NULL の場合は何もしない）
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_free(demuxer: *mut Mp4Fmp4SegmentDemuxer) {
+pub unsafe extern "C" fn fmp4_segment_demuxer_free(demuxer: *mut Fmp4SegmentDemuxer) {
     if !demuxer.is_null() {
         let _ = unsafe { Box::from_raw(demuxer) };
     }
@@ -129,8 +129,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_free(demuxer: *mut Mp4Fmp4Segm
 ///
 /// NULL 終端のエラーメッセージへのポインタ（エラーがない場合は空文字列）
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_last_error(
-    demuxer: *const Mp4Fmp4SegmentDemuxer,
+pub unsafe extern "C" fn fmp4_segment_demuxer_get_last_error(
+    demuxer: *const Fmp4SegmentDemuxer,
 ) -> *const c_char {
     if demuxer.is_null() {
         return c"".as_ptr();
@@ -156,8 +156,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_last_error(
 /// - `MP4_ERROR_INVALID_STATE`: 既に初期化済み
 /// - その他のエラー: 処理に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_init_segment(
-    demuxer: *mut Mp4Fmp4SegmentDemuxer,
+pub unsafe extern "C" fn fmp4_segment_demuxer_handle_init_segment(
+    demuxer: *mut Fmp4SegmentDemuxer,
     data: *const u8,
     size: u32,
 ) -> Mp4Error {
@@ -173,9 +173,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_init_segment(
     match demuxer.inner.handle_init_segment(data) {
         Ok(()) => Mp4Error::MP4_ERROR_OK,
         Err(e) => {
-            demuxer.set_last_error(&format!(
-                "[mp4_fmp4_segment_demuxer_handle_init_segment] {e}"
-            ));
+            demuxer.set_last_error(&format!("[fmp4_segment_demuxer_handle_init_segment] {e}"));
             e.into()
         }
     }
@@ -196,9 +194,9 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_init_segment(
 /// - `MP4_ERROR_INVALID_STATE`: 未初期化
 /// - その他のエラー: 取得に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks(
-    demuxer: *mut Mp4Fmp4SegmentDemuxer,
-    out_tracks: *mut *const Mp4Fmp4SegmentTrackInfo,
+pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks(
+    demuxer: *mut Fmp4SegmentDemuxer,
+    out_tracks: *mut *const Fmp4SegmentTrackInfo,
     out_count: *mut u32,
 ) -> Mp4Error {
     if demuxer.is_null() || out_tracks.is_null() || out_count.is_null() {
@@ -212,7 +210,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks(
                 demuxer.tracks_cache = Some(
                     tracks
                         .iter()
-                        .map(|t| Mp4Fmp4SegmentTrackInfo {
+                        .map(|t| Fmp4SegmentTrackInfo {
                             track_id: t.track_id,
                             kind: t.kind.into(),
                             timescale: t.timescale.get(),
@@ -225,7 +223,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks(
                     *out_tracks = std::ptr::null();
                     *out_count = 0;
                 }
-                demuxer.set_last_error(&format!("[mp4_fmp4_segment_demuxer_get_tracks] {e}"));
+                demuxer.set_last_error(&format!("[fmp4_segment_demuxer_get_tracks] {e}"));
                 return e.into();
             }
         }
@@ -242,9 +240,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks(
                 *out_tracks = std::ptr::null();
                 *out_count = 0;
             }
-            demuxer.set_last_error(
-                "[mp4_fmp4_segment_demuxer_get_tracks] track count exceeds u32::MAX",
-            );
+            demuxer
+                .set_last_error("[fmp4_segment_demuxer_get_tracks] track count exceeds u32::MAX");
             return Mp4Error::MP4_ERROR_OTHER;
         }
     };
@@ -264,7 +261,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks(
 /// - `data`: メディアセグメントデータへのポインタ
 /// - `size`: データのサイズ（バイト単位）
 /// - `out_samples`: 生成されたサンプル配列へのポインタを受け取るポインタ
-///   - 返された配列は `mp4_fmp4_segment_demuxer_free_samples()` で解放する必要がある
+///   - 返された配列は `fmp4_segment_demuxer_free_samples()` で解放する必要がある
 /// - `out_count`: サンプル数を受け取るポインタ
 ///
 /// # 戻り値
@@ -273,11 +270,11 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks(
 /// - `MP4_ERROR_INVALID_STATE`: 未初期化
 /// - その他のエラー: 処理に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
-    demuxer: *mut Mp4Fmp4SegmentDemuxer,
+pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment(
+    demuxer: *mut Fmp4SegmentDemuxer,
     data: *const u8,
     size: u32,
-    out_samples: *mut *mut Mp4Fmp4SegmentDemuxSample,
+    out_samples: *mut *mut Fmp4SegmentDemuxSample,
     out_count: *mut u32,
 ) -> Mp4Error {
     if demuxer.is_null() || data.is_null() || out_samples.is_null() || out_count.is_null() {
@@ -288,7 +285,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
 
     match demuxer.inner.handle_media_segment(data) {
         Ok(samples) => {
-            let mut c_samples: Vec<Mp4Fmp4SegmentDemuxSample> = Vec::new();
+            let mut c_samples: Vec<Fmp4SegmentDemuxSample> = Vec::new();
             for s in &samples {
                 let sample_entry = if let Some(sample_entry) = s.sample_entry {
                     let sample_entry_box_type = sample_entry.box_type();
@@ -306,7 +303,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                                 *out_count = 0;
                             }
                             demuxer.set_last_error(&format!(
-                                "[mp4_fmp4_segment_demuxer_handle_media_segment] Unsupported sample entry box type: {sample_entry_box_type}",
+                                "[fmp4_segment_demuxer_handle_media_segment] Unsupported sample entry box type: {sample_entry_box_type}",
                             ));
                             return Mp4Error::MP4_ERROR_UNSUPPORTED;
                         };
@@ -327,7 +324,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                             *out_count = 0;
                         }
                         demuxer.set_last_error(
-                            "[mp4_fmp4_segment_demuxer_handle_media_segment] data_size exceeds u32::MAX",
+                            "[fmp4_segment_demuxer_handle_media_segment] data_size exceeds u32::MAX",
                         );
                         return Mp4Error::MP4_ERROR_OTHER;
                     }
@@ -341,14 +338,14 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                                 *out_count = 0;
                             }
                             demuxer.set_last_error(
-                                "[mp4_fmp4_segment_demuxer_handle_media_segment] composition_time_offset exceeds i32::MAX",
+                                "[fmp4_segment_demuxer_handle_media_segment] composition_time_offset exceeds i32::MAX",
                             );
                             return Mp4Error::MP4_ERROR_OTHER;
                         }
                     },
                     None => 0,
                 };
-                c_samples.push(Mp4Fmp4SegmentDemuxSample {
+                c_samples.push(Fmp4SegmentDemuxSample {
                     sample_entry: sample_entry
                         .map(|entry| entry as *const _)
                         .unwrap_or(std::ptr::null()),
@@ -371,7 +368,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                         *out_count = 0;
                     }
                     demuxer.set_last_error(
-                        "[mp4_fmp4_segment_demuxer_handle_media_segment] sample count exceeds u32::MAX",
+                        "[fmp4_segment_demuxer_handle_media_segment] sample count exceeds u32::MAX",
                     );
                     return Mp4Error::MP4_ERROR_OTHER;
                 }
@@ -391,23 +388,21 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment(
                 *out_samples = std::ptr::null_mut();
                 *out_count = 0;
             }
-            demuxer.set_last_error(&format!(
-                "[mp4_fmp4_segment_demuxer_handle_media_segment] {e}"
-            ));
+            demuxer.set_last_error(&format!("[fmp4_segment_demuxer_handle_media_segment] {e}"));
             e.into()
         }
     }
 }
 
-/// `mp4_fmp4_segment_demuxer_handle_media_segment()` で割り当てられたサンプル配列を解放する
+/// `fmp4_segment_demuxer_handle_media_segment()` で割り当てられたサンプル配列を解放する
 ///
 /// # 引数
 ///
 /// - `samples`: 解放するサンプル配列へのポインタ（NULL の場合は何もしない）
 /// - `count`: サンプル数
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_free_samples(
-    samples: *mut Mp4Fmp4SegmentDemuxSample,
+pub unsafe extern "C" fn fmp4_segment_demuxer_free_samples(
+    samples: *mut Fmp4SegmentDemuxSample,
     count: u32,
 ) {
     if samples.is_null() {

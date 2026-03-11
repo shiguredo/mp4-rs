@@ -1,9 +1,9 @@
 //! fMP4 デマルチプレックス処理の WASM バインディング
 //!
-//! `mp4_fmp4_segment_demuxer_new` / `mp4_fmp4_segment_demuxer_handle_init_segment` / `mp4_fmp4_segment_demuxer_free`
+//! `fmp4_segment_demuxer_new` / `fmp4_segment_demuxer_handle_init_segment` / `fmp4_segment_demuxer_free`
 //! などの基本関数は C API クレートからそのまま公開されるため、
 //! このモジュールでは WASM 固有の JSON 変換関数のみを定義する。
-use c_api::fmp4_segment_demux::{Mp4Fmp4SegmentDemuxer, Mp4Fmp4SegmentTrackInfo};
+use c_api::fmp4_segment_demux::{Fmp4SegmentDemuxer, Fmp4SegmentTrackInfo};
 
 use crate::boxes::fmt_json_mp4_sample_entry;
 
@@ -25,18 +25,18 @@ use crate::boxes::fmt_json_mp4_sample_entry;
 /// [{ "track_id": 1, "kind": "video", "timescale": 90000 }]
 /// ```
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks_json(
-    demuxer: *mut Mp4Fmp4SegmentDemuxer,
+pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks_json(
+    demuxer: *mut Fmp4SegmentDemuxer,
 ) -> *mut Vec<u8> {
     if demuxer.is_null() {
         return std::ptr::null_mut();
     }
 
-    let mut tracks_ptr: *const Mp4Fmp4SegmentTrackInfo = std::ptr::null();
+    let mut tracks_ptr: *const Fmp4SegmentTrackInfo = std::ptr::null();
     let mut count: u32 = 0;
 
     let result = unsafe {
-        c_api::fmp4_segment_demux::mp4_fmp4_segment_demuxer_get_tracks(
+        c_api::fmp4_segment_demux::fmp4_segment_demuxer_get_tracks(
             demuxer,
             &mut tracks_ptr,
             &mut count,
@@ -92,8 +92,8 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_get_tracks_json(
 ///
 /// `data_offset` は `data` 引数の先頭からのバイトオフセット
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment_json(
-    demuxer: *mut Mp4Fmp4SegmentDemuxer,
+pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment_json(
+    demuxer: *mut Fmp4SegmentDemuxer,
     data: *const u8,
     size: u32,
 ) -> *mut Vec<u8> {
@@ -101,12 +101,12 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment_json(
         return std::ptr::null_mut();
     }
 
-    let mut out_samples: *mut c_api::fmp4_segment_demux::Mp4Fmp4SegmentDemuxSample =
+    let mut out_samples: *mut c_api::fmp4_segment_demux::Fmp4SegmentDemuxSample =
         std::ptr::null_mut();
     let mut out_count: u32 = 0;
 
     let result = unsafe {
-        c_api::fmp4_segment_demux::mp4_fmp4_segment_demuxer_handle_media_segment(
+        c_api::fmp4_segment_demux::fmp4_segment_demuxer_handle_media_segment(
             demuxer,
             data,
             size,
@@ -137,7 +137,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment_json(
 
     if !out_samples.is_null() {
         unsafe {
-            c_api::fmp4_segment_demux::mp4_fmp4_segment_demuxer_free_samples(out_samples, out_count)
+            c_api::fmp4_segment_demux::fmp4_segment_demuxer_free_samples(out_samples, out_count)
         };
     }
 
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn mp4_fmp4_segment_demuxer_handle_media_segment_json(
 
 fn fmt_json_track_info(
     f: &mut nojson::JsonFormatter<'_, '_>,
-    track: &Mp4Fmp4SegmentTrackInfo,
+    track: &Fmp4SegmentTrackInfo,
 ) -> std::fmt::Result {
     let kind_str = match track.kind {
         c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_AUDIO => "audio",
@@ -161,7 +161,7 @@ fn fmt_json_track_info(
 
 fn fmt_json_demux_sample(
     f: &mut nojson::JsonFormatter<'_, '_>,
-    sample: &c_api::fmp4_segment_demux::Mp4Fmp4SegmentDemuxSample,
+    sample: &c_api::fmp4_segment_demux::Fmp4SegmentDemuxSample,
 ) -> std::fmt::Result {
     f.object(|f| {
         if !sample.sample_entry.is_null() {

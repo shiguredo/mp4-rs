@@ -36,7 +36,7 @@
   - @voluntas
 - [ADD] `SegmentSample` に `composition_time_offset: Option<i32>` フィールドを追加する
   - `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される
-  - C API の `Mp4Fmp4SegmentDemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
+  - C API の `Fmp4SegmentDemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
   - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
   - @voluntas
 - [ADD] `Mp4FileDemuxer` で `ctts` ボックスをサポートする
@@ -45,8 +45,8 @@
   - `ctts` を含むトラック（H.265 など B フレームを持つコーデック）も正常にデマルチプレックスできるようになる
   - @voluntas
 - [ADD] fMP4 の C API を追加する
-  - `mp4_fmp4_segment_muxer_*` 関数群で fMP4 のマルチプレックスが可能になる
-  - `mp4_fmp4_segment_demuxer_*` 関数群で fMP4 のデマルチプレックスが可能になる
+  - `fmp4_segment_muxer_*` 関数群で fMP4 のマルチプレックスが可能になる
+  - `fmp4_segment_demuxer_*` 関数群で fMP4 のデマルチプレックスが可能になる
   - @voluntas
 - [ADD] fMP4 の WASM API を追加する
   - C API と同等の機能を wasm32-unknown-unknown ターゲットで利用可能にする

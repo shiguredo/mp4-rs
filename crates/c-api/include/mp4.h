@@ -1698,21 +1698,66 @@ enum Mp4Error fmp4_segment_muxer_write_mfra(struct Fmp4SegmentMuxer *muxer,
  */
 void fmp4_bytes_free(uint8_t *data, uint32_t size);
 
+/**
+ * 新しい `Mp4FileKindDetector` インスタンスを生成する
+ *
+ * 返されたポインタは、使用後に `mp4_file_kind_detector_free()` で解放する必要がある。
+ */
 struct Mp4FileKindDetector *mp4_file_kind_detector_new(void);
 
+/**
+ * `Mp4FileKindDetector` インスタンスを破棄してリソースを解放する
+ *
+ * NULL が渡された場合は何もしない。
+ */
 void mp4_file_kind_detector_free(struct Mp4FileKindDetector *detector);
 
+/**
+ * 最後に発生したエラーメッセージを取得する
+ *
+ * エラーが発生していない場合は空文字列を返す。
+ */
 const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetector *detector);
 
+/**
+ * 次の判定に必要な入力データの位置とサイズを取得する
+ *
+ * `out_required_input_size` には以下のいずれかが設定される:
+ * - 0: 追加の入力が不要
+ * - -1: ファイル末尾までの入力が必要
+ * - それ以外の正値: そのサイズ以上の入力が必要
+ *
+ * ここで大きなサイズが要求されるのは実質的には `moov` ボックス本体であり、
+ * `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
+ * そのため、サイズ表現には `int32_t` を使っている。
+ *
+ * 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
+ */
 enum Mp4Error mp4_file_kind_detector_get_required_input(struct Mp4FileKindDetector *detector,
                                                         uint64_t *out_required_input_position,
                                                         int32_t *out_required_input_size);
 
+/**
+ * 入力データを供給して判定処理を進める
+ *
+ * `mp4_file_kind_detector_get_required_input()` が返した要求に従って入力を渡すこと。
+ *
+ * EOF を通知する場合には、要求された `input_position` に対して
+ * `input_data = NULL` かつ `input_data_size = 0` を渡す。
+ *
+ * 入力が不正で判定器がエラー状態に遷移した場合は、その場でエラーを返す。
+ */
 enum Mp4Error mp4_file_kind_detector_handle_input(struct Mp4FileKindDetector *detector,
                                                   uint64_t input_position,
                                                   const uint8_t *input_data,
                                                   uint32_t input_data_size);
 
+/**
+ * 判定結果を取得する
+ *
+ * 戻り値が `MP4_ERROR_OK` の場合にのみ `out_kind` が有効になる。
+ * まだ追加入力が必要な場合は `MP4_ERROR_INPUT_REQUIRED` が返る。
+ */
 enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *detector,
                                                    enum Mp4FileKind *out_kind);
 

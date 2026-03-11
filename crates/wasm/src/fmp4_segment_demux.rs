@@ -3,7 +3,8 @@
 //! `fmp4_segment_demuxer_new` / `fmp4_segment_demuxer_handle_init_segment` / `fmp4_segment_demuxer_free`
 //! などの基本関数は C API クレートからそのまま公開されるため、
 //! このモジュールでは WASM 固有の JSON 変換関数のみを定義する。
-use c_api::fmp4_segment_demux::{Fmp4SegmentDemuxer, Fmp4SegmentTrackInfo};
+use c_api::demux::{Mp4DemuxSample, Mp4DemuxTrackInfo};
+use c_api::fmp4_segment_demux::Fmp4SegmentDemuxer;
 
 use crate::boxes::fmt_json_mp4_sample_entry;
 
@@ -22,8 +23,10 @@ use crate::boxes::fmt_json_mp4_sample_entry;
 /// # JSON フォーマット
 ///
 /// ```json
-/// [{ "track_id": 1, "kind": "video", "timescale": 90000 }]
+/// [{ "track_id": 1, "kind": "video", "duration": 0, "timescale": 90000 }]
 /// ```
+///
+/// `duration` は fMP4 では init segment 由来の値であり、0 になることが多い。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks_json(
     demuxer: *mut Fmp4SegmentDemuxer,
@@ -32,7 +35,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks_json(
         return std::ptr::null_mut();
     }
 
-    let mut tracks_ptr: *const Fmp4SegmentTrackInfo = std::ptr::null();
+    let mut tracks_ptr: *const Mp4DemuxTrackInfo = std::ptr::null();
     let mut count: u32 = 0;
 
     let result = unsafe {
@@ -91,6 +94,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks_json(
 /// ```
 ///
 /// `data_offset` は `data` 引数の先頭からのバイトオフセット
+/// `composition_time_offset` は共通 API として `i64` で出力される。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment_json(
     demuxer: *mut Fmp4SegmentDemuxer,
@@ -101,8 +105,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment_json(
         return std::ptr::null_mut();
     }
 
-    let mut out_samples: *mut c_api::fmp4_segment_demux::Fmp4SegmentDemuxSample =
-        std::ptr::null_mut();
+    let mut out_samples: *mut Mp4DemuxSample = std::ptr::null_mut();
     let mut out_count: u32 = 0;
 
     let result = unsafe {
@@ -146,7 +149,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment_json(
 
 fn fmt_json_track_info(
     f: &mut nojson::JsonFormatter<'_, '_>,
-    track: &Fmp4SegmentTrackInfo,
+    track: &Mp4DemuxTrackInfo,
 ) -> std::fmt::Result {
     let kind_str = match track.kind {
         c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_AUDIO => "audio",
@@ -155,13 +158,14 @@ fn fmt_json_track_info(
     f.object(|f| {
         f.member("track_id", track.track_id)?;
         f.member("kind", nojson::json(|f| f.string(kind_str)))?;
+        f.member("duration", track.duration)?;
         f.member("timescale", track.timescale)
     })
 }
 
 fn fmt_json_demux_sample(
     f: &mut nojson::JsonFormatter<'_, '_>,
-    sample: &c_api::fmp4_segment_demux::Fmp4SegmentDemuxSample,
+    sample: &Mp4DemuxSample,
 ) -> std::fmt::Result {
     f.object(|f| {
         if !sample.sample_entry.is_null() {
@@ -171,11 +175,12 @@ fn fmt_json_demux_sample(
                 nojson::json(|f| fmt_json_mp4_sample_entry(f, sample_entry)),
             )?;
         }
-        f.member("track_id", sample.track_id)?;
+        let track = unsafe { &*sample.track };
+        f.member("track_id", track.track_id)?;
         f.member("timestamp", sample.timestamp)?;
         f.member("duration", sample.duration)?;
         f.member("keyframe", sample.keyframe)?;
-        let cto: Option<i32> = if sample.has_composition_time_offset {
+        let cto: Option<i64> = if sample.has_composition_time_offset {
             Some(sample.composition_time_offset)
         } else {
             None

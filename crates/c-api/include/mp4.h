@@ -349,7 +349,10 @@ typedef struct Mp4DemuxTrackInfo {
   /**
    * トラックの尺（タイムスケール単位で表現）
    *
-   * 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること
+   * 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること。
+   *
+   * fMP4 の場合は init segment 由来の値であり、実際には 0 になることが多い。
+   * その場合は「未確定ないし実質不明相当」とみなしてよい。
    */
   uint64_t duration;
   /**
@@ -847,14 +850,14 @@ typedef struct Mp4SampleEntry {
  * MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）のメタデータと
  * ファイル内の位置情報を保持する
  *
- * この構造体が参照しているポインタのメモリ管理が `Mp4FileDemuxer` が行っており、
- * `Mp4FileDemuxer` インスタンスが破棄されるまでは安全に参照可能である
+ * この構造体が参照しているポインタのメモリ管理は各 demuxer が行っており、
+ * 対応する demuxer インスタンスが破棄されるまでは安全に参照可能である
  */
 typedef struct Mp4DemuxSample {
   /**
    * サンプルが属するトラックの情報へのポインタ
    *
-   * このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+   * このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
    */
   const struct Mp4DemuxTrackInfo *track;
   /**
@@ -862,7 +865,7 @@ typedef struct Mp4DemuxSample {
    *
    * 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
    *
-   * このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+   * このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
    */
   const struct Mp4SampleEntry *sample_entry;
   /**
@@ -888,10 +891,26 @@ typedef struct Mp4DemuxSample {
    */
   uint32_t duration;
   /**
+   * コンポジション時間オフセットが存在するかどうか
+   */
+  bool has_composition_time_offset;
+  /**
+   * コンポジション時間オフセット（タイムスケール単位）
+   *
+   * `has_composition_time_offset` が true の場合のみ有効。
+   * PTS = timestamp + composition_time_offset で計算できる。
+   *
+   * C API では通常 MP4 の `ctts` と fMP4 の `trun` の両方を共通の sample 型で扱うため、
+   * Rust 側の `Sample` に合わせて `i64` に widening している。
+   * 仕様上すべての入力が 64 bit 必須という意味ではない。
+   */
+  int64_t composition_time_offset;
+  /**
    * ファイル内におけるサンプルデータの開始位置（バイト単位）
    *
-   * 実際のサンプルデータへアクセスするには、この位置から `data_size` 分のバイト列を
-   * 入力ファイルから読み込む必要がある
+   * file demuxer ではファイル先頭からの絶対位置、
+   * segment demuxer では `fmp4_segment_demuxer_handle_media_segment()` に渡した
+   * 入力バッファ先頭からの相対位置を表す。
    */
   uint64_t data_offset;
   /**
@@ -901,75 +920,6 @@ typedef struct Mp4DemuxSample {
    */
   uintptr_t data_size;
 } Mp4DemuxSample;
-
-/**
- * fMP4 のトラック情報を表す C 構造体
- */
-typedef struct Fmp4SegmentTrackInfo {
-  /**
-   * トラック ID
-   */
-  uint32_t track_id;
-  /**
-   * トラックの種別
-   */
-  enum Mp4TrackKind kind;
-  /**
-   * タイムスケール
-   */
-  uint32_t timescale;
-} Fmp4SegmentTrackInfo;
-
-/**
- * fMP4 メディアセグメントから取り出されたサンプルを表す C 構造体
- */
-typedef struct Fmp4SegmentDemuxSample {
-  /**
-   * サンプルの詳細情報（コーデック設定など）へのポインタ
-   *
-   * 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
-   */
-  const struct Mp4SampleEntry *sample_entry;
-  /**
-   * サンプルが属するトラックの ID
-   */
-  uint32_t track_id;
-  /**
-   * サンプルのタイムスタンプ（タイムスケール単位）
-   *
-   * この値は decode timestamp を表す。
-   */
-  uint64_t timestamp;
-  /**
-   * サンプルの尺（タイムスケール単位）
-   */
-  uint32_t duration;
-  /**
-   * キーフレームかどうか
-   */
-  bool keyframe;
-  /**
-   * コンポジション時間オフセットが存在するかどうか
-   */
-  bool has_composition_time_offset;
-  /**
-   * コンポジション時間オフセット（タイムスケール単位）
-   *
-   * `has_composition_time_offset` が true の場合のみ有効。
-   * PTS = timestamp + composition_time_offset で計算できる。
-   */
-  int32_t composition_time_offset;
-  /**
-   * セグメントデータ内のサンプルデータ開始位置（バイト単位）
-   *
-   * `fmp4_segment_demuxer_handle_media_segment()` に渡したデータの先頭からのオフセット
-   */
-  uint64_t data_offset;
-  /**
-   * サンプルデータのサイズ（バイト単位）
-   */
-  uint32_t data_size;
-} Fmp4SegmentDemuxSample;
 
 /**
  * fMP4 マルチプレックスのトラック設定を表す C 構造体
@@ -1571,7 +1521,7 @@ enum Mp4Error fmp4_segment_demuxer_handle_init_segment(struct Fmp4SegmentDemuxer
  * - その他のエラー: 取得に失敗した
  */
 enum Mp4Error fmp4_segment_demuxer_get_tracks(struct Fmp4SegmentDemuxer *demuxer,
-                                              const struct Fmp4SegmentTrackInfo **out_tracks,
+                                              const struct Mp4DemuxTrackInfo **out_tracks,
                                               uint32_t *out_count);
 
 /**
@@ -1596,7 +1546,7 @@ enum Mp4Error fmp4_segment_demuxer_get_tracks(struct Fmp4SegmentDemuxer *demuxer
 enum Mp4Error fmp4_segment_demuxer_handle_media_segment(struct Fmp4SegmentDemuxer *demuxer,
                                                         const uint8_t *data,
                                                         uint32_t size,
-                                                        struct Fmp4SegmentDemuxSample **out_samples,
+                                                        struct Mp4DemuxSample **out_samples,
                                                         uint32_t *out_count);
 
 /**
@@ -1607,7 +1557,7 @@ enum Mp4Error fmp4_segment_demuxer_handle_media_segment(struct Fmp4SegmentDemuxe
  * - `samples`: 解放するサンプル配列へのポインタ（NULL の場合は何もしない）
  * - `count`: サンプル数
  */
-void fmp4_segment_demuxer_free_samples(struct Fmp4SegmentDemuxSample *samples,
+void fmp4_segment_demuxer_free_samples(struct Mp4DemuxSample *samples,
                                        uint32_t count);
 
 /**

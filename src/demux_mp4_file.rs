@@ -59,7 +59,10 @@ pub struct TrackInfo {
 
     /// トラックの尺（タイムスケール単位）
     ///
-    /// 秒単位の尺は、この値を `timescale` で割ることで求められる
+    /// 秒単位の尺は、この値を `timescale` で割ることで求められる。
+    ///
+    /// fMP4 の場合は init segment 由来の値であり、実際には 0 になることが多い。
+    /// その場合は「未確定ないし実質不明相当」とみなしてよい。
     pub duration: u64,
 
     /// トラックで使用されているタイムスケール
@@ -108,7 +111,12 @@ pub struct Sample<'a> {
 
     /// コンポジション時間オフセット（トラックのタイムスケール単位）
     ///
-    /// `ctts` ボックスが存在する場合に設定される。
+    /// 通常 MP4 の `ctts` と fMP4 の `trun` を共通の sample API で扱うため、
+    /// `i64` に widening している。
+    /// 仕様上すべての入力が 64 bit 必須という意味ではない。
+    ///
+    /// `ctts` ボックスが存在する場合や、fMP4 の `trun` に
+    /// `sample_composition_time_offset` が含まれる場合に設定される。
     /// PTS = timestamp + composition_time_offset で計算できる。
     /// `ctts` ボックスがない場合は `None` となる。
     pub composition_time_offset: Option<i64>,

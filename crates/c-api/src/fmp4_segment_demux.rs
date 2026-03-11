@@ -5,63 +5,10 @@ use shiguredo_mp4::BaseBox;
 use shiguredo_mp4::demux::Fmp4SegmentDemuxer as RustFmp4SegmentDemuxer;
 
 use crate::{
-    basic_types::Mp4TrackKind,
     boxes::{Mp4SampleEntry, Mp4SampleEntryOwned},
+    demux::{Mp4DemuxSample, Mp4DemuxTrackInfo},
     error::Mp4Error,
 };
-
-/// fMP4 のトラック情報を表す C 構造体
-#[repr(C)]
-pub struct Fmp4SegmentTrackInfo {
-    /// トラック ID
-    pub track_id: u32,
-
-    /// トラックの種別
-    pub kind: Mp4TrackKind,
-
-    /// タイムスケール
-    pub timescale: u32,
-}
-
-/// fMP4 メディアセグメントから取り出されたサンプルを表す C 構造体
-#[repr(C)]
-pub struct Fmp4SegmentDemuxSample {
-    /// サンプルの詳細情報（コーデック設定など）へのポインタ
-    ///
-    /// 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
-    pub sample_entry: *const Mp4SampleEntry,
-
-    /// サンプルが属するトラックの ID
-    pub track_id: u32,
-
-    /// サンプルのタイムスタンプ（タイムスケール単位）
-    ///
-    /// この値は decode timestamp を表す。
-    pub timestamp: u64,
-
-    /// サンプルの尺（タイムスケール単位）
-    pub duration: u32,
-
-    /// キーフレームかどうか
-    pub keyframe: bool,
-
-    /// コンポジション時間オフセットが存在するかどうか
-    pub has_composition_time_offset: bool,
-
-    /// コンポジション時間オフセット（タイムスケール単位）
-    ///
-    /// `has_composition_time_offset` が true の場合のみ有効。
-    /// PTS = timestamp + composition_time_offset で計算できる。
-    pub composition_time_offset: i32,
-
-    /// セグメントデータ内のサンプルデータ開始位置（バイト単位）
-    ///
-    /// `fmp4_segment_demuxer_handle_media_segment()` に渡したデータの先頭からのオフセット
-    pub data_offset: u64,
-
-    /// サンプルデータのサイズ（バイト単位）
-    pub data_size: u32,
-}
 
 /// fMP4 Demuxer の状態を保持する C 構造体
 ///
@@ -77,7 +24,7 @@ pub struct Fmp4SegmentDemuxSample {
 pub struct Fmp4SegmentDemuxer {
     inner: RustFmp4SegmentDemuxer,
     /// キャッシュ済みのトラック情報。`None` は未初期化または未取得を表す。
-    tracks_cache: Option<Vec<Fmp4SegmentTrackInfo>>,
+    tracks_cache: Option<Vec<Mp4DemuxTrackInfo>>,
     sample_entries: Vec<(
         shiguredo_mp4::boxes::SampleEntry,
         Mp4SampleEntryOwned,
@@ -89,6 +36,25 @@ pub struct Fmp4SegmentDemuxer {
 impl Fmp4SegmentDemuxer {
     fn set_last_error(&mut self, message: &str) {
         self.last_error_string = CString::new(message).ok();
+    }
+
+    fn ensure_tracks_cache(&mut self) -> Result<&[Mp4DemuxTrackInfo], Mp4Error> {
+        if self.tracks_cache.is_none() {
+            match self.inner.tracks() {
+                Ok(tracks) => {
+                    self.tracks_cache = Some(tracks.iter().cloned().map(Into::into).collect());
+                }
+                Err(e) => {
+                    self.set_last_error(&format!("[fmp4_segment_demuxer_get_tracks] {e}"));
+                    return Err(e.into());
+                }
+            }
+        }
+
+        Ok(self
+            .tracks_cache
+            .as_deref()
+            .expect("tracks_cache should be initialized above"))
     }
 }
 
@@ -196,7 +162,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_init_segment(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks(
     demuxer: *mut Fmp4SegmentDemuxer,
-    out_tracks: *mut *const Fmp4SegmentTrackInfo,
+    out_tracks: *mut *const Mp4DemuxTrackInfo,
     out_count: *mut u32,
 ) -> Mp4Error {
     if demuxer.is_null() || out_tracks.is_null() || out_count.is_null() {
@@ -204,35 +170,16 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks(
     }
     let demuxer = unsafe { &mut *demuxer };
 
-    if demuxer.tracks_cache.is_none() {
-        match demuxer.inner.tracks() {
-            Ok(tracks) => {
-                demuxer.tracks_cache = Some(
-                    tracks
-                        .iter()
-                        .map(|t| Fmp4SegmentTrackInfo {
-                            track_id: t.track_id,
-                            kind: t.kind.into(),
-                            timescale: t.timescale.get(),
-                        })
-                        .collect(),
-                );
+    let cached = match demuxer.ensure_tracks_cache() {
+        Ok(cached) => cached,
+        Err(error) => {
+            unsafe {
+                *out_tracks = std::ptr::null();
+                *out_count = 0;
             }
-            Err(e) => {
-                unsafe {
-                    *out_tracks = std::ptr::null();
-                    *out_count = 0;
-                }
-                demuxer.set_last_error(&format!("[fmp4_segment_demuxer_get_tracks] {e}"));
-                return e.into();
-            }
+            return error;
         }
-    }
-
-    let cached = demuxer
-        .tracks_cache
-        .as_ref()
-        .expect("tracks_cache is initialized above");
+    };
     let count = match u32::try_from(cached.len()) {
         Ok(v) => v,
         Err(_) => {
@@ -274,7 +221,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment(
     demuxer: *mut Fmp4SegmentDemuxer,
     data: *const u8,
     size: u32,
-    out_samples: *mut *mut Fmp4SegmentDemuxSample,
+    out_samples: *mut *mut Mp4DemuxSample,
     out_count: *mut u32,
 ) -> Mp4Error {
     if demuxer.is_null() || data.is_null() || out_samples.is_null() || out_count.is_null() {
@@ -283,10 +230,18 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment(
     let demuxer = unsafe { &mut *demuxer };
     let data = unsafe { std::slice::from_raw_parts(data, size as usize) };
 
+    if let Err(error) = demuxer.ensure_tracks_cache() {
+        unsafe {
+            *out_samples = std::ptr::null_mut();
+            *out_count = 0;
+        }
+        return error;
+    }
+
     match demuxer.inner.handle_media_segment(data) {
         Ok(samples) => {
-            let mut c_samples: Vec<Fmp4SegmentDemuxSample> = Vec::new();
-            for s in &samples {
+            let mut c_samples: Vec<Mp4DemuxSample> = Vec::new();
+            for s in samples {
                 let sample_entry = if let Some(sample_entry) = s.sample_entry {
                     let sample_entry_box_type = sample_entry.box_type();
                     if let Some(entry) = demuxer
@@ -316,48 +271,21 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment(
                 } else {
                     None
                 };
-                let data_size = match u32::try_from(s.data_size) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        unsafe {
-                            *out_samples = std::ptr::null_mut();
-                            *out_count = 0;
-                        }
-                        demuxer.set_last_error(
-                            "[fmp4_segment_demuxer_handle_media_segment] data_size exceeds u32::MAX",
-                        );
-                        return Mp4Error::MP4_ERROR_OTHER;
+                let Some(track) = demuxer.tracks_cache.as_ref().and_then(|tracks| {
+                    tracks
+                        .iter()
+                        .find(|track| track.track_id == s.track.track_id)
+                }) else {
+                    unsafe {
+                        *out_samples = std::ptr::null_mut();
+                        *out_count = 0;
                     }
+                    demuxer.set_last_error(
+                        "[fmp4_segment_demuxer_handle_media_segment] track info not found for sample",
+                    );
+                    return Mp4Error::MP4_ERROR_OTHER;
                 };
-                let composition_time_offset = match s.composition_time_offset {
-                    Some(value) => match i32::try_from(value) {
-                        Ok(value) => value,
-                        Err(_) => {
-                            unsafe {
-                                *out_samples = std::ptr::null_mut();
-                                *out_count = 0;
-                            }
-                            demuxer.set_last_error(
-                                "[fmp4_segment_demuxer_handle_media_segment] composition_time_offset exceeds i32::MAX",
-                            );
-                            return Mp4Error::MP4_ERROR_OTHER;
-                        }
-                    },
-                    None => 0,
-                };
-                c_samples.push(Fmp4SegmentDemuxSample {
-                    sample_entry: sample_entry
-                        .map(|entry| entry as *const _)
-                        .unwrap_or(std::ptr::null()),
-                    track_id: s.track.track_id,
-                    timestamp: s.timestamp,
-                    duration: s.duration,
-                    keyframe: s.keyframe,
-                    has_composition_time_offset: s.composition_time_offset.is_some(),
-                    composition_time_offset,
-                    data_offset: s.data_offset,
-                    data_size,
-                });
+                c_samples.push(Mp4DemuxSample::new(s, track, sample_entry));
             }
 
             let count = match u32::try_from(c_samples.len()) {
@@ -402,7 +330,7 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment(
 /// - `count`: サンプル数
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fmp4_segment_demuxer_free_samples(
-    samples: *mut Fmp4SegmentDemuxSample,
+    samples: *mut Mp4DemuxSample,
     count: u32,
 ) {
     if samples.is_null() {

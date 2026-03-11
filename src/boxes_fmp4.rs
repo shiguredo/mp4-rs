@@ -1031,9 +1031,10 @@ impl Decode for MfraBox {
                         offset += n;
                     }
                     _ => {
-                        // 未知のボックスはスキップ
-                        let (_, n) = UnknownBox::decode(&payload[offset..])?;
-                        offset += n;
+                        // 未知のボックスはスキップ（ペイロードのコピーは不要なので BoxHeader のみでサイズを算出する）
+                        let (header, unknown_payload) =
+                            BoxHeader::decode_header_and_payload(&payload[offset..])?;
+                        offset += header.external_size() + unknown_payload.len();
                     }
                 }
             }

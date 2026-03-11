@@ -79,6 +79,12 @@ fn parse_json_mp4_mux_sample(
     let keyframe: bool = value.to_member("keyframe")?.required()?.try_into()?;
     let timescale: u32 = value.to_member("timescale")?.required()?.try_into()?;
     let duration: u32 = value.to_member("duration")?.required()?.try_into()?;
+    let composition_time_offset: Option<i64> =
+        if let Some(v) = value.to_member("composition_time_offset")?.get() {
+            Some(v.try_into()?)
+        } else {
+            None
+        };
     let data_offset: u64 = value.to_member("data_offset")?.required()?.try_into()?;
     let data_size: u32 = value.to_member("data_size")?.required()?.try_into()?;
 
@@ -96,6 +102,8 @@ fn parse_json_mp4_mux_sample(
         keyframe,
         timescale,
         duration,
+        has_composition_time_offset: composition_time_offset.is_some(),
+        composition_time_offset: composition_time_offset.unwrap_or(0),
         data_offset,
         data_size,
     })

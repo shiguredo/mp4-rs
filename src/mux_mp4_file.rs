@@ -36,6 +36,7 @@
 //!     keyframe: true,
 //!     timescale: NonZeroU32::MIN.saturating_add(30 - 1),
 //!     duration: 1,
+//!     composition_time_offset: None,
 //!     data_offset: initial_bytes.len() as u64,
 //!     data_size: sample_data.len(),
 //! };
@@ -59,9 +60,9 @@ use crate::{
     BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, TrackKind,
     Utf8String,
     boxes::{
-        Brand, Co64Box, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MinfBox,
-        MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox,
-        StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
+        MdiaBox, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
+        StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
 };
 
@@ -226,6 +227,27 @@ pub struct Sample {
     /// 上述のような個々のプレイヤーの実装への依存性が低い方法を推奨している。
     pub duration: u32,
 
+    /// コンポジション時間オフセット（トラックのタイムスケール単位）
+    ///
+    /// B フレームを含む映像などで PTS と DTS がずれる場合に指定する。
+    /// 値の意味は `PTS = DTS + composition_time_offset` である。
+    ///
+    /// [`Mp4FileMuxer`] では `ctts` ボックスの生成に使われる。
+    /// [`crate::mux::Fmp4SegmentMuxer`] では `trun` の
+    /// `sample_composition_time_offset` の生成に使われる。
+    ///
+    /// 公開 API では demuxer と揃えて `i64` で受け取るが、
+    /// 実際に MP4 / fMP4 のボックスへ書ける範囲はより狭い。
+    ///
+    /// - [`Mp4FileMuxer`]:
+    ///   - 負値は `i32::MIN ..= -1`
+    ///   - 非負値は `0 ..= u32::MAX`
+    /// - [`crate::mux::Fmp4SegmentMuxer`]:
+    ///   - `i32::MIN ..= i32::MAX`
+    ///
+    /// 上記の範囲を超える値を指定した場合、mux 時にエラーになる。
+    pub composition_time_offset: Option<i64>,
+
     /// ファイル内におけるサンプルデータの開始位置（バイト単位）
     pub data_offset: u64,
 
@@ -356,6 +378,7 @@ struct SampleMetadata {
     duration: u32,
     keyframe: bool,
     size: u32,
+    composition_time_offset: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -497,6 +520,7 @@ impl Mp4FileMuxer {
             duration: sample.duration,
             keyframe: sample.keyframe,
             size: sample.data_size as u32,
+            composition_time_offset: sample.composition_time_offset,
         };
 
         let is_new_chunk_needed = self.is_new_chunk_needed(sample);
@@ -845,7 +869,7 @@ impl Mp4FileMuxer {
         let minf_box = MinfBox {
             smhd_or_vmhd_box: Some(Either::A(SmhdBox::default())),
             dinf_box: DinfBox::LOCAL_FILE,
-            stbl_box: self.build_stbl_box(&self.audio_chunks),
+            stbl_box: self.build_stbl_box(&self.audio_chunks)?,
             unknown_boxes: Vec::new(),
         };
 
@@ -881,7 +905,7 @@ impl Mp4FileMuxer {
         let minf_box = MinfBox {
             smhd_or_vmhd_box: Some(Either::B(VmhdBox::default())),
             dinf_box: DinfBox::LOCAL_FILE,
-            stbl_box: self.build_stbl_box(&self.video_chunks),
+            stbl_box: self.build_stbl_box(&self.video_chunks)?,
             unknown_boxes: Vec::new(),
         };
 
@@ -893,7 +917,7 @@ impl Mp4FileMuxer {
         })
     }
 
-    fn build_stbl_box(&self, chunks: &[Chunk]) -> StblBox {
+    fn build_stbl_box(&self, chunks: &[Chunk]) -> Result<StblBox, MuxError> {
         // [NOTE]
         // 典型的にはユニークなサンプルエントリーの数は高々数個なので、線形探索を行う
         // （`HashMap`は nostd 環境で使えず、`BTreeMap`には`Ord`実装が必要なので使用していない）
@@ -914,6 +938,7 @@ impl Mp4FileMuxer {
                 .iter()
                 .flat_map(|c| c.samples.iter().map(|s| s.duration)),
         );
+        let ctts_box = build_ctts_box(chunks)?;
 
         let stsc_box = StscBox {
             entries: chunks
@@ -968,10 +993,10 @@ impl Mp4FileMuxer {
             })
         };
 
-        StblBox {
+        Ok(StblBox {
             stsd_box,
             stts_box,
-            ctts_box: None,
+            ctts_box,
             cslg_box: None,
             stsc_box,
             stsz_box,
@@ -979,7 +1004,7 @@ impl Mp4FileMuxer {
             stss_box,
             sdtp_box: None,
             unknown_boxes: Vec::new(),
-        }
+        })
     }
 
     fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
@@ -1005,6 +1030,65 @@ impl Mp4FileMuxer {
             (self.audio_track_timescale, audio_duration)
         }
     }
+}
+
+fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {
+    let has_any_cto = chunks.iter().any(|chunk| {
+        chunk
+            .samples
+            .iter()
+            .any(|sample| sample.composition_time_offset.is_some())
+    });
+    if !has_any_cto {
+        return Ok(None);
+    }
+
+    let version = if chunks.iter().any(|chunk| {
+        chunk.samples.iter().any(|sample| {
+            sample
+                .composition_time_offset
+                .is_some_and(|offset| offset < 0)
+        })
+    }) {
+        1
+    } else {
+        0
+    };
+
+    let mut entries: Vec<CttsEntry> = Vec::new();
+    for offset in chunks
+        .iter()
+        .flat_map(|chunk| chunk.samples.iter())
+        .map(|sample| sample.composition_time_offset.unwrap_or(0))
+    {
+        if offset < i64::from(i32::MIN) {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "composition_time_offset must be greater than or equal to i32::MIN",
+            )));
+        }
+        if version == 1 && offset > i64::from(i32::MAX) {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "composition_time_offset exceeds i32::MAX (ctts version 1 requires i32 range)",
+            )));
+        }
+        if version == 0 && offset > i64::from(u32::MAX) {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "composition_time_offset must be less than or equal to u32::MAX",
+            )));
+        }
+        if let Some(last) = entries.last_mut()
+            && last.sample_offset == offset
+        {
+            last.sample_count = last.sample_count.checked_add(1).ok_or(MuxError::Overflow)?;
+            continue;
+        }
+        entries.push(CttsEntry {
+            sample_count: 1,
+            sample_offset: offset,
+        });
+    }
+
+    Ok(Some(CttsBox { version, entries }))
 }
 
 #[cfg(test)]
@@ -1047,6 +1131,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1061,6 +1146,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 512,
         };
@@ -1086,6 +1172,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 100, // 誤ったオフセット
             data_size: 1024,
         };
@@ -1109,6 +1196,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
             duration: 20,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 512,
         };
@@ -1132,6 +1220,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1147,6 +1236,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 512,
         };
@@ -1169,6 +1259,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1183,6 +1274,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
             duration: 20,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 256,
         };
@@ -1211,6 +1303,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1236,6 +1329,7 @@ mod tests {
                 keyframe: i % 2 == 0,
                 timescale: NonZeroU32::MIN.saturating_add(30 - 1),
                 duration: 1,
+                composition_time_offset: None,
                 data_offset: initial_size + (i as u64 * 1024),
                 data_size: 1024,
             };

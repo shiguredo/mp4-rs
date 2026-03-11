@@ -254,6 +254,7 @@ proptest! {
                 keyframe: sample_info.keyframe,
                 timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -316,6 +317,7 @@ proptest! {
                 keyframe: false,
                 timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -355,6 +357,109 @@ proptest! {
         }
     }
 
+    /// composition_time_offset が `ctts` 経由で roundtrip される
+    #[test]
+    fn mux_demux_video_composition_time_offset_roundtrip(
+        width in 16u16..1920,
+        height in 16u16..1080,
+        durations in prop::collection::vec(1u32..3001, 1..20),
+        composition_time_offsets in prop::collection::vec(prop::option::of(-3000i64..3001), 1..20),
+    ) {
+        prop_assume!(durations.len() == composition_time_offsets.len());
+
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::new(90_000).expect("non-zero");
+        let mut sample_entry = Some(create_avc1_sample_entry(width, height));
+
+        for ((duration, composition_time_offset), index) in durations
+            .iter()
+            .zip(composition_time_offsets.iter())
+            .zip(0..)
+        {
+            let sample = Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: sample_entry.take(),
+                keyframe: index == 0,
+                timescale,
+                duration: *duration,
+                composition_time_offset: *composition_time_offset,
+                data_offset,
+                data_size: 128,
+            };
+            muxer.append_sample(&sample).expect("failed to append sample");
+            data_offset += 128;
+        }
+
+        let initial_bytes = muxer.initial_boxes_bytes().to_vec();
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let file_data = build_file_data(&initial_bytes, finalized, durations.len() * 128);
+
+        let mut demuxer = Mp4FileDemuxer::new();
+        demuxer.handle_input(Input {
+            position: 0,
+            data: &file_data,
+        });
+
+        let has_any_cto = composition_time_offsets.iter().any(Option::is_some);
+        for expected in &composition_time_offsets {
+            let sample = demuxer
+                .next_sample()
+                .expect("failed to read sample")
+                .expect("missing sample");
+            let normalized = if has_any_cto {
+                Some(expected.unwrap_or(0))
+            } else {
+                None
+            };
+            prop_assert_eq!(sample.composition_time_offset, normalized);
+        }
+    }
+
+    /// 負の composition_time_offset を含む場合、ctts version 1 の表現範囲を超える正値はエラーになる
+    #[test]
+    fn mux_video_composition_time_offset_out_of_i32_range_for_ctts_v1(
+        width in 16u16..1920,
+        height in 16u16..1080,
+        duration_a in 1u32..3001,
+        duration_b in 1u32..3001,
+        too_large_positive_cto in (i32::MAX as i64 + 1)..=(u32::MAX as i64),
+    ) {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_data_offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::new(90_000).expect("non-zero");
+        let sample_entry = create_avc1_sample_entry(width, height);
+
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: Some(sample_entry.clone()),
+                keyframe: true,
+                timescale,
+                duration: duration_a,
+                composition_time_offset: Some(-1),
+                data_offset: initial_data_offset,
+                data_size: 128,
+            })
+            .expect("failed to append sample");
+
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: None,
+                keyframe: false,
+                timescale,
+                duration: duration_b,
+                composition_time_offset: Some(too_large_positive_cto),
+                data_offset: initial_data_offset + 128,
+                data_size: 128,
+            })
+            .expect("failed to append sample");
+
+        let result = muxer.finalize();
+        prop_assert!(result.is_err());
+    }
+
     /// ビデオ + オーディオの Mux → Demux roundtrip
     #[test]
     fn mux_demux_video_audio_roundtrip(
@@ -386,6 +491,7 @@ proptest! {
                 keyframe: sample_info.keyframe,
                 timescale: video_timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -403,6 +509,7 @@ proptest! {
                 keyframe: false,
                 timescale: audio_timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -462,6 +569,7 @@ proptest! {
                 keyframe: true,
                 timescale: NonZeroU32::new(30).expect("non-zero timescale"),
                 duration: 1,
+                composition_time_offset: None,
                 data_offset,
                 data_size: 256,
             };
@@ -475,6 +583,7 @@ proptest! {
                 keyframe: false,
                 timescale: NonZeroU32::new(48000).expect("non-zero timescale"),
                 duration: 960,
+                composition_time_offset: None,
                 data_offset,
                 data_size: 256,
             };
@@ -552,6 +661,7 @@ mod boundary_tests {
             keyframe: true,
             timescale: NonZeroU32::new(30).unwrap(),
             duration: 1,
+            composition_time_offset: None,
             data_offset,
             data_size: 100,
         };
@@ -595,6 +705,7 @@ mod boundary_tests {
             keyframe: true,
             timescale: NonZeroU32::new(30).unwrap(),
             duration: 1,
+            composition_time_offset: None,
             data_offset,
             data_size: 1024,
         };
@@ -681,6 +792,7 @@ mod estimate_moov_size_tests {
                     keyframe: true,
                     timescale: NonZeroU32::new(30).unwrap(),
                     duration: 1,
+                    composition_time_offset: None,
                     data_offset,
                     data_size: 100,
                 };
@@ -697,6 +809,7 @@ mod estimate_moov_size_tests {
                     keyframe: false,
                     timescale: NonZeroU32::new(48000).unwrap(),
                     duration: 960,
+                    composition_time_offset: None,
                     data_offset,
                     data_size: 50,
                 };

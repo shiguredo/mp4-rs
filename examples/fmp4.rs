@@ -18,7 +18,7 @@ use shiguredo_mp4::{
         VisualSampleEntryFields,
     },
     demux::Fmp4SegmentDemuxer,
-    mux::{Fmp4SegmentMuxer, SegmentSample},
+    mux::{Fmp4SegmentMuxer, Sample},
 };
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -90,6 +90,16 @@ fn dummy_audio_frame(size: usize) -> Vec<u8> {
     vec![0u8; size]
 }
 
+fn build_segment(samples: &[Sample], segment_metadata: &[u8], payloads: &[&[u8]]) -> Vec<u8> {
+    let mut segment = segment_metadata.to_vec();
+    let payload_size: usize = samples.iter().map(|sample| sample.data_size).sum();
+    segment.reserve(payload_size);
+    for payload in payloads {
+        segment.extend_from_slice(payload);
+    }
+    segment
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let width: u16 = 1280;
     let height: u16 = 720;
@@ -112,29 +122,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let audio_data = dummy_audio_frame(256);
 
             let samples = vec![
-                SegmentSample {
+                Sample {
                     track_kind: TrackKind::Video,
                     timescale: video_timescale,
                     sample_entry: Some(video_sample_entry.clone()),
                     duration: video_frame_duration,
                     keyframe: seg_idx == 0,
                     composition_time_offset: None,
-                    data: &video_data,
+                    data_offset: 0,
+                    data_size: video_data.len(),
                 },
-                SegmentSample {
+                Sample {
                     track_kind: TrackKind::Audio,
                     timescale: audio_timescale,
                     sample_entry: Some(audio_sample_entry.clone()),
                     duration: audio_frame_duration,
                     keyframe: true,
                     composition_time_offset: None,
-                    data: &audio_data,
+                    data_offset: video_data.len() as u64,
+                    data_size: audio_data.len(),
                 },
             ];
 
-            let segment = muxer
-                .create_media_segment(&samples)
+            let segment_metadata = muxer
+                .create_media_segment_metadata(&samples)
                 .expect("メディアセグメント生成に失敗");
+            let segment = build_segment(&samples, &segment_metadata, &[&video_data, &audio_data]);
 
             println!(
                 "メディアセグメント {}: {} バイト",
@@ -152,26 +165,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let video_data = dummy_video_frame(false, 1024);
     let audio_data = dummy_audio_frame(128);
     let sidx_samples = vec![
-        SegmentSample {
+        Sample {
             track_kind: TrackKind::Video,
             timescale: video_timescale,
             sample_entry: Some(video_sample_entry.clone()),
             duration: video_frame_duration,
             keyframe: false,
             composition_time_offset: None,
-            data: &video_data,
+            data_offset: 0,
+            data_size: video_data.len(),
         },
-        SegmentSample {
+        Sample {
             track_kind: TrackKind::Audio,
             timescale: audio_timescale,
             sample_entry: Some(audio_sample_entry.clone()),
             duration: audio_frame_duration,
             keyframe: true,
             composition_time_offset: None,
-            data: &audio_data,
+            data_offset: video_data.len() as u64,
+            data_size: audio_data.len(),
         },
     ];
-    let sidx_segment = muxer.create_media_segment_with_sidx(&sidx_samples)?;
+    let sidx_metadata = muxer.create_media_segment_metadata_with_sidx(&sidx_samples)?;
+    let sidx_segment = build_segment(&sidx_samples, &sidx_metadata, &[&video_data, &audio_data]);
     println!("sidx 付きセグメント: {} バイト", sidx_segment.len());
 
     // Demuxer で初期化セグメントを処理する

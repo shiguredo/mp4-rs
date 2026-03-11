@@ -8,7 +8,7 @@
 //! }
 //! ```
 //!
-//! # サンプルメタデータ JSON フォーマット (`fmp4_segment_muxer_write_media_segment_json`)
+//! # サンプルメタデータ JSON フォーマット (`fmp4_segment_muxer_write_media_segment_metadata_json`)
 //!
 //! ```json
 //! [
@@ -25,8 +25,26 @@
 //! ```
 //!
 //! `data_size` の合計が `sample_data` バイト列の長さと一致する必要がある。
-//! サンプルデータはサンプルの出現順に連結されていること。
+//! サンプルデータはサンプルの出現順に連結されていてよい。
+//! 実際の `mdat` payload 配置順は、このモジュールが fMP4 muxer の要求に合わせて
+//! 必要に応じて並べ替える。
 use c_api::fmp4_segment_mux::Fmp4SegmentMuxer;
+
+fn same_track_kind(
+    lhs: c_api::basic_types::Mp4TrackKind,
+    rhs: c_api::basic_types::Mp4TrackKind,
+) -> bool {
+    matches!(
+        (lhs, rhs),
+        (
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_AUDIO,
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_AUDIO,
+        ) | (
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
+        )
+    )
+}
 
 /// JSON 形式のトラック設定から `Fmp4SegmentMuxer` インスタンスを生成する
 ///
@@ -78,11 +96,11 @@ pub unsafe extern "C" fn fmp4_segment_muxer_from_json(
 ///
 /// # 戻り値
 ///
-/// 成功時は `Vec<u8>` へのポインタ、エラー時は NULL
+/// 成功時は `moof + mdat header + payload` 全体を格納した `Vec<u8>` へのポインタ、エラー時は NULL
 ///
 /// 返されたポインタは `mp4_vec_free()` で解放する必要がある
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_json(
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_metadata_json(
     muxer: *mut Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
@@ -103,9 +121,9 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_json(
 ///
 /// # 引数
 ///
-/// `fmp4_segment_muxer_write_media_segment_json()` と同じ
+/// `fmp4_segment_muxer_write_media_segment_metadata_json()` と同じ
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_with_sidx_json(
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_metadata_with_sidx_json(
     muxer: *mut Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
@@ -155,8 +173,11 @@ fn write_segment_impl(
     };
 
     // 各サンプルのデータ範囲を計算する
+    // 呼び出し元からはサンプル出現順の payload を受け取り、
+    // muxer が要求するトラック単位の連続配置にここで並べ替える。
     let mut sample_entry_boxes: Vec<Option<Box<c_api::boxes::Mp4SampleEntry>>> = Vec::new();
     let mut c_samples: Vec<c_api::fmp4_segment_mux::Fmp4SegmentSample> = Vec::new();
+    let mut payload_ranges: Vec<&[u8]> = Vec::new();
     let mut data_offset = 0usize;
     for meta in sample_metas {
         let Some(end) = data_offset.checked_add(meta.data_size) else {
@@ -170,6 +191,7 @@ fn write_segment_impl(
             .last()
             .and_then(|entry| entry.as_ref())
             .map_or(std::ptr::null(), |entry| (&**entry) as *const _);
+        payload_ranges.push(&sample_data_slice[data_offset..end]);
         c_samples.push(c_api::fmp4_segment_mux::Fmp4SegmentSample {
             track_kind: meta.track_kind,
             timescale: meta.timescale,
@@ -178,11 +200,37 @@ fn write_segment_impl(
             keyframe: meta.keyframe,
             has_composition_time_offset: meta.composition_time_offset.is_some(),
             composition_time_offset: meta.composition_time_offset.unwrap_or(0),
-            data: sample_data_slice[data_offset..].as_ptr(),
+            // 実際の payload 配置順が確定した後で上書きする。
+            data_offset: 0,
             data_size: u32::try_from(meta.data_size)
                 .expect("data_size exceeds u32::MAX; validated by parse_json_sample_metas"),
         });
         data_offset = end;
+    }
+
+    let mut ordered_kinds = Vec::new();
+    for sample in &c_samples {
+        if !ordered_kinds
+            .iter()
+            .any(|track_kind| same_track_kind(*track_kind, sample.track_kind))
+        {
+            ordered_kinds.push(sample.track_kind);
+        }
+    }
+
+    let mut arranged_payload = Vec::with_capacity(sample_data_slice.len());
+    let mut next_offset = 0u64;
+    for track_kind in ordered_kinds {
+        for (sample, payload) in c_samples.iter_mut().zip(payload_ranges.iter()) {
+            if !same_track_kind(sample.track_kind, track_kind) {
+                continue;
+            }
+            sample.data_offset = next_offset;
+            next_offset = next_offset
+                .checked_add(payload.len() as u64)
+                .expect("payload size overflow");
+            arranged_payload.extend_from_slice(payload);
+        }
     }
 
     let mut out_data: *mut u8 = std::ptr::null_mut();
@@ -190,7 +238,7 @@ fn write_segment_impl(
 
     let result = if with_sidx {
         unsafe {
-            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment_with_sidx(
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment_metadata_with_sidx(
                 muxer,
                 c_samples.as_ptr(),
                 u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),
@@ -200,7 +248,7 @@ fn write_segment_impl(
         }
     } else {
         unsafe {
-            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment(
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment_metadata(
                 muxer,
                 c_samples.as_ptr(),
                 u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),
@@ -214,7 +262,8 @@ fn write_segment_impl(
         return std::ptr::null_mut();
     }
 
-    let bytes = unsafe { Vec::from_raw_parts(out_data, out_size as usize, out_size as usize) };
+    let mut bytes = unsafe { Vec::from_raw_parts(out_data, out_size as usize, out_size as usize) };
+    bytes.extend_from_slice(&arranged_payload);
     Box::into_raw(Box::new(bytes))
 }
 
@@ -224,7 +273,7 @@ struct SampleMeta {
     sample_entry: Option<c_api::boxes::Mp4SampleEntry>,
     duration: u32,
     keyframe: bool,
-    composition_time_offset: Option<i32>,
+    composition_time_offset: Option<i64>,
     data_size: usize,
 }
 
@@ -256,7 +305,7 @@ fn parse_json_sample_metas(
             };
             let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
             let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
-            let composition_time_offset: Option<i32> =
+            let composition_time_offset: Option<i64> =
                 if let Some(v) = item.to_member("composition_time_offset")?.get() {
                     Some(v.try_into()?)
                 } else {

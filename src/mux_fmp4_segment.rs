@@ -12,13 +12,8 @@
 //!
 //! # `Mp4FileMuxer` との主な違い
 //!
-//! [`crate::mux::Mp4FileMuxer`] は、既にどこかへ書き込まれたサンプルデータを
-//! `data_offset` と `data_size` で参照する構造になっている。
-//! 一方で [`Fmp4SegmentMuxer`] は、セグメント本体の `mdat` をその場で構築するため、
-//! サンプルデータそのものを受け取る。
-//!
 //! fMP4 の sample entry 自体は `stsd` にしか格納できないが、
-//! [`Fmp4SegmentMuxer`] は `create_media_segment()` に渡されたサンプルから
+//! [`Fmp4SegmentMuxer`] は `create_media_segment_metadata()` に渡されたサンプルから
 //! トラック情報と sample entry を学習し、その時点までに観測した内容を反映した
 //! init segment を [`init_segment_bytes()`](Fmp4SegmentMuxer::init_segment_bytes) で返す。
 //!
@@ -34,24 +29,24 @@
 //! use std::num::NonZeroU32;
 //!
 //! use shiguredo_mp4::TrackKind;
-//! use shiguredo_mp4::mux::{Fmp4SegmentMuxer, SegmentSample};
+//! use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Sample};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
 //! let sample_entry = todo!("使用するコーデックに合わせたサンプルエントリーを構築する");
 //! let mut muxer = Fmp4SegmentMuxer::new()?;
 //!
-//! // メディアセグメントを生成する
-//! let sample_data = vec![0u8; 1024];
-//! let samples = vec![SegmentSample {
+//! // 返り値は moof + mdat header であり、payload 自体は含まれない
+//! let samples = vec![Sample {
 //!     track_kind: TrackKind::Video,
 //!     timescale: NonZeroU32::new(90000).expect("non-zero"),
 //!     sample_entry: Some(sample_entry),
 //!     duration: 3000,
 //!     keyframe: true,
 //!     composition_time_offset: None,
-//!     data: &sample_data,
+//!     data_offset: 0,
+//!     data_size: 1024,
 //! }];
-//! let segment_bytes = muxer.create_media_segment(&samples)?;
+//! let segment_bytes = muxer.create_media_segment_metadata(&samples)?;
 //!
 //! // その時点までに観測した内容を反映した init segment を取得する
 //! let init_bytes = muxer.init_segment_bytes()?;
@@ -70,7 +65,7 @@ use crate::{
         SmhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TfdtBox, TfhdBox, TfraBox,
         TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, VmhdBox,
     },
-    mux_mp4_file::MuxError,
+    mux_mp4_file::{MuxError, Sample},
 };
 
 /// [`Fmp4SegmentMuxer`] 用のオプション
@@ -88,49 +83,6 @@ impl Default for SegmentMuxerOptions {
             creation_timestamp: Duration::ZERO,
         }
     }
-}
-
-/// fMP4 メディアセグメントに追加するサンプル
-#[derive(Debug, Clone)]
-pub struct SegmentSample<'a> {
-    /// サンプルが属するトラックの種類
-    ///
-    /// 現時点では Audio 1 本、Video 1 本までを扱う。
-    /// 同種複数トラックへの対応は将来 `Mp4FileMuxer` と合わせて拡張する想定である。
-    pub track_kind: TrackKind,
-
-    /// サンプルのタイムスケール
-    ///
-    /// 同じトラック種別のサンプルは、すべて同じタイムスケールを使う必要がある。
-    pub timescale: NonZeroU32,
-
-    /// サンプルの詳細情報（コーデック種別など）
-    ///
-    /// 最初のサンプルでは必須。以後は変更がない限り `None` を指定できる。
-    /// `Fmp4SegmentMuxer` は、ここで観測した sample entry を track ごとに蓄積し、
-    /// `init_segment_bytes()` ではその時点までに観測した `stsd` を生成する。
-    ///
-    /// なお、ひとつのメディアセグメント内で同一トラックの sample entry を
-    /// 切り替えることは、現在の `1 track = 1 traf` 設計ではサポートしていない。
-    pub sample_entry: Option<SampleEntry>,
-
-    /// サンプルの尺（トラックのタイムスケール単位）
-    pub duration: u32,
-
-    /// キーフレームかどうか
-    pub keyframe: bool,
-
-    /// コンポジション時間オフセット（B フレーム向け）
-    ///
-    /// PTS と DTS の差分をタイムスケール単位で指定する。
-    /// B フレームを含まない場合は `None` を指定する。
-    pub composition_time_offset: Option<i32>,
-
-    /// サンプルのデータ
-    ///
-    /// [`crate::mux::Sample`] の `data_offset` / `data_size` と異なり、
-    /// fMP4 segment mux は `mdat` をその場で構築するため payload 自体を受け取る。
-    pub data: &'a [u8],
 }
 
 #[derive(Debug, Clone)]
@@ -156,19 +108,21 @@ struct TfraSegmentEntry {
 }
 
 #[derive(Debug)]
-struct ResolvedSegmentTrack<'a> {
+struct ResolvedSegmentTrack {
     track_index: usize,
-    samples: Vec<ResolvedSegmentSample<'a>>,
+    samples: Vec<ResolvedSegmentSample>,
     total_duration: u64,
     sample_description_index: Option<u32>,
+    first_data_offset: u64,
+    payload_end: u64,
 }
 
 #[derive(Debug)]
-struct ResolvedSegmentSample<'a> {
+struct ResolvedSegmentSample {
     duration: u32,
     keyframe: bool,
     composition_time_offset: Option<i32>,
-    data: &'a [u8],
+    data_size: usize,
 }
 
 /// fMP4 ファイルを生成するマルチプレックス処理を行うための構造体
@@ -183,7 +137,7 @@ struct ResolvedSegmentSample<'a> {
 ///
 /// 基本的な使用フロー：
 /// 1. [`new()`](Self::new) または [`with_options()`](Self::with_options) でインスタンスを作成
-/// 2. [`create_media_segment()`](Self::create_media_segment) を繰り返し呼び出してトラック情報と sample entry を蓄積しつつメディアセグメントを生成
+/// 2. [`create_media_segment_metadata()`](Self::create_media_segment_metadata) を繰り返し呼び出してトラック情報と sample entry を蓄積しつつメディアセグメントを生成
 /// 3. [`init_segment_bytes()`](Self::init_segment_bytes) で、その時点までに観測した内容を反映した初期化セグメントを取得
 /// 4. 必要に応じて [`mfra_bytes()`](Self::mfra_bytes) でランダムアクセスインデックスを取得
 #[derive(Debug, Clone)]
@@ -191,7 +145,7 @@ pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
     options: SegmentMuxerOptions,
     sequence_number: u32,
-    /// create_media_segment で書き出した media segment のバイト数累計
+    /// `create_media_segment_metadata*()` で表現した media segment のバイト数累計
     media_bytes_written: u64,
     /// トラックごとの tfra エントリ（tracks と同じインデックス）
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
@@ -217,8 +171,8 @@ impl Fmp4SegmentMuxer {
     /// 初期化セグメント（`ftyp` + `moov`）のバイト列を返す
     ///
     /// 返される `moov` には、このメソッドを呼んだ時点までに
-    /// [`create_media_segment()`](Self::create_media_segment) ないし
-    /// [`create_media_segment_with_sidx()`](Self::create_media_segment_with_sidx) で
+    /// [`create_media_segment_metadata()`](Self::create_media_segment_metadata) ないし
+    /// [`create_media_segment_metadata_with_sidx()`](Self::create_media_segment_metadata_with_sidx) で
     /// 観測したトラック情報と sample entry が反映される。
     ///
     /// まだどのトラックも観測されていない状態では `EmptyTracks` を返す。
@@ -236,33 +190,52 @@ impl Fmp4SegmentMuxer {
         Ok(bytes)
     }
 
-    /// メディアセグメント（`moof` + `mdat`）のバイト列を生成する
+    /// メディアセグメント先頭のメタデータ（`moof` + `mdat` ヘッダー）のバイト列を生成する
     ///
-    /// `samples` に含まれるサンプルは `track_kind` でグループ化される。
-    /// 同一セグメント内の同一トラックのサンプルは、渡された順序で `mdat` に格納される。
+    /// `samples` に含まれるサンプルは `track_kind` でグループ化して扱われる。
+    /// 同一セグメント内の同一トラックのサンプルは、`data_offset` の昇順で
+    /// `mdat` payload 領域内に連続して配置されている必要がある。
+    /// トラック間の payload 配置順は `data_offset` に従って決定される。
     ///
-    /// [`crate::mux::Mp4FileMuxer::append_sample()`] と異なり、
-    /// ここではファイル上の offset ではなくサンプル payload 自体を受け取って
-    /// セグメントを構築する。
+    /// 返り値に含まれるのは `moof` と `mdat` ヘッダーのみであり、
+    /// `mdat` payload そのものは含まれない。
+    /// 呼び出し側は、返り値の直後に `samples` が参照する payload 群を
+    /// `data_offset` / `data_size` の指定どおりに配置する必要がある。
+    ///
+    /// `samples[*].data_offset` の基準は、
+    /// [`crate::mux::Mp4FileMuxer::append_sample()`] で使う「ファイル全体の絶対位置」ではなく、
+    /// 「今回のセグメントに属する `mdat` payload 領域の先頭からの相対位置」である。
+    ///
+    /// `samples[*].composition_time_offset` は公開 API では demuxer と揃えて `i64` だが、
+    /// この muxer が `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲に限られる。
+    /// 範囲外の値を指定した場合はエラーになる。
+    ///
+    /// 現実装は `1 track = 1 traf = 1 trun` を前提としている。
+    /// そのため、ひとつのトラックに属する payload を複数の離れた範囲へ分割して
+    /// 配置することはサポートしていない。
     ///
     /// このメソッドは、メディアセグメントを生成するだけでなく、
     /// `init_segment_bytes()` の構築に必要なトラック情報と sample entry も内部に蓄積する。
-    pub fn create_media_segment(&mut self, samples: &[SegmentSample]) -> Result<Vec<u8>, MuxError> {
-        self.build_media_segment_bytes(samples)
+    pub fn create_media_segment_metadata(
+        &mut self,
+        samples: &[Sample],
+    ) -> Result<Vec<u8>, MuxError> {
+        let (segment, _) = self.build_media_segment_bytes(samples)?;
+        Ok(segment)
     }
 
-    /// `sidx` ボックスを先頭に付加したメディアセグメントを生成する
+    /// `sidx` ボックスを先頭に付加したメディアセグメント先頭メタデータを生成する
     ///
     /// `sidx` はセグメントインデックスボックスであり、
     /// MPEG-DASH などのアダプティブストリーミングで利用される。
     ///
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
-    /// このメソッドも [`create_media_segment()`](Self::create_media_segment) と同様に、
+    /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
-    pub fn create_media_segment_with_sidx(
+    pub fn create_media_segment_metadata_with_sidx(
         &mut self,
-        samples: &[SegmentSample],
+        samples: &[Sample],
     ) -> Result<Vec<u8>, MuxError> {
         if samples.is_empty() {
             return Err(MuxError::EmptySamples);
@@ -284,8 +257,11 @@ impl Fmp4SegmentMuxer {
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
-        let media_segment = self.build_media_segment_bytes(samples)?;
-        let media_segment_size = media_segment.len();
+        let (media_segment, mdat_payload_size) = self.build_media_segment_bytes(samples)?;
+        let media_segment_size = media_segment
+            .len()
+            .checked_add(usize::try_from(mdat_payload_size).map_err(|_| MuxError::Overflow)?)
+            .ok_or(MuxError::Overflow)?;
         let reference_track = self
             .tracks
             .iter()
@@ -326,8 +302,8 @@ impl Fmp4SegmentMuxer {
 
     fn build_media_segment_bytes(
         &mut self,
-        samples: &[SegmentSample],
-    ) -> Result<Vec<u8>, MuxError> {
+        samples: &[Sample],
+    ) -> Result<(Vec<u8>, u64), MuxError> {
         if samples.is_empty() {
             return Err(MuxError::EmptySamples);
         }
@@ -338,18 +314,14 @@ impl Fmp4SegmentMuxer {
         let mut next_tracks = self.tracks.clone();
         let resolved_tracks = resolve_segment_tracks(&mut next_tracks, samples)?;
 
-        // mdat ペイロードを構築する（トラック順にサンプルデータを連結）
-        let mut mdat_payload: Vec<u8> = Vec::new();
-        for resolved_track in &resolved_tracks {
-            for sample in &resolved_track.samples {
-                mdat_payload.extend_from_slice(sample.data);
-            }
-        }
-
         // mdat ヘッダーを先に確定する
         // ペイロードサイズに応じて U32 (8 バイトヘッダー) か U64 (16 バイトヘッダー) を選択する
-        let mdat_payload_size = mdat_payload.len();
-        let mdat_box_size_value = BoxHeader::MIN_SIZE as u64 + mdat_payload_size as u64;
+        let mdat_payload_size = resolved_tracks
+            .iter()
+            .map(|track| track.payload_end)
+            .max()
+            .ok_or(MuxError::EmptySamples)?;
+        let mdat_box_size_value = BoxHeader::MIN_SIZE as u64 + mdat_payload_size;
         let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u32::MAX as u64 {
             (
                 BoxSize::U32(mdat_box_size_value as u32),
@@ -378,21 +350,22 @@ impl Fmp4SegmentMuxer {
 
         // 各トラックのサンプルデータの data_offset (moof 先頭からの相対値) を計算する
         let mut track_data_offsets = vec![0i32; next_tracks.len()];
-        let mut accumulated_data_size = moof_size + mdat_header_size;
+        let data_offset_base = u64::try_from(moof_size + mdat_header_size).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data(
+                "data_offset base overflow: moof + mdat header exceeds u64 max",
+            ))
+        })?;
 
         for resolved_track in &resolved_tracks {
-            track_data_offsets[resolved_track.track_index] = i32::try_from(accumulated_data_size)
+            let track_data_offset = data_offset_base
+                .checked_add(resolved_track.first_data_offset)
+                .ok_or(MuxError::Overflow)?;
+            track_data_offsets[resolved_track.track_index] = i32::try_from(track_data_offset)
                 .map_err(|_| {
-                MuxError::EncodeError(Error::invalid_data(
-                    "data_offset overflow: moof + mdat header exceeds i32 max",
-                ))
-            })?;
-            let track_data_size: usize = resolved_track
-                .samples
-                .iter()
-                .map(|sample| sample.data.len())
-                .sum();
-            accumulated_data_size += track_data_size;
+                    MuxError::EncodeError(Error::invalid_data(
+                        "data_offset overflow: moof + mdat header exceeds i32 max",
+                    ))
+                })?;
         }
 
         // 正しい data_offset で moof を構築する
@@ -404,10 +377,9 @@ impl Fmp4SegmentMuxer {
         )?;
         let moof_bytes = moof.encode_to_vec()?;
 
-        // moof + mdat を結合する
+        // 返り値には moof + mdat ヘッダーのみを含める。
         let mut segment = moof_bytes;
         segment.extend_from_slice(&mdat_header_bytes);
-        segment.extend_from_slice(&mdat_payload);
 
         // tfra エントリを記録してから decode_time を更新する
         let mut next_tfra_entries = self.tfra_entries.clone();
@@ -435,11 +407,12 @@ impl Fmp4SegmentMuxer {
         self.media_bytes_written = self
             .media_bytes_written
             .checked_add(segment.len() as u64)
+            .and_then(|written| written.checked_add(mdat_payload_size))
             .ok_or(MuxError::Overflow)?;
         self.sequence_number = sequence_number;
         self.tracks = next_tracks;
         self.tfra_entries = next_tfra_entries;
-        Ok(segment)
+        Ok((segment, mdat_payload_size))
     }
 
     /// ランダムアクセスインデックス（`mfra`）のバイト列を生成する
@@ -748,7 +721,7 @@ impl Fmp4SegmentMuxer {
     fn build_moof(
         &self,
         tracks: &[TrackEntry],
-        resolved_tracks: &[ResolvedSegmentTrack<'_>],
+        resolved_tracks: &[ResolvedSegmentTrack],
         sequence_number: u32,
         data_offsets: &[i32],
     ) -> Result<MoofBox, MuxError> {
@@ -768,7 +741,7 @@ impl Fmp4SegmentMuxer {
                 .map(|sample| -> Result<TrunSample, MuxError> {
                     Ok(TrunSample {
                         duration: Some(sample.duration),
-                        size: Some(u32::try_from(sample.data.len()).map_err(|_| {
+                        size: Some(u32::try_from(sample.data_size).map_err(|_| {
                             MuxError::EncodeError(Error::invalid_data(
                                 "sample data size exceeds u32::MAX",
                             ))
@@ -825,10 +798,10 @@ impl Fmp4SegmentMuxer {
     }
 }
 
-fn resolve_segment_tracks<'a>(
+fn resolve_segment_tracks(
     tracks: &mut Vec<TrackEntry>,
-    samples: &'a [SegmentSample<'a>],
-) -> Result<Vec<ResolvedSegmentTrack<'a>>, MuxError> {
+    samples: &[Sample],
+) -> Result<Vec<ResolvedSegmentTrack>, MuxError> {
     let mut ordered_kinds = Vec::new();
     for sample in samples {
         if !ordered_kinds.contains(&sample.track_kind) {
@@ -838,7 +811,7 @@ fn resolve_segment_tracks<'a>(
 
     let mut resolved_tracks = Vec::new();
     for track_kind in ordered_kinds {
-        let track_samples: Vec<&SegmentSample<'a>> = samples
+        let track_samples: Vec<&Sample> = samples
             .iter()
             .filter(|sample| sample.track_kind == track_kind)
             .collect();
@@ -852,6 +825,9 @@ fn resolve_segment_tracks<'a>(
         let mut segment_sample_entry_index = None;
         let mut resolved_samples = Vec::new();
         let mut total_duration = 0u64;
+        let mut expected_next_data_offset: Option<u64> = None;
+        let mut first_data_offset = None;
+        let mut payload_end = 0u64;
 
         for sample in track_samples {
             if sample.timescale != track.timescale {
@@ -890,11 +866,38 @@ fn resolve_segment_tracks<'a>(
             total_duration = total_duration
                 .checked_add(sample.duration as u64)
                 .ok_or(MuxError::Overflow)?;
+            if first_data_offset.is_none() {
+                first_data_offset = Some(sample.data_offset);
+            }
+            if let Some(expected_offset) = expected_next_data_offset
+                && expected_offset != sample.data_offset
+            {
+                return Err(MuxError::EncodeError(Error::invalid_input(
+                    "sample data for the same track must be contiguous in the segment payload",
+                )));
+            }
+            expected_next_data_offset = Some(
+                sample
+                    .data_offset
+                    .checked_add(sample.data_size as u64)
+                    .ok_or(MuxError::Overflow)?,
+            );
+            payload_end = expected_next_data_offset.expect("offset must be set");
+
             resolved_samples.push(ResolvedSegmentSample {
                 duration: sample.duration,
                 keyframe: sample.keyframe,
-                composition_time_offset: sample.composition_time_offset,
-                data: sample.data,
+                composition_time_offset: sample
+                    .composition_time_offset
+                    .map(|offset| {
+                        i32::try_from(offset).map_err(|_| {
+                            MuxError::EncodeError(Error::invalid_input(
+                                "composition_time_offset for fMP4 must be within i32 range",
+                            ))
+                        })
+                    })
+                    .transpose()?,
+                data_size: sample.data_size,
             });
         }
 
@@ -917,7 +920,20 @@ fn resolve_segment_tracks<'a>(
             samples: resolved_samples,
             total_duration,
             sample_description_index,
+            first_data_offset: first_data_offset.expect("track must contain at least one sample"),
+            payload_end,
         });
+    }
+
+    resolved_tracks.sort_by_key(|track| track.first_data_offset);
+    let mut expected_track_offset = 0u64;
+    for track in &resolved_tracks {
+        if track.first_data_offset != expected_track_offset {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "track payload ranges must be contiguous and ordered by data_offset",
+            )));
+        }
+        expected_track_offset = track.payload_end;
     }
 
     Ok(resolved_tracks)

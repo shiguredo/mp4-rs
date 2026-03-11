@@ -9,8 +9,8 @@ use proptest::prelude::*;
 use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint,
     boxes::{
-        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MoofBox, MoovBox, OpusBox,
-        SampleEntry, VisualSampleEntryFields,
+        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MfraBox, MoofBox, MoovBox,
+        OpusBox, SampleEntry, SidxBox, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -553,11 +553,9 @@ proptest! {
             1..5,
         ),
     ) {
-        use shiguredo_mp4::boxes::MfraBox;
-        use shiguredo_mp4::Decode;
-
         let sample_entry = create_avc1_sample_entry(320, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut segment_sizes = Vec::new();
 
         for segment_samples in &segments {
             let fmp4_samples: Vec<Sample> = segment_samples
@@ -568,9 +566,11 @@ proptest! {
                 .iter()
                 .map(|sample| sample.data.as_slice())
                 .collect();
-            let _ = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+            let segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+            segment_sizes.push(segment.len() as u64);
         }
 
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let mfra = muxer.mfra_bytes().expect("failed to build mfra");
 
         // mfra が valid な MP4 ボックスとしてデコードできること
@@ -580,6 +580,17 @@ proptest! {
         // tfra のエントリ数はセグメント数と一致すること
         prop_assert_eq!(mfra_box.tfra_boxes.len(), 1);
         prop_assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
+
+        let init_size = init_bytes.len() as u64;
+        let mut expected_moof_offset = init_size;
+        for (entry, segment_size) in mfra_box.tfra_boxes[0]
+            .entries
+            .iter()
+            .zip(segment_sizes.iter().copied())
+        {
+            prop_assert_eq!(entry.moof_offset, expected_moof_offset);
+            expected_moof_offset += segment_size;
+        }
 
         // mfro.size が mfra 全体のサイズと一致すること
         prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
@@ -627,6 +638,32 @@ proptest! {
                 &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
             prop_assert_eq!(actual, orig.data.as_slice());
         }
+    }
+
+    /// sidx.referenced_size が payload を含むセグメント全体サイズを指すことを確認する
+    #[test]
+    fn sidx_referenced_size_includes_payload(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        samples in prop::collection::vec(arb_video_sample(0), 1..5),
+    ) {
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+
+        let fmp4_samples: Vec<Sample> = samples
+            .iter()
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
+            .collect();
+        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let segment_bytes =
+            build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
+
+        let (sidx_box, sidx_size) = SidxBox::decode(&segment_bytes).expect("failed to decode sidx");
+        prop_assert_eq!(sidx_box.references.len(), 1);
+        prop_assert_eq!(
+            sidx_box.references[0].referenced_size as usize,
+            segment_bytes.len() - sidx_size,
+        );
     }
 
     /// 最初のサンプルに `sample_entry` がない場合は
@@ -1177,5 +1214,37 @@ proptest! {
             expected_decode_time +=
                 segment_samples.iter().map(|s| s.duration as u64).sum::<u64>();
         }
+    }
+
+    /// トラック payload 間に隙間がある配置は拒否する
+    #[test]
+    fn rejects_gapped_track_payload_layout(
+        video_size in 1usize..256,
+        audio_size in 1usize..256,
+    ) {
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry(320, 240)),
+            keyframe: true,
+            timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("non-zero"),
+            duration: 3000,
+            composition_time_offset: None,
+            data_offset: 0,
+            data_size: video_size,
+        };
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("non-zero"),
+            duration: 960,
+            composition_time_offset: None,
+            data_offset: video_size as u64 + 1,
+            data_size: audio_size,
+        };
+
+        let result = muxer.create_media_segment(&[video_sample, audio_sample]);
+        prop_assert!(matches!(result, Err(shiguredo_mp4::mux::MuxError::EncodeError(_))));
     }
 }

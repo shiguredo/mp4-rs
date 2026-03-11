@@ -113,6 +113,8 @@ struct ResolvedSegmentTrack {
     samples: Vec<ResolvedSegmentSample>,
     total_duration: u64,
     sample_description_index: Option<u32>,
+    first_data_offset: u64,
+    payload_end: u64,
 }
 
 #[derive(Debug)]
@@ -190,9 +192,10 @@ impl Fmp4SegmentMuxer {
 
     /// メディアセグメント先頭のメタデータ（`moof` + `mdat` ヘッダー）のバイト列を生成する
     ///
-    /// `samples` に含まれるサンプルは `track_kind` でグループ化される。
+    /// `samples` に含まれるサンプルは `track_kind` でグループ化して扱われる。
     /// 同一セグメント内の同一トラックのサンプルは、`data_offset` の昇順で
     /// `mdat` payload 領域内に連続して配置されている必要がある。
+    /// トラック間の payload 配置順は `data_offset` に従って決定される。
     ///
     /// 返り値に含まれるのは `moof` と `mdat` ヘッダーのみであり、
     /// `mdat` payload そのものは含まれない。
@@ -210,7 +213,8 @@ impl Fmp4SegmentMuxer {
     /// このメソッドは、メディアセグメントを生成するだけでなく、
     /// `init_segment_bytes()` の構築に必要なトラック情報と sample entry も内部に蓄積する。
     pub fn create_media_segment(&mut self, samples: &[Sample]) -> Result<Vec<u8>, MuxError> {
-        self.build_media_segment_bytes(samples)
+        let (segment, _) = self.build_media_segment_bytes(samples)?;
+        Ok(segment)
     }
 
     /// `sidx` ボックスを先頭に付加したメディアセグメントを生成する
@@ -246,8 +250,11 @@ impl Fmp4SegmentMuxer {
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
-        let media_segment = self.build_media_segment_bytes(samples)?;
-        let media_segment_size = media_segment.len();
+        let (media_segment, mdat_payload_size) = self.build_media_segment_bytes(samples)?;
+        let media_segment_size = media_segment
+            .len()
+            .checked_add(usize::try_from(mdat_payload_size).map_err(|_| MuxError::Overflow)?)
+            .ok_or(MuxError::Overflow)?;
         let reference_track = self
             .tracks
             .iter()
@@ -286,7 +293,10 @@ impl Fmp4SegmentMuxer {
         Ok(result)
     }
 
-    fn build_media_segment_bytes(&mut self, samples: &[Sample]) -> Result<Vec<u8>, MuxError> {
+    fn build_media_segment_bytes(
+        &mut self,
+        samples: &[Sample],
+    ) -> Result<(Vec<u8>, u64), MuxError> {
         if samples.is_empty() {
             return Err(MuxError::EmptySamples);
         }
@@ -301,11 +311,9 @@ impl Fmp4SegmentMuxer {
         // ペイロードサイズに応じて U32 (8 バイトヘッダー) か U64 (16 バイトヘッダー) を選択する
         let mdat_payload_size = resolved_tracks
             .iter()
-            .flat_map(|track| track.samples.iter())
-            .try_fold(0u64, |acc, sample| {
-                acc.checked_add(sample.data_size as u64)
-                    .ok_or(MuxError::Overflow)
-            })?;
+            .map(|track| track.payload_end)
+            .max()
+            .ok_or(MuxError::EmptySamples)?;
         let mdat_box_size_value = BoxHeader::MIN_SIZE as u64 + mdat_payload_size;
         let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u32::MAX as u64 {
             (
@@ -335,22 +343,22 @@ impl Fmp4SegmentMuxer {
 
         // 各トラックのサンプルデータの data_offset (moof 先頭からの相対値) を計算する
         let mut track_data_offsets = vec![0i32; next_tracks.len()];
-        let mut accumulated_data_size = moof_size + mdat_header_size;
+        let data_offset_base = u64::try_from(moof_size + mdat_header_size).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data(
+                "data_offset base overflow: moof + mdat header exceeds u64 max",
+            ))
+        })?;
 
         for resolved_track in &resolved_tracks {
-            track_data_offsets[resolved_track.track_index] = i32::try_from(accumulated_data_size)
+            let track_data_offset = data_offset_base
+                .checked_add(resolved_track.first_data_offset)
+                .ok_or(MuxError::Overflow)?;
+            track_data_offsets[resolved_track.track_index] = i32::try_from(track_data_offset)
                 .map_err(|_| {
-                MuxError::EncodeError(Error::invalid_data(
-                    "data_offset overflow: moof + mdat header exceeds i32 max",
-                ))
-            })?;
-            let track_data_size: usize = resolved_track
-                .samples
-                .iter()
-                .try_fold(0usize, |acc, sample| {
-                    acc.checked_add(sample.data_size).ok_or(MuxError::Overflow)
+                    MuxError::EncodeError(Error::invalid_data(
+                        "data_offset overflow: moof + mdat header exceeds i32 max",
+                    ))
                 })?;
-            accumulated_data_size += track_data_size;
         }
 
         // 正しい data_offset で moof を構築する
@@ -392,11 +400,12 @@ impl Fmp4SegmentMuxer {
         self.media_bytes_written = self
             .media_bytes_written
             .checked_add(segment.len() as u64)
+            .and_then(|written| written.checked_add(mdat_payload_size))
             .ok_or(MuxError::Overflow)?;
         self.sequence_number = sequence_number;
         self.tracks = next_tracks;
         self.tfra_entries = next_tfra_entries;
-        Ok(segment)
+        Ok((segment, mdat_payload_size))
     }
 
     /// ランダムアクセスインデックス（`mfra`）のバイト列を生成する
@@ -810,6 +819,8 @@ fn resolve_segment_tracks(
         let mut resolved_samples = Vec::new();
         let mut total_duration = 0u64;
         let mut expected_next_data_offset: Option<u64> = None;
+        let mut first_data_offset = None;
+        let mut payload_end = 0u64;
 
         for sample in track_samples {
             if sample.timescale != track.timescale {
@@ -848,6 +859,9 @@ fn resolve_segment_tracks(
             total_duration = total_duration
                 .checked_add(sample.duration as u64)
                 .ok_or(MuxError::Overflow)?;
+            if first_data_offset.is_none() {
+                first_data_offset = Some(sample.data_offset);
+            }
             if let Some(expected_offset) = expected_next_data_offset
                 && expected_offset != sample.data_offset
             {
@@ -861,6 +875,7 @@ fn resolve_segment_tracks(
                     .checked_add(sample.data_size as u64)
                     .ok_or(MuxError::Overflow)?,
             );
+            payload_end = expected_next_data_offset.expect("offset must be set");
 
             resolved_samples.push(ResolvedSegmentSample {
                 duration: sample.duration,
@@ -889,7 +904,20 @@ fn resolve_segment_tracks(
             samples: resolved_samples,
             total_duration,
             sample_description_index,
+            first_data_offset: first_data_offset.expect("track must contain at least one sample"),
+            payload_end,
         });
+    }
+
+    resolved_tracks.sort_by_key(|track| track.first_data_offset);
+    let mut expected_track_offset = 0u64;
+    for track in &resolved_tracks {
+        if track.first_data_offset != expected_track_offset {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "track payload ranges must be contiguous and ordered by data_offset",
+            )));
+        }
+        expected_track_offset = track.payload_end;
     }
 
     Ok(resolved_tracks)

@@ -80,6 +80,12 @@ fn fmt_json_mp4_demux_sample(
         // タイムスタンプと尺
         f.member("timestamp", sample.timestamp)?;
         f.member("duration", sample.duration)?;
+        let cto: Option<i64> = if sample.has_composition_time_offset {
+            Some(sample.composition_time_offset)
+        } else {
+            None
+        };
+        f.member("composition_time_offset", cto)?;
 
         // データの位置とサイズ
         f.member("data_offset", sample.data_offset)?;

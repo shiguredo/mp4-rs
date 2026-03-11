@@ -9,6 +9,68 @@
 - FIX
   - バグ修正
 
+## feature/fmp4-mux-demux
+
+- [ADD] fMP4 のマルチプレックス機能 (`Fmp4SegmentMuxer`) を追加する
+  - 複数のメディアトラックからのサンプルを初期化セグメントとメディアセグメントに分けて生成する
+  - `sidx` ボックス付きメディアセグメントの生成に対応する
+  - moof サイズ計算には 2 パスエンコード方式を採用し、手動でのサイズ同期を不要にする
+  - @voluntas
+- [ADD] fMP4 のデマルチプレックス機能 (`Fmp4SegmentDemuxer`) を追加する
+  - 初期化セグメントとメディアセグメントを逐次処理してサンプルを取り出す
+  - `default_base_is_moof=false` の traf に対応する
+  - @voluntas
+- [ADD] fMP4 のファイルベースデマルチプレックス機能 (`Fmp4FileDemuxer`) を追加する
+  - `required_input()` / `handle_input()` ベースで完全な fMP4 ファイルを段階的に読み進める
+  - 返り値のサンプル型には既存の `Sample` を再利用する
+  - `tfhd` に絶対オフセット形式の `base_data_offset` が含まれる場合はエラーを返す
+  - @voluntas
+- [ADD] MP4 / fMP4 のファイル種別判定機能 (`Mp4FileKindDetector`) を追加する
+  - `required_input()` / `handle_input()` ベースで巨大ファイルや non-faststart なファイルも段階的に判定できる
+  - `moov` 内の `mvex` の有無に基づいて `Mp4` / `FragmentedMp4` を判定する
+  - @voluntas
+- [ADD] `Fmp4SegmentMuxer::mfra_bytes()` を追加する
+  - `mfra` (Movie Fragment Random Access) ボックスのバイト列を生成する
+  - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
+  - ファイル末尾に付加することでランダムアクセスに対応できる
+  - @voluntas
+- [ADD] `SegmentSample` に `composition_time_offset: Option<i32>` フィールドを追加する
+  - `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される
+  - C API の `Fmp4SegmentDemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
+  - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
+  - @voluntas
+- [ADD] `Mp4FileDemuxer` で `ctts` ボックスをサポートする
+  - `SampleAccessor::composition_time_offset()` メソッドを追加する
+  - `Sample` 構造体に `composition_time_offset: Option<i64>` フィールドを追加する
+  - `ctts` を含むトラック（H.265 など B フレームを持つコーデック）も正常にデマルチプレックスできるようになる
+  - @voluntas
+- [ADD] fMP4 の C API を追加する
+  - `fmp4_segment_muxer_*` 関数群で fMP4 のマルチプレックスが可能になる
+  - `fmp4_segment_demuxer_*` 関数群で fMP4 のデマルチプレックスが可能になる
+  - @voluntas
+- [ADD] fMP4 の WASM API を追加する
+  - C API と同等の機能を wasm32-unknown-unknown ターゲットで利用可能にする
+  - JSON ベースのトラック設定とサンプル情報のやりとりに対応する
+  - @voluntas
+- [CHANGE] `demux` モジュールを facade 化する
+  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の公開導線を `demux` に集約する
+  - `demux_fmp4_file` / `demux_fmp4_segment` / `demux_mp4_file` は内部実装モジュールとして扱う
+  - @voluntas
+- [CHANGE] `mux` モジュールを facade 化する
+  - `Mp4FileMuxer` と `Fmp4SegmentMuxer` の公開導線を `mux` に集約する
+  - `mux_fmp4_segment` と `mux_mp4_file` は内部実装モジュールとして扱う
+  - @voluntas
+
+### misc
+
+- [ADD] examples/fmp4.rs を追加する
+  - @voluntas
+- [ADD] pbt/ 以下に fMP4 の PBT テストを追加する
+  - @voluntas
+- [ADD] fuzz/ 以下に fMP4 のファジングターゲットを追加する
+  - `fuzz_fmp4_segment_demux` と `fuzz_fmp4_file_demux` を追加する
+  - @voluntas
+
 ## develop
 
 - [UPDATE] マルチプレックス・デマルチプレックス関連の構造体やエラー型に `Clone` トレイトを実装する
@@ -72,7 +134,6 @@
 - [ADD] B フレーム関連 box (`ctts` / `cslg` / `sdtp`) の構造体対応を追加する
   - `StblBox` で `ctts` / `cslg` / `sdtp` を decode / encode できるようにする
   - `UnknownBox` 扱いだった `ctts` / `cslg` / `sdtp` を通常 box として扱うようにする
-  - `Mp4FileDemuxer` は現時点では `ctts` を unsupported として扱い、`ctts` を含むトラックをデマルチプレックスしようとするとエラーを返す
   - @sile
 - [CHANGE] C API の `mp4_file_muxer_set_reserved_moov_box_size()` の `size` 引数の型を `u64` から `u32` に変更する
   - 理由:

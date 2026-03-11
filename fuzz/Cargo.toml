@@ -458,3 +458,17 @@ path = "fuzz_targets/fuzz_trex_box.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_fmp4_segment_demux"
+path = "fuzz_targets/fuzz_fmp4_segment_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fmp4_file_demux"
+path = "fuzz_targets/fuzz_fmp4_file_demux.rs"
+test = false
+doc = false
+bench = false

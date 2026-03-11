@@ -350,206 +350,168 @@ proptest! {
 mod boundary_tests {
     use super::*;
 
-    /// 空データでパニックしない
-    #[test]
-    fn empty_data_no_panic() {
-        let result = demux_with_loop_detection(&[], 100);
-        assert!(result.is_ok());
-    }
-
-    /// 最小サイズのデータでパニックしない
-    #[test]
-    fn minimal_data_no_panic() {
-        let result = demux_with_loop_detection(&[0; 8], 100);
-        assert!(result.is_ok());
-    }
-
-    /// ftyp だけのデータ
-    #[test]
-    fn ftyp_only_no_infinite_loop() {
-        // ftyp ボックスのみ（moov がない）
-        let ftyp_only = &TEST_MP4_H264[..32.min(TEST_MP4_H264.len())];
-        let result = demux_with_loop_detection(ftyp_only, 100);
-        assert!(result.is_ok());
-    }
-
-    /// 全バイト 0xFF
-    #[test]
-    fn all_ff_no_infinite_loop() {
-        let data = vec![0xFF; 256];
-        let result = demux_with_loop_detection(&data, 100);
-        assert!(result.is_ok());
-    }
-
-    /// 全バイト 0x00
-    #[test]
-    fn all_zero_no_infinite_loop() {
-        let data = vec![0x00; 256];
-        let result = demux_with_loop_detection(&data, 100);
-        assert!(result.is_ok());
+    proptest! {
+        #[test]
+        fn fixed_boundary_inputs_no_infinite_loop(case in prop::sample::select(vec![
+            Vec::new(),
+            vec![0; 8],
+            TEST_MP4_H264[..32.min(TEST_MP4_H264.len())].to_vec(),
+            vec![0xFF; 256],
+            vec![0x00; 256],
+        ])) {
+            let result = demux_with_loop_detection(&case, 100);
+            prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        }
     }
 }
 
 // ===== RequiredInput のテスト =====
 
 mod required_input_tests {
+    use proptest::prelude::*;
     use shiguredo_mp4::demux::{Input, RequiredInput};
 
-    /// 要求が完全に満たされる場合
-    #[test]
-    fn is_satisfied_by_exact_match() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(50),
+    fn reference_is_satisfied_by(
+        required: RequiredInput,
+        input_position: u64,
+        input_len: usize,
+    ) -> bool {
+        let Some(offset) = required.position.checked_sub(input_position) else {
+            return false;
         };
-        let input = Input {
-            position: 100,
-            data: &[0u8; 50],
+
+        if offset > input_len as u64 {
+            return false;
+        }
+
+        let Some(required_size) = required.size else {
+            return true;
         };
-        assert!(required.is_satisfied_by(input));
+
+        let Some(end) = offset.checked_add(required_size as u64) else {
+            return false;
+        };
+
+        end <= input_len as u64
     }
 
-    /// 入力データが要求より大きい場合
-    #[test]
-    fn is_satisfied_by_larger_input() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(50),
-        };
-        let input = Input {
-            position: 50,
-            data: &[0u8; 200],
-        };
-        assert!(required.is_satisfied_by(input));
-    }
+    proptest! {
+        #[test]
+        fn is_satisfied_by_matches_reference_implementation(
+            required_position in any::<u64>(),
+            required_size in prop::option::of(0usize..2048),
+            input_position in any::<u64>(),
+            input_len in 0usize..2048,
+        ) {
+            let data = vec![0u8; input_len];
+            let required = RequiredInput {
+                position: required_position,
+                size: required_size,
+            };
+            let input = Input {
+                position: input_position,
+                data: &data,
+            };
 
-    /// 入力データの開始位置が要求位置より後ろの場合 (false)
-    #[test]
-    fn is_satisfied_by_input_starts_after_required() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(50),
-        };
-        let input = Input {
-            position: 150,
-            data: &[0u8; 100],
-        };
-        assert!(!required.is_satisfied_by(input));
-    }
+            prop_assert_eq!(
+                required.is_satisfied_by(input),
+                reference_is_satisfied_by(required, input_position, input_len),
+            );
+        }
 
-    /// 入力データの終端位置が要求位置より前の場合 (false)
-    #[test]
-    fn is_satisfied_by_input_ends_before_required() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(50),
-        };
-        let input = Input {
-            position: 0,
-            data: &[0u8; 50], // 終端位置は 50、要求位置 100 より前
-        };
-        assert!(!required.is_satisfied_by(input));
-    }
+        #[test]
+        fn to_input_sets_position_and_data(
+            position in any::<u64>(),
+            size in prop::option::of(0usize..2048),
+            data in prop::collection::vec(any::<u8>(), 0..2048),
+        ) {
+            let required = RequiredInput { position, size };
+            let input = required.to_input(&data);
 
-    /// 要求サイズがない場合 (size: None)
-    #[test]
-    fn is_satisfied_by_no_size_requirement() {
-        let required = RequiredInput {
-            position: 100,
-            size: None,
-        };
-        let input = Input {
-            position: 50,
-            data: &[0u8; 100], // 位置 50 から 100 バイト、終端 150
-        };
-        assert!(required.is_satisfied_by(input));
-    }
-
-    /// 要求の終端が入力データの終端を超える場合 (false)
-    #[test]
-    fn is_satisfied_by_required_end_exceeds_input() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(100),
-        };
-        let input = Input {
-            position: 100,
-            data: &[0u8; 50], // 50 バイトしかない
-        };
-        assert!(!required.is_satisfied_by(input));
-    }
-
-    /// to_input() のテスト
-    #[test]
-    fn to_input_creates_correct_input() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(50),
-        };
-        let data = [1u8, 2, 3, 4, 5];
-        let input = required.to_input(&data);
-
-        assert_eq!(input.position, 100);
-        assert_eq!(input.data, &data);
-    }
-
-    /// 境界値: position が 0 の場合
-    #[test]
-    fn is_satisfied_by_position_zero() {
-        let required = RequiredInput {
-            position: 0,
-            size: Some(10),
-        };
-        let input = Input {
-            position: 0,
-            data: &[0u8; 10],
-        };
-        assert!(required.is_satisfied_by(input));
-    }
-
-    /// 境界値: offset が入力データの長さちょうどの場合
-    #[test]
-    fn is_satisfied_by_offset_equals_data_len() {
-        let required = RequiredInput {
-            position: 100,
-            size: Some(10),
-        };
-        let input = Input {
-            position: 0,
-            data: &[0u8; 100], // offset = 100, data.len() = 100
-        };
-        // offset > data.len() ではなく offset == data.len() なので、
-        // size が 10 で end が 110 になり、110 > 100 なので false
-        assert!(!required.is_satisfied_by(input));
+            prop_assert_eq!(input.position, position);
+            prop_assert_eq!(input.data, data.as_slice());
+        }
     }
 }
 
 // ===== DemuxError のテスト =====
 
 mod demux_error_tests {
+    use proptest::prelude::*;
     use shiguredo_mp4::{
         aux::SampleTableAccessorError,
         demux::{DemuxError, RequiredInput},
     };
 
-    /// DemuxError::SampleTableError の From 実装
-    #[test]
-    fn demux_error_from_sample_table_error() {
-        let error = SampleTableAccessorError::ChunksExistButNoSamples { chunk_count: 5 };
-        let demux_error: DemuxError = error.into();
-        let debug_str = format!("{:?}", demux_error);
-        assert!(debug_str.contains("5"));
-    }
+    proptest! {
+        #[test]
+        fn demux_error_from_sample_table_error(chunk_count in any::<u32>()) {
+            let error = SampleTableAccessorError::ChunksExistButNoSamples { chunk_count };
+            let demux_error: DemuxError = error.into();
+            let debug_str = format!("{:?}", demux_error);
 
-    /// DemuxError::InputRequired
-    #[test]
-    fn demux_error_input_required() {
-        let required = RequiredInput {
-            position: 1000,
-            size: Some(500),
-        };
-        let demux_error = DemuxError::InputRequired(required);
-        let debug_str = format!("{:?}", demux_error);
-        assert!(debug_str.contains("1000"));
+            prop_assert!(debug_str.contains(&chunk_count.to_string()));
+        }
+
+        #[test]
+        fn demux_error_input_required(
+            position in any::<u64>(),
+            size in prop::option::of(0usize..2048),
+        ) {
+            let required = RequiredInput { position, size };
+            let demux_error = DemuxError::InputRequired(required);
+            let debug_str = format!("{:?}", demux_error);
+
+            prop_assert!(debug_str.contains(&position.to_string()));
+        }
+    }
+}
+
+mod handle_input_validation_tests {
+    use proptest::prelude::*;
+    use shiguredo_mp4::demux::{DemuxError, Input, Mp4FileDemuxer};
+
+    const TEST_MP4_AAC_FILE: &[u8] = include_bytes!("../../tests/testdata/beep-aac-audio.mp4");
+
+    proptest! {
+        #[test]
+        fn wrong_position_input_is_rejected(
+            wrong_position in 1u64..2048,
+        ) {
+            let mut demuxer = Mp4FileDemuxer::new();
+            let start = usize::try_from(wrong_position)
+                .ok()
+                .map(|position| position.min(TEST_MP4_AAC_FILE.len()))
+                .expect("usize conversion must succeed on supported targets");
+            let input = Input {
+                position: wrong_position,
+                data: &TEST_MP4_AAC_FILE[start..],
+            };
+
+            demuxer.handle_input(input);
+
+            prop_assert!(matches!(
+                demuxer.tracks(),
+                Err(DemuxError::DecodeError(_))
+            ));
+        }
+
+        #[test]
+        fn insufficient_initial_input_is_rejected(
+            input_len in 0usize..8,
+        ) {
+            let mut demuxer = Mp4FileDemuxer::new();
+            let input = Input {
+                position: 0,
+                data: &TEST_MP4_AAC_FILE[..input_len],
+            };
+
+            demuxer.handle_input(input);
+
+            prop_assert!(matches!(
+                demuxer.tracks(),
+                Err(DemuxError::DecodeError(_))
+            ));
+        }
     }
 }

@@ -20,7 +20,10 @@ pub struct Mp4DemuxTrackInfo {
 
     /// トラックの尺（タイムスケール単位で表現）
     ///
-    /// 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること
+    /// 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること。
+    ///
+    /// fMP4 の場合は init segment 由来の値であり、実際には 0 になることが多い。
+    /// その場合は「未確定ないし実質不明相当」とみなしてよい。
     pub duration: u64,
 
     /// このトラック内で使用されているタイムスケール
@@ -46,20 +49,20 @@ impl From<shiguredo_mp4::demux::TrackInfo> for Mp4DemuxTrackInfo {
 /// MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）のメタデータと
 /// ファイル内の位置情報を保持する
 ///
-/// この構造体が参照しているポインタのメモリ管理が `Mp4FileDemuxer` が行っており、
-/// `Mp4FileDemuxer` インスタンスが破棄されるまでは安全に参照可能である
+/// この構造体が参照しているポインタのメモリ管理は各 demuxer が行っており、
+/// 対応する demuxer インスタンスが破棄されるまでは安全に参照可能である
 #[repr(C)]
 pub struct Mp4DemuxSample {
     /// サンプルが属するトラックの情報へのポインタ
     ///
-    /// このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+    /// このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
     pub track: *const Mp4DemuxTrackInfo,
 
     /// サンプルの詳細情報（コーデック設定など）へのポインタ
     ///
     /// 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
     ///
-    /// このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+    /// このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
     pub sample_entry: *const Mp4SampleEntry,
 
     /// このサンプルがキーフレームであるかの判定
@@ -81,10 +84,24 @@ pub struct Mp4DemuxSample {
     /// `timescale` で除算すること
     pub duration: u32,
 
+    /// コンポジション時間オフセットが存在するかどうか
+    pub has_composition_time_offset: bool,
+
+    /// コンポジション時間オフセット（タイムスケール単位）
+    ///
+    /// `has_composition_time_offset` が true の場合のみ有効。
+    /// PTS = timestamp + composition_time_offset で計算できる。
+    ///
+    /// 通常 MP4 の `ctts` と fMP4 の `trun` の両方を共通の sample 型で扱うため、
+    /// `i64` で公開している。
+    /// 仕様上すべての入力が 64 bit 必須という意味ではない。
+    pub composition_time_offset: i64,
+
     /// ファイル内におけるサンプルデータの開始位置（バイト単位）
     ///
-    /// 実際のサンプルデータへアクセスするには、この位置から `data_size` 分のバイト列を
-    /// 入力ファイルから読み込む必要がある
+    /// file demuxer ではファイル先頭からの絶対位置、
+    /// segment demuxer では `fmp4_segment_demuxer_handle_media_segment()` に渡した
+    /// 入力バッファ先頭からの相対位置を表す。
     pub data_offset: u64,
 
     /// サンプルデータのサイズ（バイト単位）
@@ -107,6 +124,8 @@ impl Mp4DemuxSample {
             keyframe: sample.keyframe,
             timestamp: sample.timestamp,
             duration: sample.duration,
+            has_composition_time_offset: sample.composition_time_offset.is_some(),
+            composition_time_offset: sample.composition_time_offset.unwrap_or(0),
             data_offset: sample.data_offset,
             data_size: sample.data_size,
         }

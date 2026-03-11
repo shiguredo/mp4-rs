@@ -978,6 +978,10 @@ typedef struct Fmp4SegmentSample {
    * `fmp4_segment_muxer_write_media_segment()` の返り値には payload 自体は含まれない。
    * 呼び出し側は返された `moof + mdat header` の直後に、
    * ここで指定した位置関係になるよう payload を配置する必要がある。
+   *
+   * 同じトラックに属するサンプル群は、`data_offset` の昇順で
+   * 隙間なく連続した 1 区間に配置されている必要がある。
+   * 複数トラックを含む場合は、トラックごとの区間同士も隙間なく並んでいる必要がある。
    */
   uint64_t data_offset;
   /**
@@ -1648,6 +1652,8 @@ enum Mp4Error fmp4_segment_muxer_write_init_segment(struct Fmp4SegmentMuxer *mux
  * 返り値には `mdat` payload 自体は含まれない。
  * 呼び出し側は、この関数が返したバイト列の直後に
  * `Fmp4SegmentSample.data_offset` / `data_size` が示す payload を自前で配置すること。
+ * その際、各トラックの payload はトラック単位で連続した 1 区間にまとめ、
+ * トラック区間同士も `data_offset` 順に隙間なく並べる必要がある。
  *
  * # 引数
  *
@@ -1674,6 +1680,7 @@ enum Mp4Error fmp4_segment_muxer_write_media_segment(struct Fmp4SegmentMuxer *mu
  *
  * `fmp4_segment_muxer_write_media_segment()` と同じだが、先頭に `sidx` ボックスが付加される。
  * 返り値は `sidx + moof + mdat` ヘッダーであり、payload は含まれない。
+ * payload 配置に関する制約も `fmp4_segment_muxer_write_media_segment()` と同じである。
  *
  * # 引数
  *

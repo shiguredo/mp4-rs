@@ -463,6 +463,6 @@ pub unsafe extern "C" fn fmp4_bytes_free(data: *mut u8, size: u32) {
     if data.is_null() {
         return;
     }
-    // into_boxed_slice して forget したのと同じ方法で解放する
-    let _ = unsafe { Vec::from_raw_parts(data, size as usize, size as usize) };
+    let slice = unsafe { std::slice::from_raw_parts_mut(data, size as usize) };
+    let _ = unsafe { Box::from_raw(slice) };
 }

@@ -416,6 +416,50 @@ proptest! {
         }
     }
 
+    /// 負の composition_time_offset を含む場合、ctts version 1 の表現範囲を超える正値はエラーになる
+    #[test]
+    fn mux_video_composition_time_offset_out_of_i32_range_for_ctts_v1(
+        width in 16u16..1920,
+        height in 16u16..1080,
+        duration_a in 1u32..3001,
+        duration_b in 1u32..3001,
+        too_large_positive_cto in (i32::MAX as i64 + 1)..=(u32::MAX as i64),
+    ) {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_data_offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::new(90_000).expect("non-zero");
+        let sample_entry = create_avc1_sample_entry(width, height);
+
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: Some(sample_entry.clone()),
+                keyframe: true,
+                timescale,
+                duration: duration_a,
+                composition_time_offset: Some(-1),
+                data_offset: initial_data_offset,
+                data_size: 128,
+            })
+            .expect("failed to append sample");
+
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: None,
+                keyframe: false,
+                timescale,
+                duration: duration_b,
+                composition_time_offset: Some(too_large_positive_cto),
+                data_offset: initial_data_offset + 128,
+                data_size: 128,
+            })
+            .expect("failed to append sample");
+
+        let result = muxer.finalize();
+        prop_assert!(result.is_err());
+    }
+
     /// ビデオ + オーディオの Mux → Demux roundtrip
     #[test]
     fn mux_demux_video_audio_roundtrip(

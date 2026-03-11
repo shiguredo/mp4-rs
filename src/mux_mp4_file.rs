@@ -1066,7 +1066,12 @@ fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {
                 "composition_time_offset must be greater than or equal to i32::MIN",
             )));
         }
-        if offset > i64::from(u32::MAX) {
+        if version == 1 && offset > i64::from(i32::MAX) {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "composition_time_offset exceeds i32::MAX (ctts version 1 requires i32 range)",
+            )));
+        }
+        if version == 0 && offset > i64::from(u32::MAX) {
             return Err(MuxError::EncodeError(Error::invalid_input(
                 "composition_time_offset must be less than or equal to u32::MAX",
             )));

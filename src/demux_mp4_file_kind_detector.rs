@@ -153,9 +153,9 @@ impl Mp4FileKindDetector {
     /// 判定結果を返す
     ///
     /// まだ `moov` まで到達していない場合は `Ok(None)` を返す。
-    pub fn file_kind(&mut self) -> Result<Option<Mp4FileKind>, DemuxError> {
-        if let Some(e) = self.handle_input_error.take() {
-            return Err(e);
+    pub fn file_kind(&self) -> Result<Option<Mp4FileKind>, DemuxError> {
+        if let Some(e) = &self.handle_input_error {
+            return Err(e.clone());
         }
 
         let kind = match self.phase {

@@ -84,6 +84,11 @@ pub unsafe extern "C" fn mp4_file_kind_detector_get_required_input(
         return Mp4Error::MP4_ERROR_NULL_POINTER;
     }
 
+    if let Err(e) = detector.inner.file_kind() {
+        detector.set_last_error(&format!("[mp4_file_kind_detector_get_required_input] {e}"));
+        return e.into();
+    }
+
     unsafe {
         if let Some(required) = detector.inner.required_input() {
             *out_required_input_position = required.position;
@@ -129,7 +134,13 @@ pub unsafe extern "C" fn mp4_file_kind_detector_handle_input(
     };
 
     detector.inner.handle_input(input);
-    Mp4Error::MP4_ERROR_OK
+    match detector.inner.file_kind() {
+        Ok(_) => Mp4Error::MP4_ERROR_OK,
+        Err(e) => {
+            detector.set_last_error(&format!("[mp4_file_kind_detector_handle_input] {e}"));
+            e.into()
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

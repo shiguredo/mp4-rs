@@ -447,9 +447,15 @@ impl Fmp4SegmentMuxer {
     /// `mfra` ボックスはファイルの末尾に付加することで、
     /// ランダムアクセスを高速化するために利用される。
     ///
-    /// [`init_segment_bytes()`](Self::init_segment_bytes) と
-    /// [`create_media_segment()`](Self::create_media_segment) を呼び出した後でないと
-    /// 正しいオフセット情報が得られないことに注意。
+    /// `mfra` 内の `tfra.moof_offset` は、
+    /// このメソッドを呼んだ時点での [`init_segment_bytes()`](Self::init_segment_bytes)
+    /// のサイズを先頭オフセットとして計算される。
+    ///
+    /// したがって、`mfra` を実際に付加するファイルでは、
+    /// このメソッドで前提にした init segment を先頭に配置する必要がある。
+    /// 途中で観測済みトラックや sample entry が増えた場合は init segment の内容とサイズも
+    /// 変わり得るため、最終的に先頭へ配置する init segment を確定させた後で
+    /// `mfra_bytes()` を呼ぶこと。
     pub fn mfra_bytes(&self) -> Result<Vec<u8>, MuxError> {
         let init_segment_size =
             u64::try_from(self.init_segment_bytes()?.len()).expect("init segment size exceeds u64");

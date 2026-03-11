@@ -249,6 +249,12 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_with_sidx(
 /// `fmp4_segment_muxer_write_media_segment()` ないし
 /// `fmp4_segment_muxer_write_media_segment_with_sidx()` を呼び出した後に使うこと。
 ///
+/// `tfra.moof_offset` は、この関数を呼んだ時点での init segment サイズを基準に計算される。
+/// したがって、実際に `mfra` を付加するファイルでは、
+/// この関数と同じ時点の init segment を先頭に配置する必要がある。
+/// 途中で観測済みトラックや sample entry が増えて init segment が変わり得る場合は、
+/// 最終的に先頭へ配置する init segment を確定させた後でこの関数を呼ぶこと。
+///
 /// # 引数
 ///
 /// - `muxer`: インスタンスへのポインタ

@@ -136,7 +136,7 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
         })
         .collect();
     let media_segment_metadata = muxer
-        .create_media_segment(&segment_samples)
+        .create_media_segment_metadata(&segment_samples)
         .expect("failed to build media segment");
     let mut media_segment = media_segment_metadata;
     for payload in &sample_payloads {

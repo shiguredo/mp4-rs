@@ -44,7 +44,7 @@ pub struct Fmp4SegmentSample {
 
     /// セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット
     ///
-    /// `fmp4_segment_muxer_write_media_segment()` の返り値には payload 自体は含まれない。
+    /// `fmp4_segment_muxer_write_media_segment_metadata()` の返り値には payload 自体は含まれない。
     /// 呼び出し側は返された `moof + mdat header` の直後に、
     /// ここで指定した位置関係になるよう payload を配置する必要がある。
     ///
@@ -65,8 +65,8 @@ pub struct Fmp4SegmentSample {
 /// - `fmp4_segment_muxer_free()`: リソースを解放する
 /// - `fmp4_segment_muxer_get_last_error()`: 最後のエラーメッセージを取得する
 /// - `fmp4_segment_muxer_write_init_segment()`: 初期化セグメントを生成する
-/// - `fmp4_segment_muxer_write_media_segment()`: メディアセグメントを生成する
-/// - `fmp4_segment_muxer_write_media_segment_with_sidx()`: sidx 付きメディアセグメントを生成する
+/// - `fmp4_segment_muxer_write_media_segment_metadata()`: メディアセグメント先頭メタデータを生成する
+/// - `fmp4_segment_muxer_write_media_segment_metadata_with_sidx()`: sidx 付きメディアセグメント先頭メタデータを生成する
 /// - `fmp4_segment_muxer_write_mfra()`: `mfra` ボックスを生成する
 pub struct Fmp4SegmentMuxer {
     inner: RustFmp4SegmentMuxer,
@@ -167,8 +167,8 @@ pub unsafe extern "C" fn fmp4_segment_muxer_get_last_error(
 /// 初期化セグメント（`ftyp` + `moov`）のバイト列を生成する
 ///
 /// 返される init segment には、この関数を呼んだ時点までに
-/// `fmp4_segment_muxer_write_media_segment()` ないし
-/// `fmp4_segment_muxer_write_media_segment_with_sidx()` で観測したトラック情報と
+/// `fmp4_segment_muxer_write_media_segment_metadata()` ないし
+/// `fmp4_segment_muxer_write_media_segment_metadata_with_sidx()` で観測したトラック情報と
 /// sample entry が反映される。
 ///
 /// まだどのトラックも観測されていない状態ではエラーになる。
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_init_segment(
 /// - `MP4_ERROR_OK`: 正常に生成された
 /// - その他のエラー: 生成に失敗した
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment(
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_metadata(
     muxer: *mut Fmp4SegmentMuxer,
     samples: *const Fmp4SegmentSample,
     sample_count: u32,
@@ -240,15 +240,15 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment(
 
 /// `sidx` ボックス付きのメディアセグメント先頭メタデータを生成する
 ///
-/// `fmp4_segment_muxer_write_media_segment()` と同じだが、先頭に `sidx` ボックスが付加される。
+/// `fmp4_segment_muxer_write_media_segment_metadata()` と同じだが、先頭に `sidx` ボックスが付加される。
 /// 返り値は `sidx + moof + mdat` ヘッダーであり、payload は含まれない。
-/// payload 配置に関する制約も `fmp4_segment_muxer_write_media_segment()` と同じである。
+/// payload 配置に関する制約も `fmp4_segment_muxer_write_media_segment_metadata()` と同じである。
 ///
 /// # 引数
 ///
-/// `fmp4_segment_muxer_write_media_segment()` と同じ
+/// `fmp4_segment_muxer_write_media_segment_metadata()` と同じ
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_with_sidx(
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_metadata_with_sidx(
     muxer: *mut Fmp4SegmentMuxer,
     samples: *const Fmp4SegmentSample,
     sample_count: u32,
@@ -262,8 +262,8 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_with_sidx(
 ///
 /// `mfra` はファイル末尾に付加することで、fragmented MP4 のランダムアクセスを補助する。
 /// `fmp4_segment_muxer_write_init_segment()` と
-/// `fmp4_segment_muxer_write_media_segment()` ないし
-/// `fmp4_segment_muxer_write_media_segment_with_sidx()` を呼び出した後に使うこと。
+/// `fmp4_segment_muxer_write_media_segment_metadata()` ないし
+/// `fmp4_segment_muxer_write_media_segment_metadata_with_sidx()` を呼び出した後に使うこと。
 ///
 /// `tfra.moof_offset` は、この関数を呼んだ時点での init segment サイズを基準に計算される。
 /// したがって、実際に `mfra` を付加するファイルでは、
@@ -344,15 +344,17 @@ unsafe fn write_media_segment_impl(
     };
 
     let func_name = if with_sidx {
-        "fmp4_segment_muxer_write_media_segment_with_sidx"
+        "fmp4_segment_muxer_write_media_segment_metadata_with_sidx"
     } else {
-        "fmp4_segment_muxer_write_media_segment"
+        "fmp4_segment_muxer_write_media_segment_metadata"
     };
 
     let result = if with_sidx {
-        muxer.inner.create_media_segment_with_sidx(&fmp4_samples)
+        muxer
+            .inner
+            .create_media_segment_metadata_with_sidx(&fmp4_samples)
     } else {
-        muxer.inner.create_media_segment(&fmp4_samples)
+        muxer.inner.create_media_segment_metadata(&fmp4_samples)
     };
 
     unsafe { write_bytes_result(muxer, result, func_name, out_data, out_size) }
@@ -438,7 +440,7 @@ unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, 
         .collect()
 }
 
-/// `fmp4_segment_muxer_write_init_segment()` や `fmp4_segment_muxer_write_media_segment()` で
+/// `fmp4_segment_muxer_write_init_segment()` や `fmp4_segment_muxer_write_media_segment_metadata()` で
 /// 割り当てられたバイト列を解放する
 ///
 /// # 引数

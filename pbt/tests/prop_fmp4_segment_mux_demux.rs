@@ -191,9 +191,9 @@ fn build_complete_media_segment_impl(
     }
 
     let mut segment = if with_sidx {
-        muxer.create_media_segment_with_sidx(&arranged_samples)
+        muxer.create_media_segment_metadata_with_sidx(&arranged_samples)
     } else {
-        muxer.create_media_segment(&arranged_samples)
+        muxer.create_media_segment_metadata(&arranged_samples)
     }
     .expect("failed to create media segment");
     segment.extend_from_slice(&payload_bytes);
@@ -667,7 +667,7 @@ proptest! {
     }
 
     /// 最初のサンプルに `sample_entry` がない場合は
-    /// `create_media_segment_with_sidx()` がエラーを返すことを確認する
+    /// `create_media_segment_metadata_with_sidx()` がエラーを返すことを確認する
     #[test]
     fn sidx_rejects_missing_sample_entry_on_first_sample(
         duration in 1u32..3001,
@@ -686,7 +686,7 @@ proptest! {
             data_size: data.len(),
         };
 
-        let result = muxer.create_media_segment_with_sidx(&[sample]);
+        let result = muxer.create_media_segment_metadata_with_sidx(&[sample]);
 
         match result {
             Err(shiguredo_mp4::mux::MuxError::MissingSampleEntry {
@@ -1244,7 +1244,7 @@ proptest! {
             data_size: audio_size,
         };
 
-        let result = muxer.create_media_segment(&[video_sample, audio_sample]);
+        let result = muxer.create_media_segment_metadata(&[video_sample, audio_sample]);
         prop_assert!(matches!(result, Err(shiguredo_mp4::mux::MuxError::EncodeError(_))));
     }
 }

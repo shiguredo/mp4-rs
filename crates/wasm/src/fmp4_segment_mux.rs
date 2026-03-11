@@ -8,7 +8,7 @@
 //! }
 //! ```
 //!
-//! # サンプルメタデータ JSON フォーマット (`fmp4_segment_muxer_write_media_segment_json`)
+//! # サンプルメタデータ JSON フォーマット (`fmp4_segment_muxer_write_media_segment_metadata_json`)
 //!
 //! ```json
 //! [
@@ -100,7 +100,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_from_json(
 ///
 /// 返されたポインタは `mp4_vec_free()` で解放する必要がある
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_json(
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_metadata_json(
     muxer: *mut Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
@@ -121,9 +121,9 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_json(
 ///
 /// # 引数
 ///
-/// `fmp4_segment_muxer_write_media_segment_json()` と同じ
+/// `fmp4_segment_muxer_write_media_segment_metadata_json()` と同じ
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_with_sidx_json(
+pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment_metadata_with_sidx_json(
     muxer: *mut Fmp4SegmentMuxer,
     meta_json_bytes: *const u8,
     meta_json_len: u32,
@@ -237,7 +237,7 @@ fn write_segment_impl(
 
     let result = if with_sidx {
         unsafe {
-            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment_with_sidx(
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment_metadata_with_sidx(
                 muxer,
                 c_samples.as_ptr(),
                 u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),
@@ -247,7 +247,7 @@ fn write_segment_impl(
         }
     } else {
         unsafe {
-            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment(
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_write_media_segment_metadata(
                 muxer,
                 c_samples.as_ptr(),
                 u32::try_from(c_samples.len()).expect("sample count exceeds u32::MAX"),

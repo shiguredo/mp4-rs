@@ -13,7 +13,7 @@
 //! # `Mp4FileMuxer` との主な違い
 //!
 //! fMP4 の sample entry 自体は `stsd` にしか格納できないが、
-//! [`Fmp4SegmentMuxer`] は `create_media_segment()` に渡されたサンプルから
+//! [`Fmp4SegmentMuxer`] は `create_media_segment_metadata()` に渡されたサンプルから
 //! トラック情報と sample entry を学習し、その時点までに観測した内容を反映した
 //! init segment を [`init_segment_bytes()`](Fmp4SegmentMuxer::init_segment_bytes) で返す。
 //!
@@ -46,7 +46,7 @@
 //!     data_offset: 0,
 //!     data_size: 1024,
 //! }];
-//! let segment_bytes = muxer.create_media_segment(&samples)?;
+//! let segment_bytes = muxer.create_media_segment_metadata(&samples)?;
 //!
 //! // その時点までに観測した内容を反映した init segment を取得する
 //! let init_bytes = muxer.init_segment_bytes()?;
@@ -137,7 +137,7 @@ struct ResolvedSegmentSample {
 ///
 /// 基本的な使用フロー：
 /// 1. [`new()`](Self::new) または [`with_options()`](Self::with_options) でインスタンスを作成
-/// 2. [`create_media_segment()`](Self::create_media_segment) を繰り返し呼び出してトラック情報と sample entry を蓄積しつつメディアセグメントを生成
+/// 2. [`create_media_segment_metadata()`](Self::create_media_segment_metadata) を繰り返し呼び出してトラック情報と sample entry を蓄積しつつメディアセグメントを生成
 /// 3. [`init_segment_bytes()`](Self::init_segment_bytes) で、その時点までに観測した内容を反映した初期化セグメントを取得
 /// 4. 必要に応じて [`mfra_bytes()`](Self::mfra_bytes) でランダムアクセスインデックスを取得
 #[derive(Debug, Clone)]
@@ -145,7 +145,7 @@ pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
     options: SegmentMuxerOptions,
     sequence_number: u32,
-    /// create_media_segment で書き出した media segment のバイト数累計
+    /// `create_media_segment_metadata*()` で表現した media segment のバイト数累計
     media_bytes_written: u64,
     /// トラックごとの tfra エントリ（tracks と同じインデックス）
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
@@ -171,8 +171,8 @@ impl Fmp4SegmentMuxer {
     /// 初期化セグメント（`ftyp` + `moov`）のバイト列を返す
     ///
     /// 返される `moov` には、このメソッドを呼んだ時点までに
-    /// [`create_media_segment()`](Self::create_media_segment) ないし
-    /// [`create_media_segment_with_sidx()`](Self::create_media_segment_with_sidx) で
+    /// [`create_media_segment_metadata()`](Self::create_media_segment_metadata) ないし
+    /// [`create_media_segment_metadata_with_sidx()`](Self::create_media_segment_metadata_with_sidx) で
     /// 観測したトラック情報と sample entry が反映される。
     ///
     /// まだどのトラックも観測されていない状態では `EmptyTracks` を返す。
@@ -212,21 +212,24 @@ impl Fmp4SegmentMuxer {
     ///
     /// このメソッドは、メディアセグメントを生成するだけでなく、
     /// `init_segment_bytes()` の構築に必要なトラック情報と sample entry も内部に蓄積する。
-    pub fn create_media_segment(&mut self, samples: &[Sample]) -> Result<Vec<u8>, MuxError> {
+    pub fn create_media_segment_metadata(
+        &mut self,
+        samples: &[Sample],
+    ) -> Result<Vec<u8>, MuxError> {
         let (segment, _) = self.build_media_segment_bytes(samples)?;
         Ok(segment)
     }
 
-    /// `sidx` ボックスを先頭に付加したメディアセグメントを生成する
+    /// `sidx` ボックスを先頭に付加したメディアセグメント先頭メタデータを生成する
     ///
     /// `sidx` はセグメントインデックスボックスであり、
     /// MPEG-DASH などのアダプティブストリーミングで利用される。
     ///
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
-    /// このメソッドも [`create_media_segment()`](Self::create_media_segment) と同様に、
+    /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
-    pub fn create_media_segment_with_sidx(
+    pub fn create_media_segment_metadata_with_sidx(
         &mut self,
         samples: &[Sample],
     ) -> Result<Vec<u8>, MuxError> {

@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ];
 
             let segment_metadata = muxer
-                .create_media_segment(&samples)
+                .create_media_segment_metadata(&samples)
                 .expect("メディアセグメント生成に失敗");
             let segment = build_segment(&samples, &segment_metadata, &[&video_data, &audio_data]);
 
@@ -186,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data_size: audio_data.len(),
         },
     ];
-    let sidx_metadata = muxer.create_media_segment_with_sidx(&sidx_samples)?;
+    let sidx_metadata = muxer.create_media_segment_metadata_with_sidx(&sidx_samples)?;
     let sidx_segment = build_segment(&sidx_samples, &sidx_metadata, &[&video_data, &audio_data]);
     println!("sidx 付きセグメント: {} バイト", sidx_segment.len());
 

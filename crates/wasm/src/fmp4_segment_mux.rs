@@ -200,6 +200,7 @@ fn write_segment_impl(
             keyframe: meta.keyframe,
             has_composition_time_offset: meta.composition_time_offset.is_some(),
             composition_time_offset: meta.composition_time_offset.unwrap_or(0),
+            // 実際の payload 配置順が確定した後で上書きする。
             data_offset: 0,
             data_size: u32::try_from(meta.data_size)
                 .expect("data_size exceeds u32::MAX; validated by parse_json_sample_metas"),

@@ -34,9 +34,10 @@
   - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
   - ファイル末尾に付加することでランダムアクセスに対応できる
   - @voluntas
-- [ADD] `SegmentSample` に `composition_time_offset: Option<i32>` フィールドを追加する
-  - `trun` ボックスのサンプルに `sample_composition_time_offset` が含まれる場合に設定される
-  - C API の `Fmp4SegmentDemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
+- [ADD] fMP4 segment muxer 用の `Sample` に `composition_time_offset: Option<i32>` フィールドを追加する
+  - `Fmp4SegmentMuxer` は `trun` ボックスの `sample_composition_time_offset` 生成にこの値を使う
+  - `create_media_segment()` / `create_media_segment_with_sidx()` は `mdat` payload 自体を含まず、前方のメタデータ (`moof + mdat header`) を返す
+  - C API の `Mp4DemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
   - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
   - @voluntas
 - [ADD] `Mp4FileDemuxer` で `ctts` ボックスをサポートする

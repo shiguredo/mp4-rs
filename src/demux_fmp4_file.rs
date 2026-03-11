@@ -97,8 +97,8 @@ enum Phase {
     },
     ReadMediaSegment {
         moof_offset: u64,
-        segment_size: usize,
-        next_offset: u64,
+        segment_size: Option<usize>,
+        next_offset: Option<u64>,
     },
     EndOfFile,
 }
@@ -169,7 +169,7 @@ impl Fmp4FileDemuxer {
                 ..
             } => Some(RequiredInput {
                 position: moof_offset,
-                size: Some(segment_size),
+                size: segment_size,
             }),
             Phase::EndOfFile => None,
         }
@@ -447,23 +447,22 @@ impl Fmp4FileDemuxer {
                 "expected mdat box after moof",
             )));
         }
-        let mdat_size = usize::try_from(mdat_header.box_size.get()).map_err(|_| {
-            DemuxError::DecodeError(Error::invalid_data("mdat box size exceeds usize::MAX"))
-        })?;
-        if mdat_size == 0 {
-            return Err(DemuxError::DecodeError(Error::unsupported(
-                "mdat box with size=0 is not supported in Fmp4FileDemuxer",
-            )));
-        }
-
-        let segment_size = moof_size
-            .checked_add(mdat_size)
-            .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("segment size overflow")))?;
-        let next_offset = moof_offset
-            .checked_add(segment_size as u64)
-            .ok_or_else(|| {
-                DemuxError::DecodeError(Error::invalid_data("segment offset overflow"))
+        let (segment_size, next_offset) = if mdat_header.box_size.get() == 0 {
+            (None, None)
+        } else {
+            let mdat_size = usize::try_from(mdat_header.box_size.get()).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("mdat box size exceeds usize::MAX"))
             })?;
+            let segment_size = moof_size.checked_add(mdat_size).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("segment size overflow"))
+            })?;
+            let next_offset = moof_offset
+                .checked_add(segment_size as u64)
+                .ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data("segment offset overflow"))
+                })?;
+            (Some(segment_size), Some(next_offset))
+        };
 
         self.phase = Phase::ReadMediaSegment {
             moof_offset,
@@ -483,16 +482,36 @@ impl Fmp4FileDemuxer {
             panic!("bug");
         };
 
-        let data = self.available_bytes(input, moof_offset, segment_size)?;
+        let data = match segment_size {
+            Some(segment_size) => self.available_bytes(input, moof_offset, segment_size)?,
+            None => {
+                let Some(data) = input.slice_range(moof_offset, None) else {
+                    return Err(DemuxError::InputRequired(RequiredInput {
+                        position: moof_offset,
+                        size: None,
+                    }));
+                };
+                if data.is_empty() {
+                    return Err(DemuxError::DecodeError(Error::invalid_data(
+                        "input ended before the required range was available",
+                    )));
+                }
+                data
+            }
+        };
         let pending_samples = {
             let track_infos = &self.track_infos;
-            let raw_samples = self.inner.handle_media_segment(&data[..segment_size])?;
+            let raw_samples = self.inner.handle_media_segment(data)?;
             Self::build_pending_samples(track_infos, moof_offset, raw_samples)?
         };
         self.pending_samples.extend(pending_samples);
 
-        self.phase = Phase::ReadTopLevelBoxHeader {
-            offset: next_offset,
+        self.phase = if let Some(next_offset) = next_offset {
+            Phase::ReadTopLevelBoxHeader {
+                offset: next_offset,
+            }
+        } else {
+            Phase::EndOfFile
         };
         Ok(())
     }

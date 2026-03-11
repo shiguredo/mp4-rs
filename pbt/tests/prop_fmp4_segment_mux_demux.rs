@@ -108,10 +108,11 @@ fn arb_audio_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
 fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
     while let Some(required) = demuxer.required_input() {
         let start = required.position as usize;
-        let Some(required_size) = required.size else {
-            panic!("bug: Fmp4FileDemuxer::required_input() must always return size");
+        let end = if let Some(required_size) = required.size {
+            start.saturating_add(required_size).min(file_data.len())
+        } else {
+            file_data.len()
         };
-        let end = start.saturating_add(required_size).min(file_data.len());
         let data = file_data.get(start..end).unwrap_or(&[]);
         demuxer.handle_input(Input {
             position: required.position,
@@ -182,6 +183,20 @@ fn rewrite_media_segment_tfhd_sample_description_index(
         .encode_to_vec()
         .expect("failed to encode moof while rewriting media segment");
     rewritten.extend_from_slice(&media_segment[moof_box_size..]);
+    rewritten
+}
+
+fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
+    let (_moof_box, moof_box_size) =
+        MoofBox::decode(media_segment).expect("failed to decode moof from media segment");
+    let mdat_size_offset = moof_box_size;
+    assert!(
+        media_segment.len() >= mdat_size_offset + 8,
+        "media segment must contain an mdat header after moof"
+    );
+
+    let mut rewritten = media_segment.to_vec();
+    rewritten[mdat_size_offset..mdat_size_offset + 4].copy_from_slice(&0u32.to_be_bytes());
     rewritten
 }
 
@@ -1067,6 +1082,80 @@ proptest! {
         }
 
         // 全サンプルを読み終えたら None が返ることを確認する
+        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
+        let last = demuxer.next_sample().expect("next_sample error");
+        prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);
+    }
+
+    /// `mdat size=0` の media segment を含む fMP4 ファイルでも
+    /// `Fmp4FileDemuxer` が末尾までの `mdat` として処理できることを確認する
+    #[test]
+    fn fmp4_file_demuxer_accepts_mdat_size_zero(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        samples in prop::collection::vec(arb_video_sample(0), 1..10),
+    ) {
+        let track_config = SegmentTrackConfig {
+            track_kind: TrackKind::Video,
+            timescale: std::num::NonZeroU32::new(90000).expect("non-zero"),
+            sample_entries: vec![create_avc1_sample_entry(width, height)],
+        };
+
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+
+        let segment_samples: Vec<SegmentSample> = samples
+            .iter()
+            .map(|sample| SegmentSample {
+                track_index: 0,
+                sample_entry_index: 0,
+                duration: sample.duration,
+                keyframe: sample.keyframe,
+                composition_time_offset: None,
+                data: &sample.data,
+            })
+            .collect();
+        let media_segment = muxer
+            .create_media_segment(&segment_samples)
+            .expect("failed to create media segment");
+        let media_segment = rewrite_media_segment_mdat_size_zero(&media_segment);
+
+        let mut file_data = init_bytes;
+        file_data.extend_from_slice(&media_segment);
+
+        let mut demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
+
+        let tracks = demuxer.tracks().expect("failed to get tracks");
+        prop_assert_eq!(tracks.len(), 1);
+        prop_assert_eq!(tracks[0].kind, TrackKind::Video);
+
+        let mut expected_decode_time = 0u64;
+        for (i, expected) in samples.iter().enumerate() {
+            let sample = loop {
+                match demuxer.next_sample() {
+                    Ok(Some(sample)) => break sample,
+                    Ok(None) => panic!("unexpected end of samples"),
+                    Err(DemuxError::InputRequired(_)) => {
+                        feed_fmp4_file_demuxer(&mut demuxer, &file_data);
+                    }
+                    Err(error) => panic!("next_sample error: {error}"),
+                }
+            };
+
+            prop_assert_eq!(sample.track.track_id, 1);
+            prop_assert_eq!(sample.timestamp, expected_decode_time);
+            prop_assert_eq!(sample.duration, expected.duration);
+            prop_assert_eq!(sample.keyframe, expected.keyframe);
+            prop_assert_eq!(
+                &file_data[sample.data_offset as usize..sample.data_offset as usize + sample.data_size],
+                expected.data.as_slice(),
+            );
+            prop_assert_eq!(sample.sample_entry.is_some(), i == 0);
+            expected_decode_time += expected.duration as u64;
+        }
+
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
         let last = demuxer.next_sample().expect("next_sample error");
         prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);

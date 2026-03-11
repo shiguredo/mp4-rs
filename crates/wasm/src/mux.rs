@@ -79,7 +79,7 @@ fn parse_json_mp4_mux_sample(
     let keyframe: bool = value.to_member("keyframe")?.required()?.try_into()?;
     let timescale: u32 = value.to_member("timescale")?.required()?.try_into()?;
     let duration: u32 = value.to_member("duration")?.required()?.try_into()?;
-    let composition_time_offset: Option<i32> =
+    let composition_time_offset: Option<i64> =
         if let Some(v) = value.to_member("composition_time_offset")?.get() {
             Some(v.try_into()?)
         } else {

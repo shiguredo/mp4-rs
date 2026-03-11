@@ -34,7 +34,7 @@
   - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
   - ファイル末尾に付加することでランダムアクセスに対応できる
   - @voluntas
-- [ADD] fMP4 segment muxer 用の `Sample` に `composition_time_offset: Option<i32>` フィールドを追加する
+- [ADD] `mux::Sample` に `composition_time_offset: Option<i64>` フィールドを追加する
   - `Fmp4SegmentMuxer` は `trun` ボックスの `sample_composition_time_offset` 生成にこの値を使う
   - `Mp4FileMuxer` は `ctts` ボックスの生成にこの値を使う
   - `create_media_segment_metadata()` / `create_media_segment_metadata_with_sidx()` は `mdat` payload 自体を含まず、前方のメタデータ (`moof + mdat header`) を返す

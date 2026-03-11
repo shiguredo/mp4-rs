@@ -272,7 +272,7 @@ struct SampleMeta {
     sample_entry: Option<c_api::boxes::Mp4SampleEntry>,
     duration: u32,
     keyframe: bool,
-    composition_time_offset: Option<i32>,
+    composition_time_offset: Option<i64>,
     data_size: usize,
 }
 
@@ -304,7 +304,7 @@ fn parse_json_sample_metas(
             };
             let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
             let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
-            let composition_time_offset: Option<i32> =
+            let composition_time_offset: Option<i64> =
                 if let Some(v) = item.to_member("composition_time_offset")?.get() {
                     Some(v.try_into()?)
                 } else {

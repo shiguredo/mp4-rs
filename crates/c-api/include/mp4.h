@@ -970,8 +970,12 @@ typedef struct Fmp4SegmentSample {
   bool has_composition_time_offset;
   /**
    * コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
+   *
+   * demux API と合わせて `i64` で公開している。
+   * ただし fMP4 の `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲だけであり、
+   * 範囲外の値を指定すると mux 関数はエラーを返す。
    */
-  int32_t composition_time_offset;
+  int64_t composition_time_offset;
   /**
    * セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット
    *
@@ -1084,14 +1088,6 @@ typedef struct Mp4MuxSample {
    */
   uint32_t duration;
   /**
-   * 出力ファイル内におけるサンプルデータの開始位置（バイト単位）
-   */
-  uint64_t data_offset;
-  /**
-   * サンプルデータのサイズ（バイト単位）
-   */
-  uint32_t data_size;
-  /**
    * コンポジション時間オフセットが有効かどうか
    *
    * `true` の場合、`composition_time_offset` を用いて `ctts` ボックスが生成される
@@ -1102,8 +1098,23 @@ typedef struct Mp4MuxSample {
    *
    * `has_composition_time_offset` が true の場合のみ有効。
    * 値の意味は `PTS = DTS + composition_time_offset` である。
+   *
+   * demux API と往復しやすいように `i64` で公開しているが、
+   * 実際に mux 時に受理される範囲は次の通り:
+   * - file mux: `i32::MIN ..= u32::MAX`
+   * - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+   *
+   * 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
    */
-  int32_t composition_time_offset;
+  int64_t composition_time_offset;
+  /**
+   * 出力ファイル内におけるサンプルデータの開始位置（バイト単位）
+   */
+  uint64_t data_offset;
+  /**
+   * サンプルデータのサイズ（バイト単位）
+   */
+  uint32_t data_size;
 } Mp4MuxSample;
 
 #ifdef __cplusplus

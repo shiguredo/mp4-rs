@@ -363,7 +363,7 @@ proptest! {
         width in 16u16..1920,
         height in 16u16..1080,
         durations in prop::collection::vec(1u32..3001, 1..20),
-        composition_time_offsets in prop::collection::vec(prop::option::of(-3000i32..3001), 1..20),
+        composition_time_offsets in prop::collection::vec(prop::option::of(-3000i64..3001), 1..20),
     ) {
         prop_assume!(durations.len() == composition_time_offsets.len());
 
@@ -408,7 +408,7 @@ proptest! {
                 .expect("failed to read sample")
                 .expect("missing sample");
             let normalized = if has_any_cto {
-                Some(i64::from(expected.unwrap_or(0)))
+                Some(expected.unwrap_or(0))
             } else {
                 None
             };

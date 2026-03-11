@@ -90,10 +90,10 @@ fn arb_video_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
 
 fn arb_video_sample_with_cto(
     track_index: usize,
-) -> impl Strategy<Value = (TestSample, Option<i32>)> {
+) -> impl Strategy<Value = (TestSample, Option<i64>)> {
     (
         arb_video_sample(track_index),
-        prop::option::of(-3000i32..3001),
+        prop::option::of(-3000i64..3001),
     )
 }
 
@@ -111,7 +111,7 @@ fn arb_audio_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
 fn video_segment_sample(
     sample_entry: &SampleEntry,
     sample: &TestSample,
-    composition_time_offset: Option<i32>,
+    composition_time_offset: Option<i64>,
 ) -> Sample {
     Sample {
         track_kind: TrackKind::Video,
@@ -537,7 +537,7 @@ proptest! {
 
         for ((_, expected_cto), ds) in samples_with_cto.iter().zip(demuxed.iter()) {
             let normalized = if has_any_cto {
-                Some(i64::from(expected_cto.unwrap_or(0)))
+                Some(expected_cto.unwrap_or(0))
             } else {
                 None
             };

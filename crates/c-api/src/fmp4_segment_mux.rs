@@ -40,7 +40,11 @@ pub struct Fmp4SegmentSample {
     pub has_composition_time_offset: bool,
 
     /// コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
-    pub composition_time_offset: i32,
+    ///
+    /// demux API と合わせて `i64` で公開している。
+    /// ただし fMP4 の `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲だけであり、
+    /// 範囲外の値を指定すると mux 関数はエラーを返す。
+    pub composition_time_offset: i64,
 
     /// セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット
     ///
@@ -428,11 +432,9 @@ unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, 
                 sample_entry,
                 duration: s.duration,
                 keyframe: s.keyframe,
-                composition_time_offset: if s.has_composition_time_offset {
-                    Some(s.composition_time_offset)
-                } else {
-                    None
-                },
+                composition_time_offset: s
+                    .has_composition_time_offset
+                    .then_some(s.composition_time_offset),
                 data_offset: s.data_offset,
                 data_size: s.data_size as usize,
             })

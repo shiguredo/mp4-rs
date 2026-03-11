@@ -206,6 +206,10 @@ impl Fmp4SegmentMuxer {
     /// [`crate::mux::Mp4FileMuxer::append_sample()`] で使う「ファイル全体の絶対位置」ではなく、
     /// 「今回のセグメントに属する `mdat` payload 領域の先頭からの相対位置」である。
     ///
+    /// `samples[*].composition_time_offset` は公開 API では demuxer と揃えて `i64` だが、
+    /// この muxer が `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲に限られる。
+    /// 範囲外の値を指定した場合はエラーになる。
+    ///
     /// 現実装は `1 track = 1 traf = 1 trun` を前提としている。
     /// そのため、ひとつのトラックに属する payload を複数の離れた範囲へ分割して
     /// 配置することはサポートしていない。
@@ -883,7 +887,16 @@ fn resolve_segment_tracks(
             resolved_samples.push(ResolvedSegmentSample {
                 duration: sample.duration,
                 keyframe: sample.keyframe,
-                composition_time_offset: sample.composition_time_offset,
+                composition_time_offset: sample
+                    .composition_time_offset
+                    .map(|offset| {
+                        i32::try_from(offset).map_err(|_| {
+                            MuxError::EncodeError(Error::invalid_input(
+                                "composition_time_offset for fMP4 must be within i32 range",
+                            ))
+                        })
+                    })
+                    .transpose()?,
                 data_size: sample.data_size,
             });
         }

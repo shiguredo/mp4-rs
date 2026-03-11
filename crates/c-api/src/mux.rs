@@ -102,7 +102,14 @@ pub struct Mp4MuxSample {
     ///
     /// `has_composition_time_offset` が true の場合のみ有効。
     /// 値の意味は `PTS = DTS + composition_time_offset` である。
-    pub composition_time_offset: i32,
+    ///
+    /// demux API と往復しやすいように `i64` で公開しているが、
+    /// 実際に mux 時に受理される範囲は次の通り:
+    /// - file mux: `i32::MIN ..= u32::MAX`
+    /// - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+    ///
+    /// 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
+    pub composition_time_offset: i64,
 
     /// 出力ファイル内におけるサンプルデータの開始位置（バイト単位）
     pub data_offset: u64,

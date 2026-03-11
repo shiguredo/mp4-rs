@@ -325,6 +325,60 @@ proptest! {
         }
     }
 
+    /// 同一トラック内で 2 番目以降のサンプルが `sample_entry: None` でも
+    /// 直前に観測した sample entry を継承してメディアセグメントを生成できることを確認する
+    #[test]
+    fn sample_entry_can_be_omitted_after_first_sample(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        samples in prop::collection::vec(arb_video_sample(0), 2..10),
+    ) {
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+
+        let fmp4_samples: Vec<SegmentSample> = samples
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                let mut segment_sample = video_segment_sample(&sample_entry, sample, None);
+                if index > 0 {
+                    segment_sample.sample_entry = None;
+                }
+                segment_sample
+            })
+            .collect();
+
+        let segment_bytes = muxer
+            .create_media_segment(&fmp4_samples)
+            .expect("failed to create media segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+
+        let demuxed = demuxer
+            .handle_media_segment(&segment_bytes)
+            .expect("failed to handle media segment");
+
+        prop_assert_eq!(demuxed.len(), samples.len());
+        prop_assert_eq!(demuxed[0].sample_entry, Some(&sample_entry));
+        for sample in demuxed.iter().skip(1) {
+            prop_assert!(sample.sample_entry.is_none());
+        }
+
+        for (orig, demuxed_sample) in samples.iter().zip(demuxed.iter()) {
+            prop_assert_eq!(demuxed_sample.duration, orig.duration);
+            prop_assert_eq!(demuxed_sample.keyframe, orig.keyframe);
+            prop_assert_eq!(demuxed_sample.data_size, orig.data.len());
+
+            let actual = &segment_bytes[demuxed_sample.data_offset as usize
+                ..demuxed_sample.data_offset as usize + demuxed_sample.data_size];
+            prop_assert_eq!(actual, orig.data.as_slice());
+        }
+    }
+
     /// 映像＋音声の 2 トラック roundtrip
     #[test]
     fn video_audio_roundtrip(

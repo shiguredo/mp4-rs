@@ -39,7 +39,7 @@
 //!     sample_entries: vec![sample_entry],
 //! }];
 //!
-//! let mut muxer = Fmp4SegmentMuxer::new(tracks)?;
+//! let mut muxer = Fmp4SegmentMuxer::new(&tracks)?;
 //!
 //! // 初期化セグメントを取得する
 //! let init_bytes = muxer.init_segment_bytes()?;
@@ -297,13 +297,13 @@ impl Fmp4SegmentMuxer {
     /// init segment を構築するためのトラック情報と sample entry 群をここで受け取る。
     ///
     /// `tracks` は空にできない。空の場合は [`SegmentMuxError::EmptyTracks`] が返される。
-    pub fn new(tracks: Vec<SegmentTrackConfig>) -> Result<Self, SegmentMuxError> {
+    pub fn new(tracks: &[SegmentTrackConfig]) -> Result<Self, SegmentMuxError> {
         Self::with_options(tracks, SegmentMuxerOptions::default())
     }
 
     /// オプションを指定して [`Fmp4SegmentMuxer`] インスタンスを生成する
     pub fn with_options(
-        tracks: Vec<SegmentTrackConfig>,
+        tracks: &[SegmentTrackConfig],
         options: SegmentMuxerOptions,
     ) -> Result<Self, SegmentMuxError> {
         if tracks.is_empty() {
@@ -311,7 +311,8 @@ impl Fmp4SegmentMuxer {
         }
 
         let tracks: Vec<TrackEntry> = tracks
-            .into_iter()
+            .iter()
+            .cloned()
             .enumerate()
             .map(|(i, config)| {
                 if config.sample_entries.is_empty() {

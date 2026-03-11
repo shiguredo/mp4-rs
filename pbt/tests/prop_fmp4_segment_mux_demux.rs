@@ -201,7 +201,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(width, height)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let fmp4_samples: Vec<SegmentSample> = samples
@@ -258,7 +259,8 @@ proptest! {
             sample_entries: vec![create_opus_sample_entry()],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let fmp4_samples: Vec<SegmentSample> = samples
@@ -321,7 +323,7 @@ proptest! {
             },
         ];
 
-        let mut muxer = Fmp4SegmentMuxer::new(tracks).expect("failed to create muxer");
+        let mut muxer = Fmp4SegmentMuxer::new(&tracks).expect("failed to create muxer");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut all_samples: Vec<TestSample> = Vec::new();
@@ -393,7 +395,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(320, 240)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let fmp4_samples: Vec<SegmentSample> = samples_with_cto
@@ -453,7 +456,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(320, 240)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         muxer.init_segment_bytes().expect("failed to build init segment");
 
         for segment_samples in &segments {
@@ -498,7 +502,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(width, height)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let fmp4_samples: Vec<SegmentSample> = samples
@@ -559,7 +564,7 @@ proptest! {
         };
 
         let mut muxer =
-            Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let sample = SegmentSample {
             track_index: invalid_track_index,
             sample_entry_index: 0,
@@ -601,7 +606,8 @@ proptest! {
             sample_entries: vec![original_sample_entry.clone()],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 2);
 
@@ -654,7 +660,8 @@ proptest! {
             sample_entries: vec![original_sample_entry.clone()],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry, 2);
 
@@ -708,7 +715,8 @@ proptest! {
             sample_entries: vec![original_sample_entry.clone()],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 1);
 
@@ -788,7 +796,7 @@ proptest! {
         };
 
         let mut muxer =
-            Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let first_segment_input: Vec<SegmentSample> = first_segment_samples
@@ -850,7 +858,8 @@ proptest! {
             sample_entries: vec![original_sample_entry.clone()],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 1);
 
@@ -940,7 +949,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(width1, 240)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(
             &init_bytes,
@@ -993,7 +1003,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(width, height)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         // 全セグメントをひとつのバイト列に連結して完全な fMP4 ファイルを組み立てる
@@ -1075,7 +1086,8 @@ proptest! {
             sample_entries: vec![create_avc1_sample_entry(320, 240)],
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new(vec![track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer =
+            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();

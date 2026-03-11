@@ -172,7 +172,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_new_with_options(
         }
     };
 
-    match RustFmp4SegmentMuxer::with_options(track_configs, rust_options) {
+    match RustFmp4SegmentMuxer::with_options(&track_configs, rust_options) {
         Ok(inner) => Box::into_raw(Box::new(Fmp4SegmentMuxer {
             inner,
             last_error_string: None,

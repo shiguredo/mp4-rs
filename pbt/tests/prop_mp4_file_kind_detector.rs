@@ -114,7 +114,7 @@ fn build_regular_mp4_file_data(
 }
 
 fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize]) -> Vec<u8> {
-    let mut muxer = Fmp4SegmentMuxer::new(vec![SegmentTrackConfig {
+    let mut muxer = Fmp4SegmentMuxer::new(&[SegmentTrackConfig {
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(90_000).expect("non-zero"),
         sample_entries: vec![create_avc1_sample_entry(width, height)],

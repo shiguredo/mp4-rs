@@ -111,7 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Muxer を生成して初期化セグメントを取得する
-    let mut muxer = Fmp4SegmentMuxer::new(track_configs)?;
+    let mut muxer = Fmp4SegmentMuxer::new(&track_configs)?;
     let init_segment = muxer.init_segment_bytes()?;
     println!("初期化セグメント: {} バイト", init_segment.len());
 

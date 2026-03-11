@@ -286,6 +286,8 @@ int main(int argc, char *argv[]) {
             .duration = demux_sample.duration,
             .data_offset = current_output_data_offset,
             .data_size = (uint32_t)demux_sample.data_size,
+            .has_composition_time_offset = demux_sample.has_composition_time_offset,
+            .composition_time_offset = (int32_t)demux_sample.composition_time_offset,
         };
 
         // マルチプレックサーにサンプルを追加
@@ -354,4 +356,3 @@ cleanup:
 
     return 0;
 }
-

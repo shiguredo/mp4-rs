@@ -1003,6 +1003,8 @@ typedef struct Fmp4SegmentSample {
  *     .keyframe = true,
  *     .timescale = 30,
  *     .duration = 1,  // 30 FPS
+ *     .has_composition_time_offset = false,
+ *     .composition_time_offset = 0,
  *     .data_offset = 1024,
  *     .data_size = 4096,
  * };
@@ -1014,6 +1016,8 @@ typedef struct Fmp4SegmentSample {
  *     .keyframe = true,  // 音声では通常は常に true
  *     .timescale = 1000,
  *     .duration = 20,  // 20 ms
+ *     .has_composition_time_offset = false,
+ *     .composition_time_offset = 0,
  *     .data_offset = 5120,
  *     .data_size = 256,
  * };
@@ -1087,6 +1091,19 @@ typedef struct Mp4MuxSample {
    * サンプルデータのサイズ（バイト単位）
    */
   uint32_t data_size;
+  /**
+   * コンポジション時間オフセットが有効かどうか
+   *
+   * `true` の場合、`composition_time_offset` を用いて `ctts` ボックスが生成される
+   */
+  bool has_composition_time_offset;
+  /**
+   * コンポジション時間オフセット（トラックのタイムスケール単位）
+   *
+   * `has_composition_time_offset` が true の場合のみ有効。
+   * 値の意味は `PTS = DTS + composition_time_offset` である。
+   */
+  int32_t composition_time_offset;
 } Mp4MuxSample;
 
 #ifdef __cplusplus
@@ -2153,6 +2170,8 @@ enum Mp4Error mp4_file_muxer_next_output(struct Mp4FileMuxer *muxer,
  *     .keyframe = true,
  *     .timescale = 30,
  *     .duration = 1,  // 30 FPS
+ *     .has_composition_time_offset = false,
+ *     .composition_time_offset = 0,
  *     .data_offset = output_offset,
  *     .data_size = sizeof(sample_data),
  * };

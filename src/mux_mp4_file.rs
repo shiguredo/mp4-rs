@@ -60,9 +60,9 @@ use crate::{
     BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, TrackKind,
     Utf8String,
     boxes::{
-        Brand, Co64Box, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MinfBox,
-        MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox,
-        StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
+        MdiaBox, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
+        StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
 };
 
@@ -232,12 +232,9 @@ pub struct Sample {
     /// B フレームを含む映像などで PTS と DTS がずれる場合に指定する。
     /// 値の意味は `PTS = DTS + composition_time_offset` である。
     ///
-    /// [`Mp4FileMuxer`] は現時点では `ctts` を生成しないため、この値は無視される。
-    /// 一方で [`crate::mux::Fmp4SegmentMuxer`] では `trun` の
+    /// [`Mp4FileMuxer`] では `ctts` ボックスの生成に使われる。
+    /// [`crate::mux::Fmp4SegmentMuxer`] では `trun` の
     /// `sample_composition_time_offset` の生成に使われる。
-    ///
-    /// 同じ [`crate::mux::Sample`] 型を file muxer と segment muxer で共有するため、
-    /// このフィールドは file muxer でも公開している。
     pub composition_time_offset: Option<i32>,
 
     /// ファイル内におけるサンプルデータの開始位置（バイト単位）
@@ -370,6 +367,7 @@ struct SampleMetadata {
     duration: u32,
     keyframe: bool,
     size: u32,
+    composition_time_offset: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -511,6 +509,7 @@ impl Mp4FileMuxer {
             duration: sample.duration,
             keyframe: sample.keyframe,
             size: sample.data_size as u32,
+            composition_time_offset: sample.composition_time_offset,
         };
 
         let is_new_chunk_needed = self.is_new_chunk_needed(sample);
@@ -928,6 +927,7 @@ impl Mp4FileMuxer {
                 .iter()
                 .flat_map(|c| c.samples.iter().map(|s| s.duration)),
         );
+        let ctts_box = build_ctts_box(chunks);
 
         let stsc_box = StscBox {
             entries: chunks
@@ -985,7 +985,7 @@ impl Mp4FileMuxer {
         StblBox {
             stsd_box,
             stts_box,
-            ctts_box: None,
+            ctts_box,
             cslg_box: None,
             stsc_box,
             stsz_box,
@@ -1019,6 +1019,50 @@ impl Mp4FileMuxer {
             (self.audio_track_timescale, audio_duration)
         }
     }
+}
+
+fn build_ctts_box(chunks: &[Chunk]) -> Option<CttsBox> {
+    let has_any_cto = chunks.iter().any(|chunk| {
+        chunk
+            .samples
+            .iter()
+            .any(|sample| sample.composition_time_offset.is_some())
+    });
+    if !has_any_cto {
+        return None;
+    }
+
+    let version = if chunks.iter().any(|chunk| {
+        chunk.samples.iter().any(|sample| {
+            sample
+                .composition_time_offset
+                .is_some_and(|offset| offset < 0)
+        })
+    }) {
+        1
+    } else {
+        0
+    };
+
+    let mut entries: Vec<CttsEntry> = Vec::new();
+    for offset in chunks
+        .iter()
+        .flat_map(|chunk| chunk.samples.iter())
+        .map(|sample| i64::from(sample.composition_time_offset.unwrap_or(0)))
+    {
+        if let Some(last) = entries.last_mut()
+            && last.sample_offset == offset
+        {
+            last.sample_count = last.sample_count.saturating_add(1);
+            continue;
+        }
+        entries.push(CttsEntry {
+            sample_count: 1,
+            sample_offset: offset,
+        });
+    }
+
+    Some(CttsBox { version, entries })
 }
 
 #[cfg(test)]

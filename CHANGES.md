@@ -36,8 +36,11 @@
   - @voluntas
 - [ADD] fMP4 segment muxer 用の `Sample` に `composition_time_offset: Option<i32>` フィールドを追加する
   - `Fmp4SegmentMuxer` は `trun` ボックスの `sample_composition_time_offset` 生成にこの値を使う
+  - `Mp4FileMuxer` は `ctts` ボックスの生成にこの値を使う
   - `create_media_segment_metadata()` / `create_media_segment_metadata_with_sidx()` は `mdat` payload 自体を含まず、前方のメタデータ (`moof + mdat header`) を返す
+  - C API の `Mp4MuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
   - C API の `Mp4DemuxSample` にも `has_composition_time_offset` / `composition_time_offset` フィールドを追加する
+  - WASM API の JSON 入力にも `composition_time_offset` フィールドを追加する
   - WASM API の JSON 出力にも `composition_time_offset` フィールドを追加する
   - @voluntas
 - [ADD] `Mp4FileDemuxer` で `ctts` ボックスをサポートする

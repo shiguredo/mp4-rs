@@ -900,6 +900,10 @@ fn resolve_segment_tracks<'a>(
 
         track.current_sample_entry_index = current_sample_entry_index;
         let sample_description_index = match segment_sample_entry_index {
+            // ISO 14496-12 では tfhd.sample_description_index を省略した場合、
+            // trex.default_sample_description_index が適用される。
+            // build_init_moov() では各トラックの default_sample_description_index に 1 を
+            // 設定しているため、0-based index=0 のときは tfhd 側を省略してよい。
             Some(0) => None,
             Some(index) => Some(u32::try_from(index + 1).map_err(|_| {
                 MuxError::EncodeError(Error::invalid_data(

@@ -953,6 +953,16 @@ typedef struct Fmp4SegmentTrackConfig {
 } Fmp4SegmentTrackConfig;
 
 /**
+ * fMP4 Muxer 生成時のオプションを表す C 構造体
+ */
+typedef struct Fmp4SegmentMuxerOptions {
+  /**
+   * ファイル作成時刻（UNIX エポックからの秒数）
+   */
+  uint64_t creation_timestamp_secs;
+} Fmp4SegmentMuxerOptions;
+
+/**
  * fMP4 メディアセグメントに追加するサンプルを表す C 構造体
  */
 typedef struct Fmp4SegmentSample {
@@ -1570,6 +1580,8 @@ void fmp4_segment_demuxer_free_samples(struct Mp4DemuxSample *samples,
 /**
  * 新しい `Fmp4SegmentMuxer` インスタンスを生成する
  *
+ * デフォルトオプションを使用する。
+ *
  * # 引数
  *
  * - `tracks`: トラック設定の配列へのポインタ
@@ -1583,6 +1595,26 @@ void fmp4_segment_demuxer_free_samples(struct Mp4DemuxSample *samples,
  */
 struct Fmp4SegmentMuxer *fmp4_segment_muxer_new(const struct Fmp4SegmentTrackConfig *tracks,
                                                 uint32_t track_count);
+
+/**
+ * オプションを指定して新しい `Fmp4SegmentMuxer` インスタンスを生成する
+ *
+ * # 引数
+ *
+ * - `tracks`: トラック設定の配列へのポインタ
+ * - `track_count`: トラック数
+ * - `options`: オプションへのポインタ
+ *   - NULL の場合はデフォルトオプションを使う
+ *
+ * # 戻り値
+ *
+ * 成功時はインスタンスへのポインタ、失敗時は NULL
+ *
+ * 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
+ */
+struct Fmp4SegmentMuxer *fmp4_segment_muxer_new_with_options(const struct Fmp4SegmentTrackConfig *tracks,
+                                                             uint32_t track_count,
+                                                             const struct Fmp4SegmentMuxerOptions *options);
 
 /**
  * `Fmp4SegmentMuxer` インスタンスを破棄してリソースを解放する

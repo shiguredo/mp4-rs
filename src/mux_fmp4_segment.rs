@@ -192,6 +192,23 @@ pub struct SegmentTrackConfig {
     pub sample_entries: Vec<SampleEntry>,
 }
 
+/// [`Fmp4SegmentMuxer`] 用のオプション
+#[derive(Debug, Clone)]
+pub struct SegmentMuxerOptions {
+    /// ファイル作成時刻（構築される fMP4 内のメタデータとして使われる）
+    ///
+    /// デフォルト値は UNIX エポック（1970年1月1日 00:00:00 UTC）
+    pub creation_timestamp: Duration,
+}
+
+impl Default for SegmentMuxerOptions {
+    fn default() -> Self {
+        Self {
+            creation_timestamp: Duration::ZERO,
+        }
+    }
+}
+
 /// fMP4 メディアセグメントに追加するサンプル
 #[derive(Debug, Clone)]
 pub struct SegmentSample<'a> {
@@ -258,13 +275,14 @@ struct TfraSegmentEntry {
 ///
 /// 基本的な使用フロー：
 /// 1. [`new()`](Self::new) でインスタンスを作成（トラック設定を指定）
+///    追加オプションが必要な場合は [`with_options()`](Self::with_options) を使う
 /// 2. [`init_segment_bytes()`](Self::init_segment_bytes) で初期化セグメントを取得
 /// 3. [`create_media_segment()`](Self::create_media_segment) を繰り返し呼び出してメディアセグメントを生成
 /// 4. 必要に応じて [`mfra_bytes()`](Self::mfra_bytes) でランダムアクセスインデックスを取得
 #[derive(Debug, Clone)]
 pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
-    creation_timestamp: Duration,
+    options: SegmentMuxerOptions,
     sequence_number: u32,
     /// init_segment_bytes / create_media_segment で書き出したバイト数の累計
     bytes_written: u64,
@@ -280,13 +298,13 @@ impl Fmp4SegmentMuxer {
     ///
     /// `tracks` は空にできない。空の場合は [`SegmentMuxError::EmptyTracks`] が返される。
     pub fn new(tracks: Vec<SegmentTrackConfig>) -> Result<Self, SegmentMuxError> {
-        Self::with_creation_timestamp(tracks, Duration::ZERO)
+        Self::with_options(tracks, SegmentMuxerOptions::default())
     }
 
-    /// 作成タイムスタンプを指定して [`Fmp4SegmentMuxer`] インスタンスを生成する
-    pub fn with_creation_timestamp(
+    /// オプションを指定して [`Fmp4SegmentMuxer`] インスタンスを生成する
+    pub fn with_options(
         tracks: Vec<SegmentTrackConfig>,
-        creation_timestamp: Duration,
+        options: SegmentMuxerOptions,
     ) -> Result<Self, SegmentMuxError> {
         if tracks.is_empty() {
             return Err(SegmentMuxError::EmptyTracks);
@@ -311,7 +329,7 @@ impl Fmp4SegmentMuxer {
         let track_count = tracks.len();
         Ok(Self {
             tracks,
-            creation_timestamp,
+            options,
             sequence_number: 0,
             bytes_written: 0,
             tfra_entries: vec![Vec::new(); track_count],
@@ -670,7 +688,7 @@ impl Fmp4SegmentMuxer {
     }
 
     fn build_init_moov(&self) -> Result<MoovBox, SegmentMuxError> {
-        let creation_time = Mp4FileTime::from_unix_time(self.creation_timestamp);
+        let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
 
         let trak_boxes: Result<Vec<_>, SegmentMuxError> = self
             .tracks

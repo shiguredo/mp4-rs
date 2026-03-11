@@ -1,9 +1,11 @@
 //! fMP4 マルチプレックス処理の C API を定義するモジュール
 use std::ffi::{CString, c_char};
 use std::num::NonZeroU32;
+use std::time::Duration;
 
 use shiguredo_mp4::mux::{
-    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, SegmentMuxError, SegmentSample, SegmentTrackConfig,
+    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, SegmentMuxError, SegmentMuxerOptions, SegmentSample,
+    SegmentTrackConfig,
 };
 
 use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
@@ -24,6 +26,13 @@ pub struct Fmp4SegmentTrackConfig {
 
     /// `sample_entries` の要素数
     pub sample_entry_count: u32,
+}
+
+/// fMP4 Muxer 生成時のオプションを表す C 構造体
+#[repr(C)]
+pub struct Fmp4SegmentMuxerOptions {
+    /// ファイル作成時刻（UNIX エポックからの秒数）
+    pub creation_timestamp_secs: u64,
 }
 
 /// fMP4 メディアセグメントに追加するサンプルを表す C 構造体
@@ -78,6 +87,8 @@ impl Fmp4SegmentMuxer {
 
 /// 新しい `Fmp4SegmentMuxer` インスタンスを生成する
 ///
+/// デフォルトオプションを使用する。
+///
 /// # 引数
 ///
 /// - `tracks`: トラック設定の配列へのポインタ
@@ -92,6 +103,29 @@ impl Fmp4SegmentMuxer {
 pub unsafe extern "C" fn fmp4_segment_muxer_new(
     tracks: *const Fmp4SegmentTrackConfig,
     track_count: u32,
+) -> *mut Fmp4SegmentMuxer {
+    unsafe { fmp4_segment_muxer_new_with_options(tracks, track_count, std::ptr::null()) }
+}
+
+/// オプションを指定して新しい `Fmp4SegmentMuxer` インスタンスを生成する
+///
+/// # 引数
+///
+/// - `tracks`: トラック設定の配列へのポインタ
+/// - `track_count`: トラック数
+/// - `options`: オプションへのポインタ
+///   - NULL の場合はデフォルトオプションを使う
+///
+/// # 戻り値
+///
+/// 成功時はインスタンスへのポインタ、失敗時は NULL
+///
+/// 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fmp4_segment_muxer_new_with_options(
+    tracks: *const Fmp4SegmentTrackConfig,
+    track_count: u32,
+    options: *const Fmp4SegmentMuxerOptions,
 ) -> *mut Fmp4SegmentMuxer {
     if tracks.is_null() {
         return std::ptr::null_mut();
@@ -129,7 +163,16 @@ pub unsafe extern "C" fn fmp4_segment_muxer_new(
         });
     }
 
-    match RustFmp4SegmentMuxer::new(track_configs) {
+    let rust_options = if options.is_null() {
+        SegmentMuxerOptions::default()
+    } else {
+        let options = unsafe { &*options };
+        SegmentMuxerOptions {
+            creation_timestamp: Duration::from_secs(options.creation_timestamp_secs),
+        }
+    };
+
+    match RustFmp4SegmentMuxer::with_options(track_configs, rust_options) {
         Ok(inner) => Box::into_raw(Box::new(Fmp4SegmentMuxer {
             inner,
             last_error_string: None,

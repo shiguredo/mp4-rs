@@ -239,6 +239,12 @@ pub enum MuxError {
     /// MP4 ボックスのエンコード処理中に発生したエラー
     EncodeError(Error),
 
+    /// まだトラックが観測されていない
+    EmptyTracks,
+
+    /// サンプルが指定されていない
+    EmptySamples,
+
     /// ファイルポジションの不一致
     PositionMismatch {
         /// 期待されたポジション
@@ -268,6 +274,15 @@ pub enum MuxError {
         /// 実際に提供されたタイムスケール
         actual: NonZeroU32,
     },
+
+    /// 同一セグメント内の同一トラックで複数の sample entry が混在している
+    MixedSampleEntries {
+        /// 対象トラックの種類
+        track_kind: TrackKind,
+    },
+
+    /// マルチプレックス処理中の内部カウンタがオーバーフローした
+    Overflow,
 }
 
 impl From<Error> for MuxError {
@@ -288,6 +303,8 @@ impl core::fmt::Display for MuxError {
             MuxError::EncodeError(error) => {
                 write!(f, "Failed to encode MP4 box: {error}")
             }
+            MuxError::EmptyTracks => write!(f, "No tracks have been observed yet"),
+            MuxError::EmptySamples => write!(f, "No samples in segment"),
             MuxError::PositionMismatch { expected, actual } => {
                 write!(
                     f,
@@ -313,6 +330,13 @@ impl core::fmt::Display for MuxError {
                     "Timescale mismatch for {track_kind:?} track: expected {expected}, but got {actual}",
                 )
             }
+            MuxError::MixedSampleEntries { track_kind } => {
+                write!(
+                    f,
+                    "{track_kind:?} track uses multiple sample entries within one segment"
+                )
+            }
+            MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
     }
 }

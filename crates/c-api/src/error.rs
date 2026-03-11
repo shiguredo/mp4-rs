@@ -3,7 +3,6 @@
 //! C API で細かくエラー方が分かれていると煩雑なので、ひとつに集約している
 use shiguredo_mp4::{
     Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, mux::MuxError,
-    mux::SegmentMuxError,
 };
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
@@ -75,24 +74,13 @@ impl From<MuxError> for Mp4Error {
         match e {
             MuxError::EncodeError(e) => e.into(),
             MuxError::AlreadyFinalized => Self::MP4_ERROR_INVALID_STATE,
-            MuxError::PositionMismatch { .. }
+            MuxError::Overflow => Self::MP4_ERROR_OTHER,
+            MuxError::EmptyTracks
+            | MuxError::EmptySamples
+            | MuxError::PositionMismatch { .. }
             | MuxError::MissingSampleEntry { .. }
-            | MuxError::TimescaleMismatch { .. } => Self::MP4_ERROR_INVALID_INPUT,
-            _ => Self::MP4_ERROR_OTHER,
-        }
-    }
-}
-
-impl From<SegmentMuxError> for Mp4Error {
-    fn from(e: SegmentMuxError) -> Self {
-        match e {
-            SegmentMuxError::EncodeError(e) => e.into(),
-            SegmentMuxError::EmptyTracks
-            | SegmentMuxError::EmptySamples
-            | SegmentMuxError::InvalidTrackIndex { .. }
-            | SegmentMuxError::EmptySampleEntries { .. }
-            | SegmentMuxError::InvalidSampleEntryIndex { .. }
-            | SegmentMuxError::MixedSampleEntryIndices { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            | MuxError::TimescaleMismatch { .. }
+            | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

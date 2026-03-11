@@ -13,8 +13,11 @@ use shiguredo_mp4::{
         SampleEntry, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
-    mux::{Fmp4SegmentMuxer, SegmentSample, SegmentTrackConfig},
+    mux::{Fmp4SegmentMuxer, SegmentSample},
 };
+
+const VIDEO_TIMESCALE: u32 = 90_000;
+const AUDIO_TIMESCALE: u32 = 48_000;
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
     SampleEntry::Avc1(Avc1Box {
@@ -103,6 +106,37 @@ fn arb_audio_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
             data,
         }
     })
+}
+
+fn video_segment_sample<'a>(
+    sample_entry: &SampleEntry,
+    sample: &'a TestSample,
+    composition_time_offset: Option<i32>,
+) -> SegmentSample<'a> {
+    SegmentSample {
+        track_kind: TrackKind::Video,
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("non-zero"),
+        sample_entry: Some(sample_entry.clone()),
+        duration: sample.duration,
+        keyframe: sample.keyframe,
+        composition_time_offset,
+        data: &sample.data,
+    }
+}
+
+fn audio_segment_sample<'a>(
+    sample_entry: &SampleEntry,
+    sample: &'a TestSample,
+) -> SegmentSample<'a> {
+    SegmentSample {
+        track_kind: TrackKind::Audio,
+        timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("non-zero"),
+        sample_entry: Some(sample_entry.clone()),
+        duration: sample.duration,
+        keyframe: sample.keyframe,
+        composition_time_offset: None,
+        data: &sample.data,
+    }
 }
 
 fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
@@ -210,31 +244,18 @@ proptest! {
         height in 64u16..1081,
         samples in prop::collection::vec(arb_video_sample(0), 1..10),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|s| SegmentSample {
-                track_index: s.track_index,
-                sample_entry_index: 0,
-                duration: s.duration,
-                keyframe: s.keyframe,
-                composition_time_offset: None,
-                data: &s.data,
-            })
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
 
         let segment_bytes = muxer
             .create_media_segment(&fmp4_samples)
             .expect("failed to create media segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -268,31 +289,18 @@ proptest! {
     fn audio_only_roundtrip(
         samples in prop::collection::vec(arb_audio_sample(0), 1..10),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Audio,
-            timescale: NonZeroU32::new(48000).expect("non-zero"),
-            sample_entries: vec![create_opus_sample_entry()],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_opus_sample_entry();
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|s| SegmentSample {
-                track_index: s.track_index,
-                sample_entry_index: 0,
-                duration: s.duration,
-                keyframe: s.keyframe,
-                composition_time_offset: None,
-                data: &s.data,
-            })
+            .map(|sample| audio_segment_sample(&sample_entry, sample))
             .collect();
 
         let segment_bytes = muxer
             .create_media_segment(&fmp4_samples)
             .expect("failed to create media segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -325,21 +333,9 @@ proptest! {
         video_samples in prop::collection::vec(arb_video_sample(0), 1..5),
         audio_samples in prop::collection::vec(arb_audio_sample(1), 1..5),
     ) {
-        let tracks = vec![
-            SegmentTrackConfig {
-                track_kind: TrackKind::Video,
-                timescale: NonZeroU32::new(90000).expect("non-zero"),
-                sample_entries: vec![create_avc1_sample_entry(width, height)],
-            },
-            SegmentTrackConfig {
-                track_kind: TrackKind::Audio,
-                timescale: NonZeroU32::new(48000).expect("non-zero"),
-                sample_entries: vec![create_opus_sample_entry()],
-            },
-        ];
-
-        let mut muxer = Fmp4SegmentMuxer::new(&tracks).expect("failed to create muxer");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let video_sample_entry = create_avc1_sample_entry(width, height);
+        let audio_sample_entry = create_opus_sample_entry();
+        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
 
         let mut all_samples: Vec<TestSample> = Vec::new();
         let max_len = video_samples.len().max(audio_samples.len());
@@ -354,19 +350,19 @@ proptest! {
 
         let fmp4_samples: Vec<SegmentSample> = all_samples
             .iter()
-            .map(|s| SegmentSample {
-                track_index: s.track_index,
-                sample_entry_index: 0,
-                duration: s.duration,
-                keyframe: s.keyframe,
-                composition_time_offset: None,
-                data: &s.data,
+            .map(|sample| {
+                if sample.track_index == 0 {
+                    video_segment_sample(&video_sample_entry, sample, None)
+                } else {
+                    audio_segment_sample(&audio_sample_entry, sample)
+                }
             })
             .collect();
 
         let segment_bytes = muxer
             .create_media_segment(&fmp4_samples)
             .expect("failed to create media segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -404,31 +400,18 @@ proptest! {
     fn composition_time_offset_roundtrip(
         samples_with_cto in prop::collection::vec(arb_video_sample_with_cto(0), 1..10),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(320, 240)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let fmp4_samples: Vec<SegmentSample> = samples_with_cto
             .iter()
-            .map(|(s, cto)| SegmentSample {
-                track_index: s.track_index,
-                sample_entry_index: 0,
-                duration: s.duration,
-                keyframe: s.keyframe,
-                composition_time_offset: *cto,
-                data: &s.data,
-            })
+            .map(|(sample, cto)| video_segment_sample(&sample_entry, sample, *cto))
             .collect();
 
         let segment_bytes = muxer
             .create_media_segment(&fmp4_samples)
             .expect("failed to create media segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -465,27 +448,13 @@ proptest! {
         use shiguredo_mp4::boxes::MfraBox;
         use shiguredo_mp4::Decode;
 
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(320, 240)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         for segment_samples in &segments {
             let fmp4_samples: Vec<SegmentSample> = segment_samples
                 .iter()
-                .map(|s| SegmentSample {
-                    track_index: 0,
-                    sample_entry_index: 0,
-                    duration: s.duration,
-                    keyframe: s.keyframe,
-                    composition_time_offset: None,
-                    data: &s.data,
-                })
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
                 .collect();
             muxer.create_media_segment(&fmp4_samples).expect("failed to create segment");
         }
@@ -511,32 +480,19 @@ proptest! {
         height in 64u16..1081,
         samples in prop::collection::vec(arb_video_sample(0), 1..5),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|s| SegmentSample {
-                track_index: s.track_index,
-                sample_entry_index: 0,
-                duration: s.duration,
-                keyframe: s.keyframe,
-                composition_time_offset: None,
-                data: &s.data,
-            })
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
 
         // sidx 付きセグメントを生成する
         let segment_bytes = muxer
             .create_media_segment_with_sidx(&fmp4_samples)
             .expect("failed to create sidx segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -561,28 +517,19 @@ proptest! {
         }
     }
 
-    /// `create_media_segment_with_sidx()` が範囲外の `track_index` で panic せず
-    /// `InvalidTrackIndex` を返すことを確認する
+    /// 最初のサンプルに `sample_entry` がない場合は
+    /// `create_media_segment_with_sidx()` がエラーを返すことを確認する
     #[test]
-    fn sidx_rejects_invalid_first_track_index(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        invalid_track_index in 1usize..8,
+    fn sidx_rejects_missing_sample_entry_on_first_sample(
         duration in 1u32..3001,
         keyframe in any::<bool>(),
         data in prop::collection::vec(any::<u8>(), 1..256),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
         let sample = SegmentSample {
-            track_index: invalid_track_index,
-            sample_entry_index: 0,
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("non-zero"),
+            sample_entry: None,
             duration,
             keyframe,
             composition_time_offset: None,
@@ -592,12 +539,10 @@ proptest! {
         let result = muxer.create_media_segment_with_sidx(&[sample]);
 
         match result {
-            Err(shiguredo_mp4::mux::SegmentMuxError::InvalidTrackIndex {
-                index,
-                track_count,
+            Err(shiguredo_mp4::mux::MuxError::MissingSampleEntry {
+                track_kind,
             }) => {
-                prop_assert_eq!(index, invalid_track_index);
-                prop_assert_eq!(track_count, 1);
+                prop_assert_eq!(track_kind, TrackKind::Video);
             }
             other => prop_assert!(false, "unexpected result: {other:?}"),
         }
@@ -615,26 +560,24 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![original_sample_entry.clone()],
-        };
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let bootstrap_segment = muxer
+            .create_media_segment(&[video_segment_sample(
+                &alternative_sample_entry,
+                &samples[0],
+                None,
+            )])
+            .expect("failed to create bootstrap segment");
+        prop_assert!(!bootstrap_segment.is_empty());
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 2);
 
         let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
             .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
+                sample_entry: Some(original_sample_entry.clone()),
+                ..video_segment_sample(&original_sample_entry, sample, None)
             })
             .collect();
         let media_segment = muxer
@@ -669,27 +612,27 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![original_sample_entry.clone()],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        muxer
+            .create_media_segment(&[video_segment_sample(
+                &original_sample_entry,
+                &samples[0],
+                None,
+            )])
+            .expect("failed to create bootstrap segment");
+        muxer
+            .create_media_segment(&[video_segment_sample(
+                &alternative_sample_entry,
+                &samples[0],
+                None,
+            )])
+            .expect("failed to create bootstrap segment");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry, 2);
 
         let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&original_sample_entry, sample, None))
             .collect();
         let media_segment = muxer
             .create_media_segment(&fmp4_samples)
@@ -724,38 +667,15 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![original_sample_entry.clone()],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
-        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 1);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let first_segment_input: Vec<SegmentSample> = first_segment_samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&original_sample_entry, sample, None))
             .collect();
         let second_segment_input: Vec<SegmentSample> = second_segment_samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&alternative_sample_entry, sample, None))
             .collect();
 
         let first_segment = muxer
@@ -764,8 +684,7 @@ proptest! {
         let second_segment = muxer
             .create_media_segment(&second_segment_input)
             .expect("failed to create second media segment");
-        let second_segment =
-            rewrite_media_segment_tfhd_sample_description_index(&second_segment, Some(2));
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -804,42 +723,22 @@ proptest! {
         first_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
         second_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let first_segment_input: Vec<SegmentSample> = first_segment_samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
         let second_segment_input: Vec<SegmentSample> = second_segment_samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
 
         let mut concatenated = muxer
             .create_media_segment(&first_segment_input)
             .expect("failed to create first media segment");
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         concatenated.extend_from_slice(
             &muxer
                 .create_media_segment(&second_segment_input)
@@ -867,38 +766,15 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![original_sample_entry.clone()],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
-        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 1);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let first_segment_input: Vec<SegmentSample> = first_segment_samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&original_sample_entry, sample, None))
             .collect();
         let second_segment_input: Vec<SegmentSample> = second_segment_samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&alternative_sample_entry, sample, None))
             .collect();
 
         let first_segment = muxer
@@ -907,8 +783,7 @@ proptest! {
         let second_segment = muxer
             .create_media_segment(&second_segment_input)
             .expect("failed to create second media segment");
-        let second_segment =
-            rewrite_media_segment_tfhd_sample_description_index(&second_segment, Some(2));
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
 
         let mut file_data = init_bytes;
         file_data.extend_from_slice(&first_segment);
@@ -958,14 +833,15 @@ proptest! {
     ) {
         prop_assume!(width1 != width2);
 
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width1, 240)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
+        let original_sample_entry = create_avc1_sample_entry(width1, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        muxer
+            .create_media_segment(&[video_segment_sample(
+                &create_avc1_sample_entry(width2, 240),
+                &samples[0],
+                None,
+            )])
+            .expect("failed to create bootstrap segment");
         let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
         let init_bytes = append_sample_entry_and_set_trex_default(
             &init_bytes,
@@ -975,14 +851,7 @@ proptest! {
 
         let fmp4_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&original_sample_entry, sample, None))
             .collect();
         let media_segment = muxer
             .create_media_segment(&fmp4_samples)
@@ -1012,38 +881,27 @@ proptest! {
             1..4,
         ),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: std::num::NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         // 全セグメントをひとつのバイト列に連結して完全な fMP4 ファイルを組み立てる
-        let mut file_data = init_bytes;
+        let mut file_data = Vec::new();
         let mut all_samples: Vec<TestSample> = Vec::new();
 
         for segment_samples in &segments {
             let fmp4_samples: Vec<SegmentSample> = segment_samples
                 .iter()
-                .map(|s| SegmentSample {
-                    track_index: 0,
-                    sample_entry_index: 0,
-                    duration: s.duration,
-                    keyframe: s.keyframe,
-                    composition_time_offset: None,
-                    data: &s.data,
-                })
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
                 .collect();
             let segment_bytes = muxer
                 .create_media_segment(&fmp4_samples)
                 .expect("failed to create media segment");
-            file_data.extend_from_slice(&segment_bytes);
             all_samples.extend_from_slice(segment_samples);
+            file_data.extend_from_slice(&segment_bytes);
         }
+        let mut init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        init_bytes.extend_from_slice(&file_data);
+        let file_data = init_bytes;
 
         let mut demuxer = Fmp4FileDemuxer::new();
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
@@ -1095,33 +953,19 @@ proptest! {
         height in 64u16..1081,
         samples in prop::collection::vec(arb_video_sample(0), 1..10),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: std::num::NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let segment_samples: Vec<SegmentSample> = samples
             .iter()
-            .map(|sample| SegmentSample {
-                track_index: 0,
-                sample_entry_index: 0,
-                duration: sample.duration,
-                keyframe: sample.keyframe,
-                composition_time_offset: None,
-                data: &sample.data,
-            })
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
         let media_segment = muxer
             .create_media_segment(&segment_samples)
             .expect("failed to create media segment");
         let media_segment = rewrite_media_segment_mdat_size_zero(&media_segment);
 
-        let mut file_data = init_bytes;
+        let mut file_data = muxer.init_segment_bytes().expect("failed to build init segment");
         file_data.extend_from_slice(&media_segment);
 
         let mut demuxer = Fmp4FileDemuxer::new();
@@ -1169,39 +1013,29 @@ proptest! {
             2..5,
         ),
     ) {
-        let track_config = SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(90000).expect("non-zero"),
-            sample_entries: vec![create_avc1_sample_entry(320, 240)],
-        };
-
-        let mut muxer =
-            Fmp4SegmentMuxer::new(&[track_config]).expect("Fmp4SegmentMuxer::new failed");
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
-
-        let mut demuxer = Fmp4SegmentDemuxer::new();
-        demuxer
-            .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
 
         let mut expected_decode_time: u64 = 0;
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        let mut initialized = false;
 
         for segment_samples in &samples_per_segment {
             let fmp4_samples: Vec<SegmentSample> = segment_samples
                 .iter()
-                .map(|s| SegmentSample {
-                    track_index: 0,
-                    sample_entry_index: 0,
-                    duration: s.duration,
-                    keyframe: s.keyframe,
-                    composition_time_offset: None,
-                    data: &s.data,
-                })
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
                 .collect();
 
             let segment_bytes = muxer
                 .create_media_segment(&fmp4_samples)
                 .expect("failed to create media segment");
+            if !initialized {
+                let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+                demuxer
+                    .handle_init_segment(&init_bytes)
+                    .expect("failed to handle init segment");
+                initialized = true;
+            }
 
             let demuxed = demuxer
                 .handle_media_segment(&segment_bytes)

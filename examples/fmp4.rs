@@ -18,7 +18,7 @@ use shiguredo_mp4::{
         VisualSampleEntryFields,
     },
     demux::Fmp4SegmentDemuxer,
-    mux::{Fmp4SegmentMuxer, SegmentSample, SegmentTrackConfig},
+    mux::{Fmp4SegmentMuxer, SegmentSample},
 };
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -96,24 +96,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let video_timescale = NonZeroU32::new(90000).expect("non-zero");
     let audio_timescale = NonZeroU32::new(48000).expect("non-zero");
 
-    // トラック設定: 映像 (track_index=0) + 音声 (track_index=1)
-    let track_configs = vec![
-        SegmentTrackConfig {
-            track_kind: TrackKind::Video,
-            timescale: video_timescale,
-            sample_entries: vec![create_avc1_sample_entry(width, height)],
-        },
-        SegmentTrackConfig {
-            track_kind: TrackKind::Audio,
-            timescale: audio_timescale,
-            sample_entries: vec![create_opus_sample_entry()],
-        },
-    ];
+    let video_sample_entry = create_avc1_sample_entry(width, height);
+    let audio_sample_entry = create_opus_sample_entry();
 
-    // Muxer を生成して初期化セグメントを取得する
-    let mut muxer = Fmp4SegmentMuxer::new(&track_configs)?;
-    let init_segment = muxer.init_segment_bytes()?;
-    println!("初期化セグメント: {} バイト", init_segment.len());
+    // Muxer を生成し、最初のメディアセグメント作成を通じてトラック情報を学習させる
+    let mut muxer = Fmp4SegmentMuxer::new()?;
 
     // 3 つのメディアセグメントを生成する
     let video_frame_duration = 3000u32; // 90000 / 30fps = 3000
@@ -126,16 +113,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let samples = vec![
                 SegmentSample {
-                    track_index: 0,
-                    sample_entry_index: 0,
+                    track_kind: TrackKind::Video,
+                    timescale: video_timescale,
+                    sample_entry: Some(video_sample_entry.clone()),
                     duration: video_frame_duration,
                     keyframe: seg_idx == 0,
                     composition_time_offset: None,
                     data: &video_data,
                 },
                 SegmentSample {
-                    track_index: 1,
-                    sample_entry_index: 0,
+                    track_kind: TrackKind::Audio,
+                    timescale: audio_timescale,
+                    sample_entry: Some(audio_sample_entry.clone()),
                     duration: audio_frame_duration,
                     keyframe: true,
                     composition_time_offset: None,
@@ -156,21 +145,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
+    let init_segment = muxer.init_segment_bytes()?;
+    println!("初期化セグメント: {} バイト", init_segment.len());
+
     // sidx 付きセグメントも生成してみる
     let video_data = dummy_video_frame(false, 1024);
     let audio_data = dummy_audio_frame(128);
     let sidx_samples = vec![
         SegmentSample {
-            track_index: 0,
-            sample_entry_index: 0,
+            track_kind: TrackKind::Video,
+            timescale: video_timescale,
+            sample_entry: Some(video_sample_entry.clone()),
             duration: video_frame_duration,
             keyframe: false,
             composition_time_offset: None,
             data: &video_data,
         },
         SegmentSample {
-            track_index: 1,
-            sample_entry_index: 0,
+            track_kind: TrackKind::Audio,
+            timescale: audio_timescale,
+            sample_entry: Some(audio_sample_entry.clone()),
             duration: audio_frame_duration,
             keyframe: true,
             composition_time_offset: None,

@@ -7,10 +7,7 @@ use shiguredo_mp4::{
     TrackKind, Uint,
     boxes::{Avc1Box, AvccBox, SampleEntry, VisualSampleEntryFields},
     demux::{DemuxError, Input, Mp4FileKind, Mp4FileKindDetector},
-    mux::{
-        Fmp4SegmentMuxer, Mp4FileMuxer, Mp4FileMuxerOptions, Sample, SegmentSample,
-        SegmentTrackConfig,
-    },
+    mux::{Fmp4SegmentMuxer, Mp4FileMuxer, Mp4FileMuxerOptions, Sample, SegmentSample},
 };
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -114,23 +111,17 @@ fn build_regular_mp4_file_data(
 }
 
 fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize]) -> Vec<u8> {
-    let mut muxer = Fmp4SegmentMuxer::new(&[SegmentTrackConfig {
-        track_kind: TrackKind::Video,
-        timescale: NonZeroU32::new(90_000).expect("non-zero"),
-        sample_entries: vec![create_avc1_sample_entry(width, height)],
-    }])
-    .expect("failed to create Fmp4SegmentMuxer");
-    let mut file_data = muxer
-        .init_segment_bytes()
-        .expect("failed to build init segment");
+    let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create Fmp4SegmentMuxer");
+    let sample_entry = create_avc1_sample_entry(width, height);
 
     let sample_payloads: Vec<Vec<u8>> = sample_sizes.iter().map(|size| vec![0u8; *size]).collect();
     let segment_samples: Vec<SegmentSample> = sample_payloads
         .iter()
         .enumerate()
         .map(|(index, payload)| SegmentSample {
-            track_index: 0,
-            sample_entry_index: 0,
+            track_kind: TrackKind::Video,
+            timescale: NonZeroU32::new(90_000).expect("non-zero"),
+            sample_entry: Some(sample_entry.clone()),
             duration: 3_000,
             keyframe: index == 0,
             composition_time_offset: None,
@@ -140,6 +131,9 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
     let media_segment = muxer
         .create_media_segment(&segment_samples)
         .expect("failed to build media segment");
+    let mut file_data = muxer
+        .init_segment_bytes()
+        .expect("failed to build init segment");
     file_data.extend_from_slice(&media_segment);
     file_data
 }

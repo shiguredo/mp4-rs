@@ -4,29 +4,10 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use shiguredo_mp4::mux::{
-    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, SegmentMuxError, SegmentMuxerOptions, SegmentSample,
-    SegmentTrackConfig,
+    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, MuxError, SegmentMuxerOptions, SegmentSample,
 };
 
 use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
-
-/// fMP4 マルチプレックスのトラック設定を表す C 構造体
-#[repr(C)]
-pub struct Fmp4SegmentTrackConfig {
-    /// トラックの種別
-    pub track_kind: Mp4TrackKind,
-
-    /// タイムスケール（0 は無効）
-    pub timescale: u32,
-
-    /// サンプルエントリー（コーデック情報）へのポインタ配列
-    ///
-    /// NULL を渡すことはできない
-    pub sample_entries: *const *const Mp4SampleEntry,
-
-    /// `sample_entries` の要素数
-    pub sample_entry_count: u32,
-}
 
 /// fMP4 Muxer 生成時のオプションを表す C 構造体
 #[repr(C)]
@@ -38,11 +19,16 @@ pub struct Fmp4SegmentMuxerOptions {
 /// fMP4 メディアセグメントに追加するサンプルを表す C 構造体
 #[repr(C)]
 pub struct Fmp4SegmentSample {
-    /// `fmp4_segment_muxer_new()` に渡したトラック配列のインデックス
-    pub track_index: u32,
+    /// トラックの種別
+    pub track_kind: Mp4TrackKind,
 
-    /// `Fmp4SegmentTrackConfig.sample_entries` に対する 0-based index
-    pub sample_entry_index: u32,
+    /// タイムスケール（0 は無効）
+    pub timescale: u32,
+
+    /// サンプルの詳細情報（コーデック情報）
+    ///
+    /// 最初のサンプルでは必須。以後、同じトラックで変更がなければ NULL を指定できる。
+    pub sample_entry: *const Mp4SampleEntry,
 
     /// サンプルの尺（トラックのタイムスケール単位）
     pub duration: u32,
@@ -91,28 +77,20 @@ impl Fmp4SegmentMuxer {
 ///
 /// # 引数
 ///
-/// - `tracks`: トラック設定の配列へのポインタ
-/// - `track_count`: トラック数
-///
 /// # 戻り値
 ///
 /// 成功時はインスタンスへのポインタ、失敗時は NULL
 ///
 /// 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fmp4_segment_muxer_new(
-    tracks: *const Fmp4SegmentTrackConfig,
-    track_count: u32,
-) -> *mut Fmp4SegmentMuxer {
-    unsafe { fmp4_segment_muxer_new_with_options(tracks, track_count, std::ptr::null()) }
+pub unsafe extern "C" fn fmp4_segment_muxer_new() -> *mut Fmp4SegmentMuxer {
+    unsafe { fmp4_segment_muxer_new_with_options(std::ptr::null()) }
 }
 
 /// オプションを指定して新しい `Fmp4SegmentMuxer` インスタンスを生成する
 ///
 /// # 引数
 ///
-/// - `tracks`: トラック設定の配列へのポインタ
-/// - `track_count`: トラック数
 /// - `options`: オプションへのポインタ
 ///   - NULL の場合はデフォルトオプションを使う
 ///
@@ -123,46 +101,8 @@ pub unsafe extern "C" fn fmp4_segment_muxer_new(
 /// 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fmp4_segment_muxer_new_with_options(
-    tracks: *const Fmp4SegmentTrackConfig,
-    track_count: u32,
     options: *const Fmp4SegmentMuxerOptions,
 ) -> *mut Fmp4SegmentMuxer {
-    if tracks.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    let track_slice = unsafe { std::slice::from_raw_parts(tracks, track_count as usize) };
-    let mut track_configs: Vec<SegmentTrackConfig> = Vec::new();
-
-    for t in track_slice {
-        let Some(timescale) = NonZeroU32::new(t.timescale) else {
-            return std::ptr::null_mut();
-        };
-        if t.sample_entries.is_null() || t.sample_entry_count == 0 {
-            return std::ptr::null_mut();
-        }
-        let sample_entry_ptrs =
-            unsafe { std::slice::from_raw_parts(t.sample_entries, t.sample_entry_count as usize) };
-        let mut sample_entries = Vec::new();
-        for sample_entry_ptr in sample_entry_ptrs {
-            if sample_entry_ptr.is_null() {
-                return std::ptr::null_mut();
-            }
-            let sample_entry = unsafe {
-                match (&**sample_entry_ptr).to_sample_entry() {
-                    Ok(entry) => entry,
-                    Err(_) => return std::ptr::null_mut(),
-                }
-            };
-            sample_entries.push(sample_entry);
-        }
-        track_configs.push(SegmentTrackConfig {
-            track_kind: t.track_kind.into(),
-            timescale,
-            sample_entries,
-        });
-    }
-
     let rust_options = if options.is_null() {
         SegmentMuxerOptions::default()
     } else {
@@ -172,7 +112,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_new_with_options(
         }
     };
 
-    match RustFmp4SegmentMuxer::with_options(&track_configs, rust_options) {
+    match RustFmp4SegmentMuxer::with_options(rust_options) {
         Ok(inner) => Box::into_raw(Box::new(Fmp4SegmentMuxer {
             inner,
             last_error_string: None,
@@ -217,6 +157,13 @@ pub unsafe extern "C" fn fmp4_segment_muxer_get_last_error(
 }
 
 /// 初期化セグメント（`ftyp` + `moov`）のバイト列を生成する
+///
+/// 返される init segment には、この関数を呼んだ時点までに
+/// `fmp4_segment_muxer_write_media_segment()` ないし
+/// `fmp4_segment_muxer_write_media_segment_with_sidx()` で観測したトラック情報と
+/// sample entry が反映される。
+///
+/// まだどのトラックも観測されていない状態ではエラーになる。
 ///
 /// # 引数
 ///
@@ -362,7 +309,17 @@ unsafe fn write_media_segment_impl(
         unsafe { std::slice::from_raw_parts(samples, sample_count as usize) }
     };
 
-    let fmp4_samples = unsafe { convert_samples(samples_slice) };
+    let fmp4_samples = match unsafe { convert_samples(samples_slice) } {
+        Ok(samples) => samples,
+        Err(message) => {
+            unsafe {
+                *out_data = std::ptr::null_mut();
+                *out_size = 0;
+            }
+            muxer.set_last_error(&format!("[write_media_segment_impl] {message}"));
+            return Mp4Error::MP4_ERROR_INVALID_INPUT;
+        }
+    };
 
     let func_name = if with_sidx {
         "fmp4_segment_muxer_write_media_segment_with_sidx"
@@ -379,14 +336,14 @@ unsafe fn write_media_segment_impl(
     unsafe { write_bytes_result(muxer, result, func_name, out_data, out_size) }
 }
 
-/// `Result<Vec<u8>, SegmentMuxError>` を C の出力ポインタに書き込む共通ヘルパー
+/// `Result<Vec<u8>, MuxError>` を C の出力ポインタに書き込む共通ヘルパー
 ///
 /// # Safety
 ///
 /// `out_data` と `out_size` は有効なポインタでなければならない。
 unsafe fn write_bytes_result(
     muxer: &mut Fmp4SegmentMuxer,
-    result: Result<Vec<u8>, SegmentMuxError>,
+    result: Result<Vec<u8>, MuxError>,
     func_name: &str,
     out_data: *mut *mut u8,
     out_size: *mut u32,
@@ -429,24 +386,41 @@ unsafe fn write_bytes_result(
 /// # Safety
 ///
 /// `samples` の各要素の `data` ポインタは、返された `Vec` が使われている間は有効でなければならない。
-unsafe fn convert_samples<'a>(samples: &'a [Fmp4SegmentSample]) -> Vec<SegmentSample<'a>> {
+unsafe fn convert_samples<'a>(
+    samples: &'a [Fmp4SegmentSample],
+) -> Result<Vec<SegmentSample<'a>>, &'static str> {
     samples
         .iter()
-        .map(|s| SegmentSample {
-            track_index: s.track_index as usize, // u32 -> usize: 常に安全
-            sample_entry_index: s.sample_entry_index as usize, // u32 -> usize: 常に安全
-            duration: s.duration,
-            keyframe: s.keyframe,
-            composition_time_offset: if s.has_composition_time_offset {
-                Some(s.composition_time_offset)
-            } else {
+        .map(|s| {
+            let Some(timescale) = NonZeroU32::new(s.timescale) else {
+                return Err("timescale must be non-zero");
+            };
+            let sample_entry = if s.sample_entry.is_null() {
                 None
-            },
-            data: if s.data.is_null() {
-                &[]
             } else {
-                unsafe { std::slice::from_raw_parts(s.data, s.data_size as usize) }
-            },
+                Some(unsafe {
+                    (&*s.sample_entry)
+                        .to_sample_entry()
+                        .map_err(|_| "sample_entry is invalid")?
+                })
+            };
+            Ok(SegmentSample {
+                track_kind: s.track_kind.into(),
+                timescale,
+                sample_entry,
+                duration: s.duration,
+                keyframe: s.keyframe,
+                composition_time_offset: if s.has_composition_time_offset {
+                    Some(s.composition_time_offset)
+                } else {
+                    None
+                },
+                data: if s.data.is_null() {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(s.data, s.data_size as usize) }
+                },
+            })
         })
         .collect()
 }

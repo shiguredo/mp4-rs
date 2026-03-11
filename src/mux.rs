@@ -21,9 +21,7 @@
 //! };
 //! let _ = (&mut muxer, sample);
 //! ```
-pub use crate::mux_fmp4_segment::{
-    Fmp4SegmentMuxer, SegmentMuxError, SegmentMuxerOptions, SegmentSample, SegmentTrackConfig,
-};
+pub use crate::mux_fmp4_segment::{Fmp4SegmentMuxer, SegmentMuxerOptions, SegmentSample};
 pub use crate::mux_mp4_file::{
     FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample,
     estimate_maximum_moov_box_size,

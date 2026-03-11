@@ -110,6 +110,11 @@ typedef enum Mp4SampleEntryKind {
   MP4_SAMPLE_ENTRY_KIND_FLAC,
 } Mp4SampleEntryKind;
 
+typedef enum Mp4FileKind {
+  MP4_FILE_KIND_MP4 = 0,
+  MP4_FILE_KIND_FRAGMENTED_MP4 = 1,
+} Mp4FileKind;
+
 /**
  * fMP4 Demuxer の状態を保持する C 構造体
  *
@@ -202,6 +207,8 @@ typedef struct Fmp4SegmentMuxer Fmp4SegmentMuxer;
  * ```
  */
 typedef struct Mp4FileDemuxer Mp4FileDemuxer;
+
+typedef struct Mp4FileKindDetector Mp4FileKindDetector;
 
 /**
  * メディアトラック（音声・映像）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
@@ -1690,6 +1697,24 @@ enum Mp4Error fmp4_segment_muxer_write_mfra(struct Fmp4SegmentMuxer *muxer,
  * - `size`: バイト列のサイズ
  */
 void fmp4_bytes_free(uint8_t *data, uint32_t size);
+
+struct Mp4FileKindDetector *mp4_file_kind_detector_new(void);
+
+void mp4_file_kind_detector_free(struct Mp4FileKindDetector *detector);
+
+const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetector *detector);
+
+enum Mp4Error mp4_file_kind_detector_get_required_input(struct Mp4FileKindDetector *detector,
+                                                        uint64_t *out_required_input_position,
+                                                        int32_t *out_required_input_size);
+
+enum Mp4Error mp4_file_kind_detector_handle_input(struct Mp4FileKindDetector *detector,
+                                                  uint64_t input_position,
+                                                  const uint8_t *input_data,
+                                                  uint32_t input_data_size);
+
+enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *detector,
+                                                   enum Mp4FileKind *out_kind);
 
 /**
  * 構築する MP4 ファイルの moov ボックスの最大サイズを見積もるための関数

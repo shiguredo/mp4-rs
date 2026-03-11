@@ -814,40 +814,4 @@ mod tests {
         };
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
-
-    #[test]
-    fn test_handle_input_validation_with_wrong_position() {
-        // 要求と異なるポジションでの入力を渡した場合
-        let file_data = include_bytes!("../tests/testdata/beep-aac-audio.mp4");
-        let mut demuxer = Mp4FileDemuxer::new();
-
-        // 正しくない位置のデータを渡す
-        let wrong_input = Input {
-            position: 100, // ファイルは位置 0 から始まるべき
-            data: &file_data[100..],
-        };
-        demuxer.handle_input(wrong_input);
-
-        // エラー状態に遷移しているはず
-        let result = demuxer.tracks();
-        assert!(matches!(result, Err(DemuxError::DecodeError(_))));
-    }
-
-    #[test]
-    fn test_handle_input_validation_with_insufficient_data() {
-        // 要求より不足したデータを渡した場合
-        let file_data = include_bytes!("../tests/testdata/beep-aac-audio.mp4");
-        let mut demuxer = Mp4FileDemuxer::new();
-
-        // 要求されたサイズより小さいデータを渡す
-        let insufficient_input = Input {
-            position: 0,
-            data: &file_data[0..10], // ボックスヘッダより少ないデータ
-        };
-        demuxer.handle_input(insufficient_input);
-
-        // エラー状態に遷移しているはず
-        let result = demuxer.tracks();
-        assert!(matches!(result, Err(DemuxError::DecodeError(_))));
-    }
 }

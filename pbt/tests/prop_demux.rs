@@ -466,3 +466,52 @@ mod demux_error_tests {
         }
     }
 }
+
+mod handle_input_validation_tests {
+    use proptest::prelude::*;
+    use shiguredo_mp4::demux::{DemuxError, Input, Mp4FileDemuxer};
+
+    const TEST_MP4_AAC_FILE: &[u8] = include_bytes!("../../tests/testdata/beep-aac-audio.mp4");
+
+    proptest! {
+        #[test]
+        fn wrong_position_input_is_rejected(
+            wrong_position in 1u64..2048,
+        ) {
+            let mut demuxer = Mp4FileDemuxer::new();
+            let start = usize::try_from(wrong_position)
+                .ok()
+                .map(|position| position.min(TEST_MP4_AAC_FILE.len()))
+                .expect("usize conversion must succeed on supported targets");
+            let input = Input {
+                position: wrong_position,
+                data: &TEST_MP4_AAC_FILE[start..],
+            };
+
+            demuxer.handle_input(input);
+
+            prop_assert!(matches!(
+                demuxer.tracks(),
+                Err(DemuxError::DecodeError(_))
+            ));
+        }
+
+        #[test]
+        fn insufficient_initial_input_is_rejected(
+            input_len in 0usize..8,
+        ) {
+            let mut demuxer = Mp4FileDemuxer::new();
+            let input = Input {
+                position: 0,
+                data: &TEST_MP4_AAC_FILE[..input_len],
+            };
+
+            demuxer.handle_input(input);
+
+            prop_assert!(matches!(
+                demuxer.tracks(),
+                Err(DemuxError::DecodeError(_))
+            ));
+        }
+    }
+}

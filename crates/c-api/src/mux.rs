@@ -761,6 +761,7 @@ pub unsafe extern "C" fn mp4_file_muxer_append_sample(
         keyframe: sample.keyframe,
         timescale,
         duration: sample.duration,
+        composition_time_offset: None,
         data_offset: sample.data_offset,
         data_size: sample.data_size as usize,
     };

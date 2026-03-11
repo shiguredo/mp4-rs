@@ -254,6 +254,7 @@ proptest! {
                 keyframe: sample_info.keyframe,
                 timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -316,6 +317,7 @@ proptest! {
                 keyframe: false,
                 timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -386,6 +388,7 @@ proptest! {
                 keyframe: sample_info.keyframe,
                 timescale: video_timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -403,6 +406,7 @@ proptest! {
                 keyframe: false,
                 timescale: audio_timescale,
                 duration: sample_info.duration,
+                composition_time_offset: None,
                 data_offset,
                 data_size: sample_info.data_size,
             };
@@ -462,6 +466,7 @@ proptest! {
                 keyframe: true,
                 timescale: NonZeroU32::new(30).expect("non-zero timescale"),
                 duration: 1,
+                composition_time_offset: None,
                 data_offset,
                 data_size: 256,
             };
@@ -475,6 +480,7 @@ proptest! {
                 keyframe: false,
                 timescale: NonZeroU32::new(48000).expect("non-zero timescale"),
                 duration: 960,
+                composition_time_offset: None,
                 data_offset,
                 data_size: 256,
             };
@@ -552,6 +558,7 @@ mod boundary_tests {
             keyframe: true,
             timescale: NonZeroU32::new(30).unwrap(),
             duration: 1,
+            composition_time_offset: None,
             data_offset,
             data_size: 100,
         };
@@ -595,6 +602,7 @@ mod boundary_tests {
             keyframe: true,
             timescale: NonZeroU32::new(30).unwrap(),
             duration: 1,
+            composition_time_offset: None,
             data_offset,
             data_size: 1024,
         };
@@ -681,6 +689,7 @@ mod estimate_moov_size_tests {
                     keyframe: true,
                     timescale: NonZeroU32::new(30).unwrap(),
                     duration: 1,
+                    composition_time_offset: None,
                     data_offset,
                     data_size: 100,
                 };
@@ -697,6 +706,7 @@ mod estimate_moov_size_tests {
                     keyframe: false,
                     timescale: NonZeroU32::new(48000).unwrap(),
                     duration: 960,
+                    composition_time_offset: None,
                     data_offset,
                     data_size: 50,
                 };

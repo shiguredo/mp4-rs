@@ -78,7 +78,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_from_json(
 ///
 /// # 戻り値
 ///
-/// 成功時は `Vec<u8>` へのポインタ、エラー時は NULL
+/// 成功時は `moof + mdat header + payload` 全体を格納した `Vec<u8>` へのポインタ、エラー時は NULL
 ///
 /// 返されたポインタは `mp4_vec_free()` で解放する必要がある
 #[unsafe(no_mangle)]
@@ -178,7 +178,7 @@ fn write_segment_impl(
             keyframe: meta.keyframe,
             has_composition_time_offset: meta.composition_time_offset.is_some(),
             composition_time_offset: meta.composition_time_offset.unwrap_or(0),
-            data: sample_data_slice[data_offset..].as_ptr(),
+            data_offset: u64::try_from(data_offset).expect("data_offset exceeds u64::MAX"),
             data_size: u32::try_from(meta.data_size)
                 .expect("data_size exceeds u32::MAX; validated by parse_json_sample_metas"),
         });
@@ -214,7 +214,8 @@ fn write_segment_impl(
         return std::ptr::null_mut();
     }
 
-    let bytes = unsafe { Vec::from_raw_parts(out_data, out_size as usize, out_size as usize) };
+    let mut bytes = unsafe { Vec::from_raw_parts(out_data, out_size as usize, out_size as usize) };
+    bytes.extend_from_slice(sample_data_slice);
     Box::into_raw(Box::new(bytes))
 }
 

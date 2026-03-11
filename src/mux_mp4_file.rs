@@ -36,6 +36,7 @@
 //!     keyframe: true,
 //!     timescale: NonZeroU32::MIN.saturating_add(30 - 1),
 //!     duration: 1,
+//!     composition_time_offset: None,
 //!     data_offset: initial_bytes.len() as u64,
 //!     data_size: sample_data.len(),
 //! };
@@ -225,6 +226,19 @@ pub struct Sample {
     /// プレイヤーの対応がまちまちであるため [`Mp4FileMuxer`] では現状サポートしておらず、
     /// 上述のような個々のプレイヤーの実装への依存性が低い方法を推奨している。
     pub duration: u32,
+
+    /// コンポジション時間オフセット（トラックのタイムスケール単位）
+    ///
+    /// B フレームを含む映像などで PTS と DTS がずれる場合に指定する。
+    /// 値の意味は `PTS = DTS + composition_time_offset` である。
+    ///
+    /// [`Mp4FileMuxer`] は現時点では `ctts` を生成しないため、この値は無視される。
+    /// 一方で [`crate::mux::Fmp4SegmentMuxer`] では `trun` の
+    /// `sample_composition_time_offset` の生成に使われる。
+    ///
+    /// 同じ [`crate::mux::Sample`] 型を file muxer と segment muxer で共有するため、
+    /// このフィールドは file muxer でも公開している。
+    pub composition_time_offset: Option<i32>,
 
     /// ファイル内におけるサンプルデータの開始位置（バイト単位）
     pub data_offset: u64,
@@ -1047,6 +1061,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1061,6 +1076,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 512,
         };
@@ -1086,6 +1102,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 100, // 誤ったオフセット
             data_size: 1024,
         };
@@ -1109,6 +1126,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
             duration: 20,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 512,
         };
@@ -1132,6 +1150,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1147,6 +1166,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 512,
         };
@@ -1169,6 +1189,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1183,6 +1204,7 @@ mod tests {
             keyframe: false,
             timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
             duration: 20,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 256,
         };
@@ -1211,6 +1233,7 @@ mod tests {
             keyframe: true,
             timescale: NonZeroU32::MIN.saturating_add(30 - 1),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1236,6 +1259,7 @@ mod tests {
                 keyframe: i % 2 == 0,
                 timescale: NonZeroU32::MIN.saturating_add(30 - 1),
                 duration: 1,
+                composition_time_offset: None,
                 data_offset: initial_size + (i as u64 * 1024),
                 data_size: 1024,
             };

@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use shiguredo_mp4::mux::{
-    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, MuxError, SegmentMuxerOptions, SegmentSample,
+    Fmp4SegmentMuxer as RustFmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions,
 };
 
 use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
@@ -42,8 +42,12 @@ pub struct Fmp4SegmentSample {
     /// コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
     pub composition_time_offset: i32,
 
-    /// サンプルデータへのポインタ
-    pub data: *const u8,
+    /// セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット
+    ///
+    /// `fmp4_segment_muxer_write_media_segment()` の返り値には payload 自体は含まれない。
+    /// 呼び出し側は返された `moof + mdat header` の直後に、
+    /// ここで指定した位置関係になるよう payload を配置する必要がある。
+    pub data_offset: u64,
 
     /// サンプルデータのサイズ（バイト単位）
     pub data_size: u32,
@@ -198,7 +202,11 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_init_segment(
     }
 }
 
-/// メディアセグメント（`moof` + `mdat`）のバイト列を生成する
+/// メディアセグメント先頭のメタデータ（`moof` + `mdat` ヘッダー）のバイト列を生成する
+///
+/// 返り値には `mdat` payload 自体は含まれない。
+/// 呼び出し側は、この関数が返したバイト列の直後に
+/// `Fmp4SegmentSample.data_offset` / `data_size` が示す payload を自前で配置すること。
 ///
 /// # 引数
 ///
@@ -224,9 +232,10 @@ pub unsafe extern "C" fn fmp4_segment_muxer_write_media_segment(
     unsafe { write_media_segment_impl(muxer, samples, sample_count, out_data, out_size, false) }
 }
 
-/// `sidx` ボックス付きのメディアセグメントを生成する
+/// `sidx` ボックス付きのメディアセグメント先頭メタデータを生成する
 ///
 /// `fmp4_segment_muxer_write_media_segment()` と同じだが、先頭に `sidx` ボックスが付加される。
+/// 返り値は `sidx + moof + mdat` ヘッダーであり、payload は含まれない。
 ///
 /// # 引数
 ///
@@ -387,14 +396,8 @@ unsafe fn write_bytes_result(
     }
 }
 
-/// `Fmp4SegmentSample` のスライスを `SegmentSample` の `Vec` に変換するヘルパー
-///
-/// # Safety
-///
-/// `samples` の各要素の `data` ポインタは、返された `Vec` が使われている間は有効でなければならない。
-unsafe fn convert_samples<'a>(
-    samples: &'a [Fmp4SegmentSample],
-) -> Result<Vec<SegmentSample<'a>>, &'static str> {
+/// `Fmp4SegmentSample` のスライスを [`Sample`] の `Vec` に変換するヘルパー
+unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, &'static str> {
     samples
         .iter()
         .map(|s| {
@@ -410,7 +413,7 @@ unsafe fn convert_samples<'a>(
                         .map_err(|_| "sample_entry is invalid")?
                 })
             };
-            Ok(SegmentSample {
+            Ok(Sample {
                 track_kind: s.track_kind.into(),
                 timescale,
                 sample_entry,
@@ -421,11 +424,8 @@ unsafe fn convert_samples<'a>(
                 } else {
                     None
                 },
-                data: if s.data.is_null() {
-                    &[]
-                } else {
-                    unsafe { std::slice::from_raw_parts(s.data, s.data_size as usize) }
-                },
+                data_offset: s.data_offset,
+                data_size: s.data_size as usize,
             })
         })
         .collect()

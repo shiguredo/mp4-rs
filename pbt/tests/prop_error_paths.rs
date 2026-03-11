@@ -1309,6 +1309,7 @@ mod mux_error_tests {
             keyframe: true,
             timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };
@@ -1323,6 +1324,7 @@ mod mux_error_tests {
             keyframe: false,
             timescale: NonZeroU32::new(60).expect("timescale should be non-zero"), // 不一致
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size + 1024,
             data_size: 512,
         };
@@ -1349,6 +1351,7 @@ mod mux_error_tests {
             keyframe: false,
             timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
             duration: 960,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 256,
         };
@@ -1363,6 +1366,7 @@ mod mux_error_tests {
             keyframe: false,
             timescale: NonZeroU32::new(44100).expect("timescale should be non-zero"), // 不一致
             duration: 1024,
+            composition_time_offset: None,
             data_offset: initial_size + 256,
             data_size: 256,
         };
@@ -1456,6 +1460,7 @@ mod mux_error_tests {
             keyframe: true,
             timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
             duration: 1,
+            composition_time_offset: None,
             data_offset: initial_size,
             data_size: 1024,
         };

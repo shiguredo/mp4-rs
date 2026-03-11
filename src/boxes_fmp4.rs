@@ -1032,9 +1032,8 @@ impl Decode for MfraBox {
                     }
                     _ => {
                         // 未知のボックスはスキップ
-                        offset += usize::try_from(child_header.box_size.get()).map_err(|_| {
-                            crate::Error::invalid_data("MfraBox child box size exceeds usize::MAX")
-                        })?;
+                        let (_, n) = UnknownBox::decode(&payload[offset..])?;
+                        offset += n;
                     }
                 }
             }

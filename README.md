@@ -2,6 +2,7 @@
 
 [![shiguredo_mp4](https://img.shields.io/crates/v/shiguredo_mp4.svg)](https://crates.io/crates/shiguredo_mp4)
 [![Documentation](https://docs.rs/shiguredo_mp4/badge.svg)](https://docs.rs/shiguredo_mp4)
+[![GitHub Actions](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ## About Shiguredo's open source software
@@ -16,29 +17,104 @@ Please read <https://github.com/shiguredo/oss> before use.
 
 ## 概要
 
-Rust で実装された MP4 ファイルを読み書きするためのライブラリです。
+Rust で実装された依存 0 かつ Sans I/O な MP4 ファイルの mux/demux ライブラリです。`no_std` 環境でも利用できます。
 
 ## 特徴
 
-- 依存ライブラリ 0
-- `no_std` 環境での利用
-  - <https://docs.rust-embedded.org/book/intro/no-std.html>
 - Sans I/O
   - <https://sans-io.readthedocs.io/index.html>
+- 依存ライブラリ 0
+- `no_std` 対応
+  - <https://docs.rust-embedded.org/book/intro/no-std.html>
+- MP4 ファイルの mux/demux
+- Fragmented MP4 (fMP4) の mux/demux
 - 高レベル API の提供
 - C API の提供
 - WebAssembly API の提供
 - Windows / macOS / Linux 対応
-- Opus / FLAC / AAC 対応
-- VP8 / VP9 / AV1 / H.264 / H.265 対応
 
-## ロードマップ
+## 対応コーデック
 
-- AV2 のサポート
-- H.266 (VVC) のサポート
-- Fragmented MP4 のサポート
+- 音声
+  - AAC (`mp4a`)
+  - Opus (`Opus`)
+  - FLAC (`fLaC`)
+- 映像
+  - VP8 (`vp08`)
+  - VP9 (`vp09`)
+  - AV1 (`av01`)
+  - H.264 / AVC (`avc1`)
+  - H.265 / HEVC (`hev1`, `hvc1`)
 
-## WebAssembly サンプルページ
+## 使い方
+
+### MP4 ファイルのデマルチプレックス
+
+`Mp4FileDemuxer` を使って MP4 ファイルからトラック情報やサンプルを取得できます。
+
+```rust
+use shiguredo_mp4::demux::{Input, Mp4FileDemuxer};
+
+// デマルチプレクサーを生成する
+let mut demuxer = Mp4FileDemuxer::new();
+
+// 必要なデータを段階的に供給する (Sans I/O)
+while let Some(required) = demuxer.required_input() {
+    // required.position と required.size に基づいてデータを読み込む
+    let data: &[u8] = read_data(required.position, required.size);
+    demuxer.handle_input(Input {
+        position: required.position,
+        data,
+    });
+}
+
+// トラック情報を取得する
+let tracks = demuxer.tracks()?;
+
+// サンプルを時系列順に取得する
+while let Ok(Some(sample)) = demuxer.next_sample() {
+    // sample.track, sample.timestamp, sample.data_offset, sample.data_size
+}
+```
+
+### fMP4 セグメントの生成と読み戻し
+
+`Fmp4SegmentMuxer` でメディアセグメントを生成し、`Fmp4SegmentDemuxer` で読み戻せます。
+
+```rust
+use shiguredo_mp4::mux::{Fmp4SegmentMuxer, SegmentSample};
+use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+
+// Muxer でメディアセグメントを生成する
+let mut muxer = Fmp4SegmentMuxer::new()?;
+let segment = muxer.create_media_segment(&samples)?;
+let init_segment = muxer.init_segment_bytes()?;
+
+// Demuxer で読み戻す
+let mut demuxer = Fmp4SegmentDemuxer::new();
+demuxer.handle_init_segment(&init_segment)?;
+let demuxed = demuxer.handle_media_segment(&segment)?;
+```
+
+## サンプル
+
+### demux
+
+MP4 ファイルのトラック情報とサンプル情報を表示します。
+
+```bash
+cargo run --example demux -- <mp4_file>
+```
+
+### fmp4
+
+fMP4 の mux/demux を行うサンプルです。引数なしで実行できます。
+
+```bash
+cargo run --example fmp4
+```
+
+### WebAssembly サンプル
 
 WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 
@@ -56,13 +132,18 @@ WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 - [Encapsulation of Opus in ISO Base Media File Format](https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html)
 - [Encapsulation of FLAC in ISO Base Media File Format](https://github.com/xiph/flac/blob/master/doc/isoflac.txt)
 
+## ロードマップ
+
+- AV2 のサポート
+- H.266 (VVC) のサポート
+
 ## ライセンス
 
 Apache License 2.0
 
 ```text
-Copyright 2024-2025, Takeru Ohta (Original Author)
-Copyright 2024-2025, Shiguredo Inc.
+Copyright 2024-2026, Takeru Ohta (Original Author)
+Copyright 2024-2026, Shiguredo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

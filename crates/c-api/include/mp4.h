@@ -900,8 +900,8 @@ typedef struct Mp4DemuxSample {
    * `has_composition_time_offset` が true の場合のみ有効。
    * PTS = timestamp + composition_time_offset で計算できる。
    *
-   * C API では通常 MP4 の `ctts` と fMP4 の `trun` の両方を共通の sample 型で扱うため、
-   * Rust 側の `Sample` に合わせて `i64` に widening している。
+   * 通常 MP4 の `ctts` と fMP4 の `trun` の両方を共通の sample 型で扱うため、
+   * `i64` で公開している。
    * 仕様上すべての入力が 64 bit 必須という意味ではない。
    */
   int64_t composition_time_offset;

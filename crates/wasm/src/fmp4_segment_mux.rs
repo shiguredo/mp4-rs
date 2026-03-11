@@ -30,7 +30,10 @@
 //! 必要に応じて並べ替える。
 use c_api::fmp4_segment_mux::Fmp4SegmentMuxer;
 
-fn same_track_kind(lhs: c_api::basic_types::Mp4TrackKind, rhs: c_api::basic_types::Mp4TrackKind) -> bool {
+fn same_track_kind(
+    lhs: c_api::basic_types::Mp4TrackKind,
+    rhs: c_api::basic_types::Mp4TrackKind,
+) -> bool {
     matches!(
         (lhs, rhs),
         (

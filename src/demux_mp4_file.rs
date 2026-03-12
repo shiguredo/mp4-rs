@@ -212,6 +212,7 @@ impl<'a> Input<'a> {
         }
 
         if let Some(size) = size {
+            // 破損データで size が極端に大きい場合の加算オーバーフローを防ぐ
             let end = offset.checked_add(size)?;
             self.data.get(offset..end)
         } else {
@@ -483,6 +484,7 @@ impl Mp4FileDemuxer {
                     "moov box not found",
                 )));
             };
+            // 破損データで box_size が極端に大きい場合の加算オーバーフローを防ぐ
             let offset = offset.checked_add(box_size).ok_or_else(|| {
                 DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
             })?;

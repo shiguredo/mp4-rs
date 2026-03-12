@@ -212,7 +212,8 @@ impl<'a> Input<'a> {
         }
 
         if let Some(size) = size {
-            self.data.get(offset..offset + size)
+            let end = offset.checked_add(size)?;
+            self.data.get(offset..end)
         } else {
             Some(&self.data[offset..])
         }
@@ -482,7 +483,9 @@ impl Mp4FileDemuxer {
                     "moov box not found",
                 )));
             };
-            let offset = offset + box_size;
+            let offset = offset.checked_add(box_size).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
+            })?;
             self.phase = Phase::ReadMoovBoxHeader { offset };
         } else {
             let box_size = box_size.map(|n| n as usize);

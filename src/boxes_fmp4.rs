@@ -1031,10 +1031,10 @@ impl Decode for MfraBox {
                         offset += n;
                     }
                     _ => {
-                        // 未知のボックスはスキップ
-                        offset += usize::try_from(child_header.box_size.get()).map_err(|_| {
-                            crate::Error::invalid_data("MfraBox child box size exceeds usize::MAX")
-                        })?;
+                        // 未知のボックスはスキップ（ペイロードのコピーは不要なので BoxHeader のみでサイズを算出する）
+                        let (header, unknown_payload) =
+                            BoxHeader::decode_header_and_payload(&payload[offset..])?;
+                        offset += header.external_size() + unknown_payload.len();
                     }
                 }
             }

@@ -467,6 +467,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_mp4_file_demux"
+path = "fuzz_targets/fuzz_mp4_file_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mp4_file_kind_detector"
+path = "fuzz_targets/fuzz_mp4_file_kind_detector.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fmp4_segment_mux"
+path = "fuzz_targets/fuzz_fmp4_segment_mux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_fmp4_file_demux"
 path = "fuzz_targets/fuzz_fmp4_file_demux.rs"
 test = false

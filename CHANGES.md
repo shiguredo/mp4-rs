@@ -11,6 +11,8 @@
 
 ## develop
 
+## 2026.2.0
+
 - [UPDATE] マルチプレックス・デマルチプレックス関連の構造体やエラー型に `Clone` トレイトを実装する
   - @sile
 - [ADD] fMP4 のマルチプレックス機能 (`Fmp4SegmentMuxer`) を追加する

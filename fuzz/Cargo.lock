@@ -86,7 +86,7 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
 name = "shiguredo_mp4"
-version = "2026.2.0-canary.5"
+version = "2026.2.0"
 
 [[package]]
 name = "shlex"

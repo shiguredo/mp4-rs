@@ -1,5 +1,3 @@
-# Based on https://github.com/actions-rs/meta/blob/master/recipes/quickstart.md
-
 name: CI
 
 on:
@@ -7,13 +5,12 @@ on:
     paths-ignore:
       - "**.md"
   schedule:
-    # UTC の 01:00 は JST だと 10:00 。
-    # 1-5 で 月曜日から金曜日
-    - cron: "0 1 * * 1-5"
+    # JST 11:00 (UTC 02:00), 月-金
+    - cron: "0 2 * * 1-5"
 
 jobs:
-  check:
-    name: Check
+  ci:
+    name: CI
     strategy:
       matrix:
         os:
@@ -21,86 +18,77 @@ jobs:
           - ubuntu-24.04-arm
           - windows-2025
           - macos-26
-        toolchain:
-          - stable
-          - beta
-          - nightly
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v5
-      - run: rustup update ${{ matrix.toolchain }}
-      - run: rustup default ${{ matrix.toolchain }}
-      - run: cargo check --workspace
+        uses: actions/checkout@v6
 
-  test:
-    name: Test Suite
-    strategy:
-      matrix:
-        os:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - windows-2025
-          - macos-26
-        toolchain:
-          - stable
-          - beta
-          - nightly
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@v5
       - name: Windows の場合には MSVC 系ではなく MinGW 系を使うようにする
         if: contains(matrix.os, 'windows')
         run: rustup set default-host x86_64-pc-windows-gnu
-      - run: rustup update ${{ matrix.toolchain }}
-      - run: rustup default ${{ matrix.toolchain }}
-      - run: rustup show
 
-      # NOTE: build は C API のテストで使用する libmp4.a を生成するために必要
-      - run: cargo build --workspace --exclude dump_wasm --exclude transcode_wasm
-      - run: ls target/debug/
-      - run: cargo test --workspace --exclude dump_wasm --exclude transcode_wasm
+      - run: rustup update stable
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ${{ matrix.os }}
+          toolchain: stable
 
-      - name: Windows の場合には MSVC 系でもビルドだけは試す（テスト用の実行可能バイナリの作成は、MSVC 固有のパス解決処理が複雑になりすぎるので見送り）
+      - run: cargo fmt --all --check
+      - run: cargo check --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
+      - run: cargo build --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
+      - run: cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
+      - run: cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings
+      - run: cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+      - name: Windows の場合には MSVC 系でもビルドだけは試す
         if: contains(matrix.os, 'windows')
         run: |
           rustup target add x86_64-pc-windows-msvc
           cargo build --package c-api --target x86_64-pc-windows-msvc
+
       - name: MSVC ビルド成果物の確認
         if: contains(matrix.os, 'windows')
         run: ls target/x86_64-pc-windows-msvc/debug/mp4.lib
 
-  lints:
-    name: Lints
-    strategy:
-      matrix:
-        os:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - windows-2025
-          - macos-26
-        toolchain:
-          # [NOTE]
-          # clippy は「stable と nightly の片方に対応したらもう片方で失敗する」といったケースが
-          # まれにあるのと、そもそも nightly のチェックを事前に行うメリットが
-          # 薄い（lint で警告がでても、別に普通に使う分には問題はない）ので、
-          # ここでは stable だけを使っている
-          - stable
-          # - beta
-          # - nightly
-    runs-on: ${{ matrix.os }}
+  test-wasm:
+    name: Test WebAssembly
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v5
-      - run: rustup update ${{ matrix.toolchain }}
-      - run: rustup default ${{ matrix.toolchain }}
-      - run: rustup component add clippy
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace -- -D warnings
+        uses: actions/checkout@v6
+
+      - run: rustup update stable
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ubuntu-24.04
+          toolchain: stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Build WebAssembly
+        run: cargo build -p wasm --target wasm32-unknown-unknown --profile release-wasm
+
+      - name: Run mux.js test
+        run: |
+          node crates/wasm/examples/mux.js /tmp/test_output.mp4
+          if [ ! -f /tmp/test_output.mp4 ]; then
+            echo "Error: mux.js did not create output file"
+            exit 1
+          fi
+          echo "mux.js completed successfully"
+
+      - name: Run demux.js test
+        run: |
+          node crates/wasm/examples/demux.js /tmp/test_output.mp4
+          echo "demux.js completed successfully"
 
   build-c-api:
     name: Build C API Library
@@ -119,9 +107,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+
       - run: rustup update stable
-      - run: rustup default stable
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ${{ matrix.os }}
+          toolchain: stable
 
       - name: Build C API
         run: cargo build --release --package c-api
@@ -149,17 +141,58 @@ jobs:
           name: c-api-${{ matrix.artifact-name }}
           path: artifacts/
 
-  slack_notify_failed:
-    needs: [check, test, lints, build-c-api]
+  build-wasm:
+    name: Build WebAssembly
     runs-on: ubuntu-24.04
-    if: ${{ failure() }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - run: rustup update stable
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ubuntu-24.04
+          toolchain: stable
+
+      - name: Install wasm-opt
+        run: |
+          curl -L -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_125/binaryen-version_125-x86_64-linux.tar.gz
+          echo "7c3bc16599c8274a04d34a504fe4be2047884f900e0e2da2f6fb9cd667183be4  binaryen.tar.gz" | sha256sum -c -
+          tar xzf binaryen.tar.gz
+          sudo mv binaryen-version_125/bin/wasm-opt /usr/local/bin/
+
+      - name: Build WebAssembly
+        run: cargo build --profile release-wasm --package wasm --target wasm32-unknown-unknown
+
+      - name: Optimize with wasm-opt
+        run: |
+          wasm-opt -Oz --enable-bulk-memory -o target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+          mv target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm
+          path: artifacts/
+
+  slack_notify:
+    needs: [ci, test-wasm, build-c-api, build-wasm]
+    runs-on: ubuntu-slim
+    if: ${{ always() }}
+    permissions:
+      actions: read
     steps:
       - name: Slack Notification
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_CHANNEL: hisui
-          SLACK_COLOR: danger
-          SLACK_ICON_EMOJI: ":japanese_ogre:"
-          SLACK_TITLE: "FAILED"
-          SLACK_MESSAGE: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{github.event.head_commit.message || 'Scheduled run'}}>
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: rust-oss
+          notify_mode: failure_and_fixed

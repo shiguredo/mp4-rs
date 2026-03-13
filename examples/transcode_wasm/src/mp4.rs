@@ -99,6 +99,7 @@ impl OutputMp4Builder {
         Ok(MoovBox {
             mvhd_box,
             trak_boxes,
+            mvex_box: None,
             unknown_boxes: Vec::new(),
         })
     }
@@ -203,10 +204,13 @@ impl OutputMp4Builder {
         Ok(StblBox {
             stsd_box,
             stts_box,
+            ctts_box: None,
+            cslg_box: None,
             stsc_box,
             stsz_box,
             stco_or_co64_box: Either::A(stco_box),
             stss_box,
+            sdtp_box: None,
             unknown_boxes: Vec::new(),
         })
     }

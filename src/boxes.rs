@@ -3,10 +3,15 @@ use alloc::{boxed::Box, format, vec::Vec};
 
 use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result};
 
+pub use crate::boxes_fmp4::{
+    MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
+    TfraEntry, TrafBox, TrunBox, TrunSample,
+};
 pub use crate::boxes_moov_tree::{
-    Co64Box, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, EsdsBox, HdlrBox, MdhdBox, MdiaBox,
-    MinfBox, MoovBox, MvhdBox, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox,
-    StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox, UrlBox, VmhdBox,
+    Co64Box, CslgBox, CttsBox, CttsEntry, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, EsdsBox,
+    HdlrBox, MdhdBox, MdiaBox, MehdBox, MinfBox, MoovBox, MvexBox, MvhdBox, SdtpBox,
+    SdtpSampleFlags, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
+    SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UrlBox, VmhdBox,
 };
 pub use crate::boxes_sample_entry::{
     AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, FlacBox,
@@ -108,6 +113,12 @@ impl Brand {
 
     /// [ISO/IEC 14496-12] `avc1` ブランド
     pub const AVC1: Self = Self::new(*b"avc1");
+
+    /// [ISO/IEC 14496-15] `hev1` ブランド
+    pub const HEV1: Self = Self::new(*b"hev1");
+
+    /// [ISO/IEC 14496-15] `hvc1` ブランド
+    pub const HVC1: Self = Self::new(*b"hvc1");
 
     /// [ISO/IEC 14496-12] `iso2` ブランド
     pub const ISO2: Self = Self::new(*b"iso2");
@@ -257,6 +268,9 @@ pub enum RootBox {
     Free(FreeBox),
     Mdat(MdatBox),
     Moov(MoovBox),
+    Moof(MoofBox),
+    Mfra(MfraBox),
+    Sidx(SidxBox),
     Unknown(UnknownBox),
 }
 
@@ -266,6 +280,9 @@ impl RootBox {
             RootBox::Free(b) => b,
             RootBox::Mdat(b) => b,
             RootBox::Moov(b) => b,
+            RootBox::Moof(b) => b,
+            RootBox::Mfra(b) => b,
+            RootBox::Sidx(b) => b,
             RootBox::Unknown(b) => b,
         }
     }
@@ -277,6 +294,9 @@ impl Encode for RootBox {
             RootBox::Free(b) => b.encode(buf),
             RootBox::Mdat(b) => b.encode(buf),
             RootBox::Moov(b) => b.encode(buf),
+            RootBox::Moof(b) => b.encode(buf),
+            RootBox::Mfra(b) => b.encode(buf),
+            RootBox::Sidx(b) => b.encode(buf),
             RootBox::Unknown(b) => b.encode(buf),
         }
     }
@@ -289,6 +309,9 @@ impl Decode for RootBox {
             FreeBox::TYPE => FreeBox::decode(buf).map(|(b, n)| (RootBox::Free(b), n)),
             MdatBox::TYPE => MdatBox::decode(buf).map(|(b, n)| (RootBox::Mdat(b), n)),
             MoovBox::TYPE => MoovBox::decode(buf).map(|(b, n)| (RootBox::Moov(b), n)),
+            MoofBox::TYPE => MoofBox::decode(buf).map(|(b, n)| (RootBox::Moof(b), n)),
+            MfraBox::TYPE => MfraBox::decode(buf).map(|(b, n)| (RootBox::Mfra(b), n)),
+            SidxBox::TYPE => SidxBox::decode(buf).map(|(b, n)| (RootBox::Sidx(b), n)),
             _ => UnknownBox::decode(buf).map(|(b, n)| (RootBox::Unknown(b), n)),
         }
     }

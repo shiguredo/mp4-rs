@@ -1,17 +1,40 @@
 [package]
 name = "shiguredo_mp4"
-version = "2026.1.0"
+version = "2026.2.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["Shiguredo Inc."]
 license = "Apache-2.0"
 description = "MP4 library"
-homepage = "https://github.com/shiguredo/mp4-rust"
-repository = "https://github.com/shiguredo/mp4-rust"
+homepage = "https://github.com/shiguredo/mp4-rs"
+repository = "https://github.com/shiguredo/mp4-rs"
 readme = "README.md"
 categories = ["no-std"]
 
 [dependencies]
 
 [workspace]
-members = ["crates/c-api","examples/dump_wasm", "examples/transcode_wasm"]
+members = [
+    "crates/c-api",
+    "crates/wasm",
+    "examples/dump_wasm",
+    "examples/transcode_wasm",
+    "pbt",
+]
+exclude = ["fuzz"]
+
+
+# wasm リリース用のビルドプロファイル (サイズ最小化)
+# cargo build --profile release-wasm --package wasm --target wasm32-unknown-unknown
+[profile.release-wasm]
+inherits = "release"
+# LTO でクレート間の最適化を行いサイズを削減
+lto = true
+# 並列コンパイルを無効化して最適化の質を向上
+codegen-units = 1
+# 速度より出力サイズを優先
+opt-level = "z"
+# スタックアンワインドを省略してサイズを削減
+panic = "abort"
+# デバッグシンボルを削除してサイズを削減
+strip = true

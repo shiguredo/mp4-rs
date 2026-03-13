@@ -112,8 +112,50 @@ jobs:
         run: |
           gh release upload ${{ needs.github-release.outputs.version }} mp4-${{ needs.github-release.outputs.version }}_${{ matrix.platform.name }}.zip
 
+  upload-wasm-assets:
+    name: "Upload WebAssembly assets"
+    needs: github-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v5
+
+      - run: rustup update stable
+      - run: rustup default stable
+      - run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-opt
+        run: |
+          curl -L -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_125/binaryen-version_125-x86_64-linux.tar.gz
+          echo "7c3bc16599c8274a04d34a504fe4be2047884f900e0e2da2f6fb9cd667183be4  binaryen.tar.gz" | sha256sum -c -
+          tar xzf binaryen.tar.gz
+          sudo mv binaryen-version_125/bin/wasm-opt /usr/local/bin/
+
+      - name: Build WebAssembly
+        run: cargo build --profile release-wasm --package wasm --target wasm32-unknown-unknown
+
+      - name: Optimize with wasm-opt
+        run: |
+          wasm-opt -Oz --enable-bulk-memory -o target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+          mv target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      - name: Package
+        run: |
+          mkdir -p mp4-${{ needs.github-release.outputs.version }}_wasm
+          cp target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm mp4-${{ needs.github-release.outputs.version }}_wasm/
+          tar -czf mp4-${{ needs.github-release.outputs.version }}_wasm.tar.gz \
+            mp4-${{ needs.github-release.outputs.version }}_wasm
+
+      - name: Upload Release Asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.github-release.outputs.version }} \
+            mp4-${{ needs.github-release.outputs.version }}_wasm.tar.gz
+
   publish:
-    needs: [github-release, upload-assets]
+    needs: [github-release, upload-assets, upload-wasm-assets]
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -126,18 +168,17 @@ jobs:
       env:
         CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-  slack_notify_failed:
-    needs: [github-release, upload-assets, publish]
-    timeout-minutes: 20
-    runs-on: ubuntu-24.04
-    if: failure()
+  slack_notify:
+    needs: [github-release, upload-assets, upload-wasm-assets, publish]
+    runs-on: ubuntu-slim
+    if: ${{ always() }}
+    permissions:
+      actions: read
     steps:
       - name: Slack Notification
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_CHANNEL: hisui
-          SLACK_COLOR: danger
-          SLACK_ICON_EMOJI: ":japanese_ogre:"
-          SLACK_TITLE: "FAILED"
-          SLACK_MESSAGE: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{github.event.head_commit.message }}>
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        uses: shiguredo/github-actions/.github/actions/slack-notify@main
+        with:
+          status: ${{ job.status }}
+          slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
+          slack_channel: hisui
+          notify_mode: failure_and_fixed

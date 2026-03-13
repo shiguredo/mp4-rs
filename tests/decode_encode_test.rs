@@ -1,4 +1,4 @@
-use shiguredo_mp4::{BoxType, Decode, Encode, Mp4File, Result};
+use shiguredo_mp4::{BoxType, Decode, Encode, Mp4File, Result, boxes::RootBox};
 
 #[test]
 fn decode_encode_black_h264_video_mp4() -> Result<()> {
@@ -194,6 +194,52 @@ fn decode_encode_beep_flac_audio_mp4() -> Result<()> {
     Ok(())
 }
 
+/// fMP4 (fragmented MP4) のデコード/エンコード テスト
+#[test]
+fn decode_encode_black_h264_fmp4() -> Result<()> {
+    let input_bytes = include_bytes!("testdata/black-h264-fmp4.mp4");
+    let (file, file_size) = Mp4File::decode(&input_bytes[..])?;
+    assert_eq!(file_size, input_bytes.len());
+
+    // デコード時に未処理のボックスがないことを確認する。
+    assert_eq!(collect_unknown_box_types(&file), Vec::new());
+
+    // fMP4 には moof ボックスが含まれていることを確認する。
+    let has_moof = file.boxes.iter().any(|b| matches!(b, RootBox::Moof(_)));
+    assert!(has_moof, "fMP4 には moof ボックスが含まれている必要がある");
+
+    // fMP4 には moov ボックスが含まれていることを確認する (mvex を含む)。
+    let moov = file
+        .boxes
+        .iter()
+        .find_map(|b| match b {
+            RootBox::Moov(m) => Some(m),
+            _ => None,
+        })
+        .expect("fMP4 には moov ボックスが含まれている必要がある");
+
+    // fMP4 の moov には mvex ボックスが含まれていることを確認する。
+    assert!(
+        moov.mvex_box.is_some(),
+        "fMP4 の moov には mvex ボックスが含まれている必要がある"
+    );
+
+    // fMP4 には mfra ボックスが含まれていることを確認する。
+    let has_mfra = file.boxes.iter().any(|b| matches!(b, RootBox::Mfra(_)));
+    assert!(has_mfra, "fMP4 には mfra ボックスが含まれている必要がある");
+
+    // エンコード結果をデコードしたら同じ MP4 になっていることを確認する。
+    let output_bytes = file.encode_to_vec()?;
+    let (encoded_file, _) = Mp4File::decode(&output_bytes[..])?;
+    assert_eq!(file, encoded_file);
+
+    // エンコード結果のバイト列が正しいことを確認する。
+    assert_eq!(input_bytes.len(), output_bytes.len());
+    assert_eq!(&input_bytes[..], output_bytes);
+
+    Ok(())
+}
+
 fn collect_unknown_box_types(mp4: &Mp4File) -> Vec<BoxType> {
     let mut stack = mp4.iter().collect::<Vec<_>>();
     let mut unknowns = Vec::new();
@@ -202,7 +248,7 @@ fn collect_unknown_box_types(mp4: &Mp4File) -> Vec<BoxType> {
         if b.is_unknown_box()
             && !matches!(
                 b.box_type().as_bytes(),
-                b"btrt" | b"ctts" | b"fiel" | b"pasp" | b"sbgp" | b"sdtp" | b"sgpd" | b"udta"
+                b"btrt" | b"fiel" | b"pasp" | b"sbgp" | b"sgpd" | b"udta"
             )
         {
             unknowns.push(b.box_type());

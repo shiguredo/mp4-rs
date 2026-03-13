@@ -20,7 +20,10 @@ pub struct Mp4DemuxTrackInfo {
 
     /// トラックの尺（タイムスケール単位で表現）
     ///
-    /// 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること
+    /// 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること。
+    ///
+    /// fMP4 の場合は init segment 由来の値であり、実際には 0 になることが多い。
+    /// その場合は「未確定ないし実質不明相当」とみなしてよい。
     pub duration: u64,
 
     /// このトラック内で使用されているタイムスケール
@@ -46,20 +49,20 @@ impl From<shiguredo_mp4::demux::TrackInfo> for Mp4DemuxTrackInfo {
 /// MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）のメタデータと
 /// ファイル内の位置情報を保持する
 ///
-/// この構造体が参照しているポインタのメモリ管理が `Mp4FileDemuxer` が行っており、
-/// `Mp4FileDemuxer` インスタンスが破棄されるまでは安全に参照可能である
+/// この構造体が参照しているポインタのメモリ管理は各 demuxer が行っており、
+/// 対応する demuxer インスタンスが破棄されるまでは安全に参照可能である
 #[repr(C)]
 pub struct Mp4DemuxSample {
     /// サンプルが属するトラックの情報へのポインタ
     ///
-    /// このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+    /// このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
     pub track: *const Mp4DemuxTrackInfo,
 
     /// サンプルの詳細情報（コーデック設定など）へのポインタ
     ///
     /// 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
     ///
-    /// このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+    /// このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
     pub sample_entry: *const Mp4SampleEntry,
 
     /// このサンプルがキーフレームであるかの判定
@@ -81,10 +84,24 @@ pub struct Mp4DemuxSample {
     /// `timescale` で除算すること
     pub duration: u32,
 
+    /// コンポジション時間オフセットが存在するかどうか
+    pub has_composition_time_offset: bool,
+
+    /// コンポジション時間オフセット（タイムスケール単位）
+    ///
+    /// `has_composition_time_offset` が true の場合のみ有効。
+    /// PTS = timestamp + composition_time_offset で計算できる。
+    ///
+    /// 通常 MP4 の `ctts` と fMP4 の `trun` の両方を共通の sample 型で扱うため、
+    /// `i64` で公開している。
+    /// 仕様上すべての入力が 64 bit 必須という意味ではない。
+    pub composition_time_offset: i64,
+
     /// ファイル内におけるサンプルデータの開始位置（バイト単位）
     ///
-    /// 実際のサンプルデータへアクセスするには、この位置から `data_size` 分のバイト列を
-    /// 入力ファイルから読み込む必要がある
+    /// file demuxer ではファイル先頭からの絶対位置、
+    /// segment demuxer では `fmp4_segment_demuxer_handle_media_segment()` に渡した
+    /// 入力バッファ先頭からの相対位置を表す。
     pub data_offset: u64,
 
     /// サンプルデータのサイズ（バイト単位）
@@ -107,6 +124,8 @@ impl Mp4DemuxSample {
             keyframe: sample.keyframe,
             timestamp: sample.timestamp,
             duration: sample.duration,
+            has_composition_time_offset: sample.composition_time_offset.is_some(),
+            composition_time_offset: sample.composition_time_offset.unwrap_or(0),
             data_offset: sample.data_offset,
             data_size: sample.data_size,
         }
@@ -124,6 +143,8 @@ impl Mp4DemuxSample {
 /// - `mp4_file_demuxer_handle_input()`: ファイルデータを入力として受け取る
 /// - `mp4_file_demuxer_get_tracks()`: MP4 ファイル内のすべてのメディアトラック情報を取得する
 /// - `mp4_file_demuxer_next_sample()`: 時系列順に次のサンプルを取得する
+/// - `mp4_file_demuxer_prev_sample()`: 時系列順に前のサンプルを取得する
+/// - `mp4_file_demuxer_seek()`: 指定した時刻へシークする
 /// - `mp4_file_demuxer_get_last_error()`: 最後に発生したエラーのメッセージを取得する
 ///
 /// # Examples
@@ -158,6 +179,14 @@ impl Mp4DemuxSample {
 /// while (mp4_file_demuxer_next_sample(demuxer, &sample) == MP4_ERROR_OK) {
 ///     // サンプルを処理...
 /// }
+///
+/// // 前のサンプルを取得
+/// while (mp4_file_demuxer_prev_sample(demuxer, &sample) == MP4_ERROR_OK) {
+///     // サンプルを処理...
+/// }
+///
+/// // timestamp=1500, timescale=1000 にシーク
+/// mp4_file_demuxer_seek(demuxer, 1500, 1000);
 ///
 /// // リソース解放
 /// mp4_file_demuxer_free(demuxer);
@@ -526,7 +555,7 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_tracks(
 /// すべてのトラックから、まだ取得していないもののなかで、
 /// 最も早いタイムスタンプを持つサンプルを返す
 ///
-/// すべてのサンプルを取得し終えた場合は `MP4_ERROR_NO_MORE_SAMPLES` が返される
+/// ファイルの先頭に達した場合は `MP4_ERROR_NO_MORE_SAMPLES` が返される
 ///
 /// # サンプルデータの読み込みについて
 ///
@@ -645,6 +674,161 @@ pub unsafe extern "C" fn mp4_file_demuxer_next_sample(
         Ok(None) => Mp4Error::MP4_ERROR_NO_MORE_SAMPLES,
         Err(e) => {
             demuxer.set_last_error(&format!("[mp4_file_demuxer_next_sample] {e}"));
+            e.into()
+        }
+    }
+}
+
+/// MP4 ファイルから時系列順に前のメディアサンプルを取得する
+///
+/// すべてのトラックのうち、現在位置より前にあるサンプルから、
+/// 最も遅いタイムスタンプのものを返す
+///
+/// ファイルの先頭に達した場合は `MP4_ERROR_NO_MORE_SAMPLES` が返される
+///
+/// # サンプルデータの読み込みについて
+///
+/// この関数は、サンプルのメタデータ（タイムスタンプ、サイズ、ファイル内の位置など）のみを返すので、
+/// 実際のサンプルデータ（音声フレームや映像フレーム）の読み込みは呼び出し元の責務となる
+///
+/// サンプルデータを処理する場合には、返された `Mp4DemuxSample` の `data_offset` と `data_size` フィールドを使用して、
+/// 入力ファイルから直接サンプルデータを読み込む必要がある
+///
+/// # 引数
+///
+/// - `demuxer`: `Mp4FileDemuxer` インスタンスへのポインタ
+///   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+///
+/// - `out_sample`: 取得したサンプル情報を受け取るポインタ
+///   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+///
+/// # 戻り値
+///
+/// - `MP4_ERROR_OK`: 正常にサンプルが取得された
+/// - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+/// - `MP4_ERROR_NO_MORE_SAMPLES`: ファイルの先頭に達した
+/// - `MP4_ERROR_INPUT_REQUIRED`: 初期化に必要な入力データが不足している
+///   - `mp4_file_demuxer_get_required_input()` および `mp4_file_demuxer_handle_input()` のハンドリングが必要
+/// - その他のエラー: 入力ファイルが破損していたり、未対応のコーデックを含んでいる場合
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mp4_file_demuxer_prev_sample(
+    demuxer: *mut Mp4FileDemuxer,
+    out_sample: *mut Mp4DemuxSample,
+) -> Mp4Error {
+    // 最初に mp4_file_demuxer_get_tracks() を呼んで、demuxer.tracks が確実に初期化されているようにする
+    let mut tracks_ptr: *const Mp4DemuxTrackInfo = std::ptr::null();
+    let mut track_count: u32 = 0;
+    let result = unsafe { mp4_file_demuxer_get_tracks(demuxer, &mut tracks_ptr, &mut track_count) };
+    if !matches!(result, Mp4Error::MP4_ERROR_OK) {
+        return result;
+    }
+
+    if demuxer.is_null() {
+        return Mp4Error::MP4_ERROR_NULL_POINTER;
+    }
+    let demuxer = unsafe { &mut *demuxer };
+
+    if out_sample.is_null() {
+        demuxer.set_last_error("[mp4_file_demuxer_prev_sample] out_sample is null");
+        return Mp4Error::MP4_ERROR_NULL_POINTER;
+    }
+
+    match demuxer.inner.prev_sample() {
+        Ok(Some(sample)) => {
+            let Some(track_info) = demuxer
+                .tracks
+                .iter()
+                .find(|t| t.track_id == sample.track.track_id)
+            else {
+                demuxer.set_last_error(
+                    "[mp4_file_demuxer_prev_sample] track info not found for sample",
+                );
+                return Mp4Error::MP4_ERROR_INVALID_STATE;
+            };
+
+            let sample_entry = if let Some(sample_entry) = sample.sample_entry {
+                let sample_entry_box_type = sample_entry.box_type();
+                if let Some(entry) = demuxer
+                    .sample_entries
+                    .iter()
+                    .find_map(|entry| (entry.0 == *sample_entry).then_some(&entry.2))
+                {
+                    Some(&**entry)
+                } else {
+                    let Some(entry_owned) = Mp4SampleEntryOwned::new(sample_entry.clone()) else {
+                        demuxer.set_last_error(&format!(
+                            "[mp4_file_demuxer_prev_sample] Unsupported sample entry box type: {sample_entry_box_type}",
+                        ));
+                        return Mp4Error::MP4_ERROR_UNSUPPORTED;
+                    };
+                    let entry = Box::new(entry_owned.to_mp4_sample_entry());
+                    demuxer
+                        .sample_entries
+                        .push((sample_entry.clone(), entry_owned, entry));
+                    demuxer.sample_entries.last().map(|entry| &*entry.2)
+                }
+            } else {
+                None
+            };
+
+            unsafe {
+                *out_sample = Mp4DemuxSample::new(sample, track_info, sample_entry);
+            }
+
+            Mp4Error::MP4_ERROR_OK
+        }
+        Ok(None) => Mp4Error::MP4_ERROR_NO_MORE_SAMPLES,
+        Err(e) => {
+            demuxer.set_last_error(&format!("[mp4_file_demuxer_prev_sample] {e}"));
+            e.into()
+        }
+    }
+}
+
+/// MP4 ファイルの指定時刻にシークする
+///
+/// 各トラックで指定時刻を含むサンプルを選び、次回の `mp4_file_demuxer_next_sample()` が
+/// その位置から開始されるようにする
+///
+/// 同一タイムスタンプのサンプルが複数ある場合は、シーク後の `mp4_file_demuxer_next_sample()` の走査対象に含まれる
+///
+/// # 引数
+///
+/// - `demuxer`: `Mp4FileDemuxer` インスタンスへのポインタ
+///   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+/// - `timestamp`: シーク先の時刻を表すタイムスタンプ値（単位は `timescale` で指定）
+///   - 実際の秒数は `timestamp / timescale` で計算される
+/// - `timescale`: タイムスケール（1 秒間の単位数）
+///   - 0 の場合は `MP4_ERROR_INVALID_INPUT` が返される
+///
+/// # 戻り値
+///
+/// - `MP4_ERROR_OK`: 正常にシークできた
+/// - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+/// - `MP4_ERROR_INVALID_INPUT`: 引数の値が不正
+/// - `MP4_ERROR_INPUT_REQUIRED`: 初期化に必要な入力データが不足している
+///   - `mp4_file_demuxer_get_required_input()` および `mp4_file_demuxer_handle_input()` のハンドリングが必要
+/// - その他のエラー: 入力ファイルが破損していたり、未対応のコーデックを含んでいる場合
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mp4_file_demuxer_seek(
+    demuxer: *mut Mp4FileDemuxer,
+    timestamp: u64,
+    timescale: u32,
+) -> Mp4Error {
+    if demuxer.is_null() {
+        return Mp4Error::MP4_ERROR_NULL_POINTER;
+    }
+    let demuxer = unsafe { &mut *demuxer };
+
+    let position = std::time::Duration::from_secs(timestamp).checked_div(timescale);
+    let Some(position) = position else {
+        demuxer.set_last_error("[mp4_file_demuxer_seek] timescale must be non-zero");
+        return Mp4Error::MP4_ERROR_INVALID_INPUT;
+    };
+    match demuxer.inner.seek(position) {
+        Ok(()) => Mp4Error::MP4_ERROR_OK,
+        Err(e) => {
+            demuxer.set_last_error(&format!("[mp4_file_demuxer_seek] {e}"));
             e.into()
         }
     }

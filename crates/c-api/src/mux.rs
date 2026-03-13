@@ -18,6 +18,8 @@ use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
 ///     .keyframe = true,
 ///     .timescale = 30,
 ///     .duration = 1,  // 30 FPS
+///     .has_composition_time_offset = false,
+///     .composition_time_offset = 0,
 ///     .data_offset = 1024,
 ///     .data_size = 4096,
 /// };
@@ -29,6 +31,8 @@ use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
 ///     .keyframe = true,  // 音声では通常は常に true
 ///     .timescale = 1000,
 ///     .duration = 20,  // 20 ms
+///     .has_composition_time_offset = false,
+///     .composition_time_offset = 0,
 ///     .data_offset = 5120,
 ///     .data_size = 256,
 /// };
@@ -88,6 +92,24 @@ pub struct Mp4MuxSample {
     /// プレイヤーの対応がまちまちであるため `Mp4FileMuxer` では現状サポートしておらず、
     /// 上述のような個々のプレイヤーの実装への依存性が低い方法を推奨している
     pub duration: u32,
+
+    /// コンポジション時間オフセットが有効かどうか
+    ///
+    /// `true` の場合、`composition_time_offset` を用いて `ctts` ボックスが生成される
+    pub has_composition_time_offset: bool,
+
+    /// コンポジション時間オフセット（トラックのタイムスケール単位）
+    ///
+    /// `has_composition_time_offset` が true の場合のみ有効。
+    /// 値の意味は `PTS = DTS + composition_time_offset` である。
+    ///
+    /// demux API と往復しやすいように `i64` で公開しているが、
+    /// 実際に mux 時に受理される範囲は次の通り:
+    /// - file mux: `i32::MIN ..= u32::MAX`
+    /// - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+    ///
+    /// 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
+    pub composition_time_offset: i64,
 
     /// 出力ファイル内におけるサンプルデータの開始位置（バイト単位）
     pub data_offset: u64,
@@ -457,7 +479,7 @@ pub unsafe extern "C" fn mp4_file_muxer_get_last_error(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mp4_file_muxer_set_reserved_moov_box_size(
     muxer: *mut Mp4FileMuxer,
-    size: u64,
+    size: u32,
 ) -> Mp4Error {
     if muxer.is_null() {
         return Mp4Error::MP4_ERROR_NULL_POINTER;
@@ -698,6 +720,8 @@ pub unsafe extern "C" fn mp4_file_muxer_next_output(
 ///     .keyframe = true,
 ///     .timescale = 30,
 ///     .duration = 1,  // 30 FPS
+///     .has_composition_time_offset = false,
+///     .composition_time_offset = 0,
 ///     .data_offset = output_offset,
 ///     .data_size = sizeof(sample_data),
 /// };
@@ -761,6 +785,9 @@ pub unsafe extern "C" fn mp4_file_muxer_append_sample(
         keyframe: sample.keyframe,
         timescale,
         duration: sample.duration,
+        composition_time_offset: sample
+            .has_composition_time_offset
+            .then_some(sample.composition_time_offset),
         data_offset: sample.data_offset,
         data_size: sample.data_size as usize,
     };

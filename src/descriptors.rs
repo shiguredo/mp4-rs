@@ -101,6 +101,9 @@ impl Encode for EsDescriptor {
             offset += v.encode(&mut buf[offset..])?;
         }
         if let Some(v) = &self.url_string {
+            if v.len() > 255 {
+                return Err(Error::invalid_input("URL string too long (max 255 bytes)"));
+            }
             offset += (v.len() as u8).encode(&mut buf[offset..])?;
             offset += v.as_bytes().encode(&mut buf[offset..])?;
         }

@@ -19,7 +19,7 @@ fn test_c_examples_compile() {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "c") {
+            if path.extension().is_some_and(|ext| ext == "c") {
                 Some(path)
             } else {
                 None

@@ -1,0 +1,495 @@
+[package]
+name = "fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+shiguredo_mp4 = { path = ".." }
+
+[[bin]]
+name = "fuzz_box_header"
+path = "fuzz_targets/fuzz_box_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_basic_types"
+path = "fuzz_targets/fuzz_basic_types.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_descriptors"
+path = "fuzz_targets/fuzz_descriptors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mp4_file"
+path = "fuzz_targets/fuzz_mp4_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ftyp_box"
+path = "fuzz_targets/fuzz_ftyp_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_root_box"
+path = "fuzz_targets/fuzz_root_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hvcc_box"
+path = "fuzz_targets/fuzz_hvcc_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_vpcc_box"
+path = "fuzz_targets/fuzz_vpcc_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_avcc_box"
+path = "fuzz_targets/fuzz_avcc_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_av1c_box"
+path = "fuzz_targets/fuzz_av1c_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_esds_box"
+path = "fuzz_targets/fuzz_esds_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dfla_box"
+path = "fuzz_targets/fuzz_dfla_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dops_box"
+path = "fuzz_targets/fuzz_dops_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_avc1_box"
+path = "fuzz_targets/fuzz_avc1_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hev1_box"
+path = "fuzz_targets/fuzz_hev1_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hvc1_box"
+path = "fuzz_targets/fuzz_hvc1_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_vp08_box"
+path = "fuzz_targets/fuzz_vp08_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_vp09_box"
+path = "fuzz_targets/fuzz_vp09_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_av01_box"
+path = "fuzz_targets/fuzz_av01_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mp4a_box"
+path = "fuzz_targets/fuzz_mp4a_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_opus_box"
+path = "fuzz_targets/fuzz_opus_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_flac_box"
+path = "fuzz_targets/fuzz_flac_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stts_box"
+path = "fuzz_targets/fuzz_stts_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ctts_box"
+path = "fuzz_targets/fuzz_ctts_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cslg_box"
+path = "fuzz_targets/fuzz_cslg_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stsc_box"
+path = "fuzz_targets/fuzz_stsc_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sdtp_box"
+path = "fuzz_targets/fuzz_sdtp_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stco_box"
+path = "fuzz_targets/fuzz_stco_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_co64_box"
+path = "fuzz_targets/fuzz_co64_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_elst_box"
+path = "fuzz_targets/fuzz_elst_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mvhd_box"
+path = "fuzz_targets/fuzz_mvhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tkhd_box"
+path = "fuzz_targets/fuzz_tkhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mdhd_box"
+path = "fuzz_targets/fuzz_mdhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_hdlr_box"
+path = "fuzz_targets/fuzz_hdlr_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_smhd_box"
+path = "fuzz_targets/fuzz_smhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_vmhd_box"
+path = "fuzz_targets/fuzz_vmhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stss_box"
+path = "fuzz_targets/fuzz_stss_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_url_box"
+path = "fuzz_targets/fuzz_url_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dref_box"
+path = "fuzz_targets/fuzz_dref_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_free_box"
+path = "fuzz_targets/fuzz_free_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_unknown_box"
+path = "fuzz_targets/fuzz_unknown_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dinf_box"
+path = "fuzz_targets/fuzz_dinf_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_edts_box"
+path = "fuzz_targets/fuzz_edts_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mdat_box"
+path = "fuzz_targets/fuzz_mdat_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stsd_box"
+path = "fuzz_targets/fuzz_stsd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_moov_box"
+path = "fuzz_targets/fuzz_moov_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_trak_box"
+path = "fuzz_targets/fuzz_trak_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mdia_box"
+path = "fuzz_targets/fuzz_mdia_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_minf_box"
+path = "fuzz_targets/fuzz_minf_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stbl_box"
+path = "fuzz_targets/fuzz_stbl_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_stsz_box"
+path = "fuzz_targets/fuzz_stsz_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_moof_box"
+path = "fuzz_targets/fuzz_moof_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mfhd_box"
+path = "fuzz_targets/fuzz_mfhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_traf_box"
+path = "fuzz_targets/fuzz_traf_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tfhd_box"
+path = "fuzz_targets/fuzz_tfhd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_trun_box"
+path = "fuzz_targets/fuzz_trun_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tfdt_box"
+path = "fuzz_targets/fuzz_tfdt_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_sidx_box"
+path = "fuzz_targets/fuzz_sidx_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mfra_box"
+path = "fuzz_targets/fuzz_mfra_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_tfra_box"
+path = "fuzz_targets/fuzz_tfra_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mfro_box"
+path = "fuzz_targets/fuzz_mfro_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mvex_box"
+path = "fuzz_targets/fuzz_mvex_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mehd_box"
+path = "fuzz_targets/fuzz_mehd_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_trex_box"
+path = "fuzz_targets/fuzz_trex_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fmp4_segment_demux"
+path = "fuzz_targets/fuzz_fmp4_segment_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mp4_file_demux"
+path = "fuzz_targets/fuzz_mp4_file_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_mp4_file_kind_detector"
+path = "fuzz_targets/fuzz_mp4_file_kind_detector.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fmp4_segment_mux"
+path = "fuzz_targets/fuzz_fmp4_segment_mux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_fmp4_file_demux"
+path = "fuzz_targets/fuzz_fmp4_file_demux.rs"
+test = false
+doc = false
+bench = false

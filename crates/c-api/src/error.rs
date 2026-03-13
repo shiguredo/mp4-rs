@@ -62,6 +62,7 @@ impl From<DemuxError> for Mp4Error {
         match e {
             DemuxError::DecodeError(e) => e.into(),
             DemuxError::SampleTableError(e) => e.into(),
+            DemuxError::InvalidState(_) => Self::MP4_ERROR_INVALID_STATE,
             DemuxError::InputRequired(_) => Self::MP4_ERROR_INPUT_REQUIRED,
             _ => Self::MP4_ERROR_OTHER,
         }
@@ -73,9 +74,13 @@ impl From<MuxError> for Mp4Error {
         match e {
             MuxError::EncodeError(e) => e.into(),
             MuxError::AlreadyFinalized => Self::MP4_ERROR_INVALID_STATE,
-            MuxError::PositionMismatch { .. }
+            MuxError::Overflow => Self::MP4_ERROR_OTHER,
+            MuxError::EmptyTracks
+            | MuxError::EmptySamples
+            | MuxError::PositionMismatch { .. }
             | MuxError::MissingSampleEntry { .. }
-            | MuxError::TimescaleMismatch { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            | MuxError::TimescaleMismatch { .. }
+            | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

@@ -1,0 +1,13 @@
+[package]
+name = "wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "mp4_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+c_api = { package = "c-api", path = "../c-api" }
+nojson = "0.3"

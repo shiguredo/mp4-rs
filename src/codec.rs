@@ -27,6 +27,7 @@ pub enum ErrorKind {
 }
 
 /// エラー型
+#[derive(Clone)]
 pub struct Error {
     /// 発生したエラーの種類
     pub kind: ErrorKind,

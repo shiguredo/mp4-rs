@@ -11,7 +11,7 @@ use crate::{
 
 /// 全てのボックスが実装するトレイト
 ///
-/// 本来なら `Box` という名前が適切だが、それだと標準ライブラリの [`core::boxed::Box`] と名前が
+/// 本来なら `Box` という名前が適切だが、それだと標準ライブラリの [`alloc::boxed::Box`] と名前が
 /// 衝突してしまうので、それを避けるために `BaseBox` としている
 pub trait BaseBox {
     /// ボックスの種別
@@ -20,8 +20,7 @@ pub trait BaseBox {
     /// 未知のボックスかどうか
     ///
     /// 基本的には `false` を返すデフォルト実装のままで問題ないが、
-    /// [`UnknownBox`](crate::boxes::UnknownBox) や [`IgnoredBox`](crate::boxes::IgnoredBox) を
-    /// 含む `enum` を定義する場合には、独自の実装が必要となる
+    /// [`UnknownBox`][crate::boxes::UnknownBox] を含む `enum` を定義する場合には、独自の実装が必要となる
     fn is_unknown_box(&self) -> bool {
         false
     }
@@ -681,4 +680,106 @@ pub enum TrackKind {
 
     /// 映像トラック
     Video,
+}
+
+/// [ISO/IEC 14496-12] Sample Flags
+///
+/// fMP4 で使用されるサンプルフラグ（32 ビット）。
+/// TrexBox, TfhdBox, TrunBox で使用される。
+///
+/// ビットレイアウト:
+/// - ビット 31-28: reserved (4 bits)
+/// - ビット 27-26: is_leading (2 bits)
+/// - ビット 25-24: sample_depends_on (2 bits)
+/// - ビット 23-22: sample_is_depended_on (2 bits)
+/// - ビット 21-20: sample_has_redundancy (2 bits)
+/// - ビット 19-17: sample_padding_value (3 bits)
+/// - ビット 16: sample_is_non_sync_sample (1 bit)
+/// - ビット 15-0: sample_degradation_priority (16 bits)
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SampleFlags(u32);
+
+impl SampleFlags {
+    /// 空のサンプルフラグを作成する
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// [`u32`] を受け取って、対応するサンプルフラグを作成する
+    pub const fn new(flags: u32) -> Self {
+        Self(flags)
+    }
+
+    /// このサンプルフラグに対応する [`u32`] 値を返す
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+
+    /// is_leading フィールドを取得する（2 bits、ビット 27-26）
+    pub const fn is_leading(self) -> u8 {
+        ((self.0 >> 26) & 0b11) as u8
+    }
+
+    /// sample_depends_on フィールドを取得する（2 bits、ビット 25-24）
+    pub const fn sample_depends_on(self) -> u8 {
+        ((self.0 >> 24) & 0b11) as u8
+    }
+
+    /// sample_is_depended_on フィールドを取得する（2 bits、ビット 23-22）
+    pub const fn sample_is_depended_on(self) -> u8 {
+        ((self.0 >> 22) & 0b11) as u8
+    }
+
+    /// sample_has_redundancy フィールドを取得する（2 bits、ビット 21-20）
+    pub const fn sample_has_redundancy(self) -> u8 {
+        ((self.0 >> 20) & 0b11) as u8
+    }
+
+    /// sample_padding_value フィールドを取得する（3 bits、ビット 19-17）
+    pub const fn sample_padding_value(self) -> u8 {
+        ((self.0 >> 17) & 0b111) as u8
+    }
+
+    /// sample_is_non_sync_sample フィールドを取得する（1 bit、ビット 16）
+    pub const fn sample_is_non_sync_sample(self) -> bool {
+        ((self.0 >> 16) & 1) != 0
+    }
+
+    /// sample_degradation_priority フィールドを取得する（16 bits、ビット 15-0）
+    pub const fn sample_degradation_priority(self) -> u16 {
+        (self.0 & 0xFFFF) as u16
+    }
+
+    /// 各フィールドからサンプルフラグを構築する
+    pub const fn from_fields(
+        is_leading: u8,
+        sample_depends_on: u8,
+        sample_is_depended_on: u8,
+        sample_has_redundancy: u8,
+        sample_padding_value: u8,
+        sample_is_non_sync_sample: bool,
+        sample_degradation_priority: u16,
+    ) -> Self {
+        let flags = ((is_leading as u32 & 0b11) << 26)
+            | ((sample_depends_on as u32 & 0b11) << 24)
+            | ((sample_is_depended_on as u32 & 0b11) << 22)
+            | ((sample_has_redundancy as u32 & 0b11) << 20)
+            | ((sample_padding_value as u32 & 0b111) << 17)
+            | ((sample_is_non_sync_sample as u32) << 16)
+            | (sample_degradation_priority as u32);
+        Self(flags)
+    }
+}
+
+impl Encode for SampleFlags {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        self.0.encode(buf)
+    }
+}
+
+impl Decode for SampleFlags {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let (flags, size) = u32::decode(buf)?;
+        Ok((Self(flags), size))
+    }
 }

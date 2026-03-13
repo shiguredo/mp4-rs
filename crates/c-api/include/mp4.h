@@ -110,6 +110,41 @@ typedef enum Mp4SampleEntryKind {
   MP4_SAMPLE_ENTRY_KIND_FLAC,
 } Mp4SampleEntryKind;
 
+typedef enum Mp4FileKind {
+  MP4_FILE_KIND_MP4 = 0,
+  MP4_FILE_KIND_FRAGMENTED_MP4 = 1,
+} Mp4FileKind;
+
+/**
+ * fMP4 Demuxer の状態を保持する C 構造体
+ *
+ * # 関連関数
+ *
+ * - `fmp4_segment_demuxer_new()`: インスタンスを生成する
+ * - `fmp4_segment_demuxer_free()`: リソースを解放する
+ * - `fmp4_segment_demuxer_get_last_error()`: 最後のエラーメッセージを取得する
+ * - `fmp4_segment_demuxer_handle_init_segment()`: 初期化セグメントを処理する
+ * - `fmp4_segment_demuxer_get_tracks()`: トラック情報を取得する
+ * - `fmp4_segment_demuxer_handle_media_segment()`: メディアセグメントを処理する
+ * - `fmp4_segment_demuxer_free_samples()`: サンプル配列を解放する
+ */
+typedef struct Fmp4SegmentDemuxer Fmp4SegmentDemuxer;
+
+/**
+ * fMP4 Muxer の状態を保持する C 構造体
+ *
+ * # 関連関数
+ *
+ * - `fmp4_segment_muxer_new()`: インスタンスを生成する
+ * - `fmp4_segment_muxer_free()`: リソースを解放する
+ * - `fmp4_segment_muxer_get_last_error()`: 最後のエラーメッセージを取得する
+ * - `fmp4_segment_muxer_write_init_segment()`: 初期化セグメントを生成する
+ * - `fmp4_segment_muxer_write_media_segment_metadata()`: メディアセグメント先頭メタデータを生成する
+ * - `fmp4_segment_muxer_write_media_segment_metadata_with_sidx()`: sidx 付きメディアセグメント先頭メタデータを生成する
+ * - `fmp4_segment_muxer_write_mfra()`: `mfra` ボックスを生成する
+ */
+typedef struct Fmp4SegmentMuxer Fmp4SegmentMuxer;
+
 /**
  * MP4 ファイルをデマルチプレックスして、メディアサンプルを時系列順に取得するための構造体
  *
@@ -122,6 +157,8 @@ typedef enum Mp4SampleEntryKind {
  * - `mp4_file_demuxer_handle_input()`: ファイルデータを入力として受け取る
  * - `mp4_file_demuxer_get_tracks()`: MP4 ファイル内のすべてのメディアトラック情報を取得する
  * - `mp4_file_demuxer_next_sample()`: 時系列順に次のサンプルを取得する
+ * - `mp4_file_demuxer_prev_sample()`: 時系列順に前のサンプルを取得する
+ * - `mp4_file_demuxer_seek()`: 指定した時刻へシークする
  * - `mp4_file_demuxer_get_last_error()`: 最後に発生したエラーのメッセージを取得する
  *
  * # Examples
@@ -157,11 +194,21 @@ typedef enum Mp4SampleEntryKind {
  *     // サンプルを処理...
  * }
  *
+ * // 前のサンプルを取得
+ * while (mp4_file_demuxer_prev_sample(demuxer, &sample) == MP4_ERROR_OK) {
+ *     // サンプルを処理...
+ * }
+ *
+ * // timestamp=1500, timescale=1000 にシーク
+ * mp4_file_demuxer_seek(demuxer, 1500, 1000);
+ *
  * // リソース解放
  * mp4_file_demuxer_free(demuxer);
  * ```
  */
 typedef struct Mp4FileDemuxer Mp4FileDemuxer;
+
+typedef struct Mp4FileKindDetector Mp4FileKindDetector;
 
 /**
  * メディアトラック（音声・映像）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
@@ -309,7 +356,10 @@ typedef struct Mp4DemuxTrackInfo {
   /**
    * トラックの尺（タイムスケール単位で表現）
    *
-   * 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること
+   * 実際の時間（秒単位）を得るには、この値を `timescale` で除算すること。
+   *
+   * fMP4 の場合は init segment 由来の値であり、実際には 0 になることが多い。
+   * その場合は「未確定ないし実質不明相当」とみなしてよい。
    */
   uint64_t duration;
   /**
@@ -807,14 +857,14 @@ typedef struct Mp4SampleEntry {
  * MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）のメタデータと
  * ファイル内の位置情報を保持する
  *
- * この構造体が参照しているポインタのメモリ管理が `Mp4FileDemuxer` が行っており、
- * `Mp4FileDemuxer` インスタンスが破棄されるまでは安全に参照可能である
+ * この構造体が参照しているポインタのメモリ管理は各 demuxer が行っており、
+ * 対応する demuxer インスタンスが破棄されるまでは安全に参照可能である
  */
 typedef struct Mp4DemuxSample {
   /**
    * サンプルが属するトラックの情報へのポインタ
    *
-   * このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+   * このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
    */
   const struct Mp4DemuxTrackInfo *track;
   /**
@@ -822,7 +872,7 @@ typedef struct Mp4DemuxSample {
    *
    * 値が NULL の場合は「サンプルエントリーの内容が前のサンプルと同じ」であることを意味する
    *
-   * このポインタの参照先には `Mp4FileDemuxer` インスタンスが有効な間のみアクセス可能である
+   * このポインタの参照先には対応する demuxer インスタンスが有効な間のみアクセス可能である
    */
   const struct Mp4SampleEntry *sample_entry;
   /**
@@ -848,10 +898,26 @@ typedef struct Mp4DemuxSample {
    */
   uint32_t duration;
   /**
+   * コンポジション時間オフセットが存在するかどうか
+   */
+  bool has_composition_time_offset;
+  /**
+   * コンポジション時間オフセット（タイムスケール単位）
+   *
+   * `has_composition_time_offset` が true の場合のみ有効。
+   * PTS = timestamp + composition_time_offset で計算できる。
+   *
+   * 通常 MP4 の `ctts` と fMP4 の `trun` の両方を共通の sample 型で扱うため、
+   * `i64` で公開している。
+   * 仕様上すべての入力が 64 bit 必須という意味ではない。
+   */
+  int64_t composition_time_offset;
+  /**
    * ファイル内におけるサンプルデータの開始位置（バイト単位）
    *
-   * 実際のサンプルデータへアクセスするには、この位置から `data_size` 分のバイト列を
-   * 入力ファイルから読み込む必要がある
+   * file demuxer ではファイル先頭からの絶対位置、
+   * segment demuxer では `fmp4_segment_demuxer_handle_media_segment()` に渡した
+   * 入力バッファ先頭からの相対位置を表す。
    */
   uint64_t data_offset;
   /**
@@ -861,6 +927,72 @@ typedef struct Mp4DemuxSample {
    */
   uintptr_t data_size;
 } Mp4DemuxSample;
+
+/**
+ * fMP4 Muxer 生成時のオプションを表す C 構造体
+ */
+typedef struct Fmp4SegmentMuxerOptions {
+  /**
+   * ファイル作成時刻（UNIX エポックからの秒数）
+   */
+  uint64_t creation_timestamp_secs;
+} Fmp4SegmentMuxerOptions;
+
+/**
+ * fMP4 メディアセグメントに追加するサンプルを表す C 構造体
+ */
+typedef struct Fmp4SegmentSample {
+  /**
+   * トラックの種別
+   */
+  enum Mp4TrackKind track_kind;
+  /**
+   * タイムスケール（0 は無効）
+   */
+  uint32_t timescale;
+  /**
+   * サンプルの詳細情報（コーデック情報）
+   *
+   * 最初のサンプルでは必須。以後、同じトラックで変更がなければ NULL を指定できる。
+   */
+  const struct Mp4SampleEntry *sample_entry;
+  /**
+   * サンプルの尺（トラックのタイムスケール単位）
+   */
+  uint32_t duration;
+  /**
+   * キーフレームかどうか
+   */
+  bool keyframe;
+  /**
+   * コンポジション時間オフセットが有効かどうか
+   */
+  bool has_composition_time_offset;
+  /**
+   * コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
+   *
+   * demux API と合わせて `i64` で公開している。
+   * ただし fMP4 の `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲だけであり、
+   * 範囲外の値を指定すると mux 関数はエラーを返す。
+   */
+  int64_t composition_time_offset;
+  /**
+   * セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット
+   *
+   * `fmp4_segment_muxer_write_media_segment_metadata()` の返り値には payload 自体は含まれない。
+   * 呼び出し側は返された `moof + mdat header` の直後に、
+   * ここで指定した位置関係になるよう payload を配置する必要がある。
+   *
+   * 同じトラックに属するサンプル群は、`data_offset` の昇順で
+   * 隙間なく連続した 1 区間に配置されている必要がある。
+   * 複数トラックを含む場合は、トラックごとの区間同士も隙間なく並んでいる必要がある。
+   */
+  uint64_t data_offset;
+  /**
+   * サンプルデータのサイズ（バイト単位）
+   */
+  uint32_t data_size;
+} Fmp4SegmentSample;
 
 /**
  * MP4 ファイルに追加（マルチプレックス）するメディアサンプルを表す構造体
@@ -875,6 +1007,8 @@ typedef struct Mp4DemuxSample {
  *     .keyframe = true,
  *     .timescale = 30,
  *     .duration = 1,  // 30 FPS
+ *     .has_composition_time_offset = false,
+ *     .composition_time_offset = 0,
  *     .data_offset = 1024,
  *     .data_size = 4096,
  * };
@@ -886,6 +1020,8 @@ typedef struct Mp4DemuxSample {
  *     .keyframe = true,  // 音声では通常は常に true
  *     .timescale = 1000,
  *     .duration = 20,  // 20 ms
+ *     .has_composition_time_offset = false,
+ *     .composition_time_offset = 0,
  *     .data_offset = 5120,
  *     .data_size = 256,
  * };
@@ -951,6 +1087,26 @@ typedef struct Mp4MuxSample {
    * 上述のような個々のプレイヤーの実装への依存性が低い方法を推奨している
    */
   uint32_t duration;
+  /**
+   * コンポジション時間オフセットが有効かどうか
+   *
+   * `true` の場合、`composition_time_offset` を用いて `ctts` ボックスが生成される
+   */
+  bool has_composition_time_offset;
+  /**
+   * コンポジション時間オフセット（トラックのタイムスケール単位）
+   *
+   * `has_composition_time_offset` が true の場合のみ有効。
+   * 値の意味は `PTS = DTS + composition_time_offset` である。
+   *
+   * demux API と往復しやすいように `i64` で公開しているが、
+   * 実際に mux 時に受理される範囲は次の通り:
+   * - file mux: `i32::MIN ..= u32::MAX`
+   * - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+   *
+   * 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
+   */
+  int64_t composition_time_offset;
   /**
    * 出力ファイル内におけるサンプルデータの開始位置（バイト単位）
    */
@@ -1214,7 +1370,7 @@ enum Mp4Error mp4_file_demuxer_get_tracks(struct Mp4FileDemuxer *demuxer,
  * すべてのトラックから、まだ取得していないもののなかで、
  * 最も早いタイムスタンプを持つサンプルを返す
  *
- * すべてのサンプルを取得し終えた場合は `MP4_ERROR_NO_MORE_SAMPLES` が返される
+ * ファイルの先頭に達した場合は `MP4_ERROR_NO_MORE_SAMPLES` が返される
  *
  * # サンプルデータの読み込みについて
  *
@@ -1266,6 +1422,408 @@ enum Mp4Error mp4_file_demuxer_get_tracks(struct Mp4FileDemuxer *demuxer,
  */
 enum Mp4Error mp4_file_demuxer_next_sample(struct Mp4FileDemuxer *demuxer,
                                            struct Mp4DemuxSample *out_sample);
+
+/**
+ * MP4 ファイルから時系列順に前のメディアサンプルを取得する
+ *
+ * すべてのトラックのうち、現在位置より前にあるサンプルから、
+ * 最も遅いタイムスタンプのものを返す
+ *
+ * ファイルの先頭に達した場合は `MP4_ERROR_NO_MORE_SAMPLES` が返される
+ *
+ * # サンプルデータの読み込みについて
+ *
+ * この関数は、サンプルのメタデータ（タイムスタンプ、サイズ、ファイル内の位置など）のみを返すので、
+ * 実際のサンプルデータ（音声フレームや映像フレーム）の読み込みは呼び出し元の責務となる
+ *
+ * サンプルデータを処理する場合には、返された `Mp4DemuxSample` の `data_offset` と `data_size` フィールドを使用して、
+ * 入力ファイルから直接サンプルデータを読み込む必要がある
+ *
+ * # 引数
+ *
+ * - `demuxer`: `Mp4FileDemuxer` インスタンスへのポインタ
+ *   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+ *
+ * - `out_sample`: 取得したサンプル情報を受け取るポインタ
+ *   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常にサンプルが取得された
+ * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_NO_MORE_SAMPLES`: ファイルの先頭に達した
+ * - `MP4_ERROR_INPUT_REQUIRED`: 初期化に必要な入力データが不足している
+ *   - `mp4_file_demuxer_get_required_input()` および `mp4_file_demuxer_handle_input()` のハンドリングが必要
+ * - その他のエラー: 入力ファイルが破損していたり、未対応のコーデックを含んでいる場合
+ */
+enum Mp4Error mp4_file_demuxer_prev_sample(struct Mp4FileDemuxer *demuxer,
+                                           struct Mp4DemuxSample *out_sample);
+
+/**
+ * MP4 ファイルの指定時刻にシークする
+ *
+ * 各トラックで指定時刻を含むサンプルを選び、次回の `mp4_file_demuxer_next_sample()` が
+ * その位置から開始されるようにする
+ *
+ * 同一タイムスタンプのサンプルが複数ある場合は、シーク後の `mp4_file_demuxer_next_sample()` の走査対象に含まれる
+ *
+ * # 引数
+ *
+ * - `demuxer`: `Mp4FileDemuxer` インスタンスへのポインタ
+ *   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+ * - `timestamp`: シーク先の時刻を表すタイムスタンプ値（単位は `timescale` で指定）
+ *   - 実際の秒数は `timestamp / timescale` で計算される
+ * - `timescale`: タイムスケール（1 秒間の単位数）
+ *   - 0 の場合は `MP4_ERROR_INVALID_INPUT` が返される
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常にシークできた
+ * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_INVALID_INPUT`: 引数の値が不正
+ * - `MP4_ERROR_INPUT_REQUIRED`: 初期化に必要な入力データが不足している
+ *   - `mp4_file_demuxer_get_required_input()` および `mp4_file_demuxer_handle_input()` のハンドリングが必要
+ * - その他のエラー: 入力ファイルが破損していたり、未対応のコーデックを含んでいる場合
+ */
+enum Mp4Error mp4_file_demuxer_seek(struct Mp4FileDemuxer *demuxer,
+                                    uint64_t timestamp,
+                                    uint32_t timescale);
+
+/**
+ * 新しい `Fmp4SegmentDemuxer` インスタンスを生成する
+ *
+ * # 戻り値
+ *
+ * インスタンスへのポインタ（返されたポインタは `fmp4_segment_demuxer_free()` で解放する）
+ */
+struct Fmp4SegmentDemuxer *fmp4_segment_demuxer_new(void);
+
+/**
+ * `Fmp4SegmentDemuxer` インスタンスを破棄してリソースを解放する
+ *
+ * # 引数
+ *
+ * - `demuxer`: 破棄するインスタンスへのポインタ（NULL の場合は何もしない）
+ */
+void fmp4_segment_demuxer_free(struct Fmp4SegmentDemuxer *demuxer);
+
+/**
+ * 最後に発生したエラーのメッセージを取得する
+ *
+ * # 引数
+ *
+ * - `demuxer`: インスタンスへのポインタ
+ *
+ * # 戻り値
+ *
+ * NULL 終端のエラーメッセージへのポインタ（エラーがない場合は空文字列）
+ */
+const char *fmp4_segment_demuxer_get_last_error(const struct Fmp4SegmentDemuxer *demuxer);
+
+/**
+ * 初期化セグメント（`ftyp` + `moov`）を処理してトラック情報を初期化する
+ *
+ * # 引数
+ *
+ * - `demuxer`: インスタンスへのポインタ
+ * - `data`: 初期化セグメントデータへのポインタ
+ * - `size`: データのサイズ（バイト単位）
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に処理された
+ * - `MP4_ERROR_INVALID_STATE`: 既に初期化済み
+ * - その他のエラー: 処理に失敗した
+ */
+enum Mp4Error fmp4_segment_demuxer_handle_init_segment(struct Fmp4SegmentDemuxer *demuxer,
+                                                       const uint8_t *data,
+                                                       uint32_t size);
+
+/**
+ * 初期化済みのトラック情報を取得する
+ *
+ * # 引数
+ *
+ * - `demuxer`: インスタンスへのポインタ
+ * - `out_tracks`: トラック情報配列へのポインタを受け取るポインタ
+ *   - このポインタの参照先は `demuxer` インスタンスが有効な間のみアクセス可能
+ * - `out_count`: トラック数を受け取るポインタ
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に取得された
+ * - `MP4_ERROR_INVALID_STATE`: 未初期化
+ * - その他のエラー: 取得に失敗した
+ */
+enum Mp4Error fmp4_segment_demuxer_get_tracks(struct Fmp4SegmentDemuxer *demuxer,
+                                              const struct Mp4DemuxTrackInfo **out_tracks,
+                                              uint32_t *out_count);
+
+/**
+ * メディアセグメント（`moof` + `mdat` または `sidx` + `moof` + `mdat`）を処理して
+ * サンプルの配列を返す
+ *
+ * # 引数
+ *
+ * - `demuxer`: インスタンスへのポインタ
+ * - `data`: メディアセグメントデータへのポインタ
+ * - `size`: データのサイズ（バイト単位）
+ * - `out_samples`: 生成されたサンプル配列へのポインタを受け取るポインタ
+ *   - 返された配列は `fmp4_segment_demuxer_free_samples()` で解放する必要がある
+ * - `out_count`: サンプル数を受け取るポインタ
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に処理された
+ * - `MP4_ERROR_INVALID_STATE`: 未初期化
+ * - その他のエラー: 処理に失敗した
+ */
+enum Mp4Error fmp4_segment_demuxer_handle_media_segment(struct Fmp4SegmentDemuxer *demuxer,
+                                                        const uint8_t *data,
+                                                        uint32_t size,
+                                                        struct Mp4DemuxSample **out_samples,
+                                                        uint32_t *out_count);
+
+/**
+ * `fmp4_segment_demuxer_handle_media_segment()` で割り当てられたサンプル配列を解放する
+ *
+ * # 引数
+ *
+ * - `samples`: 解放するサンプル配列へのポインタ（NULL の場合は何もしない）
+ * - `count`: サンプル数
+ */
+void fmp4_segment_demuxer_free_samples(struct Mp4DemuxSample *samples,
+                                       uint32_t count);
+
+/**
+ * 新しい `Fmp4SegmentMuxer` インスタンスを生成する
+ *
+ * デフォルトオプションを使用する。
+ *
+ * # 引数
+ *
+ * # 戻り値
+ *
+ * 成功時はインスタンスへのポインタ、失敗時は NULL
+ *
+ * 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
+ */
+struct Fmp4SegmentMuxer *fmp4_segment_muxer_new(void);
+
+/**
+ * オプションを指定して新しい `Fmp4SegmentMuxer` インスタンスを生成する
+ *
+ * # 引数
+ *
+ * - `options`: オプションへのポインタ
+ *   - NULL の場合はデフォルトオプションを使う
+ *
+ * # 戻り値
+ *
+ * 成功時はインスタンスへのポインタ、失敗時は NULL
+ *
+ * 返されたポインタは `fmp4_segment_muxer_free()` で解放する必要がある
+ */
+struct Fmp4SegmentMuxer *fmp4_segment_muxer_new_with_options(const struct Fmp4SegmentMuxerOptions *options);
+
+/**
+ * `Fmp4SegmentMuxer` インスタンスを破棄してリソースを解放する
+ *
+ * # 引数
+ *
+ * - `muxer`: 破棄するインスタンスへのポインタ（NULL の場合は何もしない）
+ */
+void fmp4_segment_muxer_free(struct Fmp4SegmentMuxer *muxer);
+
+/**
+ * 最後に発生したエラーのメッセージを取得する
+ *
+ * # 引数
+ *
+ * - `muxer`: インスタンスへのポインタ
+ *
+ * # 戻り値
+ *
+ * NULL 終端のエラーメッセージへのポインタ（エラーがない場合は空文字列）
+ */
+const char *fmp4_segment_muxer_get_last_error(const struct Fmp4SegmentMuxer *muxer);
+
+/**
+ * 初期化セグメント（`ftyp` + `moov`）のバイト列を生成する
+ *
+ * 返される init segment には、この関数を呼んだ時点までに
+ * `fmp4_segment_muxer_write_media_segment_metadata()` ないし
+ * `fmp4_segment_muxer_write_media_segment_metadata_with_sidx()` で観測したトラック情報と
+ * sample entry が反映される。
+ *
+ * まだどのトラックも観測されていない状態ではエラーになる。
+ *
+ * # 引数
+ *
+ * - `muxer`: インスタンスへのポインタ
+ * - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
+ *   - 返されたポインタは `fmp4_bytes_free()` で解放する必要がある
+ * - `out_size`: バイト列のサイズを受け取るポインタ
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に生成された
+ * - その他のエラー: 生成に失敗した
+ */
+enum Mp4Error fmp4_segment_muxer_write_init_segment(struct Fmp4SegmentMuxer *muxer,
+                                                    uint8_t **out_data,
+                                                    uint32_t *out_size);
+
+/**
+ * メディアセグメント先頭のメタデータ（`moof` + `mdat` ヘッダー）のバイト列を生成する
+ *
+ * 返り値には `mdat` payload 自体は含まれない。
+ * 呼び出し側は、この関数が返したバイト列の直後に
+ * `Fmp4SegmentSample.data_offset` / `data_size` が示す payload を自前で配置すること。
+ * その際、各トラックの payload はトラック単位で連続した 1 区間にまとめ、
+ * トラック区間同士も `data_offset` 順に隙間なく並べる必要がある。
+ *
+ * # 引数
+ *
+ * - `muxer`: インスタンスへのポインタ
+ * - `samples`: サンプル配列へのポインタ
+ * - `sample_count`: サンプル数
+ * - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
+ *   - 返されたポインタは `fmp4_bytes_free()` で解放する必要がある
+ * - `out_size`: バイト列のサイズを受け取るポインタ
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に生成された
+ * - その他のエラー: 生成に失敗した
+ */
+enum Mp4Error fmp4_segment_muxer_write_media_segment_metadata(struct Fmp4SegmentMuxer *muxer,
+                                                              const struct Fmp4SegmentSample *samples,
+                                                              uint32_t sample_count,
+                                                              uint8_t **out_data,
+                                                              uint32_t *out_size);
+
+/**
+ * `sidx` ボックス付きのメディアセグメント先頭メタデータを生成する
+ *
+ * `fmp4_segment_muxer_write_media_segment_metadata()` と同じだが、先頭に `sidx` ボックスが付加される。
+ * 返り値は `sidx + moof + mdat` ヘッダーであり、payload は含まれない。
+ * payload 配置に関する制約も `fmp4_segment_muxer_write_media_segment_metadata()` と同じである。
+ *
+ * # 引数
+ *
+ * `fmp4_segment_muxer_write_media_segment_metadata()` と同じ
+ */
+enum Mp4Error fmp4_segment_muxer_write_media_segment_metadata_with_sidx(struct Fmp4SegmentMuxer *muxer,
+                                                                        const struct Fmp4SegmentSample *samples,
+                                                                        uint32_t sample_count,
+                                                                        uint8_t **out_data,
+                                                                        uint32_t *out_size);
+
+/**
+ * ランダムアクセスインデックス（`mfra`）のバイト列を生成する
+ *
+ * `mfra` はファイル末尾に付加することで、fragmented MP4 のランダムアクセスを補助する。
+ * `fmp4_segment_muxer_write_init_segment()` と
+ * `fmp4_segment_muxer_write_media_segment_metadata()` ないし
+ * `fmp4_segment_muxer_write_media_segment_metadata_with_sidx()` を呼び出した後に使うこと。
+ *
+ * `tfra.moof_offset` は、この関数を呼んだ時点での init segment サイズを基準に計算される。
+ * したがって、実際に `mfra` を付加するファイルでは、
+ * この関数と同じ時点の init segment を先頭に配置する必要がある。
+ * 途中で観測済みトラックや sample entry が増えて init segment が変わり得る場合は、
+ * 最終的に先頭へ配置する init segment を確定させた後でこの関数を呼ぶこと。
+ *
+ * # 引数
+ *
+ * - `muxer`: インスタンスへのポインタ
+ * - `out_data`: 生成されたバイト列へのポインタを受け取るポインタ
+ *   - 返されたポインタは `fmp4_bytes_free()` で解放する必要がある
+ * - `out_size`: バイト列のサイズを受け取るポインタ
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に生成された
+ * - その他のエラー: 生成に失敗した
+ */
+enum Mp4Error fmp4_segment_muxer_write_mfra(struct Fmp4SegmentMuxer *muxer,
+                                            uint8_t **out_data,
+                                            uint32_t *out_size);
+
+/**
+ * `fmp4_segment_muxer_write_init_segment()` や `fmp4_segment_muxer_write_media_segment_metadata()` で
+ * 割り当てられたバイト列を解放する
+ *
+ * # 引数
+ *
+ * - `data`: 解放するバイト列へのポインタ（NULL の場合は何もしない）
+ * - `size`: バイト列のサイズ
+ */
+void fmp4_bytes_free(uint8_t *data,
+                     uint32_t size);
+
+/**
+ * 新しい `Mp4FileKindDetector` インスタンスを生成する
+ *
+ * 返されたポインタは、使用後に `mp4_file_kind_detector_free()` で解放する必要がある。
+ */
+struct Mp4FileKindDetector *mp4_file_kind_detector_new(void);
+
+/**
+ * `Mp4FileKindDetector` インスタンスを破棄してリソースを解放する
+ *
+ * NULL が渡された場合は何もしない。
+ */
+void mp4_file_kind_detector_free(struct Mp4FileKindDetector *detector);
+
+/**
+ * 最後に発生したエラーメッセージを取得する
+ *
+ * エラーが発生していない場合は空文字列を返す。
+ */
+const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetector *detector);
+
+/**
+ * 次の判定に必要な入力データの位置とサイズを取得する
+ *
+ * `out_required_input_size` には以下のいずれかが設定される:
+ * - 0: 追加の入力が不要
+ * - -1: ファイル末尾までの入力が必要
+ * - それ以外の正値: そのサイズ以上の入力が必要
+ *
+ * ここで大きなサイズが要求されるのは実質的には `moov` ボックス本体であり、
+ * `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
+ * そのため、サイズ表現には `int32_t` を使っている。
+ *
+ * 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
+ */
+enum Mp4Error mp4_file_kind_detector_get_required_input(struct Mp4FileKindDetector *detector,
+                                                        uint64_t *out_required_input_position,
+                                                        int32_t *out_required_input_size);
+
+/**
+ * 入力データを供給して判定処理を進める
+ *
+ * `mp4_file_kind_detector_get_required_input()` が返した要求に従って入力を渡すこと。
+ *
+ * EOF を通知する場合には、要求された `input_position` に対して
+ * `input_data = NULL` かつ `input_data_size = 0` を渡す。
+ *
+ * 入力が不正で判定器がエラー状態に遷移した場合は、その場でエラーを返す。
+ */
+enum Mp4Error mp4_file_kind_detector_handle_input(struct Mp4FileKindDetector *detector,
+                                                  uint64_t input_position,
+                                                  const uint8_t *input_data,
+                                                  uint32_t input_data_size);
+
+/**
+ * 判定結果を取得する
+ *
+ * 戻り値が `MP4_ERROR_OK` の場合にのみ `out_kind` が有効になる。
+ * まだ追加入力が必要な場合は `MP4_ERROR_INPUT_REQUIRED` が返る。
+ */
+enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *detector,
+                                                   enum Mp4FileKind *out_kind);
 
 /**
  * 構築する MP4 ファイルの moov ボックスの最大サイズを見積もるための関数
@@ -1454,7 +2012,7 @@ const char *mp4_file_muxer_get_last_error(const struct Mp4FileMuxer *muxer);
  * ```
  */
 enum Mp4Error mp4_file_muxer_set_reserved_moov_box_size(struct Mp4FileMuxer *muxer,
-                                                        uint64_t size);
+                                                        uint32_t size);
 
 /**
  * MP4 ファイルのマルチプレックス処理を初期化する
@@ -1623,6 +2181,8 @@ enum Mp4Error mp4_file_muxer_next_output(struct Mp4FileMuxer *muxer,
  *     .keyframe = true,
  *     .timescale = 30,
  *     .duration = 1,  // 30 FPS
+ *     .has_composition_time_offset = false,
+ *     .composition_time_offset = 0,
  *     .data_offset = output_offset,
  *     .data_size = sizeof(sample_data),
  * };

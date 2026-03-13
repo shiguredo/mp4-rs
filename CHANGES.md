@@ -12,15 +12,6 @@
 ## develop
 
 - [UPDATE] マルチプレックス・デマルチプレックス関連の構造体やエラー型に `Clone` トレイトを実装する
-  - モチベーション: これらの型に `Clone` を実装しても特に問題はなく、利用側の使い方の選択肢が増えるため
-  - 対象:
-    - `Error`
-    - `SampleTableAccessorError`
-    - `TrackState`
-    - `DemuxError`
-    - `Mp4FileDemuxer`
-    - `FinalizedBoxes`
-    - `Mp4FileMuxer`
   - @sile
 - [ADD] fMP4 のマルチプレックス機能 (`Fmp4SegmentMuxer`) を追加する
   - 複数のメディアトラックからのサンプルを初期化セグメントとメディアセグメントに分けて生成する
@@ -39,11 +30,6 @@
 - [ADD] MP4 / fMP4 のファイル種別判定機能 (`Mp4FileKindDetector`) を追加する
   - `required_input()` / `handle_input()` ベースで巨大ファイルや non-faststart なファイルも段階的に判定できる
   - `moov` 内の `mvex` の有無に基づいて `Mp4` / `FragmentedMp4` を判定する
-  - @voluntas
-- [ADD] `Fmp4SegmentMuxer::mfra_bytes()` を追加する
-  - `mfra` (Movie Fragment Random Access) ボックスのバイト列を生成する
-  - `tfra` エントリにはセグメントごとの moof オフセットとデコード時間を記録する
-  - ファイル末尾に付加することでランダムアクセスに対応できる
   - @voluntas
 - [ADD] `mux::Sample` に `composition_time_offset: Option<i64>` フィールドを追加する
   - `Fmp4SegmentMuxer` は `trun` ボックスの `sample_composition_time_offset` 生成にこの値を使う
@@ -78,10 +64,6 @@
 - [ADD] fMP4 の C API を追加する
   - `fmp4_segment_muxer_*` 関数群で fMP4 のマルチプレックスが可能になる
   - `fmp4_segment_demuxer_*` 関数群で fMP4 のデマルチプレックスが可能になる
-  - @voluntas
-- [ADD] fMP4 の WASM API を追加する
-  - C API と同等の機能を wasm32-unknown-unknown ターゲットで利用可能にする
-  - JSON ベースのトラック設定とサンプル情報のやりとりに対応する
   - @voluntas
 - [ADD] Fragmented MP4 (fMP4) 関連のボックスを追加する
   - フラグメント用ボックス:
@@ -118,14 +100,6 @@
   - `StblBox` で `ctts` / `cslg` / `sdtp` を decode / encode できるようにする
   - `UnknownBox` 扱いだった `ctts` / `cslg` / `sdtp` を通常 box として扱うようにする
   - @sile
-- [CHANGE] `demux` モジュールを facade 化する
-  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の公開導線を `demux` に集約する
-  - `demux_fmp4_file` / `demux_fmp4_segment` / `demux_mp4_file` は内部実装モジュールとして扱う
-  - @voluntas
-- [CHANGE] `mux` モジュールを facade 化する
-  - `Mp4FileMuxer` と `Fmp4SegmentMuxer` の公開導線を `mux` に集約する
-  - `mux_fmp4_segment` と `mux_mp4_file` は内部実装モジュールとして扱う
-  - @voluntas
 - [CHANGE] C API の `mp4_file_muxer_set_reserved_moov_box_size()` の `size` 引数の型を `u64` から `u32` に変更する
   - 理由:
     - `mp4_estimate_maximum_moov_box_size()` の返り値は `u32` なので一貫性がない

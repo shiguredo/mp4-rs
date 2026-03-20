@@ -28,7 +28,7 @@
 
 ## カットオフ
 
-- rustc 1.93.0
+- rustc 1.94.0
 - rust edition 2024
 
 ## カバレッジ
@@ -49,10 +49,6 @@
 
 - pbt 以下に unittest を書かないこと
 - unittest は pbt で実現できないものだけを書くこと
-
-## pre-commit
-
-- cargo fmt / cargo clippy / cargo check / cargo test を実行すること
 
 ## CHANGES の記載方法について
 

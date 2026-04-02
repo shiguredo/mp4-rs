@@ -514,7 +514,10 @@ impl Mp4FileMuxer {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
         }
-        self.next_position += size;
+        self.next_position = self
+            .next_position
+            .checked_add(size)
+            .ok_or(MuxError::Overflow)?;
         if size > 0 {
             self.last_sample_kind = None;
         }

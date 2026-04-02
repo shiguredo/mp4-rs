@@ -11,6 +11,10 @@
 
 ## develop
 
+- [ADD] `Mp4FileMuxer::advance_position()` メソッドを追加する
+  - OBS の Hybrid MP4 のように、サンプルデータ間に非サンプルデータが挿入される場合に対応する
+  - @sile
+
 ## 2026.2.0
 
 - [UPDATE] マルチプレックス・デマルチプレックス関連の構造体やエラー型に `Clone` トレイトを実装する

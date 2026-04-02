@@ -802,6 +802,65 @@ pub unsafe extern "C" fn mp4_file_muxer_append_sample(
     }
 }
 
+/// サンプルデータ以外のバイト列のサイズ分だけ内部の書き込み位置を進める
+///
+/// OBS の Hybrid MP4 のように、サンプルデータの間に moof / mdat ヘッダなどの
+/// 非サンプルデータが挿入される場合に使用する。
+///
+/// `size` が 0 より大きい場合は、次の `mp4_file_muxer_append_sample()` 呼び出し時に
+/// 強制的に新しいチャンクが開始される。
+/// これは、非サンプルデータの挿入によりチャンク内のサンプルデータの連続性が
+/// 失われるためである。
+///
+/// # 引数
+///
+/// - `muxer`: `Mp4FileMuxer` インスタンスへのポインタ
+///   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+/// - `size`: 進めるバイト数
+///
+/// # 戻り値
+///
+/// - `MP4_ERROR_OK`: 正常に書き込み位置が更新された
+/// - `MP4_ERROR_NULL_POINTER`: `muxer` が NULL である
+/// - `MP4_ERROR_INVALID_STATE`: マルチプレックスが初期化されていないか、既にファイナライズ済み
+///
+/// エラーが発生した場合は、`mp4_file_muxer_get_last_error()` でエラーメッセージを取得できる
+///
+/// # 使用例
+///
+/// ```c
+/// // fMP4 フラグメントヘッダのサイズ分だけ位置を進める
+/// Mp4Error ret = mp4_file_muxer_advance_position(muxer, fragment_header_size);
+/// if (ret != MP4_ERROR_OK) {
+///     fprintf(stderr, "Failed to advance position: %s\n", mp4_file_muxer_get_last_error(muxer));
+///     return 1;
+/// }
+/// ```
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mp4_file_muxer_advance_position(
+    muxer: *mut Mp4FileMuxer,
+    size: u64,
+) -> Mp4Error {
+    if muxer.is_null() {
+        return Mp4Error::MP4_ERROR_NULL_POINTER;
+    }
+    let muxer = unsafe { &mut *muxer };
+
+    let Some(inner) = &mut muxer.inner else {
+        muxer.set_last_error("[mp4_file_muxer_advance_position] Muxer has not been initialized");
+        return Mp4Error::MP4_ERROR_INVALID_STATE;
+    };
+
+    if let Err(e) = inner.advance_position(size) {
+        muxer.set_last_error(&format!(
+            "[mp4_file_muxer_advance_position] Failed to advance position: {e}"
+        ));
+        e.into()
+    } else {
+        Mp4Error::MP4_ERROR_OK
+    }
+}
+
 /// MP4 ファイルのマルチプレックス処理を完了する
 ///
 /// この関数は、それまでに追加されたすべてのサンプルの情報を用いて、

@@ -2199,6 +2199,46 @@ enum Mp4Error mp4_file_muxer_append_sample(struct Mp4FileMuxer *muxer,
                                            const struct Mp4MuxSample *sample);
 
 /**
+ * サンプルデータ以外のバイト列のサイズ分だけ内部の書き込み位置を進める
+ *
+ * OBS の Hybrid MP4 のように、サンプルデータの間に moof / mdat ヘッダなどの
+ * 非サンプルデータが挿入される場合に使用する。
+ *
+ * `size` が 0 より大きい場合は、次の `mp4_file_muxer_append_sample()` 呼び出し時に
+ * 強制的に新しいチャンクが開始される。
+ * これは、非サンプルデータの挿入によりチャンク内のサンプルデータの連続性が
+ * 失われるためである。
+ *
+ * # 引数
+ *
+ * - `muxer`: `Mp4FileMuxer` インスタンスへのポインタ
+ *   - NULL ポインタが渡された場合、`MP4_ERROR_NULL_POINTER` が返される
+ * - `size`: 進めるバイト数
+ *
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に書き込み位置が更新された
+ * - `MP4_ERROR_NULL_POINTER`: `muxer` が NULL である
+ * - `MP4_ERROR_INVALID_STATE`: マルチプレックスが初期化されていないか、既にファイナライズ済み
+ * - `MP4_ERROR_OUTPUT_REQUIRED`: 前回の呼び出しで生成された出力データが未処理（`mp4_file_muxer_next_output()` で取得されていない）
+ *
+ * エラーが発生した場合は、`mp4_file_muxer_get_last_error()` でエラーメッセージを取得できる
+ *
+ * # 使用例
+ *
+ * ```c
+ * // fMP4 フラグメントヘッダのサイズ分だけ位置を進める
+ * Mp4Error ret = mp4_file_muxer_advance_position(muxer, fragment_header_size);
+ * if (ret != MP4_ERROR_OK) {
+ *     fprintf(stderr, "Failed to advance position: %s\n", mp4_file_muxer_get_last_error(muxer));
+ *     return 1;
+ * }
+ * ```
+ */
+enum Mp4Error mp4_file_muxer_advance_position(struct Mp4FileMuxer *muxer,
+                                              uint64_t size);
+
+/**
  * MP4 ファイルのマルチプレックス処理を完了する
  *
  * この関数は、それまでに追加されたすべてのサンプルの情報を用いて、

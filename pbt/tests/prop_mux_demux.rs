@@ -190,17 +190,18 @@ fn build_file_data(
 
 /// FinalizedBoxes からファイルデータを構築する（ギャップ領域を含む）
 ///
-/// `regions` は (offset, size, is_sample) のリスト。
-/// is_sample=true の領域はダミーサンプルデータ、false の領域はギャップ（非サンプルデータ）として扱う。
+/// `regions` は (offset, size) のリスト。
+/// 各領域はサンプルデータまたはギャップ（非サンプルデータ）のいずれかで、
+/// ファイル上の配置位置を表す。
 fn build_hybrid_file_data(
     initial_bytes: &[u8],
     finalized: &FinalizedBoxes,
-    regions: &[(u64, usize, bool)],
+    regions: &[(u64, usize)],
 ) -> Vec<u8> {
     // データ領域の末尾を計算
     let data_end = regions
         .iter()
-        .map(|(offset, size, _)| *offset as usize + size)
+        .map(|(offset, size)| *offset as usize + size)
         .max()
         .unwrap_or(initial_bytes.len());
 
@@ -709,13 +710,13 @@ proptest! {
         let mut expected_samples = Vec::new();
 
         // ファイルデータの各領域を (offset, size, is_sample) で記録する
-        let mut regions: Vec<(u64, usize, bool)> = Vec::new();
+        let mut regions: Vec<(u64, usize)> = Vec::new();
 
         for (i, sample_info) in samples.iter().enumerate() {
             // サンプルの前にギャップを挿入する（ギャップがある場合）
             let gap = gaps.get(i).copied().unwrap_or(0);
             if gap > 0 {
-                regions.push((data_offset, gap as usize, false));
+                regions.push((data_offset, gap as usize));
                 muxer.advance_position(gap).expect("failed to advance position");
                 data_offset += gap;
             }
@@ -733,7 +734,7 @@ proptest! {
             muxer.append_sample(&sample).expect("failed to append sample");
             expected_samples.push((sample_info.keyframe, sample_info.duration, sample_info.data_size));
 
-            regions.push((data_offset, sample_info.data_size, true));
+            regions.push((data_offset, sample_info.data_size));
             data_offset += sample_info.data_size as u64;
         }
 
@@ -776,7 +777,7 @@ proptest! {
         audio_timescale in 1u32..48001,
         video_samples in prop::collection::vec(arb_video_sample_info(), 1..10),
         audio_samples in prop::collection::vec(arb_audio_sample_info(), 1..10),
-        gaps in prop::collection::vec(8u64..256, 1..20),
+        gaps in prop::collection::vec(0u64..256, 1..20),
     ) {
         let mut video_samples = video_samples;
         if let Some(first) = video_samples.first_mut() {
@@ -792,7 +793,7 @@ proptest! {
         let mut audio_entry = Some(create_opus_sample_entry(channel_count));
         let mut expected_video = Vec::new();
         let mut expected_audio = Vec::new();
-        let mut regions: Vec<(u64, usize, bool)> = Vec::new();
+        let mut regions: Vec<(u64, usize)> = Vec::new();
         let mut gap_idx = 0;
 
         // ビデオとオーディオを交互に追加し、間にギャップを挿入する
@@ -802,7 +803,7 @@ proptest! {
                 let gap = gaps.get(gap_idx).copied().unwrap_or(0);
                 gap_idx += 1;
                 if gap > 0 {
-                    regions.push((data_offset, gap as usize, false));
+                    regions.push((data_offset, gap as usize));
                     muxer.advance_position(gap).expect("failed to advance position");
                     data_offset += gap;
                 }
@@ -819,7 +820,7 @@ proptest! {
                 };
                 muxer.append_sample(&sample).expect("failed to append video sample");
                 expected_video.push((vs.keyframe, vs.duration, vs.data_size));
-                regions.push((data_offset, vs.data_size, true));
+                regions.push((data_offset, vs.data_size));
                 data_offset += vs.data_size as u64;
             }
 
@@ -827,7 +828,7 @@ proptest! {
                 let gap = gaps.get(gap_idx).copied().unwrap_or(0);
                 gap_idx += 1;
                 if gap > 0 {
-                    regions.push((data_offset, gap as usize, false));
+                    regions.push((data_offset, gap as usize));
                     muxer.advance_position(gap).expect("failed to advance position");
                     data_offset += gap;
                 }
@@ -844,7 +845,7 @@ proptest! {
                 };
                 muxer.append_sample(&sample).expect("failed to append audio sample");
                 expected_audio.push((aus.duration, aus.data_size));
-                regions.push((data_offset, aus.data_size, true));
+                regions.push((data_offset, aus.data_size));
                 data_offset += aus.data_size as u64;
             }
         }

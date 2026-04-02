@@ -13,6 +13,7 @@
 
 - [ADD] `Mp4FileMuxer::advance_position()` メソッドを追加する
   - OBS の Hybrid MP4 のように、サンプルデータ間に非サンプルデータが挿入される場合に対応する
+  - C API に `mp4_file_muxer_advance_position()` を追加する
   - @sile
 
 ## 2026.2.0

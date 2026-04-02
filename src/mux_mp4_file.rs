@@ -510,6 +510,8 @@ impl Mp4FileMuxer {
     /// 強制的に新しいチャンクが開始される。
     /// これは、非サンプルデータの挿入によりチャンク内のサンプルデータの連続性が
     /// 失われるためである。
+    ///
+    /// `size` が 0 の場合は何も行わない。
     pub fn advance_position(&mut self, size: u64) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);

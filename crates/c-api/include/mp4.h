@@ -2220,6 +2220,7 @@ enum Mp4Error mp4_file_muxer_append_sample(struct Mp4FileMuxer *muxer,
  * - `MP4_ERROR_OK`: 正常に書き込み位置が更新された
  * - `MP4_ERROR_NULL_POINTER`: `muxer` が NULL である
  * - `MP4_ERROR_INVALID_STATE`: マルチプレックスが初期化されていないか、既にファイナライズ済み
+ * - `MP4_ERROR_OUTPUT_REQUIRED`: 前回の呼び出しで生成された出力データが未処理（`mp4_file_muxer_next_output()` で取得されていない）
  *
  * エラーが発生した場合は、`mp4_file_muxer_get_last_error()` でエラーメッセージを取得できる
  *

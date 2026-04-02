@@ -190,9 +190,8 @@ fn build_file_data(
 
 /// FinalizedBoxes からファイルデータを構築する（ギャップ領域を含む）
 ///
-/// `regions` は (offset, size) のリスト。
-/// 各領域はサンプルデータまたはギャップ（非サンプルデータ）のいずれかで、
-/// ファイル上の配置位置を表す。
+/// `regions` はファイル上のデータ配置位置とサイズのリスト。
+/// サンプルデータとギャップの区別はせず、全領域の末尾位置からファイルサイズを決定する。
 fn build_hybrid_file_data(
     initial_bytes: &[u8],
     finalized: &FinalizedBoxes,
@@ -694,6 +693,7 @@ proptest! {
         height in 16u16..1080,
         timescale in 1u32..90001,
         samples in prop::collection::vec(arb_video_sample_info(), 1..20),
+        composition_time_offsets in prop::collection::vec(prop::option::of(-3000i64..3001), 1..20),
         gaps in prop::collection::vec(0u64..256, 1..20),
     ) {
         let mut samples = samples;
@@ -708,12 +708,11 @@ proptest! {
 
         let mut sample_entry = Some(create_avc1_sample_entry(width, height));
         let mut expected_samples = Vec::new();
+        let mut expected_ctos: Vec<Option<i64>> = Vec::new();
 
-        // ファイルデータの各領域を (offset, size, is_sample) で記録する
         let mut regions: Vec<(u64, usize)> = Vec::new();
 
         for (i, sample_info) in samples.iter().enumerate() {
-            // サンプルの前にギャップを挿入する（ギャップがある場合）
             let gap = gaps.get(i).copied().unwrap_or(0);
             if gap > 0 {
                 regions.push((data_offset, gap as usize));
@@ -721,18 +720,20 @@ proptest! {
                 data_offset += gap;
             }
 
+            let cto = composition_time_offsets.get(i).copied().flatten();
             let sample = Sample {
                 track_kind: TrackKind::Video,
                 sample_entry: sample_entry.take(),
                 keyframe: sample_info.keyframe,
                 timescale,
                 duration: sample_info.duration,
-                composition_time_offset: None,
+                composition_time_offset: cto,
                 data_offset,
                 data_size: sample_info.data_size,
             };
             muxer.append_sample(&sample).expect("failed to append sample");
             expected_samples.push((sample_info.keyframe, sample_info.duration, sample_info.data_size));
+            expected_ctos.push(cto);
 
             regions.push((data_offset, sample_info.data_size));
             data_offset += sample_info.data_size as u64;
@@ -741,10 +742,8 @@ proptest! {
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("failed to finalize");
 
-        // ファイルデータを構築（ギャップ領域を含む）
         let file_data = build_hybrid_file_data(&initial_bytes, finalized, &regions);
 
-        // Demux
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(Input {
             position: 0,
@@ -755,15 +754,26 @@ proptest! {
         prop_assert_eq!(tracks.len(), 1);
         prop_assert!(matches!(tracks[0].kind, TrackKind::Video));
 
+        let has_any_cto = expected_ctos.iter().any(Option::is_some);
         let mut actual_samples = Vec::new();
+        let mut actual_ctos = Vec::new();
         while let Some(sample) = demuxer.next_sample().expect("failed to read sample") {
             actual_samples.push((sample.keyframe, sample.duration, sample.data_size));
+            actual_ctos.push(sample.composition_time_offset);
         }
         prop_assert_eq!(actual_samples.len(), expected_samples.len());
         for (i, (expected, actual)) in expected_samples.iter().zip(actual_samples.iter()).enumerate() {
             prop_assert_eq!(expected.0, actual.0, "keyframe mismatch at sample {}", i);
             prop_assert_eq!(expected.1, actual.1, "duration mismatch at sample {}", i);
             prop_assert_eq!(expected.2, actual.2, "data_size mismatch at sample {}", i);
+        }
+        for (i, (expected, actual)) in expected_ctos.iter().zip(actual_ctos.iter()).enumerate() {
+            let normalized = if has_any_cto {
+                Some(expected.unwrap_or(0))
+            } else {
+                None
+            };
+            prop_assert_eq!(normalized, *actual, "composition_time_offset mismatch at sample {}", i);
         }
     }
 
@@ -777,6 +787,7 @@ proptest! {
         audio_timescale in 1u32..48001,
         video_samples in prop::collection::vec(arb_video_sample_info(), 1..10),
         audio_samples in prop::collection::vec(arb_audio_sample_info(), 1..10),
+        video_ctos in prop::collection::vec(prop::option::of(-3000i64..3001), 1..10),
         gaps in prop::collection::vec(0u64..256, 1..20),
     ) {
         let mut video_samples = video_samples;
@@ -792,6 +803,7 @@ proptest! {
         let mut video_entry = Some(create_avc1_sample_entry(width, height));
         let mut audio_entry = Some(create_opus_sample_entry(channel_count));
         let mut expected_video = Vec::new();
+        let mut expected_video_ctos: Vec<Option<i64>> = Vec::new();
         let mut expected_audio = Vec::new();
         let mut regions: Vec<(u64, usize)> = Vec::new();
         let mut gap_idx = 0;
@@ -808,18 +820,20 @@ proptest! {
                     data_offset += gap;
                 }
 
+                let cto = video_ctos.get(i).copied().flatten();
                 let sample = Sample {
                     track_kind: TrackKind::Video,
                     sample_entry: video_entry.take(),
                     keyframe: vs.keyframe,
                     timescale: video_timescale,
                     duration: vs.duration,
-                    composition_time_offset: None,
+                    composition_time_offset: cto,
                     data_offset,
                     data_size: vs.data_size,
                 };
                 muxer.append_sample(&sample).expect("failed to append video sample");
                 expected_video.push((vs.keyframe, vs.duration, vs.data_size));
+                expected_video_ctos.push(cto);
                 regions.push((data_offset, vs.data_size));
                 data_offset += vs.data_size as u64;
             }
@@ -863,11 +877,16 @@ proptest! {
         let tracks = demuxer.tracks().expect("failed to get tracks");
         prop_assert_eq!(tracks.len(), 2);
 
+        let has_any_video_cto = expected_video_ctos.iter().any(Option::is_some);
         let mut actual_video = Vec::new();
+        let mut actual_video_ctos = Vec::new();
         let mut actual_audio = Vec::new();
         while let Some(sample) = demuxer.next_sample().expect("failed to read sample") {
             match sample.track.kind {
-                TrackKind::Video => actual_video.push((sample.keyframe, sample.duration, sample.data_size)),
+                TrackKind::Video => {
+                    actual_video.push((sample.keyframe, sample.duration, sample.data_size));
+                    actual_video_ctos.push(sample.composition_time_offset);
+                }
                 TrackKind::Audio => actual_audio.push((sample.duration, sample.data_size)),
             }
         }
@@ -877,6 +896,14 @@ proptest! {
             prop_assert_eq!(expected.0, actual.0, "video keyframe mismatch at {}", i);
             prop_assert_eq!(expected.1, actual.1, "video duration mismatch at {}", i);
             prop_assert_eq!(expected.2, actual.2, "video data_size mismatch at {}", i);
+        }
+        for (i, (expected, actual)) in expected_video_ctos.iter().zip(actual_video_ctos.iter()).enumerate() {
+            let normalized = if has_any_video_cto {
+                Some(expected.unwrap_or(0))
+            } else {
+                None
+            };
+            prop_assert_eq!(normalized, *actual, "video composition_time_offset mismatch at {}", i);
         }
         for (i, (expected, actual)) in expected_audio.iter().zip(actual_audio.iter()).enumerate() {
             prop_assert_eq!(expected.0, actual.0, "audio duration mismatch at {}", i);

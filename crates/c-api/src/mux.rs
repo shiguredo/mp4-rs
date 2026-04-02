@@ -823,6 +823,7 @@ pub unsafe extern "C" fn mp4_file_muxer_append_sample(
 /// - `MP4_ERROR_OK`: 正常に書き込み位置が更新された
 /// - `MP4_ERROR_NULL_POINTER`: `muxer` が NULL である
 /// - `MP4_ERROR_INVALID_STATE`: マルチプレックスが初期化されていないか、既にファイナライズ済み
+/// - `MP4_ERROR_OUTPUT_REQUIRED`: 前回の呼び出しで生成された出力データが未処理（`mp4_file_muxer_next_output()` で取得されていない）
 ///
 /// エラーが発生した場合は、`mp4_file_muxer_get_last_error()` でエラーメッセージを取得できる
 ///
@@ -845,6 +846,13 @@ pub unsafe extern "C" fn mp4_file_muxer_advance_position(
         return Mp4Error::MP4_ERROR_NULL_POINTER;
     }
     let muxer = unsafe { &mut *muxer };
+
+    if muxer.next_output_index < muxer.output_list.len() {
+        muxer.set_last_error(
+            "[mp4_file_muxer_advance_position] Output required before advancing position",
+        );
+        return Mp4Error::MP4_ERROR_OUTPUT_REQUIRED;
+    }
 
     let Some(inner) = &mut muxer.inner else {
         muxer.set_last_error("[mp4_file_muxer_advance_position] Muxer has not been initialized");

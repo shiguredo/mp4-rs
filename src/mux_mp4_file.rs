@@ -600,7 +600,10 @@ impl Mp4FileMuxer {
 
         chunks.last_mut().expect("bug").samples.push(metadata);
 
-        self.next_position += sample.data_size as u64;
+        self.next_position = self
+            .next_position
+            .checked_add(sample.data_size as u64)
+            .ok_or(MuxError::Overflow)?;
         self.last_sample_kind = Some(sample.track_kind);
         Ok(())
     }

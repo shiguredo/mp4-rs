@@ -500,6 +500,32 @@ impl Mp4FileMuxer {
         &self.initial_boxes_bytes
     }
 
+    /// サンプルデータ以外のバイト列（fMP4 フラグメントヘッダ等）のサイズ分だけ
+    /// 内部の書き込み位置を進める
+    ///
+    /// OBS の Hybrid MP4 のように、サンプルデータの間に moof / mdat ヘッダなどの
+    /// 非サンプルデータが挿入される場合に使用する。
+    ///
+    /// `size` が 0 より大きい場合は、次の [`append_sample()`](Self::append_sample) 呼び出し時に
+    /// 強制的に新しいチャンクが開始される。
+    /// これは、非サンプルデータの挿入によりチャンク内のサンプルデータの連続性が
+    /// 失われるためである。
+    ///
+    /// `size` が 0 の場合は何も行わない。
+    pub fn advance_position(&mut self, size: u64) -> Result<(), MuxError> {
+        if self.finalized_boxes.is_some() {
+            return Err(MuxError::AlreadyFinalized);
+        }
+        self.next_position = self
+            .next_position
+            .checked_add(size)
+            .ok_or(MuxError::Overflow)?;
+        if size > 0 {
+            self.last_sample_kind = None;
+        }
+        Ok(())
+    }
+
     /// 映像ないし音声サンプルのデータを MP4 ファイルに追記したことを [`Mp4FileMuxer`] に通知する
     ///
     /// 実際のデータ追記処理自体は利用側の責務であり、
@@ -574,7 +600,10 @@ impl Mp4FileMuxer {
 
         chunks.last_mut().expect("bug").samples.push(metadata);
 
-        self.next_position += sample.data_size as u64;
+        self.next_position = self
+            .next_position
+            .checked_add(sample.data_size as u64)
+            .ok_or(MuxError::Overflow)?;
         self.last_sample_kind = Some(sample.track_kind);
         Ok(())
     }

@@ -1,0 +1,45 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+fail_fast = true
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-toml" },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "cargo-fmt",
+    name = "cargo fmt",
+    entry = "cargo fmt --all -- --check",
+    language = "system",
+    types = ["rust"],
+    pass_filenames = false,
+    priority = 0,
+  },
+  {
+    id = "cargo-clippy",
+    name = "cargo clippy",
+    entry = "cargo clippy --workspace --all-targets -- -D warnings",
+    language = "system",
+    types = ["rust"],
+    pass_filenames = false,
+    priority = 10,
+  },
+  {
+    id = "cargo-test",
+    name = "cargo test",
+    entry = "cargo test --workspace",
+    language = "system",
+    pass_filenames = false,
+    always_run = true,
+    priority = 20,
+  },
+]

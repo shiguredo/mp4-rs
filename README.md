@@ -136,6 +136,7 @@ WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 
 - AV2 のサポート
 - H.266 (VVC) のサポート
+- [Open Audio Codec (OAC)](https://github.com/AOMediaCodec/oac) のサポート
 
 ## ライセンス
 

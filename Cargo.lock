@@ -320,15 +320,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "orfail"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aba2212a0fddd290c8209fb9b0393382435ede29c24a71f245d7fa92f0f3442e"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "pbt"
 version = "0.0.0"
 dependencies = [
@@ -618,12 +609,10 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "transcode_wasm"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "futures",
- "orfail",
- "serde",
- "serde_json",
+ "nojson",
  "shiguredo_mp4",
 ]
 

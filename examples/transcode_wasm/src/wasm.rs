@@ -1,8 +1,6 @@
 use std::{future::Future, marker::PhantomData};
 
 use futures::{TryFutureExt, channel::oneshot};
-use orfail::{Failure, OrFail};
-use serde::{Deserialize, Serialize};
 use shiguredo_mp4::Encode;
 use shiguredo_mp4::boxes::Avc1Box;
 
@@ -10,14 +8,24 @@ use crate::mp4::Mp4FileSummary;
 use crate::transcode::{
     TranscodeOptions, TranscodeProgress, Transcoder, VideoEncoderConfig, VideoFrame,
 };
+use crate::{Error, JsonResult, Result};
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VideoDecoderConfig {
     pub codec: String,
     pub coded_width: u16,
     pub coded_height: u16,
     pub description: Vec<u8>,
+}
+
+impl nojson::DisplayJson for VideoDecoderConfig {
+    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("codec", &self.codec)?;
+            f.member("codedWidth", self.coded_width)?;
+            f.member("codedHeight", self.coded_height)?;
+            f.member("description", &self.description)
+        })
+    }
 }
 
 pub struct Encoded {
@@ -30,13 +38,13 @@ unsafe extern "C" {
 
     #[expect(improper_ctypes)]
     pub fn createVideoDecoder(
-        result_future: *mut oneshot::Sender<orfail::Result<CoderId>>,
+        result_future: *mut oneshot::Sender<Result<CoderId>>,
         config: JsonVec<VideoDecoderConfig>,
     );
 
     #[expect(improper_ctypes)]
     pub fn decode(
-        result_future: *mut oneshot::Sender<orfail::Result<VideoFrame>>,
+        result_future: *mut oneshot::Sender<Result<VideoFrame>>,
         coder_id: CoderId,
         keyframe: bool,
         data_offset: *const u8,
@@ -45,13 +53,13 @@ unsafe extern "C" {
 
     #[expect(improper_ctypes)]
     pub fn createVideoEncoder(
-        result_future: *mut oneshot::Sender<orfail::Result<CoderId>>,
+        result_future: *mut oneshot::Sender<Result<CoderId>>,
         config: JsonVec<VideoEncoderConfig>,
     );
 
     #[expect(improper_ctypes)]
     pub fn encode(
-        result_future: *mut oneshot::Sender<orfail::Result<Encoded>>,
+        result_future: *mut oneshot::Sender<Result<Encoded>>,
         coder_id: CoderId,
         keyframe: bool,
         width: u32,
@@ -68,8 +76,8 @@ pub struct WebCodec;
 pub type CoderId = u32;
 
 impl WebCodec {
-    pub fn create_h264_decoder(config: &Avc1Box) -> impl Future<Output = orfail::Result<Coder>> {
-        let (tx, rx) = oneshot::channel::<orfail::Result<_>>();
+    pub fn create_h264_decoder(config: &Avc1Box) -> impl Future<Output = Result<Coder>> {
+        let (tx, rx) = oneshot::channel::<Result<_>>();
 
         let mut description = [0; 1024]; // 十分なサイズのバッファを用意しておく
         let encoded_size = config
@@ -92,18 +100,15 @@ impl WebCodec {
         unsafe {
             createVideoDecoder(Box::into_raw(Box::new(tx)), JsonVec::new(config));
         }
-        rx.map_ok_or_else(
-            |e| Err(Failure::new(e.to_string())),
-            |r| r.or_fail().map(Coder),
-        )
+        rx.map_ok_or_else(|e| Err(Error::new(e.to_string())), |r| r.map(Coder))
     }
 
     pub fn decode(
         decoder: CoderId,
         keyframe: bool,
         encoded_data: &[u8],
-    ) -> impl Future<Output = orfail::Result<VideoFrame>> {
-        let (tx, rx) = oneshot::channel::<orfail::Result<_>>();
+    ) -> impl Future<Output = Result<VideoFrame>> {
+        let (tx, rx) = oneshot::channel::<Result<_>>();
         unsafe {
             decode(
                 Box::into_raw(Box::new(tx)),
@@ -113,28 +118,23 @@ impl WebCodec {
                 encoded_data.len() as u32,
             );
         }
-        rx.map_ok_or_else(|e| Err(Failure::new(e.to_string())), |r| r.or_fail())
+        rx.map_ok_or_else(|e| Err(Error::new(e.to_string())), |r| r)
     }
 
-    pub fn create_encoder(
-        config: &VideoEncoderConfig,
-    ) -> impl Future<Output = orfail::Result<Coder>> {
-        let (tx, rx) = oneshot::channel::<orfail::Result<_>>();
+    pub fn create_encoder(config: &VideoEncoderConfig) -> impl Future<Output = Result<Coder>> {
+        let (tx, rx) = oneshot::channel::<Result<_>>();
         unsafe {
             createVideoEncoder(Box::into_raw(Box::new(tx)), JsonVec::new(config.clone()));
         }
-        rx.map_ok_or_else(
-            |e| Err(Failure::new(e.to_string())),
-            |r| r.or_fail().map(Coder),
-        )
+        rx.map_ok_or_else(|e| Err(Error::new(e.to_string())), |r| r.map(Coder))
     }
 
     pub fn encode(
         encoder: CoderId,
         keyframe: bool,
         frame: VideoFrame,
-    ) -> impl Future<Output = orfail::Result<Encoded>> {
-        let (tx, rx) = oneshot::channel::<orfail::Result<_>>();
+    ) -> impl Future<Output = Result<Encoded>> {
+        let (tx, rx) = oneshot::channel::<Result<_>>();
         unsafe {
             encode(
                 Box::into_raw(Box::new(tx)),
@@ -146,7 +146,7 @@ impl WebCodec {
                 frame.data.len() as u32,
             );
         }
-        rx.map_ok_or_else(|e| Err(Failure::new(e.to_string())), |r| r.or_fail())
+        rx.map_ok_or_else(|e| Err(Error::new(e.to_string())), |r| r)
     }
 }
 
@@ -185,10 +185,10 @@ pub fn freeTranscoder(transcoder: *mut Transcoder) {
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
 pub fn notifyCreateVideoDecoderResult(
     transcoder: *mut Transcoder,
-    result_future: *mut oneshot::Sender<orfail::Result<CoderId>>,
-    result: JsonVec<orfail::Result<CoderId>>,
+    result_future: *mut oneshot::Sender<Result<CoderId>>,
+    result: JsonVec<JsonResult<CoderId>>,
 ) {
-    let result = unsafe { result.into_value() };
+    let result = unsafe { result.into_value() }.0;
     let tx = unsafe { Box::from_raw(result_future) };
     let _ = tx.send(result);
     let _ = pollTranscode(transcoder);
@@ -198,10 +198,10 @@ pub fn notifyCreateVideoDecoderResult(
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
 pub fn notifyCreateVideoEncoderResult(
     transcoder: *mut Transcoder,
-    result_future: *mut oneshot::Sender<orfail::Result<CoderId>>,
-    result: JsonVec<orfail::Result<CoderId>>,
+    result_future: *mut oneshot::Sender<Result<CoderId>>,
+    result: JsonVec<JsonResult<CoderId>>,
 ) {
-    let result = unsafe { result.into_value() };
+    let result = unsafe { result.into_value() }.0;
     let tx = unsafe { Box::from_raw(result_future) };
     let _ = tx.send(result);
     let _ = pollTranscode(transcoder);
@@ -211,11 +211,11 @@ pub fn notifyCreateVideoEncoderResult(
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
 pub fn notifyDecodeResult(
     transcoder: *mut Transcoder,
-    result_future: *mut oneshot::Sender<orfail::Result<VideoFrame>>,
-    result: JsonVec<orfail::Result<VideoFrame>>,
+    result_future: *mut oneshot::Sender<Result<VideoFrame>>,
+    result: JsonVec<JsonResult<VideoFrame>>,
     decoded_data: *mut Vec<u8>,
 ) {
-    let result = unsafe { result.into_value() };
+    let result = unsafe { result.into_value() }.0;
     let tx = unsafe { Box::from_raw(result_future) };
     let _ = tx.send(result.map(|mut frame| {
         frame.data = *unsafe { Box::from_raw(decoded_data) };
@@ -228,11 +228,11 @@ pub fn notifyDecodeResult(
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
 pub fn notifyEncodeResult(
     transcoder: *mut Transcoder,
-    result_future: *mut oneshot::Sender<orfail::Result<Encoded>>,
-    result: JsonVec<orfail::Result<Option<Vec<u8>>>>,
+    result_future: *mut oneshot::Sender<Result<Encoded>>,
+    result: JsonVec<JsonResult<Option<Vec<u8>>>>,
     encoded_data: *mut Vec<u8>,
 ) {
-    let result = unsafe { result.into_value() };
+    let result = unsafe { result.into_value() }.0;
     let tx = unsafe { Box::from_raw(result_future) };
     let _ = tx.send(result.map(|description| Encoded {
         description,
@@ -246,35 +246,35 @@ pub fn notifyEncodeResult(
 pub fn parseInputMp4File(
     transcoder: *mut Transcoder,
     input_mp4: *mut Vec<u8>,
-) -> JsonVec<orfail::Result<Mp4FileSummary>> {
+) -> JsonVec<JsonResult<Mp4FileSummary>> {
     let transcoder = unsafe { &mut *transcoder };
     let input_mp4 = unsafe { Box::from_raw(input_mp4) };
-    let result = transcoder.parse_input_mp4_file(&input_mp4).or_fail();
-    JsonVec::new(result)
+    let result = transcoder.parse_input_mp4_file(&input_mp4);
+    JsonVec::new(JsonResult(result))
 }
 
 #[unsafe(no_mangle)]
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
-pub fn startTranscode(transcoder: *mut Transcoder) -> JsonVec<orfail::Result<()>> {
+pub fn startTranscode(transcoder: *mut Transcoder) -> JsonVec<JsonResult<()>> {
     let transcoder = unsafe { &mut *transcoder };
-    let result = transcoder.start_transcode().or_fail();
-    JsonVec::new(result)
+    let result = transcoder.start_transcode();
+    JsonVec::new(JsonResult(result))
 }
 
 #[unsafe(no_mangle)]
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
-pub fn pollTranscode(transcoder: *mut Transcoder) -> JsonVec<orfail::Result<TranscodeProgress>> {
+pub fn pollTranscode(transcoder: *mut Transcoder) -> JsonVec<JsonResult<TranscodeProgress>> {
     let transcoder = unsafe { &mut *transcoder };
-    let result = transcoder.poll_transcode().or_fail();
-    JsonVec::new(result)
+    let result = transcoder.poll_transcode();
+    JsonVec::new(JsonResult(result))
 }
 
 #[unsafe(no_mangle)]
 #[expect(non_snake_case, clippy::not_unsafe_ptr_arg_deref)]
-pub fn buildOutputMp4File(transcoder: *mut Transcoder) -> JsonVec<orfail::Result<()>> {
+pub fn buildOutputMp4File(transcoder: *mut Transcoder) -> JsonVec<JsonResult<()>> {
     let transcoder = unsafe { &mut *transcoder };
-    let result = transcoder.build_output_mp4_file().or_fail();
-    JsonVec::new(result)
+    let result = transcoder.build_output_mp4_file();
+    JsonVec::new(JsonResult(result))
 }
 
 #[unsafe(no_mangle)]
@@ -314,9 +314,10 @@ pub struct JsonVec<T> {
     _ty: PhantomData<T>,
 }
 
-impl<T: Serialize> JsonVec<T> {
+impl<T: nojson::DisplayJson> JsonVec<T> {
     fn new(value: T) -> Self {
-        let bytes = Box::into_raw(Box::new(serde_json::to_vec(&value).expect("unreachable")));
+        let text = nojson::Json(&value).to_string();
+        let bytes = Box::into_raw(Box::new(text.into_bytes()));
         Self {
             bytes,
             _ty: PhantomData,
@@ -324,10 +325,14 @@ impl<T: Serialize> JsonVec<T> {
     }
 }
 
-impl<T: for<'de> Deserialize<'de>> JsonVec<T> {
+impl<T> JsonVec<T>
+where
+    T: for<'text, 'raw> TryFrom<nojson::RawJsonValue<'text, 'raw>, Error = nojson::JsonParseError>,
+{
     unsafe fn into_value(self) -> T {
         let bytes = unsafe { Box::from_raw(self.bytes) };
-        let value: T = serde_json::from_slice(&bytes).expect("Invalid JSON");
-        value
+        let text = std::str::from_utf8(&bytes).expect("valid UTF-8 JSON");
+        let json = nojson::RawJson::parse(text).expect("valid JSON");
+        T::try_from(json.value()).expect("valid JSON shape")
     }
 }

@@ -298,7 +298,7 @@ fn parse_json_sample_metas(
                 }
             };
             let timescale: u32 = item.to_member("timescale")?.required()?.try_into()?;
-            let sample_entry = if let Some(value) = item.to_member("sample_entry")?.get() {
+            let sample_entry = if let Some(value) = item.to_member("sample_entry")?.optional() {
                 Some(crate::boxes::parse_json_mp4_sample_entry(value)?)
             } else {
                 None
@@ -306,7 +306,7 @@ fn parse_json_sample_metas(
             let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
             let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
             let composition_time_offset: Option<i64> =
-                if let Some(v) = item.to_member("composition_time_offset")?.get() {
+                if let Some(v) = item.to_member("composition_time_offset")?.optional() {
                     Some(v.try_into()?)
                 } else {
                     None
@@ -335,7 +335,7 @@ fn parse_json_muxer_options(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<c_api::fmp4_segment_mux::Fmp4SegmentMuxerOptions, nojson::JsonParseError> {
     let creation_timestamp_secs =
-        if let Some(value) = value.to_member("creation_timestamp_secs")?.get() {
+        if let Some(value) = value.to_member("creation_timestamp_secs")?.optional() {
             let creation_timestamp_secs: u64 = value.try_into()?;
             creation_timestamp_secs
         } else {

@@ -89,19 +89,22 @@ pub fn parse_json_mp4_sample_entry_avc1(
         pps_data,
         pps_sizes,
         pps_count,
-        is_chroma_format_present: value.to_member("chromaFormat")?.get().is_some(),
+        is_chroma_format_present: value.to_member("chromaFormat")?.optional().is_some(),
         chroma_format: value
             .to_member("chromaFormat")?
             .map(|v| v.try_into())?
             .unwrap_or(0),
-        is_bit_depth_luma_minus8_present: value.to_member("bitDepthLumaMinus8")?.get().is_some(),
+        is_bit_depth_luma_minus8_present: value
+            .to_member("bitDepthLumaMinus8")?
+            .optional()
+            .is_some(),
         bit_depth_luma_minus8: value
             .to_member("bitDepthLumaMinus8")?
             .map(|v| v.try_into())?
             .unwrap_or(0),
         is_bit_depth_chroma_minus8_present: value
             .to_member("bitDepthChromaMinus8")?
-            .get()
+            .optional()
             .is_some(),
         bit_depth_chroma_minus8: value
             .to_member("bitDepthChromaMinus8")?

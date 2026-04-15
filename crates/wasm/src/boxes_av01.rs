@@ -63,7 +63,7 @@ pub fn parse_json_mp4_sample_entry_av01(
             .try_into()?,
         initial_presentation_delay_present: value
             .to_member("initialPresentationDelayMinusOne")?
-            .get()
+            .optional()
             .is_some(),
         initial_presentation_delay_minus_one: value
             .to_member("initialPresentationDelayMinusOne")?

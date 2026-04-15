@@ -163,14 +163,11 @@ impl Transcoder {
             let mut do_continue = true;
             while do_continue {
                 do_continue = false;
-                match self.transcode_result_rx.try_next() {
+                match self.transcode_result_rx.try_recv() {
                     Err(_) => {
-                        // 全ての変換が終了した
+                        // メッセージなし (Empty) または全ての変換が終了した (Closed)
                     }
-                    Ok(None) => {
-                        // 変換中
-                    }
-                    Ok(Some(result)) => {
+                    Ok(result) => {
                         // 特定のトラックの変換が完了した or 失敗した
                         let result = result.or_fail();
                         self.transcode_error = result.as_ref().err().cloned();

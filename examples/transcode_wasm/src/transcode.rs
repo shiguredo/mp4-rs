@@ -11,8 +11,6 @@ use futures::{
     stream::FusedStream,
     task::LocalSpawnExt,
 };
-use orfail::{Failure, OrFail};
-use serde::{Deserialize, Serialize};
 use shiguredo_mp4::{
     BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Uint,
     boxes::{
@@ -22,6 +20,7 @@ use shiguredo_mp4::{
 };
 
 use crate::{
+    Error, Result,
     mp4::{Chunk, InputMp4, Mp4FileSummary, OutputMp4Builder, Track},
     wasm::WebCodec,
 };
@@ -31,15 +30,34 @@ use crate::{
 // 理想的には、入力ストリームから適切な値を取得すべきだが、簡単のために十分に大きな固定値を使用している。
 const DECODE_QUEQUE_SIZE: usize = 32;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub width: u16,
     pub height: u16,
-    #[serde(default)]
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl<'text, 'raw> TryFrom<nojson::RawJsonValue<'text, 'raw>> for VideoFrame {
+    type Error = nojson::JsonParseError;
+
+    fn try_from(
+        value: nojson::RawJsonValue<'text, 'raw>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let width = value.to_member("width")?.required()?.try_into()?;
+        let height = value.to_member("height")?.required()?.try_into()?;
+        let data = value
+            .to_member("data")?
+            .map(|v| v.try_into())?
+            .unwrap_or_default();
+        Ok(Self {
+            width,
+            height,
+            data,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct VideoEncoderConfig {
     pub codec: String,
     pub bitrate: u32,
@@ -47,18 +65,62 @@ pub struct VideoEncoderConfig {
     pub height: u16,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl nojson::DisplayJson for VideoEncoderConfig {
+    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("codec", &self.codec)?;
+            f.member("bitrate", self.bitrate)?;
+            f.member("width", self.width)?;
+            f.member("height", self.height)
+        })
+    }
+}
+
+impl<'text, 'raw> TryFrom<nojson::RawJsonValue<'text, 'raw>> for VideoEncoderConfig {
+    type Error = nojson::JsonParseError;
+
+    fn try_from(
+        value: nojson::RawJsonValue<'text, 'raw>,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            codec: value.to_member("codec")?.required()?.try_into()?,
+            bitrate: value.to_member("bitrate")?.required()?.try_into()?,
+            width: value.to_member("width")?.required()?.try_into()?,
+            height: value.to_member("height")?.required()?.try_into()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TranscodeOptions {
-    #[serde(flatten)]
     pub video_encoder_config: VideoEncoderConfig,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+impl<'text, 'raw> TryFrom<nojson::RawJsonValue<'text, 'raw>> for TranscodeOptions {
+    type Error = nojson::JsonParseError;
+
+    fn try_from(
+        value: nojson::RawJsonValue<'text, 'raw>,
+    ) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            video_encoder_config: value.try_into()?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct TranscodeProgress {
     pub done: bool,
     pub rate: f32,
+}
+
+impl nojson::DisplayJson for TranscodeProgress {
+    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("done", self.done)?;
+            f.member("rate", self.rate)
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -68,11 +130,11 @@ pub struct Transcoder {
     output_mp4: Vec<u8>,
     executor: LocalPool,
     executing: bool,
-    transcode_result_rx: futures::channel::mpsc::UnboundedReceiver<orfail::Result<Track>>,
+    transcode_result_rx: futures::channel::mpsc::UnboundedReceiver<Result<Track>>,
     output_tracks: Vec<Track>,
     transcode_target_sample_count: usize,
     transcoded_sample_count: Arc<AtomicUsize>,
-    transcode_error: Option<Failure>,
+    transcode_error: Option<Error>,
 }
 
 impl Transcoder {
@@ -92,15 +154,18 @@ impl Transcoder {
         }
     }
 
-    pub fn parse_input_mp4_file(&mut self, mp4: &[u8]) -> orfail::Result<Mp4FileSummary> {
-        let mp4 = InputMp4::parse(mp4).or_fail()?;
+    pub fn parse_input_mp4_file(&mut self, mp4: &[u8]) -> Result<Mp4FileSummary> {
+        let mp4 = InputMp4::parse(mp4)?;
         let summary = mp4.summary();
         self.input_mp4 = Some(mp4);
         Ok(summary)
     }
 
-    pub fn start_transcode(&mut self) -> orfail::Result<()> {
-        let input_mp4 = self.input_mp4.take().or_fail()?;
+    pub fn start_transcode(&mut self) -> Result<()> {
+        let input_mp4 = self
+            .input_mp4
+            .take()
+            .ok_or_else(|| Error::new("input MP4 is not parsed yet"))?;
         for track in &input_mp4.tracks {
             if track.is_audio {
                 continue;
@@ -114,7 +179,7 @@ impl Transcoder {
                     Some(&c.sample_entry)
                 }
             }) {
-                return Err(Failure::new(format!(
+                return Err(Error::new(format!(
                     "Only H.264 is supported for input video codec: {}",
                     sample_entry.box_type()
                 )));
@@ -141,16 +206,16 @@ impl Transcoder {
             self.executor
                 .spawner()
                 .spawn_local(async move {
-                    let result = transcoder.run().await.or_fail();
+                    let result = transcoder.run().await;
                     let _ = transcode_result_tx.unbounded_send(result);
                 })
-                .or_fail()?;
+                .map_err(|e| Error::new(e.to_string()))?;
         }
         self.transcode_result_rx = transcode_result_rx;
         Ok(())
     }
 
-    pub fn poll_transcode(&mut self) -> orfail::Result<TranscodeProgress> {
+    pub fn poll_transcode(&mut self) -> Result<TranscodeProgress> {
         if let Some(e) = self.transcode_error.clone() {
             return Err(e);
         }
@@ -169,7 +234,6 @@ impl Transcoder {
                     }
                     Ok(result) => {
                         // 特定のトラックの変換が完了した or 失敗した
-                        let result = result.or_fail();
                         self.transcode_error = result.as_ref().err().cloned();
                         self.output_tracks.push(result?);
                         do_continue = true;
@@ -189,10 +253,10 @@ impl Transcoder {
         })
     }
 
-    pub fn build_output_mp4_file(&mut self) -> orfail::Result<()> {
+    pub fn build_output_mp4_file(&mut self) -> Result<()> {
         let builder = OutputMp4Builder::new(std::mem::take(&mut self.output_tracks));
-        let mp4 = builder.build().or_fail()?;
-        self.output_mp4 = mp4.encode_to_vec().or_fail()?;
+        let mp4 = builder.build()?;
+        self.output_mp4 = mp4.encode_to_vec().map_err(|e| Error::new(e.to_string()))?;
         Ok(())
     }
 
@@ -210,7 +274,7 @@ struct TrackTranscoder {
 }
 
 impl TrackTranscoder {
-    async fn run(self) -> orfail::Result<Track> {
+    async fn run(self) -> Result<Track> {
         let mut output_track = Track {
             is_audio: self.track.is_audio,
             chunks: Vec::new(),
@@ -240,23 +304,19 @@ impl TrackTranscoder {
                 // H.264 以外 (= 音声) は無変換
                 continue;
             }
-            self.transcode_chunk(chunk).await.or_fail()?;
+            self.transcode_chunk(chunk).await?;
         }
 
         Ok(output_track)
     }
 
-    async fn transcode_chunk(&self, chunk: &mut Chunk) -> orfail::Result<()> {
+    async fn transcode_chunk(&self, chunk: &mut Chunk) -> Result<()> {
         let SampleEntry::Avc1(sample_entry) = &chunk.sample_entry else {
             unreachable!();
         };
 
-        let decoder = WebCodec::create_h264_decoder(sample_entry)
-            .await
-            .or_fail()?;
-        let encoder = WebCodec::create_encoder(&self.options.video_encoder_config)
-            .await
-            .or_fail()?;
+        let decoder = WebCodec::create_h264_decoder(sample_entry).await?;
+        let encoder = WebCodec::create_encoder(&self.options.video_encoder_config).await?;
 
         let decoder_id = decoder.0;
         let encoder_id = encoder.0;
@@ -265,20 +325,21 @@ impl TrackTranscoder {
             transcodings.push_back(
                 self.spawner
                     .spawn_local_with_handle(async move {
-                        let decoded = WebCodec::decode(decoder_id, sample.keyframe, &sample.data)
-                            .await
-                            .or_fail()?;
-                        let encoded = WebCodec::encode(encoder_id, sample.keyframe, decoded)
-                            .await
-                            .or_fail()?;
+                        let decoded =
+                            WebCodec::decode(decoder_id, sample.keyframe, &sample.data).await?;
+                        let encoded =
+                            WebCodec::encode(encoder_id, sample.keyframe, decoded).await?;
                         sample.description = encoded.description;
                         sample.data = encoded.data;
-                        Ok::<_, Failure>(sample)
+                        Ok::<_, Error>(sample)
                     })
-                    .or_fail()?,
+                    .map_err(|e| Error::new(e.to_string()))?,
             );
             if transcodings.len() > DECODE_QUEQUE_SIZE {
-                let sample = transcodings.pop_front().or_fail()?.await.or_fail()?;
+                let sample = transcodings
+                    .pop_front()
+                    .ok_or_else(|| Error::new("transcoding queue is empty"))?
+                    .await?;
                 chunk.samples.push(sample);
                 self.transcoded_sample_count.fetch_add(1, Ordering::SeqCst);
             }
@@ -286,16 +347,16 @@ impl TrackTranscoder {
         std::mem::drop(decoder); // もうデコードすべきサンプルがないことをデコーダーに伝える
 
         for sample in transcodings {
-            chunk.samples.push(sample.await.or_fail()?);
+            chunk.samples.push(sample.await?);
             self.transcoded_sample_count.fetch_add(1, Ordering::SeqCst);
         }
 
-        chunk.sample_entry = self.build_output_sample_entry(chunk).or_fail()?;
+        chunk.sample_entry = self.build_output_sample_entry(chunk)?;
 
         Ok(())
     }
 
-    fn build_output_sample_entry(&self, chunk: &Chunk) -> orfail::Result<SampleEntry> {
+    fn build_output_sample_entry(&self, chunk: &Chunk) -> Result<SampleEntry> {
         let visual = VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
             width: self.options.video_encoder_config.width,
@@ -364,34 +425,38 @@ impl TrackTranscoder {
             }
             "avc1.42e02a" => Ok(SampleEntry::Avc1(Avc1Box {
                 visual,
-                avcc_box: Self::decode_description(chunk, AvccBox::TYPE).or_fail()?,
+                avcc_box: Self::decode_description(chunk, AvccBox::TYPE)?,
                 unknown_boxes: Vec::new(),
             })),
             "hev1.1.6.L90.B0" => Ok(SampleEntry::Hev1(Hev1Box {
                 visual,
-                hvcc_box: Self::decode_description(chunk, HvccBox::TYPE).or_fail()?,
+                hvcc_box: Self::decode_description(chunk, HvccBox::TYPE)?,
                 unknown_boxes: Vec::new(),
             })),
-            codec => Err(Failure::new(format!("Not yet implemented: {codec}"))),
+            codec => Err(Error::new(format!("Not yet implemented: {codec}"))),
         }
     }
 
-    fn decode_description<T: Decode>(chunk: &Chunk, box_type: BoxType) -> orfail::Result<T> {
-        let description = &chunk
+    fn decode_description<T: Decode>(chunk: &Chunk, box_type: BoxType) -> Result<T> {
+        let description = chunk
             .samples
             .first()
-            .or_fail()?
+            .ok_or_else(|| Error::new("no samples in chunk"))?
             .description
             .as_ref()
-            .or_fail()?;
+            .ok_or_else(|| Error::new("no description in sample"))?;
         let header = BoxHeader {
             box_type,
             box_size: BoxSize::with_payload_size(box_type, description.len() as u64),
         };
         let mut data = Vec::new();
-        header.encode(&mut data).or_fail()?;
+        header
+            .encode(&mut data)
+            .map_err(|e| Error::new(e.to_string()))?;
         data.extend_from_slice(description);
 
-        T::decode(&data[..]).or_fail().map(|(desc, _)| desc)
+        T::decode(&data[..])
+            .map_err(|e| Error::new(e.to_string()))
+            .map(|(desc, _)| desc)
     }
 }

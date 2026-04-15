@@ -1,7 +1,5 @@
 use std::{num::NonZeroU32, time::Duration};
 
-use orfail::OrFail;
-use serde::Serialize;
 use shiguredo_mp4::{
     Decode, Either, Encode, FixedPointNumber, Mp4File, Mp4FileTime, Utf8String,
     aux::SampleTableAccessor,
@@ -11,6 +9,8 @@ use shiguredo_mp4::{
         StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
 };
+
+use crate::{Error, Result};
 
 // 出力側はマイクロ秒に決め打ち
 const OUTPUT_TIMESCALE: NonZeroU32 = NonZeroU32::MIN.saturating_add(1_000_000 - 1);
@@ -31,10 +31,10 @@ impl OutputMp4Builder {
         }
     }
 
-    pub fn build(mut self) -> orfail::Result<Mp4File> {
+    pub fn build(mut self) -> Result<Mp4File> {
         let ftyp_box = self.build_ftyp_box();
         let mdat_box = self.build_mdat_box();
-        let moov_box = self.build_moov_box().or_fail()?;
+        let moov_box = self.build_moov_box()?;
         Ok(Mp4File {
             ftyp_box,
             boxes: vec![RootBox::Mdat(mdat_box), RootBox::Moov(moov_box)],
@@ -75,7 +75,7 @@ impl OutputMp4Builder {
         mdat_box
     }
 
-    fn build_moov_box(&mut self) -> orfail::Result<MoovBox> {
+    fn build_moov_box(&mut self) -> Result<MoovBox> {
         let mvhd_box = MvhdBox {
             creation_time: Mp4FileTime::default(),
             modification_time: Mp4FileTime::default(),
@@ -93,7 +93,7 @@ impl OutputMp4Builder {
         };
         let mut trak_boxes = Vec::new();
         for (i, track) in std::mem::take(&mut self.tracks).iter().enumerate() {
-            let trak_box = self.build_trak_box(i as u32 + 1, track).or_fail()?;
+            let trak_box = self.build_trak_box(i as u32 + 1, track)?;
             trak_boxes.push(trak_box);
         }
         Ok(MoovBox {
@@ -104,7 +104,7 @@ impl OutputMp4Builder {
         })
     }
 
-    fn build_trak_box(&mut self, track_id: u32, track: &Track) -> orfail::Result<TrakBox> {
+    fn build_trak_box(&mut self, track_id: u32, track: &Track) -> Result<TrakBox> {
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
             flag_track_in_movie: true,
@@ -124,12 +124,12 @@ impl OutputMp4Builder {
         Ok(TrakBox {
             tkhd_box,
             edts_box: None,
-            mdia_box: self.build_mdia_box(track).or_fail()?,
+            mdia_box: self.build_mdia_box(track)?,
             unknown_boxes: Vec::new(),
         })
     }
 
-    fn build_mdia_box(&mut self, track: &Track) -> orfail::Result<MdiaBox> {
+    fn build_mdia_box(&mut self, track: &Track) -> Result<MdiaBox> {
         let mdhd_box = MdhdBox {
             creation_time: Mp4FileTime::default(),
             modification_time: Mp4FileTime::default(),
@@ -152,7 +152,7 @@ impl OutputMp4Builder {
                 Some(Either::B(VmhdBox::default()))
             },
             dinf_box: DinfBox::LOCAL_FILE,
-            stbl_box: self.build_stbl_box(track).or_fail()?,
+            stbl_box: self.build_stbl_box(track)?,
             unknown_boxes: Vec::new(),
         };
         Ok(MdiaBox {
@@ -163,7 +163,7 @@ impl OutputMp4Builder {
         })
     }
 
-    fn build_stbl_box(&mut self, track: &Track) -> orfail::Result<StblBox> {
+    fn build_stbl_box(&mut self, track: &Track) -> Result<StblBox> {
         let stsd_box = StsdBox {
             entries: track
                 .chunks
@@ -216,11 +216,21 @@ impl OutputMp4Builder {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Mp4FileSummary {
     pub duration: u32,
     pub width: u16,
     pub height: u16,
+}
+
+impl nojson::DisplayJson for Mp4FileSummary {
+    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("duration", self.duration)?;
+            f.member("width", self.width)?;
+            f.member("height", self.height)
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -229,8 +239,9 @@ pub struct InputMp4 {
 }
 
 impl InputMp4 {
-    pub fn parse(mp4_file_bytes: &[u8]) -> orfail::Result<Self> {
-        let (mp4_file, _) = Mp4File::decode(mp4_file_bytes).or_fail()?;
+    pub fn parse(mp4_file_bytes: &[u8]) -> Result<Self> {
+        let (mp4_file, _) =
+            Mp4File::decode(mp4_file_bytes).map_err(|e| Error::new(e.to_string()))?;
         let moov_box = mp4_file
             .boxes
             .iter()
@@ -241,14 +252,14 @@ impl InputMp4 {
                     None
                 }
             })
-            .or_fail_with(|()| "'moov' box not found".to_owned())?;
+            .ok_or_else(|| Error::new("'moov' box not found"))?;
 
         let mut tracks = Vec::new();
         for trak_box in &moov_box.trak_boxes {
             let is_audio = trak_box.mdia_box.hdlr_box.handler_type == HdlrBox::HANDLER_TYPE_SOUN;
             let timescale = trak_box.mdia_box.mdhd_box.timescale;
-            let sample_table =
-                SampleTableAccessor::new(&trak_box.mdia_box.minf_box.stbl_box).or_fail()?;
+            let sample_table = SampleTableAccessor::new(&trak_box.mdia_box.minf_box.stbl_box)
+                .map_err(|e| Error::new(e.to_string()))?;
 
             tracks.push(Track {
                 is_audio,

@@ -3,7 +3,6 @@ name = "shiguredo_mp4"
 version = "2026.3.0"
 edition = "2024"
 rust-version = "1.88"
-authors = ["Shiguredo Inc."]
 license = "Apache-2.0"
 description = "MP4 library"
 homepage = "https://github.com/shiguredo/mp4-rs"

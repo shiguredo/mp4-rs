@@ -1,13 +1,9 @@
-use serde::Serialize;
 use shiguredo_mp4::{BaseBox, Decode, Mp4File, boxes::RootBox};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct BoxInfo {
-    #[serde(rename = "type")]
     pub ty: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub unknown: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Self>,
 }
 
@@ -21,18 +17,38 @@ impl BoxInfo {
     }
 }
 
+impl nojson::DisplayJson for BoxInfo {
+    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
+        f.object(|f| {
+            f.member("type", &self.ty)?;
+            if let Some(unknown) = self.unknown {
+                f.member("unknown", unknown)?;
+            }
+            if !self.children.is_empty() {
+                f.member("children", &self.children)?;
+            }
+            Ok(())
+        })
+    }
+}
+
 #[unsafe(no_mangle)]
 #[expect(clippy::not_unsafe_ptr_arg_deref)]
 pub fn dump(bytes: *const u8, bytes_len: i32) -> *mut Vec<u8> {
     let bytes = unsafe { std::slice::from_raw_parts(bytes, bytes_len as usize) };
 
-    let json = Mp4File::<RootBox>::decode(bytes)
-        .map_err(|e| e.to_string())
-        .and_then(|(mp4, _)| {
+    let json = match Mp4File::<RootBox>::decode(bytes) {
+        Ok((mp4, _)) => {
             let infos = mp4.iter().map(BoxInfo::new).collect::<Vec<_>>();
-            serde_json::to_string_pretty(&infos).map_err(|e| e.to_string())
-        })
-        .unwrap_or_else(|e| e);
+            nojson::json(|f| {
+                f.set_indent_size(2);
+                f.set_spacing(true);
+                f.value(&infos)
+            })
+            .to_string()
+        }
+        Err(e) => e.to_string(),
+    };
 
     Box::into_raw(Box::new(json.into_bytes()))
 }

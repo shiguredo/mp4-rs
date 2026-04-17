@@ -329,7 +329,7 @@ impl Fmp4SegmentMuxer {
             )
         } else {
             // 拡張サイズが必要: ヘッダーが 16 バイトになるため合計値を再計算する
-            let extended_box_size = 16u64 + mdat_payload_size as u64;
+            let extended_box_size = 16u64 + mdat_payload_size;
             (BoxSize::U64(extended_box_size), 16)
         };
         let mdat_header = BoxHeader::new(MdatBox::TYPE, mdat_box_size);

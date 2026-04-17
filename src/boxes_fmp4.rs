@@ -691,8 +691,7 @@ impl Decode for TrunBox {
             };
 
             let remaining = payload.len().saturating_sub(offset);
-            if bytes_per_sample > 0 {
-                let max_samples = remaining / bytes_per_sample;
+            if let Some(max_samples) = remaining.checked_div(bytes_per_sample) {
                 if sample_count as usize > max_samples {
                     return Err(Error::invalid_data(
                         "TrunBox sample_count exceeds available payload",

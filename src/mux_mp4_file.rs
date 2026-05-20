@@ -531,6 +531,11 @@ impl Mp4FileMuxer {
     /// 実際のデータ追記処理自体は利用側の責務であり、
     /// このメソッド目的は、その追記結果などを伝えることで、
     /// [`Mp4FileMuxer`] が適切に、MP4ファイルの再生に必要なメタデータを構築できるようにすることである。
+    ///
+    /// エラーを返した場合、内部状態 (`next_position` / `audio_chunks` / `video_chunks` /
+    /// `last_sample_kind`) は変更されないため、呼び出し側は内容を補正したサンプルで再呼び出しできる。
+    /// ただし、対象トラック種別の最初のサンプル投入直後に `MissingSampleEntry` エラーになった場合は、
+    /// そのトラックの `audio_track_timescale` または `video_track_timescale` だけは記録済みとなる。
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
@@ -545,7 +550,9 @@ impl Mp4FileMuxer {
         let metadata = SampleMetadata {
             duration: sample.duration,
             keyframe: sample.keyframe,
-            size: sample.data_size as u32,
+            size: u32::try_from(sample.data_size).map_err(|_| {
+                MuxError::EncodeError(Error::invalid_data("sample data size exceeds u32::MAX"))
+            })?,
             composition_time_offset: sample.composition_time_offset,
         };
 
@@ -973,19 +980,23 @@ impl Mp4FileMuxer {
             entries: chunks
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
+                .map(|(i, c)| -> Result<StscEntry, MuxError> {
                     let sample_description_index = sample_entries
                         .iter()
                         .position(|entry| entry == &c.sample_entry)
                         .map(|idx| NonZeroU32::MIN.saturating_add(idx as u32))
                         .expect("sample_entry should exist in sample_entries");
-                    StscEntry {
+                    Ok(StscEntry {
                         first_chunk: NonZeroU32::MIN.saturating_add(i as u32),
-                        sample_per_chunk: c.samples.len() as u32,
+                        sample_per_chunk: u32::try_from(c.samples.len()).map_err(|_| {
+                            MuxError::EncodeError(Error::invalid_data(
+                                "samples per chunk exceeds u32::MAX",
+                            ))
+                        })?,
                         sample_description_index,
-                    }
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         };
 
         let stsz_box = StszBox::Variable {
@@ -1123,6 +1134,8 @@ fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+
     use crate::{
         Uint,
         boxes::{
@@ -1273,6 +1286,130 @@ mod tests {
             muxer.append_sample(&sample2),
             Err(MuxError::AlreadyFinalized)
         ));
+    }
+
+    /// data_size が u32::MAX の境界値で append_sample と finalize が成功するテスト
+    ///
+    /// Mp4FileMuxer はメタデータのみを管理して実バイト列は確保しないため、
+    /// data_size に u32::MAX を渡しても 4 GiB の確保は発生しない。
+    /// next_position が u32::MAX を超えるため、finalize は Co64Box 経路を通る。
+    #[test]
+    fn test_append_sample_data_size_u32_max_succeeds() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: u32::MAX as usize,
+        };
+        muxer
+            .append_sample(&sample)
+            .expect("failed to append sample with u32::MAX data_size");
+        let finalized = muxer.finalize().expect("failed to finalize muxer");
+        assert!(!finalized.moov_box_bytes.is_empty());
+    }
+
+    /// faststart 有効化 (with_options) 経路でも data_size の u32 境界が同様に防御されるテスト
+    #[test]
+    fn test_append_sample_data_size_u32_max_with_faststart() {
+        let options = Mp4FileMuxerOptions {
+            reserved_moov_box_size: 8192,
+            ..Default::default()
+        };
+        let mut muxer =
+            Mp4FileMuxer::with_options(options).expect("failed to create muxer with options");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: u32::MAX as usize,
+        };
+        muxer
+            .append_sample(&sample)
+            .expect("failed to append sample with u32::MAX data_size under faststart");
+        let finalized = muxer.finalize().expect("failed to finalize muxer");
+        assert!(finalized.is_faststart_enabled());
+    }
+
+    /// data_size が u32::MAX を超える場合のエラーテスト
+    // 32-bit プラットフォームでは usize で u32::MAX + 1 を表現できず構造的に到達不能なため cfg で限定する
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_append_sample_data_size_exceeds_u32_max() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: u32::MAX as usize + 1,
+        };
+        let err = muxer
+            .append_sample(&sample)
+            .expect_err("expected encode error for data_size exceeding u32::MAX");
+        assert!(matches!(err, MuxError::EncodeError(_)));
+        // MuxError::EncodeError は他原因でも返るためメッセージ内容まで確認する
+        let message = format!("{err}");
+        assert!(
+            message.contains("sample data size exceeds u32::MAX"),
+            "unexpected error message: {message}",
+        );
+    }
+
+    /// append_sample がエラーを返した後にミューサ状態が変化していないことを検証するテスト
+    // 32-bit プラットフォームでは usize で u32::MAX + 1 を表現できず構造的に到達不能なため cfg で限定する
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_append_sample_error_keeps_muxer_state() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let bad_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: u32::MAX as usize + 1,
+        };
+        muxer
+            .append_sample(&bad_sample)
+            .expect_err("expected encode error for data_size exceeding u32::MAX");
+
+        // エラー後でも next_position は初期値のままなので、同じ data_offset で再投入できる
+        let good_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&good_sample)
+            .expect("failed to append sample after error");
+        muxer.finalize().expect("failed to finalize muxer");
     }
 
     /// 音声と映像の複数トラックのテスト

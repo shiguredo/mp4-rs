@@ -855,6 +855,13 @@ impl Mp4FileMuxer {
                 (max_w.max(w), max_h.max(h))
             });
 
+        let width = i16::try_from(max_width).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data("video width exceeds i16::MAX"))
+        })?;
+        let height = i16::try_from(max_height).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data("video height exceeds i16::MAX"))
+        })?;
+
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
@@ -869,8 +876,8 @@ impl Mp4FileMuxer {
             alternate_group: TkhdBox::DEFAULT_ALTERNATE_GROUP,
             volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
             matrix: TkhdBox::DEFAULT_MATRIX,
-            width: FixedPointNumber::new(max_width as i16, 0),
-            height: FixedPointNumber::new(max_height as i16, 0),
+            width: FixedPointNumber::new(width, 0),
+            height: FixedPointNumber::new(height, 0),
         };
 
         Ok(TrakBox {
@@ -1410,6 +1417,89 @@ mod tests {
             .append_sample(&good_sample)
             .expect("failed to append sample after error");
         muxer.finalize().expect("failed to finalize muxer");
+    }
+
+    /// `muxer` に解像度 `width` x `height` の AVC1 サンプルを 1 つ追加して `finalize()` を呼ぶ
+    fn finalize_after_appending_video_sample(
+        muxer: &mut Mp4FileMuxer,
+        width: u16,
+        height: u16,
+    ) -> Result<(), MuxError> {
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+        let mut entry = create_avc1_sample_entry();
+        let SampleEntry::Avc1(avc1) = &mut entry else {
+            panic!("create_avc1_sample_entry must return SampleEntry::Avc1");
+        };
+        avc1.visual.width = width;
+        avc1.visual.height = height;
+
+        let sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(entry),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&sample)
+            .expect("failed to append sample");
+        muxer.finalize().map(|_| ())
+    }
+
+    /// 映像解像度の幅と高さが i16::MAX (32767) の境界値で finalize が成功するテスト
+    #[test]
+    fn test_finalize_video_resolution_i16_max_succeeds() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        finalize_after_appending_video_sample(&mut muxer, i16::MAX as u16, i16::MAX as u16)
+            .expect("failed to finalize at i16::MAX resolution");
+    }
+
+    /// faststart 有効化 (with_options) 経路でも i16::MAX 境界値で finalize が成功するテスト
+    #[test]
+    fn test_finalize_video_resolution_i16_max_with_faststart() {
+        let options = Mp4FileMuxerOptions {
+            reserved_moov_box_size: 8192,
+            ..Default::default()
+        };
+        let mut muxer =
+            Mp4FileMuxer::with_options(options).expect("failed to create muxer with options");
+        finalize_after_appending_video_sample(&mut muxer, i16::MAX as u16, i16::MAX as u16)
+            .expect("failed to finalize at i16::MAX resolution under faststart");
+    }
+
+    /// 映像幅が i16::MAX を超える場合に width 側のエラーメッセージが返ることを検証するテスト
+    #[test]
+    fn test_finalize_video_width_exceeds_i16_max() {
+        // i16::MAX を超える最小値の u16 (= 32768) を渡す
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let err = finalize_after_appending_video_sample(&mut muxer, 32_768, 1)
+            .expect_err("expected encode error for width exceeding i16::MAX");
+        assert!(matches!(err, MuxError::EncodeError(_)));
+        // MuxError::EncodeError は他原因でも返るためメッセージ内容まで確認する
+        let message = format!("{err}");
+        assert!(
+            message.contains("video width exceeds i16::MAX"),
+            "unexpected error message: {message}",
+        );
+    }
+
+    /// 映像高さが i16::MAX を超える場合に height 側のエラーメッセージが返ることを検証するテスト
+    #[test]
+    fn test_finalize_video_height_exceeds_i16_max() {
+        // i16::MAX を超える最小値の u16 (= 32768) を渡す
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let err = finalize_after_appending_video_sample(&mut muxer, 1, 32_768)
+            .expect_err("expected encode error for height exceeding i16::MAX");
+        assert!(matches!(err, MuxError::EncodeError(_)));
+        // MuxError::EncodeError は他原因でも返るためメッセージ内容まで確認する
+        let message = format!("{err}");
+        assert!(
+            message.contains("video height exceeds i16::MAX"),
+            "unexpected error message: {message}",
+        );
     }
 
     /// 音声と映像の複数トラックのテスト

@@ -198,7 +198,7 @@ impl Decode for Brand {
 
 /// [ISO/IEC 14496-12] FileTypeBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct FtypBox {
     pub major_brand: Brand,
     pub minor_version: u32,
@@ -263,7 +263,7 @@ impl BaseBox for FtypBox {
 
 /// [`Mp4File`](crate::Mp4File) のトップレベルに位置するボックス群のデフォルト実装
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum RootBox {
     Free(FreeBox),
     Mdat(MdatBox),
@@ -333,7 +333,7 @@ impl BaseBox for RootBox {
 
 /// [ISO/IEC 14496-12] FreeSpaceBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct FreeBox {
     pub payload: Vec<u8>,
 }

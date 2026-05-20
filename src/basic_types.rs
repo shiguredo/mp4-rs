@@ -347,7 +347,7 @@ impl Decode for FullBoxFlags {
 /// ボックスのサイズは原則として、ヘッダー部分とペイロード部分のサイズを足した値となる。
 /// ただし、MP4 ファイルの末尾にあるボックスについてはサイズを 0 とすることで、ペイロードが可変長（追記可能）なボックスとして扱うことが可能となっている。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum BoxSize {
     U32(u32),
     U64(u64),
@@ -583,7 +583,7 @@ impl Decode for Utf8String {
 
 /// `A` か `B` のどちらかの値を保持する列挙型
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum Either<A, B> {
     A(A),
     B(B),

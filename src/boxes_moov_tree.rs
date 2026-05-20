@@ -14,7 +14,7 @@ use crate::{
 
 /// [ISO/IEC 14496-12] MovieBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MoovBox {
     pub mvhd_box: MvhdBox,
     pub trak_boxes: Vec<TrakBox>,
@@ -107,7 +107,7 @@ impl BaseBox for MoovBox {
 
 /// [ISO/IEC 14496-12] MovieHeaderBox class (親: [`MoovBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MvhdBox {
     pub creation_time: Mp4FileTime,
     pub modification_time: Mp4FileTime,
@@ -240,7 +240,7 @@ impl FullBox for MvhdBox {
 
 /// [ISO/IEC 14496-12] TrackBox class (親: [`MoovBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TrakBox {
     pub tkhd_box: TkhdBox,
     pub edts_box: Option<EdtsBox>,
@@ -331,7 +331,7 @@ impl BaseBox for TrakBox {
 
 /// [ISO/IEC 14496-12] TrackHeaderBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TkhdBox {
     pub flag_track_enabled: bool,
     pub flag_track_in_movie: bool,
@@ -501,7 +501,7 @@ impl FullBox for TkhdBox {
 
 /// [ISO/IEC 14496-12] EditBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct EdtsBox {
     pub elst_box: Option<ElstBox>,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -576,7 +576,7 @@ impl BaseBox for EdtsBox {
 
 /// [`ElstBox`] に含まれるエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct ElstEntry {
     pub edit_duration: u64,
     pub media_time: i64,
@@ -585,7 +585,7 @@ pub struct ElstEntry {
 
 /// [ISO/IEC 14496-12] EditListBox class (親: [`EdtsBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct ElstBox {
     pub entries: Vec<ElstEntry>,
 }
@@ -677,7 +677,7 @@ impl FullBox for ElstBox {
 
 /// [ISO/IEC 14496-12] MediaBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MdiaBox {
     pub mdhd_box: MdhdBox,
     pub hdlr_box: HdlrBox,
@@ -766,7 +766,7 @@ impl BaseBox for MdiaBox {
 
 /// [ISO/IEC 14496-12] MediaHeaderBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MdhdBox {
     pub creation_time: Mp4FileTime,
     pub modification_time: Mp4FileTime,
@@ -898,7 +898,7 @@ impl FullBox for MdhdBox {
 
 /// [ISO/IEC 14496-12] HandlerBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct HdlrBox {
     pub handler_type: [u8; 4],
 
@@ -980,7 +980,7 @@ impl FullBox for HdlrBox {
 
 /// [ISO/IEC 14496-12] MediaInformationBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MinfBox {
     // 音声・映像トラック以外の場合は None になる
     pub smhd_or_vmhd_box: Option<Either<SmhdBox, VmhdBox>>,
@@ -1079,7 +1079,7 @@ impl BaseBox for MinfBox {
 
 /// [ISO/IEC 14496-12] SoundMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct SmhdBox {
     pub balance: FixedPointNumber<u8, u8>,
 }
@@ -1142,7 +1142,7 @@ impl FullBox for SmhdBox {
 
 /// [ISO/IEC 14496-12] VideoMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct VmhdBox {
     pub graphicsmode: u16,
     pub opcolor: [u16; 3],
@@ -1220,7 +1220,7 @@ impl FullBox for VmhdBox {
 
 /// [ISO/IEC 14496-12] DataInformationBox class (親: [`MinfBox`]）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct DinfBox {
     pub dref_box: DrefBox,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -1299,7 +1299,7 @@ impl BaseBox for DinfBox {
 
 /// [ISO/IEC 14496-12] DataReferenceBox class (親: [`DinfBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct DrefBox {
     pub url_box: Option<UrlBox>,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -1396,7 +1396,7 @@ impl FullBox for DrefBox {
 
 /// [ISO/IEC 14496-12] DataEntryUrlBox class (親: [`DrefBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct UrlBox {
     pub location: Option<Utf8String>,
 }
@@ -1463,7 +1463,7 @@ impl FullBox for UrlBox {
 
 /// [ISO/IEC 14496-12] SampleTableBox class (親: [`MinfBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct StblBox {
     pub stsd_box: StsdBox,
     pub stts_box: SttsBox,
@@ -1625,7 +1625,7 @@ impl AsRef<StblBox> for StblBox {
 
 /// [ISO/IEC 14496-12] SampleDescriptionBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct StsdBox {
     pub entries: Vec<SampleEntry>,
 }
@@ -1692,7 +1692,7 @@ impl FullBox for StsdBox {
 
 /// [`SttsBox`] が保持するエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct SttsEntry {
     pub sample_count: u32,
     pub sample_delta: u32,
@@ -1700,7 +1700,7 @@ pub struct SttsEntry {
 
 /// [ISO/IEC 14496-12] TimeToSampleBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct SttsBox {
     pub entries: Vec<SttsEntry>,
 }
@@ -2217,7 +2217,7 @@ impl FullBox for SdtpBox {
 
 /// [`StscBox`] が保持するエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct StscEntry {
     pub first_chunk: NonZeroU32,
     pub sample_per_chunk: u32,
@@ -2226,7 +2226,7 @@ pub struct StscEntry {
 
 /// [ISO/IEC 14496-12] SampleToChunkBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct StscBox {
     pub entries: Vec<StscEntry>,
 }
@@ -2298,7 +2298,7 @@ impl FullBox for StscBox {
 
 /// [ISO/IEC 14496-12] SampleSizeBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum StszBox {
     Fixed {
         sample_size: NonZeroU32,
@@ -2391,7 +2391,7 @@ impl FullBox for StszBox {
 
 /// [ISO/IEC 14496-12] ChunkOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct StcoBox {
     pub chunk_offsets: Vec<u32>,
 }
@@ -2460,7 +2460,7 @@ impl FullBox for StcoBox {
 
 /// [ISO/IEC 14496-12] ChunkLargeOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Co64Box {
     pub chunk_offsets: Vec<u64>,
 }
@@ -2529,7 +2529,7 @@ impl FullBox for Co64Box {
 
 /// [ISO/IEC 14496-12] SyncSampleBox class (親: [`StssBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct StssBox {
     pub sample_numbers: Vec<NonZeroU32>,
 }
@@ -2598,7 +2598,7 @@ impl FullBox for StssBox {
 
 /// [ISO/IEC 14496-14] ESDBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct EsdsBox {
     pub es: EsDescriptor,
 }
@@ -2659,7 +2659,7 @@ impl FullBox for EsdsBox {
 /// Fragmented MP4 で使用するムービー拡張ボックス。
 /// このボックスが存在する場合、ファイルは fMP4 フォーマットであることを示す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MvexBox {
     pub mehd_box: Option<MehdBox>,
     pub trex_boxes: Vec<TrexBox>,
@@ -2747,7 +2747,7 @@ impl BaseBox for MvexBox {
 /// フラグメント化されたムービー全体の継続時間を格納する。
 /// このボックスはオプションであり、存在しない場合は継続時間が不明であることを意味する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct MehdBox {
     pub fragment_duration: u64,
 }
@@ -2824,7 +2824,7 @@ impl FullBox for MehdBox {
 /// トラックフラグメントのデフォルト値を定義する。
 /// 各トラックに対して 1 つの TrexBox が必要。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct TrexBox {
     pub track_id: u32,
     pub default_sample_description_index: u32,

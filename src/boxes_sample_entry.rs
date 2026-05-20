@@ -13,7 +13,7 @@ use crate::{
 
 /// [`StsdBox`][crate::boxes::StsdBox] に含まれるエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub enum SampleEntry {
     Avc1(Avc1Box),
     Hev1(Hev1Box),
@@ -155,7 +155,7 @@ impl BaseBox for SampleEntry {
 
 /// 映像系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct VisualSampleEntryFields {
     pub data_reference_index: NonZeroU16,
     pub width: u16,
@@ -239,7 +239,7 @@ impl Decode for VisualSampleEntryFields {
 
 /// [ISO/IEC 14496-15] AVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Avc1Box {
     pub visual: VisualSampleEntryFields,
     pub avcc_box: AvccBox,
@@ -317,7 +317,7 @@ impl BaseBox for Avc1Box {
 
 /// [ISO/IEC 14496-15] AVCConfigurationBox class (親: [`Avc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct AvccBox {
     pub avc_profile_indication: u8,
     pub profile_compatibility: u8,
@@ -506,7 +506,7 @@ impl BaseBox for AvccBox {
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Hev1Box {
     pub visual: VisualSampleEntryFields,
     pub hvcc_box: HvccBox,
@@ -584,7 +584,7 @@ impl BaseBox for Hev1Box {
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Hvc1Box {
     pub visual: VisualSampleEntryFields,
     pub hvcc_box: HvccBox,
@@ -662,7 +662,7 @@ impl BaseBox for Hvc1Box {
 
 /// [`HvccBox`] 内の NAL ユニット配列を保持する構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct HvccNalUintArray {
     pub array_completeness: Uint<u8, 1, 7>,
     pub nal_unit_type: Uint<u8, 6, 0>,
@@ -671,7 +671,7 @@ pub struct HvccNalUintArray {
 
 /// [ISO/IEC 14496-15] HVCConfigurationBox class (親: [`Hev1Box`], [`Hvc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct HvccBox {
     pub general_profile_space: Uint<u8, 2, 6>,
     pub general_tier_flag: Uint<u8, 1, 5>,
@@ -866,7 +866,7 @@ impl BaseBox for HvccBox {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP8SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Vp08Box {
     pub visual: VisualSampleEntryFields,
     pub vpcc_box: VpccBox,
@@ -944,7 +944,7 @@ impl BaseBox for Vp08Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP9SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Vp09Box {
     pub visual: VisualSampleEntryFields,
     pub vpcc_box: VpccBox,
@@ -1022,7 +1022,7 @@ impl BaseBox for Vp09Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VPCodecConfigurationBox class (親: [`Vp08Box`], [`Vp09Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct VpccBox {
     pub profile: u8,
     pub level: u8,
@@ -1134,7 +1134,7 @@ impl FullBox for VpccBox {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Av01Box {
     pub visual: VisualSampleEntryFields,
     pub av1c_box: Av1cBox,
@@ -1212,7 +1212,7 @@ impl BaseBox for Av01Box {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1CodecConfigurationBox class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Av1cBox {
     pub seq_profile: Uint<u8, 3, 5>,
     pub seq_level_idx_0: Uint<u8, 5, 0>,
@@ -1336,7 +1336,7 @@ impl BaseBox for Av1cBox {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct OpusBox {
     pub audio: AudioSampleEntryFields,
     pub dops_box: DopsBox,
@@ -1414,7 +1414,7 @@ impl BaseBox for OpusBox {
 
 /// [ISO/IEC 14496-14] MP4AudioSampleEntry class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct Mp4aBox {
     pub audio: AudioSampleEntryFields,
     pub esds_box: EsdsBox,
@@ -1494,7 +1494,7 @@ impl BaseBox for Mp4aBox {
 ///
 /// <https://github.com/xiph/flac/blob/master/doc/isoflac.txt>
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct FlacBox {
     pub audio: AudioSampleEntryFields,
     pub dfla_box: DflaBox,
@@ -1772,7 +1772,7 @@ impl Decode for FlacMetadataBlock {
 
 /// 音声系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct AudioSampleEntryFields {
     pub data_reference_index: NonZeroU16,
     pub channelcount: u16,
@@ -1828,7 +1828,7 @@ impl Decode for AudioSampleEntryFields {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSpecificBox class (親: [`OpusBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct DopsBox {
     pub output_channel_count: u8,
     pub pre_skip: u16,

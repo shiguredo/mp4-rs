@@ -5,7 +5,7 @@ use crate::{Decode, Encode, Error, Result, Uint};
 
 /// [ISO_IEC_14496-1] ES_Descriptor class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct EsDescriptor {
     pub es_id: u16,
     pub stream_priority: Uint<u8, 5>,
@@ -120,7 +120,7 @@ impl Encode for EsDescriptor {
 
 /// [ISO_IEC_14496-1] DecoderConfigDescriptor class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct DecoderConfigDescriptor {
     pub object_type_indication: u8,
     pub stream_type: Uint<u8, 6, 2>,
@@ -224,7 +224,7 @@ impl Encode for DecoderConfigDescriptor {
 
 /// [ISO_IEC_14496-1] DecoderSpecificInfo class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub struct DecoderSpecificInfo {
     pub payload: Vec<u8>,
 }

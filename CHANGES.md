@@ -16,6 +16,10 @@
   - `u32::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - 同様に `build_stbl_box` 内の `sample_per_chunk` でも `c.samples.len()` の `u32` 暗黙キャストを防御する
   - @voluntas
+- [FIX] `Mp4FileMuxer` の `build_video_trak_box()` で映像解像度の幅と高さが `i16::MAX` を超える場合にエラーを返すようにする
+  - これまでは `u16` から `i16` への暗黙キャストで符号が反転し、`tkhd` の `width` / `height` が負の値になる可能性があった
+  - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
+  - @voluntas
 
 ## 2026.3.0
 

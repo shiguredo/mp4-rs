@@ -1,7 +1,9 @@
 # mux_mp4_file.rs で映像解像度の u16→i16 キャストにより符号反転が発生する
 
 Created: 2026-05-20
+Completed: 2026-05-20
 Model: opencode mimo-v2.5-pro
+Branch: feature/fix-mux-mp4-file-resolution-sign-inversion
 
 ## 概要
 
@@ -108,3 +110,21 @@ height: FixedPointNumber::new(i16::try_from(max_height).map_err(|_| {
 ## CHANGES.md
 
 `[FIX]` で記載する。
+
+## 解決方法
+
+- `src/mux_mp4_file.rs` の `build_video_trak_box` で `max_width as i16` / `max_height as i16` の
+  暗黙キャストを `i16::try_from()` ベースに置き換えた。エラー時は
+  `MuxError::EncodeError(Error::invalid_data("video {width|height} exceeds i16::MAX"))` を返す。
+  `mux_fmp4_segment.rs:613-636` と同じ防御パターンに揃えている。
+- `src/mux_mp4_file.rs` の `#[cfg(test)] mod tests` に共通ヘルパー
+  `finalize_after_appending_video_sample(muxer, width, height)` を追加し、
+  以下 4 テストを実装した:
+  - `test_finalize_video_resolution_i16_max_succeeds`: width/height が `i16::MAX` (32767)
+    の境界値で `finalize()` が成功することを検証する
+  - `test_finalize_video_resolution_i16_max_with_faststart`: faststart 有効化
+    (`Mp4FileMuxerOptions::reserved_moov_box_size > 0`) 経路でも同じ境界値挙動を検証する
+  - `test_finalize_video_width_exceeds_i16_max`: width = 32768 で `MuxError::EncodeError`
+    が返り、Display 出力が `"video width exceeds i16::MAX"` を含むことを検証する
+  - `test_finalize_video_height_exceeds_i16_max`: height = 32768 で同様に
+    `"video height exceeds i16::MAX"` を含むことを検証する

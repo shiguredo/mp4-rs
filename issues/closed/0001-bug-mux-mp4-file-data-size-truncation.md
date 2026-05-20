@@ -1,7 +1,9 @@
 # mux_mp4_file.rs で sample.data_size の usize→u32 によるトランケーションが発生する
 
 Created: 2026-05-20
+Completed: 2026-05-20
 Model: opencode mimo-v2.5-pro
+Branch: feature/fix-mux-mp4-file-data-size-truncation
 
 ## 概要
 
@@ -94,3 +96,28 @@ fmp4 側と一貫性を取るため `EncodeError` を採用する)。
 
 C API (`crates/c-api/src/mux.rs`) の `Mp4MuxSample` でも `data_size` を受け取るが、
 C API 側では `u32` として扱っているため、今回の問題は発生しない。
+
+## 解決方法
+
+- `src/mux_mp4_file.rs:548` の `sample.data_size as u32` を
+  `u32::try_from(sample.data_size).map_err(|_| MuxError::EncodeError(Error::invalid_data("sample data size exceeds u32::MAX")))?`
+  に置き換え、`u32::MAX` を超えるサイズで明示的なエラーを返すようにした。
+  `mux_fmp4_segment.rs:744` 周辺と同じ防御パターンに揃えた。
+- レビューで `src/mux_mp4_file.rs:986` の `c.samples.len() as u32` も同型の暗黙
+  トランケーションを抱えていることが判明したため、同じく `u32::try_from()`
+  ベースに置き換え、`build_stbl_box` の `entries` 構築 closure を `Result<StscEntry, MuxError>`
+  返却にして `collect::<Result<_, _>>()?` で伝播するようにした。エラー文面は
+  `"samples per chunk exceeds u32::MAX"`。
+- `Mp4FileMuxer::append_sample()` の doc コメントに、エラー返却時の内部状態の
+  不変条件 (`MissingSampleEntry` 経路を除き `next_position` / `chunks` 等は
+  変更されない) を明記した。
+- `src/mux_mp4_file.rs` の `#[cfg(test)] mod tests` に以下 4 テストを追加した:
+  - `test_append_sample_data_size_u32_max_succeeds`: 境界値 `u32::MAX` で
+    `append_sample` と `finalize` が成功し、Co64Box 経路を通ることを検証する
+  - `test_append_sample_data_size_u32_max_with_faststart`: faststart 有効化
+    (`with_options`) 経路でも同じ境界値挙動を検証する
+  - `test_append_sample_data_size_exceeds_u32_max`: `u32::MAX + 1` で
+    `MuxError::EncodeError` が返り、その Display 出力が
+    `"sample data size exceeds u32::MAX"` を含むことを検証する (64-bit 限定)
+  - `test_append_sample_error_keeps_muxer_state`: エラー後に同じ `data_offset`
+    で正常サンプルを再投入できることを検証する (64-bit 限定)

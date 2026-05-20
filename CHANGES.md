@@ -11,6 +11,12 @@
 
 ## develop
 
+- [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
+  - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった
+  - `u32::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
+  - 同様に `build_stbl_box` 内の `sample_per_chunk` でも `c.samples.len()` の `u32` 暗黙キャストを防御する
+  - @voluntas
+
 ## 2026.3.0
 
 - [ADD] `Mp4FileMuxer::advance_position()` メソッドを追加する

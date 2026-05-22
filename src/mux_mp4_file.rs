@@ -64,6 +64,7 @@ use crate::{
         MdiaBox, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
         StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
+    codec::buf,
 };
 
 // ftyp 更新時に必要となる free 予約の最小値は以下:
@@ -470,7 +471,8 @@ impl Mp4FileMuxer {
         self.initial_boxes_bytes
             .extend_from_slice(&free_box.encode_to_vec()?);
 
-        self.mdat_box_offset = self.initial_boxes_bytes.len() as u64;
+        self.mdat_box_offset =
+            buf::usize_to_u64(self.initial_boxes_bytes.len()).map_err(MuxError::EncodeError)?;
 
         // 可変長の mdat ボックスのヘッダーを書きこむ
         //
@@ -487,7 +489,8 @@ impl Mp4FileMuxer {
             .extend_from_slice(&mdat_box_header.encode_to_vec()?);
 
         // サンプルのデータが mdat ボックスに追記されていくように、ポジションを更新
-        self.next_position = self.initial_boxes_bytes.len() as u64;
+        self.next_position =
+            buf::usize_to_u64(self.initial_boxes_bytes.len()).map_err(MuxError::EncodeError)?;
 
         Ok(())
     }
@@ -605,11 +608,16 @@ impl Mp4FileMuxer {
             });
         }
 
-        chunks.last_mut().expect("bug").samples.push(metadata);
+        let Some(last_chunk) = chunks.last_mut() else {
+            return Err(MuxError::EncodeError(Error::invalid_data(
+                "internal bug: chunk must exist after push",
+            )));
+        };
+        last_chunk.samples.push(metadata);
 
         self.next_position = self
             .next_position
-            .checked_add(sample.data_size as u64)
+            .checked_add(buf::usize_to_u64(sample.data_size).map_err(MuxError::EncodeError)?)
             .ok_or(MuxError::Overflow)?;
         self.last_sample_kind = Some(sample.track_kind);
         Ok(())
@@ -666,7 +674,11 @@ impl Mp4FileMuxer {
             moov_box,
         });
 
-        Ok(self.finalized_boxes.as_ref().expect("infallible"))
+        self.finalized_boxes.as_ref().ok_or_else(|| {
+            MuxError::EncodeError(Error::invalid_data(
+                "internal bug: finalized_boxes must exist after assignment",
+            ))
+        })
     }
 
     /// ファイナライズされたボックス情報を取得する
@@ -719,8 +731,9 @@ impl Mp4FileMuxer {
         ftyp_box_bytes: &[u8],
         moov_box_bytes: &[u8],
     ) -> Result<(Vec<u8>, u64), MuxError> {
-        let head_region_size =
-            usize::try_from(self.mdat_box_offset).expect("mdat_box_offset should fit in usize");
+        let head_region_size = usize::try_from(self.mdat_box_offset).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data("mdat_box_offset exceeds usize::MAX"))
+        })?;
 
         // moov を先頭領域に配置できる場合は faststart にする
         if let Some(required_head_size) = ftyp_box_bytes.len().checked_add(moov_box_bytes.len())
@@ -729,7 +742,8 @@ impl Mp4FileMuxer {
             let trailing_size = head_region_size - required_head_size;
             if trailing_size == 0 || trailing_size >= BoxHeader::MIN_SIZE {
                 let mut head_boxes_bytes = ftyp_box_bytes.to_vec();
-                let moov_box_offset = ftyp_box_bytes.len() as u64;
+                let moov_box_offset =
+                    buf::usize_to_u64(ftyp_box_bytes.len()).map_err(MuxError::EncodeError)?;
                 head_boxes_bytes.extend_from_slice(moov_box_bytes);
                 if trailing_size > 0 {
                     let free_box_bytes = Self::build_free_box_bytes(trailing_size)?;
@@ -742,7 +756,11 @@ impl Mp4FileMuxer {
         // 先頭に moov を置けない場合は、ftyp + free に再構成して moov は末尾に追記する
         let trailing_size = head_region_size
             .checked_sub(ftyp_box_bytes.len())
-            .expect("bug: finalized ftyp should fit in reserved head region");
+            .ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: finalized ftyp should fit in reserved head region",
+                ))
+            })?;
 
         let mut head_boxes_bytes = ftyp_box_bytes.to_vec();
         if trailing_size > 0 {
@@ -753,20 +771,25 @@ impl Mp4FileMuxer {
     }
 
     fn build_free_box_bytes(total_size: usize) -> Result<Vec<u8>, MuxError> {
-        assert!(
-            total_size >= BoxHeader::MIN_SIZE,
-            "bug: free box size should be larger than BoxHeader::MIN_SIZE",
-        );
+        if total_size < BoxHeader::MIN_SIZE {
+            return Err(MuxError::EncodeError(Error::invalid_data(
+                "internal bug: free box size should be larger than BoxHeader::MIN_SIZE",
+            )));
+        }
 
         let box_size = if let Ok(box_size) = u32::try_from(total_size) {
             BoxSize::U32(box_size)
         } else {
-            BoxSize::U64(total_size as u64)
+            BoxSize::U64(buf::usize_to_u64(total_size).map_err(MuxError::EncodeError)?)
         };
         let header = BoxHeader::new(FreeBox::TYPE, box_size);
         let payload_size = total_size
             .checked_sub(header.external_size())
-            .expect("free box total size should be larger than its header size");
+            .ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "free box total size should be larger than its header size",
+                ))
+            })?;
 
         let mut bytes = header.encode_to_vec()?;
         bytes.extend_from_slice(&vec![0; payload_size]);
@@ -777,12 +800,12 @@ impl Mp4FileMuxer {
         let mut trak_boxes = Vec::new();
 
         if !self.audio_chunks.is_empty() {
-            let track_id = trak_boxes.len() as u32 + 1;
+            let track_id = next_track_id(trak_boxes.len())?;
             trak_boxes.push(self.build_audio_trak_box(track_id)?);
         }
 
         if !self.video_chunks.is_empty() {
-            let track_id = trak_boxes.len() as u32 + 1;
+            let track_id = next_track_id(trak_boxes.len())?;
             trak_boxes.push(self.build_video_trak_box(track_id)?);
         }
 
@@ -796,7 +819,7 @@ impl Mp4FileMuxer {
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
-            next_track_id: trak_boxes.len() as u32 + 1,
+            next_track_id: next_track_id(trak_boxes.len())?,
         };
 
         Ok(MoovBox {
@@ -811,7 +834,7 @@ impl Mp4FileMuxer {
         let total_duration = self
             .audio_chunks
             .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+            .flat_map(|c| c.samples.iter().map(|s| u64::from(s.duration)))
             .sum::<u64>();
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
@@ -844,7 +867,7 @@ impl Mp4FileMuxer {
         let total_duration = self
             .video_chunks
             .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+            .flat_map(|c| c.samples.iter().map(|s| u64::from(s.duration)))
             .sum::<u64>();
 
         let (max_width, max_height) = self
@@ -892,7 +915,7 @@ impl Mp4FileMuxer {
         let total_duration = self
             .audio_chunks
             .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+            .flat_map(|c| c.samples.iter().map(|s| u64::from(s.duration)))
             .sum::<u64>();
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
@@ -928,7 +951,7 @@ impl Mp4FileMuxer {
         let total_duration = self
             .video_chunks
             .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+            .flat_map(|c| c.samples.iter().map(|s| u64::from(s.duration)))
             .sum::<u64>();
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
@@ -988,13 +1011,29 @@ impl Mp4FileMuxer {
                 .iter()
                 .enumerate()
                 .map(|(i, c)| -> Result<StscEntry, MuxError> {
-                    let sample_description_index = sample_entries
-                        .iter()
-                        .position(|entry| entry == &c.sample_entry)
-                        .map(|idx| NonZeroU32::MIN.saturating_add(idx as u32))
-                        .expect("sample_entry should exist in sample_entries");
+                    let sample_description_index = {
+                        let idx = sample_entries
+                            .iter()
+                            .position(|entry| entry == &c.sample_entry)
+                            .ok_or_else(|| {
+                                MuxError::EncodeError(Error::invalid_data(
+                                    "internal bug: sample_entry should exist in sample_entries",
+                                ))
+                            })?;
+                        NonZeroU32::MIN.saturating_add(u32::try_from(idx).map_err(|_| {
+                            MuxError::EncodeError(Error::invalid_data(
+                                "sample entry index exceeds u32::MAX",
+                            ))
+                        })?)
+                    };
                     Ok(StscEntry {
-                        first_chunk: NonZeroU32::MIN.saturating_add(i as u32),
+                        first_chunk: NonZeroU32::MIN.saturating_add(u32::try_from(i).map_err(
+                            |_| {
+                                MuxError::EncodeError(Error::invalid_data(
+                                    "chunk index exceeds u32::MAX",
+                                ))
+                            },
+                        )?),
                         sample_per_chunk: u32::try_from(c.samples.len()).map_err(|_| {
                             MuxError::EncodeError(Error::invalid_data(
                                 "samples per chunk exceeds u32::MAX",
@@ -1013,13 +1052,16 @@ impl Mp4FileMuxer {
                 .collect(),
         };
 
-        let stco_or_co64_box = if self.next_position > u32::MAX as u64 {
+        let stco_or_co64_box = if self.next_position > u64::from(u32::MAX) {
             Either::B(Co64Box {
                 chunk_offsets: chunks.iter().map(|c| c.offset).collect(),
             })
         } else {
             Either::A(StcoBox {
-                chunk_offsets: chunks.iter().map(|c| c.offset as u32).collect(),
+                chunk_offsets: chunks
+                    .iter()
+                    .map(|c| buf::u64_to_u32(c.offset).map_err(MuxError::EncodeError))
+                    .collect::<Result<_, _>>()?,
             })
         };
 
@@ -1034,7 +1076,12 @@ impl Mp4FileMuxer {
                     .enumerate()
                     .filter_map(|(i, s)| {
                         s.keyframe
-                            .then_some(NonZeroU32::MIN.saturating_add(i as u32))
+                            .then(|| {
+                                u32::try_from(i)
+                                    .ok()
+                                    .map(|index| NonZeroU32::MIN.saturating_add(index))
+                            })
+                            .flatten()
                     })
                     .collect(),
             })
@@ -1058,12 +1105,12 @@ impl Mp4FileMuxer {
         let audio_duration = self
             .audio_chunks
             .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+            .flat_map(|c| c.samples.iter().map(|s| u64::from(s.duration)))
             .sum::<u64>();
         let video_duration = self
             .video_chunks
             .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+            .flat_map(|c| c.samples.iter().map(|s| u64::from(s.duration)))
             .sum::<u64>();
 
         let normalized_audio_duration =
@@ -1077,6 +1124,16 @@ impl Mp4FileMuxer {
             (self.audio_track_timescale, audio_duration)
         }
     }
+}
+
+fn next_track_id(track_count: usize) -> Result<u32, MuxError> {
+    let count = u32::try_from(track_count)
+        .map_err(|_| MuxError::EncodeError(Error::invalid_data("track count exceeds u32::MAX")))?;
+    count
+        .checked_add(1)
+        .ok_or(MuxError::EncodeError(Error::invalid_data(
+            "track count exceeds u32::MAX",
+        )))
 }
 
 fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {

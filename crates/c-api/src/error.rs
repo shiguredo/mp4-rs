@@ -7,7 +7,7 @@ use shiguredo_mp4::{
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
 #[repr(C)]
-#[expect(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "C ABI type names must match mp4.h")]
 pub enum Mp4Error {
     /// エラーが発生しなかったことを示す
     MP4_ERROR_OK = 0,

@@ -1,11 +1,11 @@
 //! ISO_IEC_14496-1 で定義されているディスクリプター群
 use alloc::{format, string::String, vec::Vec};
 
-use crate::{Decode, Encode, Error, Result, Uint};
+use crate::{Decode, Encode, Error, Result, Uint, codec::buf};
 
 /// [ISO_IEC_14496-1] ES_Descriptor class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct EsDescriptor {
     pub es_id: u16,
     pub stream_priority: Uint<u8, 5>,
@@ -51,11 +51,12 @@ impl Decode for EsDescriptor {
         };
 
         let url_string = if url_flag.get() == 1 {
-            let len = u8::decode_at(buf, &mut offset)? as usize;
-            if len > buf[offset..].len() {
+            let len = usize::from(u8::decode_at(buf, &mut offset)?);
+            let remaining = buf::suffix(buf, offset)?;
+            if len > remaining.len() {
                 return Err(Error::invalid_data("URL string exceeds buffer boundary"));
             }
-            let s = String::from_utf8(buf[offset..][..len].to_vec())
+            let s = String::from_utf8(buf::range_len(buf, offset, len)?.to_vec())
                 .map_err(|_| Error::invalid_data("Invalid UTF-8 in URL string"))?;
             offset += len;
             Some(s)
@@ -90,29 +91,33 @@ impl Decode for EsDescriptor {
 impl Encode for EsDescriptor {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += self.es_id.encode(&mut buf[offset..])?;
-        offset += (Uint::<u8, 1, 7>::new(self.depends_on_es_id.is_some() as u8).to_bits()
-            | Uint::<u8, 1, 6>::new(self.url_string.is_some() as u8).to_bits()
-            | Uint::<u8, 1, 5>::new(self.ocr_es_id.is_some() as u8).to_bits()
+        offset += self.es_id.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (Uint::<u8, 1, 7>::new(u8::from(self.depends_on_es_id.is_some())).to_bits()
+            | Uint::<u8, 1, 6>::new(u8::from(self.url_string.is_some())).to_bits()
+            | Uint::<u8, 1, 5>::new(u8::from(self.ocr_es_id.is_some())).to_bits()
             | self.stream_priority.to_bits())
-        .encode(&mut buf[offset..])?;
+        .encode(buf::suffix_mut(buf, offset)?)?;
 
         if let Some(v) = self.depends_on_es_id {
-            offset += v.encode(&mut buf[offset..])?;
+            offset += v.encode(buf::suffix_mut(buf, offset)?)?;
         }
         if let Some(v) = &self.url_string {
             if v.len() > 255 {
                 return Err(Error::invalid_input("URL string too long (max 255 bytes)"));
             }
-            offset += (v.len() as u8).encode(&mut buf[offset..])?;
-            offset += v.as_bytes().encode(&mut buf[offset..])?;
+            offset += u8::try_from(v.len())
+                .map_err(|_| Error::invalid_input("URL string too long (max 255 bytes)"))?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += v.as_bytes().encode(buf::suffix_mut(buf, offset)?)?;
         }
         if let Some(v) = self.ocr_es_id {
-            offset += v.encode(&mut buf[offset..])?;
+            offset += v.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
-        offset += self.dec_config_descr.encode(&mut buf[offset..])?;
-        offset += self.sl_config_descr.encode(&mut buf[offset..])?;
+        offset += self
+            .dec_config_descr
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.sl_config_descr.encode(buf::suffix_mut(buf, offset)?)?;
 
         encode_tag_and_payload(buf, Self::TAG, offset)
     }
@@ -120,7 +125,7 @@ impl Encode for EsDescriptor {
 
 /// [ISO_IEC_14496-1] DecoderConfigDescriptor class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct DecoderConfigDescriptor {
     pub object_type_indication: u8,
     pub stream_type: Uint<u8, 6, 2>,
@@ -161,13 +166,13 @@ impl Decode for DecoderConfigDescriptor {
         let up_stream = Uint::from_bits(b);
 
         let buffer_size_db = {
-            let mut temp = [0; 4];
-            if 3 > buf[offset..].len() {
-                return Err(Error::invalid_data(
-                    "buffer_size_db exceeds buffer boundary",
-                ));
-            }
-            temp[1..].copy_from_slice(&buf[offset..][..3]);
+            let suffix = buf::range_len(buf, offset, 3)?;
+            let temp = [
+                0,
+                buf::read_u8(buf::range(suffix, 0, 1)?)?,
+                buf::read_u8(buf::range(suffix, 1, 2)?)?,
+                buf::read_u8(buf::range(suffix, 2, 3)?)?,
+            ];
             offset += 3;
             Uint::from_bits(u32::from_be_bytes(temp))
         };
@@ -175,11 +180,12 @@ impl Decode for DecoderConfigDescriptor {
         let max_bitrate = u32::decode_at(buf, &mut offset)?;
         let avg_bitrate = u32::decode_at(buf, &mut offset)?;
 
-        let dec_specific_info = if starts_with_tag(&buf[offset..], DecoderSpecificInfo::TAG) {
-            Some(DecoderSpecificInfo::decode_at(buf, &mut offset)?)
-        } else {
-            None
-        };
+        let dec_specific_info =
+            if starts_with_tag(buf::suffix(buf, offset)?, DecoderSpecificInfo::TAG) {
+                Some(DecoderSpecificInfo::decode_at(buf, &mut offset)?)
+            } else {
+                None
+            };
 
         // [NOTE]
         // 仕様的には、ここに複数個の profileLevelIndicationIndexDescriptor が存在する可能性がある。
@@ -206,16 +212,19 @@ impl Encode for DecoderConfigDescriptor {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
 
-        offset += self.object_type_indication.encode(&mut buf[offset..])?;
+        offset += self
+            .object_type_indication
+            .encode(buf::suffix_mut(buf, offset)?)?;
         offset += (self.stream_type.to_bits()
             | self.up_stream.to_bits()
             | Uint::<u8, 1>::new(1).to_bits())
-        .encode(&mut buf[offset..])?;
-        offset += self.buffer_size_db.to_bits().to_be_bytes()[1..].encode(&mut buf[offset..])?;
-        offset += self.max_bitrate.encode(&mut buf[offset..])?;
-        offset += self.avg_bitrate.encode(&mut buf[offset..])?;
+        .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += buf::range(&self.buffer_size_db.to_bits().to_be_bytes(), 1, 4)?
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.max_bitrate.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.avg_bitrate.encode(buf::suffix_mut(buf, offset)?)?;
         if let Some(dec_specific_info) = &self.dec_specific_info {
-            offset += dec_specific_info.encode(&mut buf[offset..])?;
+            offset += dec_specific_info.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
         encode_tag_and_payload(buf, Self::TAG, offset)
@@ -224,7 +233,7 @@ impl Encode for DecoderConfigDescriptor {
 
 /// [ISO_IEC_14496-1] DecoderSpecificInfo class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct DecoderSpecificInfo {
     pub payload: Vec<u8>,
 }
@@ -244,12 +253,13 @@ impl Decode for DecoderSpecificInfo {
             )));
         }
 
-        if size > buf[offset..].len() {
+        let remaining = buf::suffix(buf, offset)?;
+        if size > remaining.len() {
             return Err(Error::invalid_data(
                 "DecoderSpecificInfo payload exceeds buffer boundary",
             ));
         }
-        let payload = buf[offset..][..size].to_vec();
+        let payload = buf::range_len(buf, offset, size)?.to_vec();
         offset += size;
 
         Ok((Self { payload }, offset))
@@ -319,7 +329,7 @@ fn decode_tag_and_size(buf: &[u8]) -> Result<(u8, usize, usize)> {
         let new_size_base = size
             .checked_shl(7)
             .ok_or_else(|| Error::invalid_data("Descriptor size overflow"))?;
-        size = new_size_base | Uint::<u8, 7>::from_bits(b).get() as usize
+        size = new_size_base | usize::from(Uint::<u8, 7>::from_bits(b).get());
     }
 
     Ok((tag, size, offset))
@@ -331,17 +341,22 @@ fn encode_tag_and_payload(buf: &mut [u8], tag: u8, payload_size: usize) -> Resul
     let header_size = encode_tag_and_size(&mut header_buf, tag, payload_size)?;
     Error::check_buffer_size(header_size + payload_size, buf)?;
     buf.copy_within(..payload_size, header_size);
-    buf[..header_size].copy_from_slice(&header_buf[..header_size]);
+    buf::prefix_len_mut(buf, header_size)?.copy_from_slice(buf::range(
+        &header_buf,
+        0,
+        header_size,
+    )?);
     Ok(header_size + payload_size)
 }
 
 fn encode_tag_and_size(buf: &mut [u8], tag: u8, mut size: usize) -> Result<usize> {
     let mut offset = 0;
-    offset += tag.encode(&mut buf[offset..])?;
+    offset += tag.encode(buf::suffix_mut(buf, offset)?)?;
 
     let mut size_bytes = Vec::new();
     for i in 0.. {
-        let mut b = (size & 0b0111_1111) as u8;
+        let mut b = u8::try_from(size & 0b0111_1111)
+            .map_err(|_| Error::invalid_data("Descriptor size byte exceeds u8::MAX"))?;
         size >>= 7;
 
         if i > 0 {
@@ -355,7 +370,7 @@ fn encode_tag_and_size(buf: &mut [u8], tag: u8, mut size: usize) -> Result<usize
     }
     size_bytes.reverse(); // リトルエンディアンからビッグエンディアンにする
 
-    offset += size_bytes.encode(&mut buf[offset..])?;
+    offset += size_bytes.encode(buf::suffix_mut(buf, offset)?)?;
     Ok(offset)
 }
 

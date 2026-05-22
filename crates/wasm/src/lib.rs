@@ -2,7 +2,10 @@
 //!
 //! c-api の機能に加えて、wasm 固有の機能を提供する
 #![warn(missing_docs)]
-#![expect(clippy::missing_safety_doc)]
+#![expect(
+    clippy::missing_safety_doc,
+    reason = "WASM exports mirror c-api safety contract"
+)]
 
 pub mod boxes;
 pub mod boxes_av01;

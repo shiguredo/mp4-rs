@@ -43,6 +43,7 @@ use alloc::{format, string::String};
 use crate::{
     BoxHeader, Decode, Error,
     boxes::{FtypBox, MoovBox},
+    codec::buf,
     demux_mp4_file::{DemuxError, Input, RequiredInput},
 };
 
@@ -195,20 +196,25 @@ impl Mp4FileKindDetector {
 
     fn read_ftyp_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadFtypBox { box_size } = self.phase else {
-            unreachable!("bug: invalid phase for read_ftyp_box");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data = self.available_bytes(input, 0, Some(box_size))?;
-        let (_ftyp_box, ftyp_box_size) = FtypBox::decode(&data[..box_size])?;
+        let ftyp_data = buf::range(data, 0, box_size).map_err(DemuxError::DecodeError)?;
+        let (_ftyp_box, ftyp_box_size) = FtypBox::decode(ftyp_data)?;
         self.phase = Phase::ReadTopLevelBoxHeader {
-            offset: ftyp_box_size as u64,
+            offset: buf::usize_to_u64(ftyp_box_size).map_err(DemuxError::DecodeError)?,
         };
         Ok(())
     }
 
     fn read_top_level_box_header(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadTopLevelBoxHeader { offset } = self.phase else {
-            unreachable!("bug: invalid phase for read_top_level_box_header");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_top_level_box_header",
+            )));
         };
 
         if input.position == offset && input.data.is_empty() {
@@ -249,12 +255,14 @@ impl Mp4FileKindDetector {
 
     fn read_moov_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMoovBox { offset, box_size } = self.phase else {
-            unreachable!("bug: invalid phase for read_moov_box");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_moov_box",
+            )));
         };
 
         let data = self.available_bytes(input, offset, box_size)?;
         let decode_input = if let Some(box_size) = box_size {
-            &data[..box_size]
+            buf::range(data, 0, box_size).map_err(DemuxError::DecodeError)?
         } else {
             data
         };

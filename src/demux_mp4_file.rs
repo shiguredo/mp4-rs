@@ -46,6 +46,7 @@ use crate::{
     BoxHeader, Decode, Error, TrackKind,
     aux::{SampleTableAccessor, SampleTableAccessorError},
     boxes::{FtypBox, HdlrBox, MoovBox, SampleEntry, StblBox},
+    codec::buf,
 };
 
 /// メディアトラックの情報を表す構造体
@@ -162,7 +163,11 @@ impl RequiredInput {
             return false;
         };
 
-        if offset > input.data.len() as u64 {
+        let data_len = match u64::try_from(input.data.len()) {
+            Ok(len) => len,
+            Err(_) => return false,
+        };
+        if offset > data_len {
             // 入力データの終端位置が、要求位置よりも前にある
             return false;
         }
@@ -174,14 +179,18 @@ impl RequiredInput {
             return true;
         };
 
-        let Some(end) = offset.checked_add(required_size as u64) else {
+        let required_size_u64 = match u64::try_from(required_size) {
+            Ok(size) => size,
+            Err(_) => return false,
+        };
+        let Some(end) = offset.checked_add(required_size_u64) else {
             // 基本はここには来ないはずだけど、入力データが壊れていて
             // required_size に極端に大きな値が設定される可能性もなくはないので、
             // 念のためにハンドリングしておく
             return false;
         };
 
-        if end > input.data.len() as u64 {
+        if end > data_len {
             // 要求の終端位置が入力データに含まれていなかった（入力データの終端位置より後ろだった）
             return false;
         }
@@ -206,7 +215,7 @@ pub struct Input<'a> {
 
 impl<'a> Input<'a> {
     pub(crate) fn slice_range(self, position: u64, size: Option<usize>) -> Option<&'a [u8]> {
-        let offset = position.checked_sub(self.position)? as usize;
+        let offset = usize::try_from(position.checked_sub(self.position)?).ok()?;
         if offset > self.data.len() {
             return None;
         }
@@ -216,7 +225,7 @@ impl<'a> Input<'a> {
             let end = offset.checked_add(size)?;
             self.data.get(offset..end)
         } else {
-            Some(&self.data[offset..])
+            buf::suffix(self.data, offset).ok()
         }
     }
 }
@@ -346,7 +355,10 @@ pub struct Mp4FileDemuxer {
 
 impl Mp4FileDemuxer {
     /// 新しい [`Mp4FileDemuxer`] インスタンスを生成する
-    #[expect(clippy::new_without_default)]
+    #[expect(
+        clippy::new_without_default,
+        reason = "demuxer requires explicit initialization state"
+    )]
     pub fn new() -> Self {
         Self {
             phase: Phase::ReadFtypBoxHeader,
@@ -437,7 +449,11 @@ impl Mp4FileDemuxer {
     }
 
     fn read_ftyp_box_header(&mut self, input: Input) -> Result<(), DemuxError> {
-        assert!(matches!(self.phase, Phase::ReadFtypBoxHeader));
+        if !matches!(self.phase, Phase::ReadFtypBoxHeader) {
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box_header",
+            )));
+        }
 
         let data_size = Some(BoxHeader::MAX_SIZE);
         let Some(data) = input.slice_range(0, data_size) else {
@@ -446,28 +462,34 @@ impl Mp4FileDemuxer {
         let (header, _header_size) = BoxHeader::decode(data)?;
         header.box_type.expect(FtypBox::TYPE)?;
 
-        let box_size = Some(header.box_size.get() as usize).filter(|n| *n > 0);
+        let box_size = usize::try_from(header.box_size.get())
+            .ok()
+            .filter(|n| *n > 0);
         self.phase = Phase::ReadFtypBox { box_size };
         self.handle_input_inner(input)
     }
 
     fn read_ftyp_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadFtypBox { box_size } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
         let Some(data) = input.slice_range(0, box_size) else {
             return Err(DemuxError::input_required(0, box_size));
         };
         let (_ftyp_box, ftyp_box_size) = FtypBox::decode(data)?;
         self.phase = Phase::ReadMoovBoxHeader {
-            offset: ftyp_box_size as u64,
+            offset: buf::usize_to_u64(ftyp_box_size).map_err(DemuxError::DecodeError)?,
         };
         self.handle_input_inner(input)
     }
 
     fn read_moov_box_header(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMoovBoxHeader { offset } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data_size = Some(BoxHeader::MAX_SIZE);
@@ -490,7 +512,7 @@ impl Mp4FileDemuxer {
             })?;
             self.phase = Phase::ReadMoovBoxHeader { offset };
         } else {
-            let box_size = box_size.map(|n| n as usize);
+            let box_size = box_size.and_then(|n| usize::try_from(n).ok());
             self.phase = Phase::ReadMoovBox { offset, box_size };
         }
         self.handle_input_inner(input)
@@ -498,7 +520,9 @@ impl Mp4FileDemuxer {
 
     fn read_moov_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMoovBox { offset, box_size } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let Some(data) = input.slice_range(offset, box_size) else {
@@ -573,14 +597,18 @@ impl Mp4FileDemuxer {
         // 最も早いサンプルを提供したトラックを進める
         if let Some((_timestamp, track_index)) = earliest_sample {
             let sample_index = {
-                let track = &mut self.tracks[track_index];
+                let track = self.tracks.get_mut(track_index).ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: track index out of range",
+                    ))
+                })?;
                 let sample_index = track.next_sample_index;
                 track.next_sample_index = sample_index.checked_add(1).ok_or_else(|| {
                     DemuxError::DecodeError(Error::invalid_data("sample index overflow"))
                 })?;
                 sample_index
             };
-            let sample = self.build_sample(track_index, sample_index);
+            let sample = self.build_sample(track_index, sample_index)?;
             Ok(Some(sample))
         } else {
             Ok(None)
@@ -624,8 +652,15 @@ impl Mp4FileDemuxer {
         }
 
         if let Some((_timestamp, track_index, sample_index)) = latest_sample {
-            self.tracks[track_index].next_sample_index = sample_index;
-            let sample = self.build_sample(track_index, sample_index);
+            self.tracks
+                .get_mut(track_index)
+                .ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: track index out of range",
+                    ))
+                })?
+                .next_sample_index = sample_index;
+            let sample = self.build_sample(track_index, sample_index)?;
             Ok(Some(sample))
         } else {
             Ok(None)
@@ -650,45 +685,83 @@ impl Mp4FileDemuxer {
                 let next_index = track.table.sample_count().checked_add(1).ok_or_else(|| {
                     DemuxError::DecodeError(Error::invalid_data("sample index overflow"))
                 })?;
-                track.next_sample_index = NonZeroU32::new(next_index).expect("bug");
+                track.next_sample_index = NonZeroU32::new(next_index).ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: sample index overflow in seek",
+                    ))
+                })?;
             }
         }
 
         Ok(())
     }
 
-    fn build_sample(&self, track_index: usize, sample_index: NonZeroU32) -> Sample<'_> {
-        let track = &self.tracks[track_index];
-        let sample_accessor = track.table.get_sample(sample_index).expect("bug");
-        let sample_entry = sample_accessor.chunk().sample_entry();
-        let sample_entry_index = sample_accessor.chunk().sample_entry_index();
+    fn build_sample(
+        &self,
+        track_index: usize,
+        sample_index: NonZeroU32,
+    ) -> Result<Sample<'_>, DemuxError> {
+        let track = self.tracks.get(track_index).ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: track index out of range",
+            ))
+        })?;
+        let sample_accessor = track.table.get_sample(sample_index).ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: sample accessor must exist",
+            ))
+        })?;
+        let sample_entry = sample_accessor.chunk().sample_entry().ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "sample entry must exist for valid sample table",
+            ))
+        })?;
+        let sample_entry_index = sample_accessor
+            .chunk()
+            .sample_entry_index()
+            .ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data(
+                    "sample entry index must exist for valid sample table",
+                ))
+            })?;
 
         // サンプルエントリーに変更があるかどうかをチェックする
         let is_new_sample_entry = if let Some(prev_sample_index) =
             sample_index.get().checked_sub(1).and_then(NonZeroU32::new)
         {
-            let prev_sample_accessor = track.table.get_sample(prev_sample_index).expect("bug");
-            if prev_sample_accessor.chunk().sample_entry_index() == sample_entry_index {
+            let prev_sample_accessor =
+                track.table.get_sample(prev_sample_index).ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: previous sample accessor must exist",
+                    ))
+                })?;
+            if prev_sample_accessor.chunk().sample_entry_index() == Some(sample_entry_index) {
                 // サンプルエントリーのインデックスが等しい場合には、内容も常に等しい
                 false
             } else {
-                prev_sample_accessor.chunk().sample_entry() != sample_entry
+                prev_sample_accessor.chunk().sample_entry() != Some(sample_entry)
             }
         } else {
             // 最初のサンプル
             true
         };
 
-        Sample {
-            track: &self.track_infos[track_index],
+        Ok(Sample {
+            track: self.track_infos.get(track_index).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data(
+                    "internal bug: track info index out of range",
+                ))
+            })?,
             sample_entry: is_new_sample_entry.then_some(sample_entry),
             keyframe: sample_accessor.is_sync_sample(),
             timestamp: sample_accessor.timestamp(),
             duration: sample_accessor.duration(),
             data_offset: sample_accessor.data_offset(),
-            data_size: sample_accessor.data_size() as usize,
+            data_size: usize::try_from(sample_accessor.data_size()).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("sample data size exceeds usize::MAX"))
+            })?,
             composition_time_offset: sample_accessor.composition_time_offset(),
-        }
+        })
     }
 
     fn ensure_initialized(&mut self) -> Result<(), DemuxError> {
@@ -709,10 +782,8 @@ fn duration_to_timestamp(duration: Duration, timescale: NonZeroU32) -> Result<u6
     let secs_part = secs
         .checked_mul(timescale)
         .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("timestamp overflow")))?;
-    let nanos_part = subsec_nanos
-        .checked_mul(timescale)
-        .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("timestamp overflow")))?
-        / 1_000_000_000;
+    let nanos_part = buf::mul_div_u64(subsec_nanos, timescale, 1_000_000_000)
+        .map_err(|_| DemuxError::DecodeError(Error::invalid_data("timestamp overflow")))?;
     secs_part
         .checked_add(nanos_part)
         .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("timestamp overflow")))

@@ -9,12 +9,13 @@ use crate::{
     FullBoxFlags, FullBoxHeader, Mp4FileTime, Result, SampleFlags, Utf8String,
     basic_types::as_box_object,
     boxes::{SampleEntry, UnknownBox, check_mandatory_box, with_box_type},
+    codec::buf,
     descriptors::EsDescriptor,
 };
 
 /// [ISO/IEC 14496-12] MovieBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MoovBox {
     pub mvhd_box: MvhdBox,
     pub trak_boxes: Vec<TrakBox>,
@@ -31,17 +32,17 @@ impl Encode for MoovBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.mvhd_box.encode(&mut buf[offset..])?;
+        offset += self.mvhd_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.trak_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         if let Some(b) = &self.mvex_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -59,7 +60,7 @@ impl Decode for MoovBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     MvhdBox::TYPE if mvhd_box.is_none() => {
                         mvhd_box = Some(MvhdBox::decode_at(payload, &mut offset)?);
@@ -107,7 +108,7 @@ impl BaseBox for MoovBox {
 
 /// [ISO/IEC 14496-12] MovieHeaderBox class (親: [`MoovBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MvhdBox {
     pub creation_time: Mp4FileTime,
     pub modification_time: Mp4FileTime,
@@ -137,28 +138,33 @@ impl Encode for MvhdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         if self.full_box_version() == 1 {
-            offset += self.creation_time.as_secs().encode(&mut buf[offset..])?;
+            offset += self
+                .creation_time
+                .as_secs()
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += self
                 .modification_time
                 .as_secs()
-                .encode(&mut buf[offset..])?;
-            offset += self.timescale.encode(&mut buf[offset..])?;
-            offset += self.duration.encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.timescale.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.duration.encode(buf::suffix_mut(buf, offset)?)?;
         } else {
-            offset += (self.creation_time.as_secs() as u32).encode(&mut buf[offset..])?;
-            offset += (self.modification_time.as_secs() as u32).encode(&mut buf[offset..])?;
-            offset += self.timescale.encode(&mut buf[offset..])?;
-            offset += (self.duration as u32).encode(&mut buf[offset..])?;
+            offset += buf::u64_to_u32(self.creation_time.as_secs())?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += buf::u64_to_u32(self.modification_time.as_secs())?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.timescale.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += buf::u64_to_u32(self.duration)?.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        offset += self.rate.encode(&mut buf[offset..])?;
-        offset += self.volume.encode(&mut buf[offset..])?;
-        offset += [0u8; 2 + 4 * 2].encode(&mut buf[offset..])?;
-        offset += self.matrix.encode(&mut buf[offset..])?;
-        offset += [0u8; 4 * 6].encode(&mut buf[offset..])?;
-        offset += self.next_track_id.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += self.rate.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.volume.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2 + 4 * 2].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.matrix.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 4 * 6].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.next_track_id.encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -192,11 +198,11 @@ impl Decode for MvhdBox {
                 this.duration = u64::decode_at(payload, &mut offset)?;
             } else {
                 this.creation_time = u32::decode_at(payload, &mut offset)
-                    .map(|v| Mp4FileTime::from_secs(v as u64))?;
+                    .map(|v| Mp4FileTime::from_secs(u64::from(v)))?;
                 this.modification_time = u32::decode_at(payload, &mut offset)
-                    .map(|v| Mp4FileTime::from_secs(v as u64))?;
+                    .map(|v| Mp4FileTime::from_secs(u64::from(v)))?;
                 this.timescale = NonZeroU32::decode_at(payload, &mut offset)?;
-                this.duration = u32::decode_at(payload, &mut offset).map(|v| v as u64)?;
+                this.duration = u32::decode_at(payload, &mut offset).map(u64::from)?;
             }
 
             this.rate = FixedPointNumber::decode_at(payload, &mut offset)?;
@@ -223,9 +229,9 @@ impl BaseBox for MvhdBox {
 
 impl FullBox for MvhdBox {
     fn full_box_version(&self) -> u8 {
-        if self.creation_time.as_secs() > u32::MAX as u64
-            || self.modification_time.as_secs() > u32::MAX as u64
-            || self.duration > u32::MAX as u64
+        if self.creation_time.as_secs() > u64::from(u32::MAX)
+            || self.modification_time.as_secs() > u64::from(u32::MAX)
+            || self.duration > u64::from(u32::MAX)
         {
             1
         } else {
@@ -240,7 +246,7 @@ impl FullBox for MvhdBox {
 
 /// [ISO/IEC 14496-12] TrackBox class (親: [`MoovBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct TrakBox {
     pub tkhd_box: TkhdBox,
     pub edts_box: Option<EdtsBox>,
@@ -257,15 +263,15 @@ impl Encode for TrakBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.tkhd_box.encode(&mut buf[offset..])?;
+        offset += self.tkhd_box.encode(buf::suffix_mut(buf, offset)?)?;
         if let Some(b) = &self.edts_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        offset += self.mdia_box.encode(&mut buf[offset..])?;
+        offset += self.mdia_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -283,7 +289,7 @@ impl Decode for TrakBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     TkhdBox::TYPE if tkhd_box.is_none() => {
                         tkhd_box = Some(TkhdBox::decode_at(payload, &mut offset)?);
@@ -331,7 +337,7 @@ impl BaseBox for TrakBox {
 
 /// [ISO/IEC 14496-12] TrackHeaderBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct TkhdBox {
     pub flag_track_enabled: bool,
     pub flag_track_in_movie: bool,
@@ -374,32 +380,37 @@ impl Encode for TkhdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         if self.full_box_version() == 1 {
-            offset += self.creation_time.as_secs().encode(&mut buf[offset..])?;
+            offset += self
+                .creation_time
+                .as_secs()
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += self
                 .modification_time
                 .as_secs()
-                .encode(&mut buf[offset..])?;
-            offset += self.track_id.encode(&mut buf[offset..])?;
-            offset += [0u8; 4].encode(&mut buf[offset..])?;
-            offset += self.duration.encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.track_id.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += [0u8; 4].encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.duration.encode(buf::suffix_mut(buf, offset)?)?;
         } else {
-            offset += (self.creation_time.as_secs() as u32).encode(&mut buf[offset..])?;
-            offset += (self.modification_time.as_secs() as u32).encode(&mut buf[offset..])?;
-            offset += self.track_id.encode(&mut buf[offset..])?;
-            offset += [0u8; 4].encode(&mut buf[offset..])?;
-            offset += (self.duration as u32).encode(&mut buf[offset..])?;
+            offset += buf::u64_to_u32(self.creation_time.as_secs())?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += buf::u64_to_u32(self.modification_time.as_secs())?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.track_id.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += [0u8; 4].encode(buf::suffix_mut(buf, offset)?)?;
+            offset += buf::u64_to_u32(self.duration)?.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        offset += [0u8; 4 * 2].encode(&mut buf[offset..])?;
-        offset += self.layer.encode(&mut buf[offset..])?;
-        offset += self.alternate_group.encode(&mut buf[offset..])?;
-        offset += self.volume.encode(&mut buf[offset..])?;
-        offset += [0u8; 2].encode(&mut buf[offset..])?;
-        offset += self.matrix.encode(&mut buf[offset..])?;
-        offset += self.width.encode(&mut buf[offset..])?;
-        offset += self.height.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += [0u8; 4 * 2].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.layer.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.alternate_group.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.volume.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.matrix.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.width.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.height.encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -445,12 +456,12 @@ impl Decode for TkhdBox {
                 this.duration = u64::decode_at(payload, &mut offset)?;
             } else {
                 this.creation_time = u32::decode_at(payload, &mut offset)
-                    .map(|v| Mp4FileTime::from_secs(v as u64))?;
+                    .map(|v| Mp4FileTime::from_secs(u64::from(v)))?;
                 this.modification_time = u32::decode_at(payload, &mut offset)
-                    .map(|v| Mp4FileTime::from_secs(v as u64))?;
+                    .map(|v| Mp4FileTime::from_secs(u64::from(v)))?;
                 this.track_id = u32::decode_at(payload, &mut offset)?;
                 let _ = <[u8; 4]>::decode_at(payload, &mut offset)?;
-                this.duration = u32::decode_at(payload, &mut offset).map(|v| v as u64)?;
+                this.duration = u32::decode_at(payload, &mut offset).map(u64::from)?;
             }
 
             let _ = <[u8; 4 * 2]>::decode_at(payload, &mut offset)?;
@@ -479,9 +490,9 @@ impl BaseBox for TkhdBox {
 
 impl FullBox for TkhdBox {
     fn full_box_version(&self) -> u8 {
-        if self.creation_time.as_secs() > u32::MAX as u64
-            || self.modification_time.as_secs() > u32::MAX as u64
-            || self.duration > u32::MAX as u64
+        if self.creation_time.as_secs() > u64::from(u32::MAX)
+            || self.modification_time.as_secs() > u64::from(u32::MAX)
+            || self.duration > u64::from(u32::MAX)
         {
             1
         } else {
@@ -501,7 +512,7 @@ impl FullBox for TkhdBox {
 
 /// [ISO/IEC 14496-12] EditBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct EdtsBox {
     pub elst_box: Option<ElstBox>,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -517,12 +528,12 @@ impl Encode for EdtsBox {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         if let Some(b) = &self.elst_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -538,7 +549,7 @@ impl Decode for EdtsBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     ElstBox::TYPE if elst_box.is_none() => {
                         elst_box = Some(ElstBox::decode_at(payload, &mut offset)?);
@@ -576,7 +587,7 @@ impl BaseBox for EdtsBox {
 
 /// [`ElstBox`] に含まれるエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct ElstEntry {
     pub edit_duration: u64,
     pub media_time: i64,
@@ -585,7 +596,7 @@ pub struct ElstEntry {
 
 /// [ISO/IEC 14496-12] EditListBox class (親: [`EdtsBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct ElstBox {
     pub entries: Vec<ElstEntry>,
 }
@@ -599,21 +610,26 @@ impl Encode for ElstBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
 
         let version = self.full_box_version();
-        offset += (self.entries.len() as u32).encode(&mut buf[offset..])?;
+        offset += buf::usize_to_u32(self.entries.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for entry in &self.entries {
             if version == 1 {
-                offset += entry.edit_duration.encode(&mut buf[offset..])?;
-                offset += entry.media_time.encode(&mut buf[offset..])?;
+                offset += entry.edit_duration.encode(buf::suffix_mut(buf, offset)?)?;
+                offset += entry.media_time.encode(buf::suffix_mut(buf, offset)?)?;
             } else {
-                offset += (entry.edit_duration as u32).encode(&mut buf[offset..])?;
-                offset += (entry.media_time as i32).encode(&mut buf[offset..])?;
+                offset +=
+                    buf::u64_to_u32(entry.edit_duration)?.encode(buf::suffix_mut(buf, offset)?)?;
+                offset += i32::try_from(entry.media_time)
+                    .map_err(|_| {
+                        Error::invalid_data("ElstEntry media_time exceeds i32::MAX for version 0")
+                    })?
+                    .encode(buf::suffix_mut(buf, offset)?)?;
             }
-            offset += entry.media_rate.encode(&mut buf[offset..])?;
+            offset += entry.media_rate.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -636,8 +652,8 @@ impl Decode for ElstBox {
                     edit_duration = u64::decode_at(payload, &mut offset)?;
                     media_time = i64::decode_at(payload, &mut offset)?;
                 } else {
-                    edit_duration = u32::decode_at(payload, &mut offset)? as u64;
-                    media_time = i32::decode_at(payload, &mut offset)? as i64;
+                    edit_duration = u64::from(u32::decode_at(payload, &mut offset)?);
+                    media_time = i64::from(i32::decode_at(payload, &mut offset)?);
                 }
                 let media_rate = FixedPointNumber::decode_at(payload, &mut offset)?;
                 entries.push(ElstEntry {
@@ -677,7 +693,7 @@ impl FullBox for ElstBox {
 
 /// [ISO/IEC 14496-12] MediaBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MdiaBox {
     pub mdhd_box: MdhdBox,
     pub hdlr_box: HdlrBox,
@@ -694,13 +710,13 @@ impl Encode for MdiaBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.mdhd_box.encode(&mut buf[offset..])?;
-        offset += self.hdlr_box.encode(&mut buf[offset..])?;
-        offset += self.minf_box.encode(&mut buf[offset..])?;
+        offset += self.mdhd_box.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.hdlr_box.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.minf_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -718,7 +734,7 @@ impl Decode for MdiaBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     MdhdBox::TYPE if mdhd_box.is_none() => {
                         mdhd_box = Some(MdhdBox::decode_at(payload, &mut offset)?);
@@ -766,7 +782,7 @@ impl BaseBox for MdiaBox {
 
 /// [ISO/IEC 14496-12] MediaHeaderBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MdhdBox {
     pub creation_time: Mp4FileTime,
     pub modification_time: Mp4FileTime,
@@ -789,20 +805,25 @@ impl Encode for MdhdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         if self.full_box_version() == 1 {
-            offset += self.creation_time.as_secs().encode(&mut buf[offset..])?;
+            offset += self
+                .creation_time
+                .as_secs()
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += self
                 .modification_time
                 .as_secs()
-                .encode(&mut buf[offset..])?;
-            offset += self.timescale.encode(&mut buf[offset..])?;
-            offset += self.duration.encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.timescale.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.duration.encode(buf::suffix_mut(buf, offset)?)?;
         } else {
-            offset += (self.creation_time.as_secs() as u32).encode(&mut buf[offset..])?;
-            offset += (self.modification_time.as_secs() as u32).encode(&mut buf[offset..])?;
-            offset += self.timescale.encode(&mut buf[offset..])?;
-            offset += (self.duration as u32).encode(&mut buf[offset..])?;
+            offset += buf::u64_to_u32(self.creation_time.as_secs())?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += buf::u64_to_u32(self.modification_time.as_secs())?
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self.timescale.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += buf::u64_to_u32(self.duration)?.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
         let mut language: u16 = 0;
@@ -813,11 +834,11 @@ impl Encode for MdhdBox {
                     self.language
                 )));
             };
-            language = (language << 5) | code as u16;
+            language = (language << 5) | u16::from(code);
         }
-        offset += language.encode(&mut buf[offset..])?;
-        offset += [0u8; 2].encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += language.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2].encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -848,18 +869,24 @@ impl Decode for MdhdBox {
                 this.duration = u64::decode_at(payload, &mut offset)?;
             } else {
                 this.creation_time = u32::decode_at(payload, &mut offset)
-                    .map(|v| Mp4FileTime::from_secs(v as u64))?;
+                    .map(|v| Mp4FileTime::from_secs(u64::from(v)))?;
                 this.modification_time = u32::decode_at(payload, &mut offset)
-                    .map(|v| Mp4FileTime::from_secs(v as u64))?;
+                    .map(|v| Mp4FileTime::from_secs(u64::from(v)))?;
                 this.timescale = NonZeroU32::decode_at(payload, &mut offset)?;
-                this.duration = u32::decode_at(payload, &mut offset).map(|v| v as u64)?;
+                this.duration = u32::decode_at(payload, &mut offset).map(u64::from)?;
             }
 
             let language = u16::decode_at(payload, &mut offset)?;
             this.language = [
-                ((language >> 10) & 0b11111) as u8 + 0x60,
-                ((language >> 5) & 0b11111) as u8 + 0x60,
-                (language & 0b11111) as u8 + 0x60,
+                u8::try_from((language >> 10) & 0b11111)
+                    .map_err(|_| Error::invalid_data("Invalid mdhd language code"))?
+                    + 0x60,
+                u8::try_from((language >> 5) & 0b11111)
+                    .map_err(|_| Error::invalid_data("Invalid mdhd language code"))?
+                    + 0x60,
+                u8::try_from(language & 0b11111)
+                    .map_err(|_| Error::invalid_data("Invalid mdhd language code"))?
+                    + 0x60,
             ];
 
             let _ = <[u8; 2]>::decode_at(payload, &mut offset)?;
@@ -881,9 +908,9 @@ impl BaseBox for MdhdBox {
 
 impl FullBox for MdhdBox {
     fn full_box_version(&self) -> u8 {
-        if self.creation_time.as_secs() > u32::MAX as u64
-            || self.modification_time.as_secs() > u32::MAX as u64
-            || self.duration > u32::MAX as u64
+        if self.creation_time.as_secs() > u64::from(u32::MAX)
+            || self.modification_time.as_secs() > u64::from(u32::MAX)
+            || self.duration > u64::from(u32::MAX)
         {
             1
         } else {
@@ -898,7 +925,7 @@ impl FullBox for MdhdBox {
 
 /// [ISO/IEC 14496-12] HandlerBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct HdlrBox {
     pub handler_type: [u8; 4],
 
@@ -927,12 +954,12 @@ impl Encode for HdlrBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += [0u8; 4].encode(&mut buf[offset..])?;
-        offset += self.handler_type.encode(&mut buf[offset..])?;
-        offset += [0u8; 4 * 3].encode(&mut buf[offset..])?;
-        offset += self.name.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 4].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.handler_type.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 4 * 3].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.name.encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -948,7 +975,7 @@ impl Decode for HdlrBox {
             let _ = <[u8; 4]>::decode_at(payload, &mut offset)?;
             let handler_type = <[u8; 4]>::decode_at(payload, &mut offset)?;
             let _ = <[u8; 4 * 3]>::decode_at(payload, &mut offset)?;
-            let name = payload[offset..].to_vec();
+            let name = buf::suffix(payload, offset)?.to_vec();
 
             Ok((
                 Self { handler_type, name },
@@ -980,7 +1007,7 @@ impl FullBox for HdlrBox {
 
 /// [ISO/IEC 14496-12] MediaInformationBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MinfBox {
     // 音声・映像トラック以外の場合は None になる
     pub smhd_or_vmhd_box: Option<Either<SmhdBox, VmhdBox>>,
@@ -1000,16 +1027,16 @@ impl Encode for MinfBox {
         let mut offset = header.encode(buf)?;
         if let Some(smhd_or_vmhd_box) = &self.smhd_or_vmhd_box {
             match smhd_or_vmhd_box {
-                Either::A(b) => offset += b.encode(&mut buf[offset..])?,
-                Either::B(b) => offset += b.encode(&mut buf[offset..])?,
+                Either::A(b) => offset += b.encode(buf::suffix_mut(buf, offset)?)?,
+                Either::B(b) => offset += b.encode(buf::suffix_mut(buf, offset)?)?,
             }
         }
-        offset += self.dinf_box.encode(&mut buf[offset..])?;
-        offset += self.stbl_box.encode(&mut buf[offset..])?;
+        offset += self.dinf_box.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.stbl_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1028,7 +1055,7 @@ impl Decode for MinfBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     SmhdBox::TYPE if smhd_box.is_none() => {
                         smhd_box = Some(SmhdBox::decode_at(payload, &mut offset)?);
@@ -1079,7 +1106,7 @@ impl BaseBox for MinfBox {
 
 /// [ISO/IEC 14496-12] SoundMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct SmhdBox {
     pub balance: FixedPointNumber<u8, u8>,
 }
@@ -1096,10 +1123,10 @@ impl Encode for SmhdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += self.balance.encode(&mut buf[offset..])?;
-        offset += [0u8; 2].encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.balance.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2].encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1142,7 +1169,7 @@ impl FullBox for SmhdBox {
 
 /// [ISO/IEC 14496-12] VideoMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct VmhdBox {
     pub graphicsmode: u16,
     pub opcolor: [u16; 3],
@@ -1163,10 +1190,10 @@ impl Encode for VmhdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += self.graphicsmode.encode(&mut buf[offset..])?;
-        offset += self.opcolor.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.graphicsmode.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.opcolor.encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1220,7 +1247,7 @@ impl FullBox for VmhdBox {
 
 /// [ISO/IEC 14496-12] DataInformationBox class (親: [`MinfBox`]）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct DinfBox {
     pub dref_box: DrefBox,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -1241,11 +1268,11 @@ impl Encode for DinfBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.dref_box.encode(&mut buf[offset..])?;
+        offset += self.dref_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1261,7 +1288,7 @@ impl Decode for DinfBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     DrefBox::TYPE if dref_box.is_none() => {
                         dref_box = Some(DrefBox::decode_at(payload, &mut offset)?);
@@ -1299,7 +1326,7 @@ impl BaseBox for DinfBox {
 
 /// [ISO/IEC 14496-12] DataReferenceBox class (親: [`DinfBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct DrefBox {
     pub url_box: Option<UrlBox>,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -1320,16 +1347,17 @@ impl Encode for DrefBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        let entry_count = (self.url_box.is_some() as usize + self.unknown_boxes.len()) as u32;
-        offset += entry_count.encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        let entry_count =
+            buf::usize_to_u32(usize::from(self.url_box.is_some()) + self.unknown_boxes.len())?;
+        offset += entry_count.encode(buf::suffix_mut(buf, offset)?)?;
         if let Some(b) = &self.url_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1348,7 +1376,7 @@ impl Decode for DrefBox {
             let mut unknown_boxes = Vec::new();
 
             for _ in 0..entry_count {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     UrlBox::TYPE if url_box.is_none() => {
                         url_box = Some(UrlBox::decode_at(payload, &mut offset)?);
@@ -1396,7 +1424,7 @@ impl FullBox for DrefBox {
 
 /// [ISO/IEC 14496-12] DataEntryUrlBox class (親: [`DrefBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct UrlBox {
     pub location: Option<Utf8String>,
 }
@@ -1413,11 +1441,11 @@ impl Encode for UrlBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         if let Some(l) = &self.location {
-            offset += l.encode(&mut buf[offset..])?;
+            offset += l.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1457,13 +1485,13 @@ impl FullBox for UrlBox {
     }
 
     fn full_box_flags(&self) -> FullBoxFlags {
-        FullBoxFlags::new(self.location.is_none() as u32)
+        FullBoxFlags::new(u32::from(self.location.is_none()))
     }
 }
 
 /// [ISO/IEC 14496-12] SampleTableBox class (親: [`MinfBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct StblBox {
     pub stsd_box: StsdBox,
     pub stts_box: SttsBox,
@@ -1486,30 +1514,30 @@ impl Encode for StblBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.stsd_box.encode(&mut buf[offset..])?;
-        offset += self.stts_box.encode(&mut buf[offset..])?;
+        offset += self.stsd_box.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.stts_box.encode(buf::suffix_mut(buf, offset)?)?;
         if let Some(b) = &self.ctts_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         if let Some(b) = &self.cslg_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        offset += self.stsc_box.encode(&mut buf[offset..])?;
-        offset += self.stsz_box.encode(&mut buf[offset..])?;
+        offset += self.stsc_box.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.stsz_box.encode(buf::suffix_mut(buf, offset)?)?;
         match &self.stco_or_co64_box {
-            Either::A(b) => offset += b.encode(&mut buf[offset..])?,
-            Either::B(b) => offset += b.encode(&mut buf[offset..])?,
+            Either::A(b) => offset += b.encode(buf::suffix_mut(buf, offset)?)?,
+            Either::B(b) => offset += b.encode(buf::suffix_mut(buf, offset)?)?,
         }
         if let Some(b) = &self.stss_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         if let Some(b) = &self.sdtp_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1534,7 +1562,7 @@ impl Decode for StblBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     StsdBox::TYPE if stsd_box.is_none() => {
                         stsd_box = Some(StsdBox::decode_at(payload, &mut offset)?);
@@ -1625,7 +1653,7 @@ impl AsRef<StblBox> for StblBox {
 
 /// [ISO/IEC 14496-12] SampleDescriptionBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct StsdBox {
     pub entries: Vec<SampleEntry>,
 }
@@ -1639,13 +1667,13 @@ impl Encode for StsdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        let entry_count = (self.entries.len()) as u32;
-        offset += entry_count.encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        let entry_count = buf::usize_to_u32(self.entries.len())?;
+        offset += entry_count.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.entries {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1692,7 +1720,7 @@ impl FullBox for StsdBox {
 
 /// [`SttsBox`] が保持するエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct SttsEntry {
     pub sample_count: u32,
     pub sample_delta: u32,
@@ -1700,7 +1728,7 @@ pub struct SttsEntry {
 
 /// [ISO/IEC 14496-12] TimeToSampleBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct SttsBox {
     pub entries: Vec<SttsEntry>,
 }
@@ -1735,13 +1763,13 @@ impl Encode for SttsBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += (self.entries.len() as u32).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += buf::usize_to_u32(self.entries.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for entry in &self.entries {
-            offset += entry.sample_count.encode(&mut buf[offset..])?;
-            offset += entry.sample_delta.encode(&mut buf[offset..])?;
+            offset += entry.sample_count.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += entry.sample_delta.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1754,7 +1782,8 @@ impl Decode for SttsBox {
 
             let mut offset = 0;
             let _full_header = FullBoxHeader::decode_at(payload, &mut offset)?;
-            let count = u32::decode_at(payload, &mut offset)? as usize;
+            let count = usize::try_from(u32::decode_at(payload, &mut offset)?)
+                .map_err(|_| Error::invalid_data("stts entry count exceeds usize::MAX"))?;
 
             let mut entries = Vec::new();
             for _ in 0..count {
@@ -1827,10 +1856,10 @@ impl Encode for CttsBox {
 
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += (self.entries.len() as u32).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += buf::usize_to_u32(self.entries.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for entry in &self.entries {
-            offset += entry.sample_count.encode(&mut buf[offset..])?;
+            offset += entry.sample_count.encode(buf::suffix_mut(buf, offset)?)?;
             if version == 1 {
                 let sample_offset = i32::try_from(entry.sample_offset).map_err(|_| {
                     Error::invalid_input(format!(
@@ -1838,7 +1867,7 @@ impl Encode for CttsBox {
                         entry.sample_offset
                     ))
                 })?;
-                offset += sample_offset.encode(&mut buf[offset..])?;
+                offset += sample_offset.encode(buf::suffix_mut(buf, offset)?)?;
             } else {
                 let sample_offset = u32::try_from(entry.sample_offset).map_err(|_| {
                     Error::invalid_input(format!(
@@ -1846,10 +1875,10 @@ impl Encode for CttsBox {
                         entry.sample_offset
                     ))
                 })?;
-                offset += sample_offset.encode(&mut buf[offset..])?;
+                offset += sample_offset.encode(buf::suffix_mut(buf, offset)?)?;
             }
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1868,15 +1897,16 @@ impl Decode for CttsBox {
                     full_header.version
                 )));
             }
-            let count = u32::decode_at(payload, &mut offset)? as usize;
+            let count = usize::try_from(u32::decode_at(payload, &mut offset)?)
+                .map_err(|_| Error::invalid_data("stts entry count exceeds usize::MAX"))?;
 
             let mut entries = Vec::new();
             for _ in 0..count {
                 let sample_count = u32::decode_at(payload, &mut offset)?;
                 let sample_offset = if full_header.version == 1 {
-                    i32::decode_at(payload, &mut offset)? as i64
+                    i64::from(i32::decode_at(payload, &mut offset)?)
                 } else {
-                    u32::decode_at(payload, &mut offset)? as i64
+                    i64::from(u32::decode_at(payload, &mut offset)?)
                 };
                 entries.push(CttsEntry {
                     sample_count,
@@ -1953,18 +1983,24 @@ impl Encode for CslgBox {
 
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
 
         if version == 1 {
-            offset += self.composition_to_dts_shift.encode(&mut buf[offset..])?;
+            offset += self
+                .composition_to_dts_shift
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += self
                 .least_decode_to_display_delta
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += self
                 .greatest_decode_to_display_delta
-                .encode(&mut buf[offset..])?;
-            offset += self.composition_start_time.encode(&mut buf[offset..])?;
-            offset += self.composition_end_time.encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self
+                .composition_start_time
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += self
+                .composition_end_time
+                .encode(buf::suffix_mut(buf, offset)?)?;
         } else {
             offset += i32::try_from(self.composition_to_dts_shift)
                 .map_err(|_| {
@@ -1973,7 +2009,7 @@ impl Encode for CslgBox {
                         self.composition_to_dts_shift
                     ))
                 })?
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += i32::try_from(self.least_decode_to_display_delta)
                 .map_err(|_| {
                     Error::invalid_input(format!(
@@ -1981,7 +2017,7 @@ impl Encode for CslgBox {
                         self.least_decode_to_display_delta
                     ))
                 })?
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += i32::try_from(self.greatest_decode_to_display_delta)
                 .map_err(|_| {
                     Error::invalid_input(format!(
@@ -1989,7 +2025,7 @@ impl Encode for CslgBox {
                         self.greatest_decode_to_display_delta
                     ))
                 })?
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += i32::try_from(self.composition_start_time)
                 .map_err(|_| {
                     Error::invalid_input(format!(
@@ -1997,7 +2033,7 @@ impl Encode for CslgBox {
                         self.composition_start_time
                     ))
                 })?
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
             offset += i32::try_from(self.composition_end_time)
                 .map_err(|_| {
                     Error::invalid_input(format!(
@@ -2005,10 +2041,10 @@ impl Encode for CslgBox {
                         self.composition_end_time
                     ))
                 })?
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
         }
 
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2044,11 +2080,11 @@ impl Decode for CslgBox {
                 )
             } else {
                 (
-                    i32::decode_at(payload, &mut offset)? as i64,
-                    i32::decode_at(payload, &mut offset)? as i64,
-                    i32::decode_at(payload, &mut offset)? as i64,
-                    i32::decode_at(payload, &mut offset)? as i64,
-                    i32::decode_at(payload, &mut offset)? as i64,
+                    i64::from(i32::decode_at(payload, &mut offset)?),
+                    i64::from(i32::decode_at(payload, &mut offset)?),
+                    i64::from(i32::decode_at(payload, &mut offset)?),
+                    i64::from(i32::decode_at(payload, &mut offset)?),
+                    i64::from(i32::decode_at(payload, &mut offset)?),
                 )
             };
 
@@ -2161,11 +2197,11 @@ impl Encode for SdtpBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         for entry in &self.entries {
-            offset += entry.encode(&mut buf[offset..])?;
+            offset += entry.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2217,7 +2253,7 @@ impl FullBox for SdtpBox {
 
 /// [`StscBox`] が保持するエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct StscEntry {
     pub first_chunk: NonZeroU32,
     pub sample_per_chunk: u32,
@@ -2226,7 +2262,7 @@ pub struct StscEntry {
 
 /// [ISO/IEC 14496-12] SampleToChunkBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct StscBox {
     pub entries: Vec<StscEntry>,
 }
@@ -2240,14 +2276,18 @@ impl Encode for StscBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += (self.entries.len() as u32).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += buf::usize_to_u32(self.entries.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for entry in &self.entries {
-            offset += entry.first_chunk.encode(&mut buf[offset..])?;
-            offset += entry.sample_per_chunk.encode(&mut buf[offset..])?;
-            offset += entry.sample_description_index.encode(&mut buf[offset..])?;
+            offset += entry.first_chunk.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += entry
+                .sample_per_chunk
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += entry
+                .sample_description_index
+                .encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2298,7 +2338,7 @@ impl FullBox for StscBox {
 
 /// [ISO/IEC 14496-12] SampleSizeBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub enum StszBox {
     Fixed {
         sample_size: NonZeroU32,
@@ -2318,24 +2358,25 @@ impl Encode for StszBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         match self {
             StszBox::Fixed {
                 sample_size,
                 sample_count,
             } => {
-                offset += sample_size.get().encode(&mut buf[offset..])?;
-                offset += sample_count.encode(&mut buf[offset..])?;
+                offset += sample_size.get().encode(buf::suffix_mut(buf, offset)?)?;
+                offset += sample_count.encode(buf::suffix_mut(buf, offset)?)?;
             }
             StszBox::Variable { entry_sizes } => {
-                offset += 0u32.encode(&mut buf[offset..])?;
-                offset += (entry_sizes.len() as u32).encode(&mut buf[offset..])?;
+                offset += 0u32.encode(buf::suffix_mut(buf, offset)?)?;
+                offset +=
+                    buf::usize_to_u32(entry_sizes.len())?.encode(buf::suffix_mut(buf, offset)?)?;
                 for size in entry_sizes {
-                    offset += size.encode(&mut buf[offset..])?;
+                    offset += size.encode(buf::suffix_mut(buf, offset)?)?;
                 }
             }
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2391,7 +2432,7 @@ impl FullBox for StszBox {
 
 /// [ISO/IEC 14496-12] ChunkOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct StcoBox {
     pub chunk_offsets: Vec<u32>,
 }
@@ -2405,12 +2446,13 @@ impl Encode for StcoBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += (self.chunk_offsets.len() as u32).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset +=
+            buf::usize_to_u32(self.chunk_offsets.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for offset_val in &self.chunk_offsets {
-            offset += offset_val.encode(&mut buf[offset..])?;
+            offset += offset_val.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2460,7 +2502,7 @@ impl FullBox for StcoBox {
 
 /// [ISO/IEC 14496-12] ChunkLargeOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Co64Box {
     pub chunk_offsets: Vec<u64>,
 }
@@ -2474,12 +2516,13 @@ impl Encode for Co64Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += (self.chunk_offsets.len() as u32).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset +=
+            buf::usize_to_u32(self.chunk_offsets.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for offset_val in &self.chunk_offsets {
-            offset += offset_val.encode(&mut buf[offset..])?;
+            offset += offset_val.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2529,7 +2572,7 @@ impl FullBox for Co64Box {
 
 /// [ISO/IEC 14496-12] SyncSampleBox class (親: [`StssBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct StssBox {
     pub sample_numbers: Vec<NonZeroU32>,
 }
@@ -2543,12 +2586,13 @@ impl Encode for StssBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += (self.sample_numbers.len() as u32).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset +=
+            buf::usize_to_u32(self.sample_numbers.len())?.encode(buf::suffix_mut(buf, offset)?)?;
         for offset_val in &self.sample_numbers {
-            offset += offset_val.encode(&mut buf[offset..])?;
+            offset += offset_val.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2598,7 +2642,7 @@ impl FullBox for StssBox {
 
 /// [ISO/IEC 14496-14] ESDBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct EsdsBox {
     pub es: EsDescriptor,
 }
@@ -2612,9 +2656,9 @@ impl Encode for EsdsBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += self.es.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.es.encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2659,7 +2703,7 @@ impl FullBox for EsdsBox {
 /// Fragmented MP4 で使用するムービー拡張ボックス。
 /// このボックスが存在する場合、ファイルは fMP4 フォーマットであることを示す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MvexBox {
     pub mehd_box: Option<MehdBox>,
     pub trex_boxes: Vec<TrexBox>,
@@ -2676,15 +2720,15 @@ impl Encode for MvexBox {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         if let Some(b) = &self.mehd_box {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         for b in &self.trex_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2701,7 +2745,7 @@ impl Decode for MvexBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     MehdBox::TYPE if mehd_box.is_none() => {
                         mehd_box = Some(MehdBox::decode_at(payload, &mut offset)?);
@@ -2747,7 +2791,7 @@ impl BaseBox for MvexBox {
 /// フラグメント化されたムービー全体の継続時間を格納する。
 /// このボックスはオプションであり、存在しない場合は継続時間が不明であることを意味する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct MehdBox {
     pub fragment_duration: u64,
 }
@@ -2761,13 +2805,16 @@ impl Encode for MehdBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
         if self.full_box_version() == 1 {
-            offset += self.fragment_duration.encode(&mut buf[offset..])?;
+            offset += self
+                .fragment_duration
+                .encode(buf::suffix_mut(buf, offset)?)?;
         } else {
-            offset += (self.fragment_duration as u32).encode(&mut buf[offset..])?;
+            offset +=
+                buf::u64_to_u32(self.fragment_duration)?.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -2784,7 +2831,7 @@ impl Decode for MehdBox {
             let fragment_duration = if full_header.version == 1 {
                 u64::decode_at(payload, &mut offset)?
             } else {
-                u32::decode_at(payload, &mut offset)? as u64
+                u64::from(u32::decode_at(payload, &mut offset)?)
             };
 
             Ok((
@@ -2807,7 +2854,7 @@ impl BaseBox for MehdBox {
 
 impl FullBox for MehdBox {
     fn full_box_version(&self) -> u8 {
-        if self.fragment_duration > u32::MAX as u64 {
+        if self.fragment_duration > u64::from(u32::MAX) {
             1
         } else {
             0
@@ -2824,7 +2871,7 @@ impl FullBox for MehdBox {
 /// トラックフラグメントのデフォルト値を定義する。
 /// 各トラックに対して 1 つの TrexBox が必要。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct TrexBox {
     pub track_id: u32,
     pub default_sample_description_index: u32,
@@ -2842,15 +2889,21 @@ impl Encode for TrexBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += self.track_id.encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.track_id.encode(buf::suffix_mut(buf, offset)?)?;
         offset += self
             .default_sample_description_index
-            .encode(&mut buf[offset..])?;
-        offset += self.default_sample_duration.encode(&mut buf[offset..])?;
-        offset += self.default_sample_size.encode(&mut buf[offset..])?;
-        offset += self.default_sample_flags.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .default_sample_duration
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .default_sample_size
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .default_sample_flags
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }

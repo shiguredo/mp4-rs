@@ -7,6 +7,7 @@ use core::{
 use crate::{
     Decode, Encode, Error, Result,
     boxes::{FtypBox, RootBox},
+    codec::buf,
 };
 
 /// 全てのボックスが実装するトレイト
@@ -79,9 +80,9 @@ impl<B: BaseBox + Decode> Decode for Mp4File<B> {
 impl<B: BaseBox + Encode> Encode for Mp4File<B> {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += self.ftyp_box.encode(&mut buf[offset..])?;
+        offset += self.ftyp_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
         Ok(offset)
     }
@@ -125,7 +126,7 @@ impl BoxHeader {
 
         // NOTE: もし `box_bytes.len() < self.external_size()` の場合は後続の `self.encode()` でエラーになる
         let payload_size = box_bytes.len().saturating_sub(self.external_size());
-        self.box_size = BoxSize::with_payload_size(self.box_type, payload_size as u64);
+        self.box_size = BoxSize::with_payload_size(self.box_type, buf::usize_to_u64(payload_size)?);
         if !matches!(self.box_size, BoxSize::U32(_)) {
             // ヘッダーのサイズに変更があると box_bytes 全体のレイアウトが変わってしまうのでエラーにする
             return Err(Error::invalid_input(
@@ -173,7 +174,7 @@ impl BoxHeader {
             box_size = buf.len();
         }
 
-        Ok((header, &buf[header_size..box_size]))
+        Ok((header, buf::range(buf, header_size, box_size)?))
     }
 }
 
@@ -183,27 +184,27 @@ impl Encode for BoxHeader {
 
         let large_size = match self.box_size {
             BoxSize::U32(size) => {
-                offset += size.encode(&mut buf[offset..])?;
+                offset += size.encode(buf::suffix_mut(buf, offset)?)?;
                 None
             }
             BoxSize::U64(size) => {
-                offset += 1u32.encode(&mut buf[offset..])?;
+                offset += 1u32.encode(buf::suffix_mut(buf, offset)?)?;
                 Some(size)
             }
         };
 
         match self.box_type {
             BoxType::Normal(ty) => {
-                offset += ty.encode(&mut buf[offset..])?;
+                offset += ty.encode(buf::suffix_mut(buf, offset)?)?;
             }
             BoxType::Uuid(ty) => {
-                offset += b"uuid".encode(&mut buf[offset..])?;
-                offset += ty.encode(&mut buf[offset..])?;
+                offset += b"uuid".encode(buf::suffix_mut(buf, offset)?)?;
+                offset += ty.encode(buf::suffix_mut(buf, offset)?)?;
             }
         }
 
         if let Some(large_size) = large_size {
-            offset += large_size.encode(&mut buf[offset..])?;
+            offset += large_size.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
         Ok(offset)
@@ -219,14 +220,14 @@ impl Decode for BoxHeader {
         Error::check_buffer_size(offset + 4, buf)?;
 
         let mut box_type = [0; 4];
-        box_type.copy_from_slice(&buf[offset..offset + 4]);
+        box_type.copy_from_slice(buf::range_len(buf, offset, 4)?);
         offset += 4;
 
         let box_type = if box_type == [b'u', b'u', b'i', b'd'] {
             Error::check_buffer_size(offset + 16, buf)?;
 
             let mut uuid = [0; 16];
-            uuid.copy_from_slice(&buf[offset..offset + 16]);
+            uuid.copy_from_slice(buf::range_len(buf, offset, 16)?);
             offset += 16;
             BoxType::Uuid(uuid)
         } else {
@@ -240,14 +241,15 @@ impl Decode for BoxHeader {
             BoxSize::U32(box_size)
         };
 
-        if box_size.get() != 0
-            && box_size.get() < (box_size.external_size() + box_type.external_size()) as u64
-        {
-            return Err(Error::invalid_input(format!(
-                "Too small box size: actual={}, expected={} or more",
-                box_size.get(),
-                box_size.external_size() + box_type.external_size()
-            )));
+        if box_size.get() != 0 {
+            let min_size = buf::usize_to_u64(box_size.external_size() + box_type.external_size())?;
+            if box_size.get() < min_size {
+                return Err(Error::invalid_input(format!(
+                    "Too small box size: actual={}, expected={} or more",
+                    box_size.get(),
+                    min_size
+                )));
+            }
         }
 
         Ok((Self { box_type, box_size }, offset))
@@ -277,8 +279,8 @@ impl FullBoxHeader {
 impl Encode for FullBoxHeader {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += self.version.encode(&mut buf[offset..])?;
-        offset += self.flags.encode(&mut buf[offset..])?;
+        offset += self.version.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.flags.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -329,15 +331,20 @@ impl FullBoxFlags {
 
 impl Encode for FullBoxFlags {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        self.0.to_be_bytes()[1..].encode(buf)
+        let bytes = self.0.to_be_bytes();
+        buf::range(&bytes, 1, 4)?.encode(buf)
     }
 }
 
 impl Decode for FullBoxFlags {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(3, buf)?;
-        let mut full_buf = [0; 4];
-        full_buf[1..].copy_from_slice(&buf[..3]);
+        let full_buf = [
+            0,
+            buf::read_u8(buf::range(buf, 0, 1)?)?,
+            buf::read_u8(buf::range(buf, 1, 2)?)?,
+            buf::read_u8(buf::range(buf, 2, 3)?)?,
+        ];
         Ok((Self(u32::from_be_bytes(full_buf)), 3))
     }
 }
@@ -347,7 +354,7 @@ impl Decode for FullBoxFlags {
 /// ボックスのサイズは原則として、ヘッダー部分とペイロード部分のサイズを足した値となる。
 /// ただし、MP4 ファイルの末尾にあるボックスについてはサイズを 0 とすることで、ペイロードが可変長（追記可能）なボックスとして扱うことが可能となっている。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub enum BoxSize {
     U32(u32),
     U64(u64),
@@ -364,7 +371,11 @@ impl BoxSize {
 
     /// ボックス種別とペイロードサイズを受け取って、対応する [`BoxSize`] インスタンスを作成する
     pub fn with_payload_size(box_type: BoxType, payload_size: u64) -> Self {
-        let mut size = 4 + box_type.external_size() as u64 + payload_size;
+        let external_size = match box_type {
+            BoxType::Normal(_) => 4u64,
+            BoxType::Uuid(_) => 20u64,
+        };
+        let mut size = 4 + external_size + payload_size;
         if let Ok(size) = u32::try_from(size) {
             Self::U32(size)
         } else {
@@ -374,9 +385,9 @@ impl BoxSize {
     }
 
     /// ボックスのサイズの値を取得する
-    pub const fn get(self) -> u64 {
+    pub fn get(self) -> u64 {
         match self {
-            BoxSize::U32(v) => v as u64,
+            BoxSize::U32(v) => u64::from(v),
             BoxSize::U64(v) => v,
         }
     }
@@ -404,8 +415,8 @@ impl BoxType {
     /// 種別を表すバイト列を返す
     pub fn as_bytes(&self) -> &[u8] {
         match self {
-            BoxType::Normal(ty) => &ty[..],
-            BoxType::Uuid(ty) => &ty[..],
+            BoxType::Normal(ty) => ty,
+            BoxType::Uuid(ty) => ty,
         }
     }
 
@@ -448,7 +459,7 @@ impl core::fmt::Debug for BoxType {
 impl core::fmt::Display for BoxType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let BoxType::Normal(ty) = self
-            && let Ok(ty) = core::str::from_utf8(&ty[..])
+            && let Ok(ty) = core::str::from_utf8(ty)
         {
             return write!(f, "{ty}");
         }
@@ -499,8 +510,8 @@ impl<I, F> FixedPointNumber<I, F> {
 impl<I: Encode, F: Encode> Encode for FixedPointNumber<I, F> {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += self.integer.encode(&mut buf[offset..])?;
-        offset += self.fraction.encode(&mut buf[offset..])?;
+        offset += self.integer.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.fraction.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -549,8 +560,8 @@ impl Utf8String {
 impl Encode for Utf8String {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += self.0.as_bytes().encode(&mut buf[offset..])?;
-        offset += 0u8.encode(&mut buf[offset..])?;
+        offset += self.0.as_bytes().encode(buf::suffix_mut(buf, offset)?)?;
+        offset += 0u8.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -561,15 +572,20 @@ impl Decode for Utf8String {
         let mut bytes = Vec::new();
 
         while offset < buf.len() {
-            if buf[offset] == 0 {
+            let byte = buf::read_u8(buf::suffix(buf, offset)?)?;
+            if byte == 0 {
                 offset += 1;
                 break;
             }
-            bytes.push(buf[offset]);
+            bytes.push(byte);
             offset += 1;
         }
 
-        if offset == 0 || (offset > 0 && buf[offset - 1] != 0) {
+        if offset == 0 {
+            return Err(Error::invalid_input("Null-terminated string not found"));
+        }
+        let prev = buf::read_u8(buf::range(buf, offset - 1, offset)?)?;
+        if prev != 0 {
             return Err(Error::invalid_input("Null-terminated string not found"));
         }
 
@@ -583,7 +599,7 @@ impl Decode for Utf8String {
 
 /// `A` か `B` のどちらかの値を保持する列挙型
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub enum Either<A, B> {
     A(A),
     B(B),
@@ -717,27 +733,56 @@ impl SampleFlags {
 
     /// is_leading フィールドを取得する（2 bits、ビット 27-26）
     pub const fn is_leading(self) -> u8 {
-        ((self.0 >> 26) & 0b11) as u8
+        match (self.0 >> 26) & 0b11 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 3,
+        }
     }
 
     /// sample_depends_on フィールドを取得する（2 bits、ビット 25-24）
     pub const fn sample_depends_on(self) -> u8 {
-        ((self.0 >> 24) & 0b11) as u8
+        match (self.0 >> 24) & 0b11 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 3,
+        }
     }
 
     /// sample_is_depended_on フィールドを取得する（2 bits、ビット 23-22）
     pub const fn sample_is_depended_on(self) -> u8 {
-        ((self.0 >> 22) & 0b11) as u8
+        match (self.0 >> 22) & 0b11 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 3,
+        }
     }
 
     /// sample_has_redundancy フィールドを取得する（2 bits、ビット 21-20）
     pub const fn sample_has_redundancy(self) -> u8 {
-        ((self.0 >> 20) & 0b11) as u8
+        match (self.0 >> 20) & 0b11 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 3,
+        }
     }
 
     /// sample_padding_value フィールドを取得する（3 bits、ビット 19-17）
     pub const fn sample_padding_value(self) -> u8 {
-        ((self.0 >> 17) & 0b111) as u8
+        match (self.0 >> 17) & 0b111 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            6 => 6,
+            _ => 7,
+        }
     }
 
     /// sample_is_non_sync_sample フィールドを取得する（1 bit、ビット 16）
@@ -746,12 +791,20 @@ impl SampleFlags {
     }
 
     /// sample_degradation_priority フィールドを取得する（16 bits、ビット 15-0）
-    pub const fn sample_degradation_priority(self) -> u16 {
-        (self.0 & 0xFFFF) as u16
+    pub fn sample_degradation_priority(self) -> u16 {
+        let lo = match u8::try_from(self.0 & 0xFF) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        let hi = match u8::try_from((self.0 >> 8) & 0xFF) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        u16::from(hi) << 8 | u16::from(lo)
     }
 
     /// 各フィールドからサンプルフラグを構築する
-    pub const fn from_fields(
+    pub fn from_fields(
         is_leading: u8,
         sample_depends_on: u8,
         sample_is_depended_on: u8,
@@ -760,13 +813,13 @@ impl SampleFlags {
         sample_is_non_sync_sample: bool,
         sample_degradation_priority: u16,
     ) -> Self {
-        let flags = ((is_leading as u32 & 0b11) << 26)
-            | ((sample_depends_on as u32 & 0b11) << 24)
-            | ((sample_is_depended_on as u32 & 0b11) << 22)
-            | ((sample_has_redundancy as u32 & 0b11) << 20)
-            | ((sample_padding_value as u32 & 0b111) << 17)
-            | ((sample_is_non_sync_sample as u32) << 16)
-            | (sample_degradation_priority as u32);
+        let flags = ((u32::from(is_leading) & 0b11) << 26)
+            | ((u32::from(sample_depends_on) & 0b11) << 24)
+            | ((u32::from(sample_is_depended_on) & 0b11) << 22)
+            | ((u32::from(sample_has_redundancy) & 0b11) << 20)
+            | ((u32::from(sample_padding_value) & 0b111) << 17)
+            | (u32::from(sample_is_non_sync_sample) << 16)
+            | u32::from(sample_degradation_priority);
         Self(flags)
     }
 }

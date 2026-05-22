@@ -9,11 +9,12 @@ use crate::{
     FullBoxHeader, Result, Uint,
     basic_types::as_box_object,
     boxes::{EsdsBox, UnknownBox, check_mandatory_box, with_box_type},
+    codec::buf,
 };
 
 /// [`StsdBox`][crate::boxes::StsdBox] に含まれるエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub enum SampleEntry {
     Avc1(Avc1Box),
     Hev1(Hev1Box),
@@ -33,9 +34,9 @@ impl SampleEntry {
     /// 音声の場合はチャンネル数、映像の場合は None を返す
     pub fn audio_channel_count(&self) -> Option<u8> {
         match self {
-            Self::Opus(b) => Some(b.audio.channelcount as u8),
-            Self::Mp4a(b) => Some(b.audio.channelcount as u8),
-            Self::Flac(b) => Some(b.audio.channelcount as u8),
+            Self::Opus(b) => u8::try_from(b.audio.channelcount).ok(),
+            Self::Mp4a(b) => u8::try_from(b.audio.channelcount).ok(),
+            Self::Flac(b) => u8::try_from(b.audio.channelcount).ok(),
             _ => None,
         }
     }
@@ -155,7 +156,7 @@ impl BaseBox for SampleEntry {
 
 /// 映像系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct VisualSampleEntryFields {
     pub data_reference_index: NonZeroU16,
     pub width: u16,
@@ -190,18 +191,20 @@ impl VisualSampleEntryFields {
 impl Encode for VisualSampleEntryFields {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += [0u8; 6].encode(&mut buf[offset..])?;
-        offset += self.data_reference_index.encode(&mut buf[offset..])?;
-        offset += [0u8; 2 + 2 + 4 * 3].encode(&mut buf[offset..])?;
-        offset += self.width.encode(&mut buf[offset..])?;
-        offset += self.height.encode(&mut buf[offset..])?;
-        offset += self.horizresolution.encode(&mut buf[offset..])?;
-        offset += self.vertresolution.encode(&mut buf[offset..])?;
-        offset += [0u8; 4].encode(&mut buf[offset..])?;
-        offset += self.frame_count.encode(&mut buf[offset..])?;
-        offset += self.compressorname.encode(&mut buf[offset..])?;
-        offset += self.depth.encode(&mut buf[offset..])?;
-        offset += (-1i16).encode(&mut buf[offset..])?;
+        offset += [0u8; 6].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .data_reference_index
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2 + 2 + 4 * 3].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.width.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.height.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.horizresolution.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.vertresolution.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 4].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.frame_count.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.compressorname.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.depth.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (-1i16).encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -239,7 +242,7 @@ impl Decode for VisualSampleEntryFields {
 
 /// [ISO/IEC 14496-15] AVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Avc1Box {
     pub visual: VisualSampleEntryFields,
     pub avcc_box: AvccBox,
@@ -255,12 +258,12 @@ impl Encode for Avc1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.avcc_box.encode(&mut buf[offset..])?;
+        offset += self.visual.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.avcc_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -278,7 +281,7 @@ impl Decode for Avc1Box {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     AvccBox::TYPE if avcc_box.is_none() => {
                         avcc_box = Some(AvccBox::decode_at(payload, &mut offset)?);
@@ -317,7 +320,7 @@ impl BaseBox for Avc1Box {
 
 /// [ISO/IEC 14496-15] AVCConfigurationBox class (親: [`Avc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct AvccBox {
     pub avc_profile_indication: u8,
     pub profile_compatibility: u8,
@@ -343,34 +346,43 @@ impl Encode for AvccBox {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
 
-        offset += Self::CONFIGURATION_VERSION.encode(&mut buf[offset..])?;
-        offset += self.avc_profile_indication.encode(&mut buf[offset..])?;
-        offset += self.profile_compatibility.encode(&mut buf[offset..])?;
-        offset += self.avc_level_indication.encode(&mut buf[offset..])?;
-        offset += (0b1111_1100 | self.length_size_minus_one.get()).encode(&mut buf[offset..])?;
+        offset += Self::CONFIGURATION_VERSION.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .avc_profile_indication
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .profile_compatibility
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .avc_level_indication
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (0b1111_1100 | self.length_size_minus_one.get())
+            .encode(buf::suffix_mut(buf, offset)?)?;
 
         if self.sps_list.len() > 31 {
             return Err(Error::invalid_input("Too many SPSs (max 31)"));
         }
-        let sps_count = self.sps_list.len() as u8;
-        offset += (0b1110_0000 | sps_count).encode(&mut buf[offset..])?;
+        let sps_count = u8::try_from(self.sps_list.len())
+            .map_err(|_| Error::invalid_input("Too many SPSs (max 31)"))?;
+        offset += (0b1110_0000 | sps_count).encode(buf::suffix_mut(buf, offset)?)?;
         for sps in &self.sps_list {
             let size =
                 u16::try_from(sps.len()).map_err(|_| Error::invalid_input("Too long SPS"))?;
-            offset += size.encode(&mut buf[offset..])?;
-            offset += sps.encode(&mut buf[offset..])?;
+            offset += size.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += sps.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
         if self.pps_list.len() > 31 {
             return Err(Error::invalid_input("Too many PPSs (max 31)"));
         }
-        let pps_count = self.pps_list.len() as u8;
-        offset += pps_count.encode(&mut buf[offset..])?;
+        let pps_count = u8::try_from(self.pps_list.len())
+            .map_err(|_| Error::invalid_input("Too many PPSs (max 31)"))?;
+        offset += pps_count.encode(buf::suffix_mut(buf, offset)?)?;
         for pps in &self.pps_list {
             let size =
                 u16::try_from(pps.len()).map_err(|_| Error::invalid_input("Too long PPS"))?;
-            offset += size.encode(&mut buf[offset..])?;
-            offset += pps.encode(&mut buf[offset..])?;
+            offset += size.encode(buf::suffix_mut(buf, offset)?)?;
+            offset += pps.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
         if !matches!(self.avc_profile_indication, 66 | 77 | 88) {
@@ -383,22 +395,24 @@ impl Encode for AvccBox {
             let bit_depth_chroma_minus8 = self.bit_depth_chroma_minus8.ok_or_else(|| {
                 Error::invalid_input("Missing 'bit_depth_chroma_minus8' field in 'avcC' box")
             })?;
-            offset += (0b1111_1100 | chroma_format.get()).encode(&mut buf[offset..])?;
-            offset += (0b1111_1000 | bit_depth_luma_minus8.get()).encode(&mut buf[offset..])?;
-            offset += (0b1111_1000 | bit_depth_chroma_minus8.get()).encode(&mut buf[offset..])?;
+            offset += (0b1111_1100 | chroma_format.get()).encode(buf::suffix_mut(buf, offset)?)?;
+            offset += (0b1111_1000 | bit_depth_luma_minus8.get())
+                .encode(buf::suffix_mut(buf, offset)?)?;
+            offset += (0b1111_1000 | bit_depth_chroma_minus8.get())
+                .encode(buf::suffix_mut(buf, offset)?)?;
 
             let sps_ext_count = u8::try_from(self.sps_ext_list.len())
                 .map_err(|_| Error::invalid_input("Too many SPS EXTs"))?;
-            offset += sps_ext_count.encode(&mut buf[offset..])?;
+            offset += sps_ext_count.encode(buf::suffix_mut(buf, offset)?)?;
             for sps_ext in &self.sps_ext_list {
                 let size = u16::try_from(sps_ext.len())
                     .map_err(|_| Error::invalid_input("Too long SPS EXT"))?;
-                offset += size.encode(&mut buf[offset..])?;
-                offset += sps_ext.encode(&mut buf[offset..])?;
+                offset += size.encode(buf::suffix_mut(buf, offset)?)?;
+                offset += sps_ext.encode(buf::suffix_mut(buf, offset)?)?;
             }
         }
 
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -423,26 +437,26 @@ impl Decode for AvccBox {
             let length_size_minus_one = Uint::from_bits(u8::decode_at(payload, &mut offset)?);
 
             let sps_count =
-                Uint::<u8, 5>::from_bits(u8::decode_at(payload, &mut offset)?).get() as usize;
+                usize::from(Uint::<u8, 5>::from_bits(u8::decode_at(payload, &mut offset)?).get());
             let mut sps_list = Vec::new();
             for _ in 0..sps_count {
-                let size = u16::decode_at(payload, &mut offset)? as usize;
+                let size = usize::from(u16::decode_at(payload, &mut offset)?);
                 if offset + size > payload.len() {
                     return Err(Error::invalid_data("SPS data exceeds payload boundary"));
                 }
-                let sps = payload[offset..offset + size].to_vec();
+                let sps = buf::range_len(payload, offset, size)?.to_vec();
                 offset += size;
                 sps_list.push(sps);
             }
 
-            let pps_count = u8::decode_at(payload, &mut offset)? as usize;
+            let pps_count = usize::from(u8::decode_at(payload, &mut offset)?);
             let mut pps_list = Vec::new();
             for _ in 0..pps_count {
-                let size = u16::decode_at(payload, &mut offset)? as usize;
+                let size = usize::from(u16::decode_at(payload, &mut offset)?);
                 if offset + size > payload.len() {
                     return Err(Error::invalid_data("PPS data exceeds payload boundary"));
                 }
-                let pps = payload[offset..offset + size].to_vec();
+                let pps = buf::range_len(payload, offset, size)?.to_vec();
                 offset += size;
                 pps_list.push(pps);
             }
@@ -463,13 +477,13 @@ impl Decode for AvccBox {
                 bit_depth_chroma_minus8 =
                     Some(Uint::from_bits(u8::decode_at(payload, &mut offset)?));
 
-                let sps_ext_count = u8::decode_at(payload, &mut offset)? as usize;
+                let sps_ext_count = usize::from(u8::decode_at(payload, &mut offset)?);
                 for _ in 0..sps_ext_count {
-                    let size = u16::decode_at(payload, &mut offset)? as usize;
+                    let size = usize::from(u16::decode_at(payload, &mut offset)?);
                     if offset + size > payload.len() {
                         return Err(Error::invalid_data("SPS EXT data exceeds payload boundary"));
                     }
-                    let sps_ext = payload[offset..offset + size].to_vec();
+                    let sps_ext = buf::range_len(payload, offset, size)?.to_vec();
                     offset += size;
                     sps_ext_list.push(sps_ext);
                 }
@@ -506,7 +520,7 @@ impl BaseBox for AvccBox {
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Hev1Box {
     pub visual: VisualSampleEntryFields,
     pub hvcc_box: HvccBox,
@@ -522,12 +536,12 @@ impl Encode for Hev1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.hvcc_box.encode(&mut buf[offset..])?;
+        offset += self.visual.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.hvcc_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -545,7 +559,7 @@ impl Decode for Hev1Box {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     HvccBox::TYPE if hvcc_box.is_none() => {
                         hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
@@ -584,7 +598,7 @@ impl BaseBox for Hev1Box {
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Hvc1Box {
     pub visual: VisualSampleEntryFields,
     pub hvcc_box: HvccBox,
@@ -600,12 +614,12 @@ impl Encode for Hvc1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.hvcc_box.encode(&mut buf[offset..])?;
+        offset += self.visual.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.hvcc_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -623,7 +637,7 @@ impl Decode for Hvc1Box {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     HvccBox::TYPE if hvcc_box.is_none() => {
                         hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
@@ -662,7 +676,7 @@ impl BaseBox for Hvc1Box {
 
 /// [`HvccBox`] 内の NAL ユニット配列を保持する構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct HvccNalUintArray {
     pub array_completeness: Uint<u8, 1, 7>,
     pub nal_unit_type: Uint<u8, 6, 0>,
@@ -671,7 +685,7 @@ pub struct HvccNalUintArray {
 
 /// [ISO/IEC 14496-15] HVCConfigurationBox class (親: [`Hev1Box`], [`Hvc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct HvccBox {
     pub general_profile_space: Uint<u8, 2, 6>,
     pub general_tier_flag: Uint<u8, 1, 5>,
@@ -703,53 +717,61 @@ impl Encode for HvccBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += Self::CONFIGURATION_VERSION.encode(&mut buf[offset..])?;
+        offset += Self::CONFIGURATION_VERSION.encode(buf::suffix_mut(buf, offset)?)?;
         offset += (self.general_profile_space.to_bits()
             | self.general_tier_flag.to_bits()
             | self.general_profile_idc.to_bits())
-        .encode(&mut buf[offset..])?;
+        .encode(buf::suffix_mut(buf, offset)?)?;
         offset += self
             .general_profile_compatibility_flags
-            .encode(&mut buf[offset..])?;
-        offset += self.general_constraint_indicator_flags.get().to_be_bytes()[2..]
-            .encode(&mut buf[offset..])?;
-        offset += self.general_level_idc.encode(&mut buf[offset..])?;
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += buf::range(
+            &self.general_constraint_indicator_flags.get().to_be_bytes(),
+            2,
+            8,
+        )?
+        .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .general_level_idc
+            .encode(buf::suffix_mut(buf, offset)?)?;
         offset += (0b1111_0000_0000_0000 | self.min_spatial_segmentation_idc.to_bits())
-            .encode(&mut buf[offset..])?;
-        offset += (0b1111_1100 | self.parallelism_type.to_bits()).encode(&mut buf[offset..])?;
-        offset += (0b1111_1100 | self.chroma_format_idc.to_bits()).encode(&mut buf[offset..])?;
-        offset +=
-            (0b1111_1000 | self.bit_depth_luma_minus8.to_bits()).encode(&mut buf[offset..])?;
-        offset +=
-            (0b1111_1000 | self.bit_depth_chroma_minus8.to_bits()).encode(&mut buf[offset..])?;
-        offset += self.avg_frame_rate.encode(&mut buf[offset..])?;
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (0b1111_1100 | self.parallelism_type.to_bits())
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (0b1111_1100 | self.chroma_format_idc.to_bits())
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (0b1111_1000 | self.bit_depth_luma_minus8.to_bits())
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += (0b1111_1000 | self.bit_depth_chroma_minus8.to_bits())
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.avg_frame_rate.encode(buf::suffix_mut(buf, offset)?)?;
         offset += (self.constant_frame_rate.to_bits()
             | self.num_temporal_layers.to_bits()
             | self.temporal_id_nested.to_bits()
             | self.length_size_minus_one.to_bits())
-        .encode(&mut buf[offset..])?;
+        .encode(buf::suffix_mut(buf, offset)?)?;
         offset += u8::try_from(self.nalu_arrays.len())
             .map_err(|_| {
                 Error::invalid_input(format!("Too many NALU arrays: {}", self.nalu_arrays.len()))
             })?
-            .encode(&mut buf[offset..])?;
+            .encode(buf::suffix_mut(buf, offset)?)?;
         for nalu_array in &self.nalu_arrays {
             offset += (nalu_array.array_completeness.to_bits()
                 | nalu_array.nal_unit_type.to_bits())
-            .encode(&mut buf[offset..])?;
+            .encode(buf::suffix_mut(buf, offset)?)?;
             offset += u16::try_from(nalu_array.nalus.len())
                 .map_err(|_| {
                     Error::invalid_input(format!("Too many NALUs: {}", nalu_array.nalus.len()))
                 })?
-                .encode(&mut buf[offset..])?;
+                .encode(buf::suffix_mut(buf, offset)?)?;
             for nalu in &nalu_array.nalus {
                 offset += u16::try_from(nalu.len())
                     .map_err(|_| Error::invalid_input(format!("Too large NALU: {}", nalu.len())))?
-                    .encode(&mut buf[offset..])?;
-                offset += nalu.encode(&mut buf[offset..])?;
+                    .encode(buf::suffix_mut(buf, offset)?)?;
+                offset += nalu.encode(buf::suffix_mut(buf, offset)?)?;
             }
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -775,13 +797,10 @@ impl Decode for HvccBox {
 
             let general_profile_compatibility_flags = u32::decode_at(payload, &mut offset)?;
 
-            let mut buf_constraint = [0; 8];
-            if offset + 6 > payload.len() {
-                return Err(Error::invalid_data(
-                    "general_constraint_indicator_flags exceeds payload boundary",
-                ));
-            }
-            buf_constraint[2..].copy_from_slice(&payload[offset..offset + 6]);
+            let constraint_bytes = buf::range_len(payload, offset, 6)?;
+            let mut buf_constraint = [0u8; 8];
+            buf::prefix_mut::<6>(buf::suffix_mut(&mut buf_constraint, 2)?)?
+                .copy_from_slice(constraint_bytes);
             offset += 6;
             let general_constraint_indicator_flags =
                 Uint::from_bits(u64::from_be_bytes(buf_constraint));
@@ -811,13 +830,13 @@ impl Decode for HvccBox {
                 let num_nalus = u16::decode_at(payload, &mut offset)?;
                 let mut nalus = Vec::new();
                 for _ in 0..num_nalus {
-                    let nal_unit_length = u16::decode_at(payload, &mut offset)? as usize;
+                    let nal_unit_length = usize::from(u16::decode_at(payload, &mut offset)?);
                     if offset + nal_unit_length > payload.len() {
                         return Err(Error::invalid_data(
                             "NAL unit data exceeds payload boundary",
                         ));
                     }
-                    let nal_unit = payload[offset..offset + nal_unit_length].to_vec();
+                    let nal_unit = buf::range_len(payload, offset, nal_unit_length)?.to_vec();
                     offset += nal_unit_length;
                     nalus.push(nal_unit);
                 }
@@ -866,7 +885,7 @@ impl BaseBox for HvccBox {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP8SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Vp08Box {
     pub visual: VisualSampleEntryFields,
     pub vpcc_box: VpccBox,
@@ -882,12 +901,12 @@ impl Encode for Vp08Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.vpcc_box.encode(&mut buf[offset..])?;
+        offset += self.visual.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.vpcc_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -905,7 +924,7 @@ impl Decode for Vp08Box {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     VpccBox::TYPE if vpcc_box.is_none() => {
                         vpcc_box = Some(VpccBox::decode_at(payload, &mut offset)?);
@@ -944,7 +963,7 @@ impl BaseBox for Vp08Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP9SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Vp09Box {
     pub visual: VisualSampleEntryFields,
     pub vpcc_box: VpccBox,
@@ -960,12 +979,12 @@ impl Encode for Vp09Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.vpcc_box.encode(&mut buf[offset..])?;
+        offset += self.visual.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.vpcc_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -983,7 +1002,7 @@ impl Decode for Vp09Box {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     VpccBox::TYPE if vpcc_box.is_none() => {
                         vpcc_box = Some(VpccBox::decode_at(payload, &mut offset)?);
@@ -1022,7 +1041,7 @@ impl BaseBox for Vp09Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VPCodecConfigurationBox class (親: [`Vp08Box`], [`Vp09Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct VpccBox {
     pub profile: u8,
     pub level: u8,
@@ -1044,19 +1063,29 @@ impl Encode for VpccBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
-        offset += self.profile.encode(&mut buf[offset..])?;
-        offset += self.level.encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.profile.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.level.encode(buf::suffix_mut(buf, offset)?)?;
         offset += (self.bit_depth.to_bits()
             | self.chroma_subsampling.to_bits()
             | self.video_full_range_flag.to_bits())
-        .encode(&mut buf[offset..])?;
-        offset += self.colour_primaries.encode(&mut buf[offset..])?;
-        offset += self.transfer_characteristics.encode(&mut buf[offset..])?;
-        offset += self.matrix_coefficients.encode(&mut buf[offset..])?;
-        offset += (self.codec_initialization_data.len() as u16).encode(&mut buf[offset..])?;
-        offset += self.codec_initialization_data.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .colour_primaries
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .transfer_characteristics
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .matrix_coefficients
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += u16::try_from(self.codec_initialization_data.len())
+            .map_err(|_| Error::invalid_input("codec initialization data length exceeds u16::MAX"))?
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .codec_initialization_data
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1086,13 +1115,14 @@ impl Decode for VpccBox {
             let colour_primaries = u8::decode_at(payload, &mut offset)?;
             let transfer_characteristics = u8::decode_at(payload, &mut offset)?;
             let matrix_coefficients = u8::decode_at(payload, &mut offset)?;
-            let codec_init_size = u16::decode_at(payload, &mut offset)? as usize;
+            let codec_init_size = usize::from(u16::decode_at(payload, &mut offset)?);
             if offset + codec_init_size > payload.len() {
                 return Err(Error::invalid_data(
                     "codec initialization data exceeds payload boundary",
                 ));
             }
-            let codec_initialization_data = payload[offset..offset + codec_init_size].to_vec();
+            let codec_initialization_data =
+                buf::range_len(payload, offset, codec_init_size)?.to_vec();
 
             Ok((
                 Self {
@@ -1134,7 +1164,7 @@ impl FullBox for VpccBox {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Av01Box {
     pub visual: VisualSampleEntryFields,
     pub av1c_box: Av1cBox,
@@ -1150,12 +1180,12 @@ impl Encode for Av01Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.av1c_box.encode(&mut buf[offset..])?;
+        offset += self.visual.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.av1c_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1173,7 +1203,7 @@ impl Decode for Av01Box {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     Av1cBox::TYPE if av1c_box.is_none() => {
                         av1c_box = Some(Av1cBox::decode_at(payload, &mut offset)?);
@@ -1212,7 +1242,7 @@ impl BaseBox for Av01Box {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1CodecConfigurationBox class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Av1cBox {
     pub seq_profile: Uint<u8, 3, 5>,
     pub seq_level_idx_0: Uint<u8, 5, 0>,
@@ -1239,9 +1269,10 @@ impl Encode for Av1cBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += (Self::MARKER.to_bits() | Self::VERSION.to_bits()).encode(&mut buf[offset..])?;
+        offset += (Self::MARKER.to_bits() | Self::VERSION.to_bits())
+            .encode(buf::suffix_mut(buf, offset)?)?;
         offset += (self.seq_profile.to_bits() | self.seq_level_idx_0.to_bits())
-            .encode(&mut buf[offset..])?;
+            .encode(buf::suffix_mut(buf, offset)?)?;
         offset += (self.seq_tier_0.to_bits()
             | self.high_bitdepth.to_bits()
             | self.twelve_bit.to_bits()
@@ -1249,14 +1280,14 @@ impl Encode for Av1cBox {
             | self.chroma_subsampling_x.to_bits()
             | self.chroma_subsampling_y.to_bits()
             | self.chroma_sample_position.to_bits())
-        .encode(&mut buf[offset..])?;
+        .encode(buf::suffix_mut(buf, offset)?)?;
         if let Some(v) = self.initial_presentation_delay_minus_one {
-            offset += (0b1_0000 | v.to_bits()).encode(&mut buf[offset..])?;
+            offset += (0b1_0000 | v.to_bits()).encode(buf::suffix_mut(buf, offset)?)?;
         } else {
-            offset += 0u8.encode(&mut buf[offset..])?;
+            offset += 0u8.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        offset += self.config_obus.encode(&mut buf[offset..])?;
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += self.config_obus.encode(buf::suffix_mut(buf, offset)?)?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1302,7 +1333,7 @@ impl Decode for Av1cBox {
                 None
             };
 
-            let config_obus = payload[offset..].to_vec();
+            let config_obus = buf::suffix(payload, offset)?.to_vec();
 
             Ok((
                 Self {
@@ -1336,7 +1367,7 @@ impl BaseBox for Av1cBox {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct OpusBox {
     pub audio: AudioSampleEntryFields,
     pub dops_box: DopsBox,
@@ -1352,12 +1383,12 @@ impl Encode for OpusBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.audio.encode(&mut buf[offset..])?;
-        offset += self.dops_box.encode(&mut buf[offset..])?;
+        offset += self.audio.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.dops_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1375,7 +1406,7 @@ impl Decode for OpusBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     DopsBox::TYPE if dops_box.is_none() => {
                         dops_box = Some(DopsBox::decode_at(payload, &mut offset)?);
@@ -1414,7 +1445,7 @@ impl BaseBox for OpusBox {
 
 /// [ISO/IEC 14496-14] MP4AudioSampleEntry class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct Mp4aBox {
     pub audio: AudioSampleEntryFields,
     pub esds_box: EsdsBox,
@@ -1430,12 +1461,12 @@ impl Encode for Mp4aBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.audio.encode(&mut buf[offset..])?;
-        offset += self.esds_box.encode(&mut buf[offset..])?;
+        offset += self.audio.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.esds_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1453,7 +1484,7 @@ impl Decode for Mp4aBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     EsdsBox::TYPE if esds_box.is_none() => {
                         esds_box = Some(EsdsBox::decode_at(payload, &mut offset)?);
@@ -1494,7 +1525,7 @@ impl BaseBox for Mp4aBox {
 ///
 /// <https://github.com/xiph/flac/blob/master/doc/isoflac.txt>
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct FlacBox {
     pub audio: AudioSampleEntryFields,
     pub dfla_box: DflaBox,
@@ -1510,12 +1541,12 @@ impl Encode for FlacBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.audio.encode(&mut buf[offset..])?;
-        offset += self.dfla_box.encode(&mut buf[offset..])?;
+        offset += self.audio.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.dfla_box.encode(buf::suffix_mut(buf, offset)?)?;
         for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
+            offset += b.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1533,7 +1564,7 @@ impl Decode for FlacBox {
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                let (child_header, _) = BoxHeader::decode(buf::suffix(payload, offset)?)?;
                 match child_header.box_type {
                     DflaBox::TYPE if dfla_box.is_none() => {
                         dfla_box = Some(DflaBox::decode_at(payload, &mut offset)?);
@@ -1592,13 +1623,13 @@ impl Encode for DflaBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += FullBoxHeader::from_box(self).encode(buf::suffix_mut(buf, offset)?)?;
 
         for block in &self.metadata_blocks {
-            offset += block.encode(&mut buf[offset..])?;
+            offset += block.encode(buf::suffix_mut(buf, offset)?)?;
         }
 
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1635,13 +1666,12 @@ impl Decode for DflaBox {
                 )));
             }
 
-            if metadata_blocks.is_empty() {
-                return Err(Error::invalid_data(
+            let first_block = metadata_blocks.first().ok_or_else(|| {
+                Error::invalid_data(
                     "dfLa box must contain at least one metadata block (STREAMINFO)",
-                ));
-            }
-
-            if metadata_blocks[0].block_type != FlacMetadataBlock::BLOCK_TYPE_STREAMINFO {
+                )
+            })?;
+            if first_block.block_type != FlacMetadataBlock::BLOCK_TYPE_STREAMINFO {
                 return Err(Error::invalid_data(
                     "First metadata block in dfLa must be STREAMINFO (block_type=0)",
                 ));
@@ -1728,15 +1758,24 @@ impl Encode for FlacMetadataBlock {
 
         let mut offset = 0;
         let first_byte = self.last_metadata_block_flag.to_bits() | self.block_type.to_bits();
-        offset += first_byte.encode(&mut buf[offset..])?;
+        offset += first_byte.encode(buf::suffix_mut(buf, offset)?)?;
 
         let length_bytes = [
-            ((length >> 16) & 0xFF) as u8,
-            ((length >> 8) & 0xFF) as u8,
-            (length & 0xFF) as u8,
+            u8::try_from((length >> 16) & 0xFF).map_err(|_| {
+                Error::invalid_input("FLAC metadata block length byte exceeds u8::MAX")
+            })?,
+            u8::try_from((length >> 8) & 0xFF).map_err(|_| {
+                Error::invalid_input("FLAC metadata block length byte exceeds u8::MAX")
+            })?,
+            u8::try_from(length & 0xFF).map_err(|_| {
+                Error::invalid_input("FLAC metadata block length byte exceeds u8::MAX")
+            })?,
         ];
-        offset += length_bytes.encode(&mut buf[offset..])?;
-        offset += self.block_data.as_slice().encode(&mut buf[offset..])?;
+        offset += length_bytes.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .block_data
+            .as_slice()
+            .encode(buf::suffix_mut(buf, offset)?)?;
 
         Ok(offset)
     }
@@ -1751,12 +1790,12 @@ impl Decode for FlacMetadataBlock {
         let block_type = Uint::from_bits(first_byte);
 
         let length_bytes = <[u8; 3]>::decode_at(buf, &mut offset)?;
-        let length = ((length_bytes[0] as usize) << 16)
-            | ((length_bytes[1] as usize) << 8)
-            | (length_bytes[2] as usize);
+        let length = (usize::from(buf::read_u8(buf::range(&length_bytes, 0, 1)?)?) << 16)
+            | (usize::from(buf::read_u8(buf::range(&length_bytes, 1, 2)?)?) << 8)
+            | usize::from(buf::read_u8(buf::range(&length_bytes, 2, 3)?)?);
 
         Error::check_buffer_size(offset + length, buf)?;
-        let block_data = buf[offset..offset + length].to_vec();
+        let block_data = buf::range_len(buf, offset, length)?.to_vec();
         offset += length;
 
         Ok((
@@ -1772,7 +1811,7 @@ impl Decode for FlacMetadataBlock {
 
 /// 音声系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct AudioSampleEntryFields {
     pub data_reference_index: NonZeroU16,
     pub channelcount: u16,
@@ -1791,14 +1830,16 @@ impl AudioSampleEntryFields {
 impl Encode for AudioSampleEntryFields {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
-        offset += [0u8; 6].encode(&mut buf[offset..])?;
-        offset += self.data_reference_index.encode(&mut buf[offset..])?;
-        offset += [0u8; 4 * 2].encode(&mut buf[offset..])?;
-        offset += self.channelcount.encode(&mut buf[offset..])?;
-        offset += self.samplesize.encode(&mut buf[offset..])?;
-        offset += [0u8; 2].encode(&mut buf[offset..])?;
-        offset += [0u8; 2].encode(&mut buf[offset..])?;
-        offset += self.samplerate.encode(&mut buf[offset..])?;
+        offset += [0u8; 6].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .data_reference_index
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 4 * 2].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.channelcount.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.samplesize.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += [0u8; 2].encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.samplerate.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -1828,7 +1869,7 @@ impl Decode for AudioSampleEntryFields {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSpecificBox class (親: [`OpusBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct DopsBox {
     pub output_channel_count: u8,
     pub pre_skip: u16,
@@ -1847,13 +1888,17 @@ impl Encode for DopsBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += Self::VERSION.encode(&mut buf[offset..])?;
-        offset += self.output_channel_count.encode(&mut buf[offset..])?;
-        offset += self.pre_skip.encode(&mut buf[offset..])?;
-        offset += self.input_sample_rate.encode(&mut buf[offset..])?;
-        offset += self.output_gain.encode(&mut buf[offset..])?;
-        offset += 0u8.encode(&mut buf[offset..])?; // ChannelMappingFamily
-        header.finalize_box_size(&mut buf[..offset])?;
+        offset += Self::VERSION.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .output_channel_count
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.pre_skip.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self
+            .input_sample_rate
+            .encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.output_gain.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += 0u8.encode(buf::suffix_mut(buf, offset)?)?; // ChannelMappingFamily
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }

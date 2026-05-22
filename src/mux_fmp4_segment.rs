@@ -65,6 +65,7 @@ use crate::{
         SmhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TfdtBox, TfhdBox, TfraBox,
         TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, VmhdBox,
     },
+    codec::buf,
     mux_mp4_file::{MuxError, Sample},
 };
 
@@ -240,12 +241,12 @@ impl Fmp4SegmentMuxer {
         if samples.is_empty() {
             return Err(MuxError::EmptySamples);
         }
-        let first_track_kind = samples[0].track_kind;
+        let first_track_kind = samples.first().ok_or(MuxError::EmptySamples)?.track_kind;
 
         let subsegment_duration: u64 = samples
             .iter()
             .filter(|s| s.track_kind == first_track_kind)
-            .map(|s| s.duration as u64)
+            .map(|s| u64::from(s.duration))
             .sum();
         let first_sample_is_keyframe = samples
             .iter()
@@ -266,7 +267,11 @@ impl Fmp4SegmentMuxer {
             .tracks
             .iter()
             .find(|track| track.track_kind == first_track_kind)
-            .expect("bug: first sample track must exist after media segment creation");
+            .ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: first sample track must exist after media segment creation",
+                ))
+            })?;
 
         let referenced_size = u32::try_from(media_segment_size).map_err(|_| {
             MuxError::EncodeError(Error::invalid_data(
@@ -321,10 +326,13 @@ impl Fmp4SegmentMuxer {
             .map(|track| track.payload_end)
             .max()
             .ok_or(MuxError::EmptySamples)?;
-        let mdat_box_size_value = BoxHeader::MIN_SIZE as u64 + mdat_payload_size;
-        let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u32::MAX as u64 {
+        let mdat_box_size_value = buf::usize_to_u64(BoxHeader::MIN_SIZE)
+            .map_err(MuxError::EncodeError)?
+            .checked_add(mdat_payload_size)
+            .ok_or(MuxError::Overflow)?;
+        let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u64::from(u32::MAX) {
             (
-                BoxSize::U32(mdat_box_size_value as u32),
+                BoxSize::U32(buf::u64_to_u32(mdat_box_size_value).map_err(MuxError::EncodeError)?),
                 BoxHeader::MIN_SIZE,
             )
         } else {
@@ -360,12 +368,17 @@ impl Fmp4SegmentMuxer {
             let track_data_offset = data_offset_base
                 .checked_add(resolved_track.first_data_offset)
                 .ok_or(MuxError::Overflow)?;
-            track_data_offsets[resolved_track.track_index] = i32::try_from(track_data_offset)
-                .map_err(|_| {
+            *track_data_offsets
+                .get_mut(resolved_track.track_index)
+                .ok_or_else(|| {
                     MuxError::EncodeError(Error::invalid_data(
-                        "data_offset overflow: moof + mdat header exceeds i32 max",
+                        "internal bug: track data offset index out of range",
                     ))
-                })?;
+                })? = i32::try_from(track_data_offset).map_err(|_| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "data_offset overflow: moof + mdat header exceeds i32 max",
+                ))
+            })?;
         }
 
         // 正しい data_offset で moof を構築する
@@ -391,13 +404,28 @@ impl Fmp4SegmentMuxer {
             let entry = TfraSegmentEntry {
                 time: self.tracks.get(ti).map_or(0, |track| track.decode_time),
                 moof_relative_offset,
-                traf_number: u32::try_from(traf_pos + 1).expect("traf count exceeds u32::MAX"),
+                traf_number: u32::try_from(traf_pos + 1).map_err(|_| {
+                    MuxError::EncodeError(Error::invalid_data("traf count exceeds u32::MAX"))
+                })?,
             };
-            next_tfra_entries[ti].push(entry);
+            next_tfra_entries
+                .get_mut(ti)
+                .ok_or_else(|| {
+                    MuxError::EncodeError(Error::invalid_data(
+                        "internal bug: tfra entry index out of range",
+                    ))
+                })?
+                .push(entry);
         }
 
         for resolved_track in &resolved_tracks {
-            let track = &mut next_tracks[resolved_track.track_index];
+            let track = next_tracks
+                .get_mut(resolved_track.track_index)
+                .ok_or_else(|| {
+                    MuxError::EncodeError(Error::invalid_data(
+                        "internal bug: track index out of range",
+                    ))
+                })?;
             track.decode_time = track
                 .decode_time
                 .checked_add(resolved_track.total_duration)
@@ -406,7 +434,7 @@ impl Fmp4SegmentMuxer {
 
         self.media_bytes_written = self
             .media_bytes_written
-            .checked_add(segment.len() as u64)
+            .checked_add(buf::usize_to_u64(segment.len()).map_err(MuxError::EncodeError)?)
             .and_then(|written| written.checked_add(mdat_payload_size))
             .ok_or(MuxError::Overflow)?;
         self.sequence_number = sequence_number;
@@ -431,19 +459,23 @@ impl Fmp4SegmentMuxer {
     /// `mfra_bytes()` を呼ぶこと。
     pub fn mfra_bytes(&self) -> Result<Vec<u8>, MuxError> {
         let init_segment_size =
-            u64::try_from(self.init_segment_bytes()?.len()).expect("init segment size exceeds u64");
+            buf::usize_to_u64(self.init_segment_bytes()?.len()).map_err(MuxError::EncodeError)?;
         let mut tfra_boxes = Vec::new();
 
         for (ti, entries) in self.tfra_entries.iter().enumerate() {
             if entries.is_empty() {
                 continue;
             }
-            let track = &self.tracks[ti];
+            let track = self.tracks.get(ti).ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: track index out of range for mfra",
+                ))
+            })?;
 
             // time / moof_offset が u32 に収まるか否かで version を決める
             let needs_v1 = entries.iter().any(|e| {
                 let moof_offset = init_segment_size + e.moof_relative_offset;
-                e.time > u32::MAX as u64 || moof_offset > u32::MAX as u64
+                e.time > u64::from(u32::MAX) || moof_offset > u64::from(u32::MAX)
             });
             let version = if needs_v1 { 1 } else { 0 };
 
@@ -573,13 +605,18 @@ impl Fmp4SegmentMuxer {
         let mvhd_box = MvhdBox {
             creation_time,
             modification_time: creation_time,
-            timescale: NonZeroU32::new(1000).expect("1000 is non-zero"),
+            timescale: NonZeroU32::new(1000).ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: mvhd timescale must be non-zero",
+                ))
+            })?,
             duration: 0,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
-            next_track_id: u32::try_from(self.tracks.len() + 1)
-                .expect("track count exceeds u32::MAX"),
+            next_track_id: u32::try_from(self.tracks.len() + 1).map_err(|_| {
+                MuxError::EncodeError(Error::invalid_data("track count exceeds u32::MAX"))
+            })?,
         };
 
         Ok(MoovBox {
@@ -729,7 +766,11 @@ impl Fmp4SegmentMuxer {
 
         let mut traf_boxes = Vec::new();
         for resolved_track in resolved_tracks {
-            let track = &tracks[resolved_track.track_index];
+            let track = tracks.get(resolved_track.track_index).ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: track index out of range",
+                ))
+            })?;
             let has_any_cto = resolved_track
                 .samples
                 .iter()
@@ -757,7 +798,13 @@ impl Fmp4SegmentMuxer {
                 .collect::<Result<Vec<_>, _>>()?;
 
             let trun_box = TrunBox {
-                data_offset: Some(data_offsets[resolved_track.track_index]),
+                data_offset: Some(*data_offsets.get(resolved_track.track_index).ok_or_else(
+                    || {
+                        MuxError::EncodeError(Error::invalid_data(
+                            "internal bug: data offset index out of range",
+                        ))
+                    },
+                )?),
                 first_sample_flags: None,
                 samples: trun_samples,
             };
@@ -774,7 +821,7 @@ impl Fmp4SegmentMuxer {
             };
 
             let tfdt_box = TfdtBox {
-                version: if track.decode_time > u32::MAX as u64 {
+                version: if track.decode_time > u64::from(u32::MAX) {
                     1
                 } else {
                     0
@@ -815,11 +862,17 @@ fn resolve_segment_tracks(
             .iter()
             .filter(|sample| sample.track_kind == track_kind)
             .collect();
-        let first_sample = track_samples
-            .first()
-            .expect("bug: ordered track kind must have at least one sample");
+        let first_sample = track_samples.first().ok_or_else(|| {
+            MuxError::EncodeError(Error::invalid_data(
+                "internal bug: ordered track kind must have at least one sample",
+            ))
+        })?;
         let track_index = ensure_track_entry(tracks, track_kind, first_sample.timescale)?;
-        let track = &mut tracks[track_index];
+        let track = tracks.get_mut(track_index).ok_or_else(|| {
+            MuxError::EncodeError(Error::invalid_data(
+                "internal bug: track index out of range",
+            ))
+        })?;
 
         let mut current_sample_entry_index = track.current_sample_entry_index;
         let mut segment_sample_entry_index = None;
@@ -864,7 +917,7 @@ fn resolve_segment_tracks(
 
             current_sample_entry_index = Some(sample_entry_index);
             total_duration = total_duration
-                .checked_add(sample.duration as u64)
+                .checked_add(u64::from(sample.duration))
                 .ok_or(MuxError::Overflow)?;
             if first_data_offset.is_none() {
                 first_data_offset = Some(sample.data_offset);
@@ -879,10 +932,16 @@ fn resolve_segment_tracks(
             expected_next_data_offset = Some(
                 sample
                     .data_offset
-                    .checked_add(sample.data_size as u64)
+                    .checked_add(
+                        buf::usize_to_u64(sample.data_size).map_err(MuxError::EncodeError)?,
+                    )
                     .ok_or(MuxError::Overflow)?,
             );
-            payload_end = expected_next_data_offset.expect("offset must be set");
+            payload_end = expected_next_data_offset.ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: sample data offset must be set",
+                ))
+            })?;
 
             resolved_samples.push(ResolvedSegmentSample {
                 duration: sample.duration,
@@ -920,7 +979,11 @@ fn resolve_segment_tracks(
             samples: resolved_samples,
             total_duration,
             sample_description_index,
-            first_data_offset: first_data_offset.expect("track must contain at least one sample"),
+            first_data_offset: first_data_offset.ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "internal bug: track must contain at least one sample",
+                ))
+            })?,
             payload_end,
         });
     }
@@ -948,7 +1011,11 @@ fn ensure_track_entry(
         .iter()
         .position(|track| track.track_kind == track_kind)
     {
-        let track = &tracks[track_index];
+        let track = tracks.get(track_index).ok_or_else(|| {
+            MuxError::EncodeError(Error::invalid_data(
+                "internal bug: track index out of range",
+            ))
+        })?;
         if track.timescale != timescale {
             return Err(MuxError::TimescaleMismatch {
                 track_kind,
@@ -959,7 +1026,8 @@ fn ensure_track_entry(
         return Ok(track_index);
     }
 
-    let track_id = u32::try_from(tracks.len() + 1).expect("track count exceeds u32::MAX");
+    let track_id = u32::try_from(tracks.len() + 1)
+        .map_err(|_| MuxError::EncodeError(Error::invalid_data("track count exceeds u32::MAX")))?;
     tracks.push(TrackEntry {
         track_kind,
         timescale,

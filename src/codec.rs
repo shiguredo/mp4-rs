@@ -116,6 +116,106 @@ impl core::fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+/// バッファ操作と型変換のヘルパー
+pub(crate) mod buf {
+    use super::{Error, Result};
+
+    /// バッファ先頭 N バイトを不変参照で取得する
+    pub fn prefix<const N: usize>(buf: &[u8]) -> Result<&[u8; N]> {
+        buf.get(..N)
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or_else(Error::insufficient_buffer)
+    }
+
+    /// バッファ先頭 N バイトを可変参照で取得する
+    pub fn prefix_mut<const N: usize>(buf: &mut [u8]) -> Result<&mut [u8; N]> {
+        buf.get_mut(..N)
+            .and_then(|slice| slice.try_into().ok())
+            .ok_or_else(Error::insufficient_buffer)
+    }
+
+    /// バッファ先頭 len バイトを可変参照で取得する
+    pub fn prefix_len_mut(buf: &mut [u8], len: usize) -> Result<&mut [u8]> {
+        buf.get_mut(..len).ok_or_else(Error::insufficient_buffer)
+    }
+
+    /// offset 以降のバッファを不変参照で取得する
+    pub fn suffix(buf: &[u8], offset: usize) -> Result<&[u8]> {
+        buf.get(offset..).ok_or_else(Error::insufficient_buffer)
+    }
+
+    /// offset 以降のバッファを可変参照で取得する
+    pub fn suffix_mut(buf: &mut [u8], offset: usize) -> Result<&mut [u8]> {
+        buf.get_mut(offset..).ok_or_else(Error::insufficient_buffer)
+    }
+
+    /// 範囲指定でバッファを不変参照で取得する
+    pub fn range(buf: &[u8], start: usize, end: usize) -> Result<&[u8]> {
+        buf.get(start..end).ok_or_else(Error::insufficient_buffer)
+    }
+
+    /// 先頭 1 バイトを読み取る
+    pub fn read_u8(buf: &[u8]) -> Result<u8> {
+        Ok(*buf.first().ok_or_else(Error::insufficient_buffer)?)
+    }
+
+    /// 先頭 1 バイトを書き込む
+    pub fn write_u8(buf: &mut [u8], value: u8) -> Result<()> {
+        *buf.first_mut().ok_or_else(Error::insufficient_buffer)? = value;
+        Ok(())
+    }
+
+    /// start から len バイト分のスライスを取得する
+    pub fn range_len(buf: &[u8], start: usize, len: usize) -> Result<&[u8]> {
+        let end = start
+            .checked_add(len)
+            .ok_or_else(Error::insufficient_buffer)?;
+        range(buf, start, end)
+    }
+
+    /// u8 を i8 に変換する
+    pub fn u8_to_i8(byte: u8) -> i8 {
+        i8::from_ne_bytes([byte])
+    }
+
+    /// i8 を u8 に変換する
+    pub fn i8_to_u8(value: i8) -> u8 {
+        u8::from_ne_bytes(value.to_ne_bytes())
+    }
+
+    /// u64 を u32 に変換する (範囲外ならエラー)
+    pub fn u64_to_u32(value: u64) -> Result<u32> {
+        u32::try_from(value).map_err(|_| Error::invalid_data("value exceeds u32::MAX"))
+    }
+
+    /// usize を u32 に変換する (範囲外ならエラー)
+    pub fn usize_to_u32(value: usize) -> Result<u32> {
+        u32::try_from(value).map_err(|_| Error::invalid_data("value exceeds u32::MAX"))
+    }
+
+    /// usize を u64 に変換する (範囲外ならエラー)
+    pub fn usize_to_u64(value: usize) -> Result<u64> {
+        u64::try_from(value).map_err(|_| Error::invalid_data("value exceeds u64::MAX"))
+    }
+
+    /// value * multiplier / divisor を整数演算で求める
+    #[expect(
+        clippy::integer_division,
+        reason = "timestamp conversion requires exact integer division"
+    )]
+    #[expect(
+        clippy::integer_division_remainder_used,
+        reason = "timestamp conversion requires exact integer division"
+    )]
+    pub fn mul_div_u64(value: u64, multiplier: u64, divisor: u64) -> Result<u64> {
+        let product = u128::from(value)
+            .checked_mul(u128::from(multiplier))
+            .ok_or_else(Error::insufficient_buffer)?;
+        let quotient = product / u128::from(divisor);
+        u64::try_from(quotient).map_err(|_| Error::invalid_data("quotient exceeds u64::MAX"))
+    }
+}
+
 /// バイト列に変換可能な型を表現するためのトレイト
 pub trait Encode {
     /// `self` をバイト列に変換して `buf` に書きこむ
@@ -147,7 +247,7 @@ impl Encode for u8 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(1, buf)?;
-        buf[0] = *self;
+        buf::write_u8(buf, *self)?;
         Ok(1)
     }
 }
@@ -156,7 +256,7 @@ impl Encode for u16 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(2, buf)?;
-        buf[..2].copy_from_slice(&self.to_be_bytes());
+        buf::prefix_mut::<2>(buf)?.copy_from_slice(&self.to_be_bytes());
         Ok(2)
     }
 }
@@ -165,7 +265,7 @@ impl Encode for u32 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(4, buf)?;
-        buf[..4].copy_from_slice(&self.to_be_bytes());
+        buf::prefix_mut::<4>(buf)?.copy_from_slice(&self.to_be_bytes());
         Ok(4)
     }
 }
@@ -174,7 +274,7 @@ impl Encode for u64 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(8, buf)?;
-        buf[..8].copy_from_slice(&self.to_be_bytes());
+        buf::prefix_mut::<8>(buf)?.copy_from_slice(&self.to_be_bytes());
         Ok(8)
     }
 }
@@ -183,7 +283,7 @@ impl Encode for i8 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(1, buf)?;
-        buf[0] = *self as u8;
+        buf::write_u8(buf, buf::i8_to_u8(*self))?;
         Ok(1)
     }
 }
@@ -192,7 +292,7 @@ impl Encode for i16 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(2, buf)?;
-        buf[..2].copy_from_slice(&self.to_be_bytes());
+        buf::prefix_mut::<2>(buf)?.copy_from_slice(&self.to_be_bytes());
         Ok(2)
     }
 }
@@ -201,7 +301,7 @@ impl Encode for i32 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(4, buf)?;
-        buf[..4].copy_from_slice(&self.to_be_bytes());
+        buf::prefix_mut::<4>(buf)?.copy_from_slice(&self.to_be_bytes());
         Ok(4)
     }
 }
@@ -210,7 +310,7 @@ impl Encode for i64 {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(8, buf)?;
-        buf[..8].copy_from_slice(&self.to_be_bytes());
+        buf::prefix_mut::<8>(buf)?.copy_from_slice(&self.to_be_bytes());
         Ok(8)
     }
 }
@@ -234,7 +334,7 @@ impl<T: Encode, const N: usize> Encode for [T; N] {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = 0;
         for item in self {
-            offset += item.encode(&mut buf[offset..])?;
+            offset += item.encode(buf::suffix_mut(buf, offset)?)?;
         }
         Ok(offset)
     }
@@ -244,7 +344,7 @@ impl Encode for [u8] {
     #[track_caller]
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         Error::check_buffer_size(self.len(), buf)?;
-        buf[..self.len()].copy_from_slice(self);
+        buf::prefix_len_mut(buf, self.len())?.copy_from_slice(self);
         Ok(self.len())
     }
 }
@@ -262,7 +362,7 @@ pub trait Decode: Sized {
     /// なお、デコードが失敗した場合はオフセットの更新は行われない
     #[track_caller]
     fn decode_at(buf: &[u8], offset: &mut usize) -> Result<Self> {
-        let (decoded, size) = Self::decode(&buf[*offset..])?;
+        let (decoded, size) = Self::decode(buf::suffix(buf, *offset)?)?;
         *offset += size;
         Ok(decoded)
     }
@@ -272,7 +372,7 @@ impl Decode for u8 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(1, buf)?;
-        Ok((buf[0], 1))
+        Ok((buf::read_u8(buf)?, 1))
     }
 }
 
@@ -280,7 +380,7 @@ impl Decode for u16 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(2, buf)?;
-        Ok((Self::from_be_bytes([buf[0], buf[1]]), 2))
+        Ok((Self::from_be_bytes(*buf::prefix::<2>(buf)?), 2))
     }
 }
 
@@ -288,7 +388,7 @@ impl Decode for u32 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(4, buf)?;
-        Ok((Self::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]), 4))
+        Ok((Self::from_be_bytes(*buf::prefix::<4>(buf)?), 4))
     }
 }
 
@@ -296,10 +396,7 @@ impl Decode for u64 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(8, buf)?;
-        let bytes = [
-            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-        ];
-        Ok((Self::from_be_bytes(bytes), 8))
+        Ok((Self::from_be_bytes(*buf::prefix::<8>(buf)?), 8))
     }
 }
 
@@ -307,7 +404,7 @@ impl Decode for i8 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(1, buf)?;
-        Ok((buf[0] as i8, 1))
+        Ok((buf::u8_to_i8(buf::read_u8(buf)?), 1))
     }
 }
 
@@ -315,7 +412,7 @@ impl Decode for i16 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(2, buf)?;
-        Ok((Self::from_be_bytes([buf[0], buf[1]]), 2))
+        Ok((Self::from_be_bytes(*buf::prefix::<2>(buf)?), 2))
     }
 }
 
@@ -323,7 +420,7 @@ impl Decode for i32 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(4, buf)?;
-        Ok((Self::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]), 4))
+        Ok((Self::from_be_bytes(*buf::prefix::<4>(buf)?), 4))
     }
 }
 
@@ -331,10 +428,7 @@ impl Decode for i64 {
     #[track_caller]
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
         Error::check_buffer_size(8, buf)?;
-        let bytes = [
-            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-        ];
-        Ok((Self::from_be_bytes(bytes), 8))
+        Ok((Self::from_be_bytes(*buf::prefix::<8>(buf)?), 8))
     }
 }
 

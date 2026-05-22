@@ -4,7 +4,7 @@ use shiguredo_mp4::TrackKind;
 /// MP4 ファイル内のトラックの種類を表す列挙型
 #[derive(Clone, Copy)]
 #[repr(C)]
-#[expect(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "C ABI type names must match mp4.h")]
 pub enum Mp4TrackKind {
     /// 音声トラック
     MP4_TRACK_KIND_AUDIO = 0,

@@ -29,18 +29,25 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
         for entry in &stbl_box_ref.stts_box.entries {
             sample_durations.push((sample_count, entry.sample_delta, acc_duration));
             sample_count += entry.sample_count;
-            acc_duration += entry.sample_delta as u64 * entry.sample_count as u64;
+            acc_duration += u64::from(entry.sample_delta) * u64::from(entry.sample_count);
         }
 
-        if let StszBox::Variable { entry_sizes } = &stbl_box_ref.stsz_box
-            && entry_sizes.len() != sample_count as usize
-        {
-            // stts と stsz でサンプル数が異なる
-            return Err(SampleTableAccessorError::InconsistentSampleCount {
-                stts_sample_count: sample_count,
-                other_box_type: StszBox::TYPE,
-                other_sample_count: entry_sizes.len() as u32,
-            });
+        if let StszBox::Variable { entry_sizes } = &stbl_box_ref.stsz_box {
+            let expected_count = usize::try_from(sample_count).map_err(|_| {
+                SampleTableAccessorError::InconsistentSampleCount {
+                    stts_sample_count: sample_count,
+                    other_box_type: StszBox::TYPE,
+                    other_sample_count: u32::try_from(entry_sizes.len()).unwrap_or(u32::MAX),
+                }
+            })?;
+            if entry_sizes.len() != expected_count {
+                // stts と stsz でサンプル数が異なる
+                return Err(SampleTableAccessorError::InconsistentSampleCount {
+                    stts_sample_count: sample_count,
+                    other_box_type: StszBox::TYPE,
+                    other_sample_count: u32::try_from(entry_sizes.len()).unwrap_or(u32::MAX),
+                });
+            }
         }
 
         let sample_composition_offsets = if let Some(ctts_box) = &stbl_box_ref.ctts_box {
@@ -63,8 +70,18 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
         };
 
         let chunk_count = match &stbl_box_ref.stco_or_co64_box {
-            Either::A(b) => b.chunk_offsets.len() as u32,
-            Either::B(b) => b.chunk_offsets.len() as u32,
+            Either::A(b) => u32::try_from(b.chunk_offsets.len()).map_err(|_| {
+                SampleTableAccessorError::LastChunkIndexIsTooLarge {
+                    max_chunk_index: NonZeroU32::MIN,
+                    last_chunk_index: NonZeroU32::MIN,
+                }
+            })?,
+            Either::B(b) => u32::try_from(b.chunk_offsets.len()).map_err(|_| {
+                SampleTableAccessorError::LastChunkIndexIsTooLarge {
+                    max_chunk_index: NonZeroU32::MIN,
+                    last_chunk_index: NonZeroU32::MIN,
+                }
+            })?,
         };
 
         if chunk_count > 0 && stbl_box_ref.stsc_box.entries.is_empty() {
@@ -81,12 +98,17 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             });
         }
         if let Some(i) = stbl_box_ref.stsc_box.entries.iter().position(|x| {
-            stbl_box_ref.stsd_box.entries.len() < x.sample_description_index.get() as usize
+            usize::try_from(x.sample_description_index.get())
+                .ok()
+                .is_some_and(|index| index > stbl_box_ref.stsd_box.entries.len())
         }) {
             // 存在しないサンプルエントリーを参照しているチャンクがある
+            let Some(stsc_entry) = stbl_box_ref.stsc_box.entries.get(i) else {
+                return Err(SampleTableAccessorError::ChunkIndicesNotMonotonicallyIncreasing);
+            };
             return Err(SampleTableAccessorError::MissingSampleEntry {
                 stsc_entry_index: i,
-                sample_description_index: stbl_box_ref.stsc_box.entries[i].sample_description_index,
+                sample_description_index: stsc_entry.sample_description_index,
                 sample_entry_count: stbl_box_ref.stsd_box.entries.len(),
             });
         }
@@ -125,8 +147,14 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                 .entries
                 .binary_search_by_key(&chunk_index, |x| x.first_chunk)
                 .unwrap_or_else(|j| j - 1);
-            first_sample_index = first_sample_index
-                .saturating_add(stbl_box_ref.stsc_box.entries[j].sample_per_chunk);
+            first_sample_index = first_sample_index.saturating_add(
+                stbl_box_ref
+                    .stsc_box
+                    .entries
+                    .get(j)
+                    .map(|entry| entry.sample_per_chunk)
+                    .unwrap_or(0),
+            );
         }
         if first_sample_index.get() - 1 != sample_count {
             // stts と stsc でサンプル数が異なる
@@ -152,7 +180,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             let mut offset = chunk.offset();
             for sample in chunk.samples() {
                 sample_data_offsets.push(offset);
-                offset += sample.data_size() as u64;
+                offset += u64::from(sample.data_size());
             }
         }
         this.sample_data_offsets = sample_data_offsets;
@@ -187,7 +215,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
         let mut low = 0;
         let mut high = self.sample_count;
         while high > low {
-            let i = (high - low) / 2 + low;
+            let i = low + ((high - low) >> 1);
             let sample = SampleAccessor {
                 sample_table: self,
                 index: NonZeroU32::MIN.saturating_add(i),
@@ -200,7 +228,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                 }
                 core::cmp::Ordering::Equal => return Some(sample),
                 core::cmp::Ordering::Greater => {
-                    if timestamp < sample_timestamp + sample.duration() as u64 {
+                    if timestamp < sample_timestamp + u64::from(sample.duration()) {
                         return Some(sample);
                     }
                     low = i + 1;
@@ -356,6 +384,13 @@ pub struct SampleAccessor<'a, T> {
 }
 
 impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
+    fn stts_entry_index(&self) -> usize {
+        self.sample_table
+            .sample_durations
+            .binary_search_by_key(&(self.index.get() - 1), |x| x.0)
+            .unwrap_or_else(|i| i.saturating_sub(1))
+    }
+
     /// このサンプルのインデックスを取得する
     pub fn index(&self) -> NonZeroU32 {
         self.index
@@ -363,37 +398,42 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
 
     /// サンプルの尺を取得する
     pub fn duration(&self) -> u32 {
-        let i = self
-            .sample_table
+        self.sample_table
             .sample_durations
-            .binary_search_by_key(&(self.index.get() - 1), |x| x.0)
-            .unwrap_or_else(|i| i.checked_sub(1).expect("unreachable"));
-        self.sample_table.sample_durations[i].1
+            .get(self.stts_entry_index())
+            .map(|entry| entry.1)
+            .unwrap_or(0)
     }
 
     /// サンプルのタイムスタンプ（累計尺）を取得する
     pub fn timestamp(&self) -> u64 {
-        let i = self
+        let Some((base_index_minus_1, duration, base_timestamp)) = self
             .sample_table
             .sample_durations
-            .binary_search_by_key(&(self.index.get() - 1), |x| x.0)
-            .unwrap_or_else(|i| i.checked_sub(1).expect("unreachable"));
-        let (base_index_minus_1, duration, base_timestamp) = self.sample_table.sample_durations[i];
-        base_timestamp + duration as u64 * (self.index.get() - 1 - base_index_minus_1) as u64
+            .get(self.stts_entry_index())
+        else {
+            return 0;
+        };
+        base_timestamp + u64::from(*duration) * u64::from(self.index.get() - 1 - base_index_minus_1)
     }
 
     /// サンプルのデータサイズ（バイト数）を取得する
     pub fn data_size(&self) -> u32 {
-        let i = self.index.get() as usize - 1;
+        let Some(i) = usize::try_from(self.index.get() - 1).ok() else {
+            return 0;
+        };
         match &self.sample_table.stbl_box().stsz_box {
             StszBox::Fixed { sample_size, .. } => sample_size.get(),
-            StszBox::Variable { entry_sizes } => entry_sizes[i],
+            StszBox::Variable { entry_sizes } => entry_sizes.get(i).copied().unwrap_or(0),
         }
     }
 
     /// サンプルデータのファイル内でのバイト位置を返す
     pub fn data_offset(&self) -> u64 {
-        self.sample_table.sample_data_offsets[self.index.get() as usize - 1]
+        usize::try_from(self.index.get() - 1)
+            .ok()
+            .and_then(|i| self.sample_table.sample_data_offsets.get(i).copied())
+            .unwrap_or(0)
     }
 
     /// サンプルが同期サンプルかどうかを判定する
@@ -415,7 +455,7 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
             match stss_box.sample_numbers.binary_search(&self.index) {
                 Ok(_) => self.index,
                 Err(0) => return None,
-                Err(i) => stss_box.sample_numbers[i - 1],
+                Err(i) => stss_box.sample_numbers.get(i - 1).copied()?,
             }
         } else {
             self.index
@@ -435,8 +475,13 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
         let sample_composition_offsets = self.sample_table.sample_composition_offsets.as_ref()?;
         let i = sample_composition_offsets
             .binary_search_by_key(&sample_idx, |x| x.0)
-            .unwrap_or_else(|i| i.checked_sub(1).expect("unreachable"));
-        Some(sample_composition_offsets[i].1)
+            .unwrap_or_else(|i| i.saturating_sub(1));
+        Some(
+            sample_composition_offsets
+                .get(i)
+                .map(|entry| entry.1)
+                .unwrap_or(0),
+        )
     }
 
     /// サンプルが属するチャンクの情報を返す
@@ -445,11 +490,12 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
             .sample_table
             .sample_index_offsets
             .binary_search(&self.index)
-            .unwrap_or_else(|i| i - 1);
-        let chunk_index = NonZeroU32::MIN.saturating_add(i as u32);
-        self.sample_table
-            .get_chunk(chunk_index)
-            .expect("unreachable")
+            .unwrap_or_else(|i| i.saturating_sub(1));
+        let chunk_index = NonZeroU32::MIN.saturating_add(u32::try_from(i).unwrap_or(0));
+        ChunkAccessor {
+            sample_table: self.sample_table,
+            index: chunk_index,
+        }
     }
 }
 
@@ -468,50 +514,63 @@ impl<'a, T: AsRef<StblBox>> ChunkAccessor<'a, T> {
 
     /// チャンクのファイル内でのバイト位置を返す
     pub fn offset(&self) -> u64 {
-        let i = self.index.get() as usize - 1;
+        let Some(i) = usize::try_from(self.index.get() - 1).ok() else {
+            return 0;
+        };
         match &self.sample_table.stbl_box().stco_or_co64_box {
-            Either::A(b) => b.chunk_offsets[i] as u64,
-            Either::B(b) => b.chunk_offsets[i],
+            Either::A(b) => b.chunk_offsets.get(i).copied().map(u64::from).unwrap_or(0),
+            Either::B(b) => b.chunk_offsets.get(i).copied().unwrap_or(0),
         }
     }
 
     /// チャンクが参照するサンプルエントリー返す
-    pub fn sample_entry(&self) -> &'a SampleEntry {
-        &self.sample_table.stbl_box().stsd_box.entries[self.sample_entry_index()]
+    pub fn sample_entry(&self) -> Option<&'a SampleEntry> {
+        self.sample_entry_index()
+            .and_then(|index| self.sample_table.stbl_box().stsd_box.entries.get(index))
+    }
+
+    fn stsc_entry_index(&self) -> usize {
+        self.sample_table
+            .stbl_box()
+            .stsc_box
+            .entries
+            .binary_search_by_key(&self.index, |x| x.first_chunk)
+            .unwrap_or_else(|i| i.saturating_sub(1))
+    }
+
+    fn stsc_entry(&self) -> Option<&StscEntry> {
+        self.sample_table
+            .stbl_box()
+            .stsc_box
+            .entries
+            .get(self.stsc_entry_index())
     }
 
     /// このチャンクが参照するサンプルエントリーのインデックス（0 ベース）を取得する
-    pub fn sample_entry_index(&self) -> usize {
-        self.stsc_entry().sample_description_index.get() as usize - 1
+    pub fn sample_entry_index(&self) -> Option<usize> {
+        self.stsc_entry().and_then(|entry| {
+            usize::try_from(entry.sample_description_index.get())
+                .ok()
+                .and_then(|index| index.checked_sub(1))
+        })
     }
 
     /// チャンクに属するサンプルの数を返す
     pub fn sample_count(&self) -> u32 {
-        self.stsc_entry().sample_per_chunk
+        self.stsc_entry().map_or(0, |entry| entry.sample_per_chunk)
     }
 
     /// チャンクに属するサンプル群を走査するイテレーターを返す
     pub fn samples(&self) -> impl '_ + Iterator<Item = SampleAccessor<'_, T>> {
         let count = self.sample_count();
-        let sample_index_offset =
-            self.sample_table.sample_index_offsets[self.index.get() as usize - 1];
-        (0..count).map(move |i| {
+        let sample_index_offset = usize::try_from(self.index.get() - 1)
+            .ok()
+            .and_then(|i| self.sample_table.sample_index_offsets.get(i).copied())
+            .unwrap_or(NonZeroU32::MIN);
+        (0..count).filter_map(move |i| {
             let sample_index = sample_index_offset.saturating_add(i);
-            self.sample_table
-                .get_sample(sample_index)
-                .expect("unreachable")
+            self.sample_table.get_sample(sample_index)
         })
-    }
-
-    fn stsc_entry(&self) -> &StscEntry {
-        let i = self
-            .sample_table
-            .stbl_box()
-            .stsc_box
-            .entries
-            .binary_search_by_key(&self.index, |x| x.first_chunk)
-            .unwrap_or_else(|i| i - 1);
-        &self.sample_table.stbl_box().stsc_box.entries[i]
     }
 }
 
@@ -594,7 +653,10 @@ mod tests {
         for i in 0..4 {
             let chunk = sample_table.get_chunk(index(i as u32 + 1)).expect("bug");
             assert_eq!(chunk.offset(), chunk_offsets[i] as u64);
-            assert_eq!(chunk.sample_entry().box_type().as_bytes(), b"test");
+            assert_eq!(
+                chunk.sample_entry().expect("bug").box_type().as_bytes(),
+                b"test"
+            );
             assert_eq!(chunk.sample_count(), sample_counts[i]);
             assert_eq!(chunk.samples().count(), sample_counts[i] as usize);
         }

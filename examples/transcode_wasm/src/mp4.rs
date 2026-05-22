@@ -261,12 +261,15 @@ impl InputMp4 {
             let sample_table = SampleTableAccessor::new(&trak_box.mdia_box.minf_box.stbl_box)
                 .map_err(|e| Error::new(e.to_string()))?;
 
-            tracks.push(Track {
-                is_audio,
-                chunks: sample_table
-                    .chunks()
-                    .map(|c| Chunk {
-                        sample_entry: c.sample_entry().clone(),
+            let chunks = sample_table
+                .chunks()
+                .map(|c| {
+                    let sample_entry = c
+                        .sample_entry()
+                        .ok_or_else(|| Error::new("sample entry not found"))?
+                        .clone();
+                    Ok(Chunk {
+                        sample_entry,
                         samples: c
                             .samples()
                             .map(|s| {
@@ -282,8 +285,9 @@ impl InputMp4 {
                             })
                             .collect(),
                     })
-                    .collect(),
-            });
+                })
+                .collect::<Result<_>>()?;
+            tracks.push(Track { is_audio, chunks });
         }
 
         Ok(Self { tracks })

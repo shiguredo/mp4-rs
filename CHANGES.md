@@ -21,6 +21,15 @@
   - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - @voluntas
 
+### misc
+
+- [UPDATE] workspace lint / clippy 設定を追加し、既存コードを対応させる
+  - `Cargo.toml` に `[workspace.lints.*]` と `[workspace.package]` を追加する
+  - `clippy.toml` を追加する
+  - `src/lib.rs` に library target 専用 restriction lint を設定する
+  - `codec::buf` ヘルパを追加し、暗黙キャスト・未検証スライス操作を置換する
+  - @voluntas
+
 ## 2026.3.0
 
 - [ADD] `Mp4FileMuxer::advance_position()` メソッドを追加する

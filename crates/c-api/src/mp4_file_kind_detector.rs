@@ -5,7 +5,7 @@ use shiguredo_mp4::demux::{Input, Mp4FileKindDetector as RustMp4FileKindDetector
 use crate::error::Mp4Error;
 
 #[repr(C)]
-#[expect(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "C ABI type names must match mp4.h")]
 pub enum Mp4FileKind {
     MP4_FILE_KIND_MP4 = 0,
     MP4_FILE_KIND_FRAGMENTED_MP4 = 1,

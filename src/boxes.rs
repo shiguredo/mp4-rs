@@ -1,7 +1,7 @@
 //! ボックス群
 use alloc::{boxed::Box, format, vec::Vec};
 
-use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result};
+use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result, codec::buf};
 
 pub use crate::boxes_fmp4::{
     MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
@@ -68,7 +68,7 @@ pub struct UnknownBox {
 impl Encode for UnknownBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let mut offset = BoxHeader::new(self.box_type, self.box_size).encode(buf)?;
-        offset += self.payload.encode(&mut buf[offset..])?;
+        offset += self.payload.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -198,7 +198,7 @@ impl Decode for Brand {
 
 /// [ISO/IEC 14496-12] FileTypeBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct FtypBox {
     pub major_brand: Brand,
     pub minor_version: u32,
@@ -214,12 +214,12 @@ impl Encode for FtypBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        offset += self.major_brand.encode(&mut buf[offset..])?;
-        offset += self.minor_version.encode(&mut buf[offset..])?;
+        offset += self.major_brand.encode(buf::suffix_mut(buf, offset)?)?;
+        offset += self.minor_version.encode(buf::suffix_mut(buf, offset)?)?;
         for brand in &self.compatible_brands {
-            offset += brand.encode(&mut buf[offset..])?;
+            offset += brand.encode(buf::suffix_mut(buf, offset)?)?;
         }
-        header.finalize_box_size(&mut buf[..offset])?;
+        header.finalize_box_size(buf::prefix_len_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -263,7 +263,7 @@ impl BaseBox for FtypBox {
 
 /// [`Mp4File`](crate::Mp4File) のトップレベルに位置するボックス群のデフォルト実装
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub enum RootBox {
     Free(FreeBox),
     Mdat(MdatBox),
@@ -333,7 +333,7 @@ impl BaseBox for RootBox {
 
 /// [ISO/IEC 14496-12] FreeSpaceBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
+#[expect(missing_docs, reason = "ISO BMFF field names are self-explanatory")]
 pub struct FreeBox {
     pub payload: Vec<u8>,
 }
@@ -345,9 +345,10 @@ impl FreeBox {
 
 impl Encode for FreeBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let box_size = BoxSize::with_payload_size(Self::TYPE, self.payload.len() as u64);
+        let box_size =
+            BoxSize::with_payload_size(Self::TYPE, buf::usize_to_u64(self.payload.len())?);
         let mut offset = BoxHeader::new(Self::TYPE, box_size).encode(buf)?;
-        offset += self.payload.encode(&mut buf[offset..])?;
+        offset += self.payload.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }
@@ -396,9 +397,10 @@ impl MdatBox {
 
 impl Encode for MdatBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let box_size = BoxSize::with_payload_size(Self::TYPE, self.payload.len() as u64);
+        let box_size =
+            BoxSize::with_payload_size(Self::TYPE, buf::usize_to_u64(self.payload.len())?);
         let mut offset = BoxHeader::new(Self::TYPE, box_size).encode(buf)?;
-        offset += self.payload.encode(&mut buf[offset..])?;
+        offset += self.payload.encode(buf::suffix_mut(buf, offset)?)?;
         Ok(offset)
     }
 }

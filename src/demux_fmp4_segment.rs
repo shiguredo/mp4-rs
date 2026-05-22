@@ -41,6 +41,7 @@ use alloc::{format, vec::Vec};
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
     boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, SidxBox, TfhdBox, TrexBox},
+    codec::buf,
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
 
@@ -78,7 +79,10 @@ pub struct Fmp4SegmentDemuxer {
 
 impl Fmp4SegmentDemuxer {
     /// 新しい [`Fmp4SegmentDemuxer`] インスタンスを生成する
-    #[expect(clippy::new_without_default)]
+    #[expect(
+        clippy::new_without_default,
+        reason = "demuxer requires explicit initialization state"
+    )]
     pub fn new() -> Self {
         Self {
             track_infos: Vec::new(),
@@ -113,9 +117,9 @@ impl Fmp4SegmentDemuxer {
                     "moov box not found in init segment",
                 )));
             }
-            let (header, _) = BoxHeader::decode(&data[offset..])?;
+            let (header, _) = BoxHeader::decode(buf::suffix(data, offset)?)?;
             if header.box_type == MoovBox::TYPE {
-                let (moov, _) = MoovBox::decode(&data[offset..])?;
+                let (moov, _) = MoovBox::decode(buf::suffix(data, offset)?)?;
                 break moov;
             }
             let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
@@ -217,7 +221,7 @@ impl Fmp4SegmentDemuxer {
         let mut offset = 0;
 
         if data.len().saturating_sub(offset) >= BoxHeader::MIN_SIZE {
-            let (header, _) = BoxHeader::decode(&data[offset..])?;
+            let (header, _) = BoxHeader::decode(buf::suffix(data, offset)?)?;
             if header.box_type == SidxBox::TYPE {
                 let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
                     DemuxError::DecodeError(Error::invalid_data("sidx box size exceeds usize::MAX"))
@@ -238,7 +242,7 @@ impl Fmp4SegmentDemuxer {
                 "empty media segment",
             )));
         }
-        let (header, _) = BoxHeader::decode(&data[offset..])?;
+        let (header, _) = BoxHeader::decode(buf::suffix(data, offset)?)?;
         if header.box_type != MoofBox::TYPE {
             return Err(DemuxError::DecodeError(Error::invalid_data(format!(
                 "expected moof box but got {:?}",
@@ -246,7 +250,7 @@ impl Fmp4SegmentDemuxer {
             ))));
         }
         let moof_offset = offset;
-        let (moof, moof_size) = MoofBox::decode(&data[offset..])?;
+        let (moof, moof_size) = MoofBox::decode(buf::suffix(data, offset)?)?;
         offset = offset
             .checked_add(moof_size)
             .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("moof offset overflow")))?;
@@ -256,7 +260,7 @@ impl Fmp4SegmentDemuxer {
                 "mdat box not found after moof",
             )));
         }
-        let (mdat_header, _) = BoxHeader::decode(&data[offset..])?;
+        let (mdat_header, _) = BoxHeader::decode(buf::suffix(data, offset)?)?;
         if mdat_header.box_type != MdatBox::TYPE {
             return Err(DemuxError::DecodeError(Error::invalid_data(format!(
                 "expected mdat box after moof but got {:?}",
@@ -302,14 +306,25 @@ impl Fmp4SegmentDemuxer {
                             traf.tfhd_box.track_id
                         )))
                     })?;
-                let track_runtime = &mut track_runtimes[track_index];
+                let track_runtime = track_runtimes.get_mut(track_index).ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: track runtime index out of range",
+                    ))
+                })?;
 
                 let sample_description_index =
                     resolve_sample_description_index(&traf.tfhd_box, &track_runtime.trex)?;
                 let sample_entry_index = checked_sample_entry_index(
                     track_runtime,
                     sample_description_index,
-                    track_infos[track_index].track_id,
+                    track_infos
+                        .get(track_index)
+                        .ok_or_else(|| {
+                            DemuxError::DecodeError(Error::invalid_data(
+                                "internal bug: track info index out of range",
+                            ))
+                        })?
+                        .track_id,
                 )?;
                 let mut emit_sample_entry = track_runtime.current_sample_description_index
                     != Some(sample_description_index);
@@ -337,8 +352,14 @@ impl Fmp4SegmentDemuxer {
                 let mut traf_data_end = base_data_offset;
 
                 for trun in &traf.trun_boxes {
+                    let trun_data_offset =
+                        isize::try_from(trun.data_offset.unwrap_or(0)).map_err(|_| {
+                            DemuxError::DecodeError(Error::invalid_data(
+                                "trun data_offset exceeds isize::MAX",
+                            ))
+                        })?;
                     let trun_data_start = base_data_offset
-                        .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
+                        .checked_add_signed(trun_data_offset)
                         .ok_or_else(|| {
                             DemuxError::DecodeError(Error::invalid_data(
                                 "data_offset calculation overflow",
@@ -395,7 +416,7 @@ impl Fmp4SegmentDemuxer {
                             timestamp: trun_decode_time,
                             duration,
                             keyframe,
-                            data_offset: sample_data_offset as u64,
+                            data_offset: buf::usize_to_u64(sample_data_offset)?,
                             data_size: size,
                             composition_time_offset: trun_sample
                                 .composition_time_offset
@@ -406,7 +427,7 @@ impl Fmp4SegmentDemuxer {
                         emit_sample_entry = false;
 
                         trun_decode_time = trun_decode_time
-                            .checked_add(duration as u64)
+                            .checked_add(u64::from(duration))
                             .ok_or_else(|| {
                                 DemuxError::DecodeError(Error::invalid_data(
                                     "trun decode time overflow",
@@ -430,34 +451,44 @@ impl Fmp4SegmentDemuxer {
             )));
         }
 
-        let track_runtimes = self
-            .track_runtimes
-            .as_ref()
-            .expect("bug: track_runtimes must exist after initialization");
-        Ok(pending_samples
-            .into_iter()
-            .map(|pending| {
-                let track = &self.track_infos[pending.track_index];
-                let sample_entry = if pending.emit_sample_entry {
-                    Some(
-                        &track_runtimes[pending.track_index].sample_entries
-                            [pending.sample_entry_index],
-                    )
-                } else {
-                    None
-                };
-                Sample {
-                    track,
-                    sample_entry,
-                    keyframe: pending.keyframe,
-                    timestamp: pending.timestamp,
-                    duration: pending.duration,
-                    data_offset: pending.data_offset,
-                    data_size: pending.data_size,
-                    composition_time_offset: pending.composition_time_offset,
-                }
-            })
-            .collect())
+        let track_runtimes = self.track_runtimes.as_ref().ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: track_runtimes must exist after initialization",
+            ))
+        })?;
+        let mut samples = Vec::with_capacity(pending_samples.len());
+        for pending in pending_samples {
+            let track = self.track_infos.get(pending.track_index).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data(
+                    "internal bug: track info index out of range",
+                ))
+            })?;
+            let sample_entry = if pending.emit_sample_entry {
+                Some(
+                    track_runtimes
+                        .get(pending.track_index)
+                        .and_then(|runtime| runtime.sample_entries.get(pending.sample_entry_index))
+                        .ok_or_else(|| {
+                            DemuxError::DecodeError(Error::invalid_data(
+                                "internal bug: sample entry index out of range",
+                            ))
+                        })?,
+                )
+            } else {
+                None
+            };
+            samples.push(Sample {
+                track,
+                sample_entry,
+                keyframe: pending.keyframe,
+                timestamp: pending.timestamp,
+                duration: pending.duration,
+                data_offset: pending.data_offset,
+                data_size: pending.data_size,
+                composition_time_offset: pending.composition_time_offset,
+            });
+        }
+        Ok(samples)
     }
 }
 

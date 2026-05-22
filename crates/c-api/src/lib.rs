@@ -1,4 +1,7 @@
-#![expect(clippy::missing_safety_doc)]
+#![expect(
+    clippy::missing_safety_doc,
+    reason = "safety requirements are documented in mp4.h"
+)]
 pub mod basic_types;
 pub mod boxes;
 pub mod demux;

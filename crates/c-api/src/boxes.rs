@@ -7,7 +7,7 @@ use crate::error::Mp4Error;
 ///
 /// MP4 ファイル内で使用されるコーデックの種類を識別するために使用される
 #[repr(C)]
-#[expect(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "C ABI type names must match mp4.h")]
 pub enum Mp4SampleEntryKind {
     /// AVC1 (H.264)
     MP4_SAMPLE_ENTRY_KIND_AVC1,

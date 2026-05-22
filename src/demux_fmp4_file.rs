@@ -44,11 +44,12 @@
 //! # }
 //! ```
 use alloc::{collections::VecDeque, format, vec::Vec};
-use core::cmp::Ordering;
+use core::{cmp::Ordering, num::NonZeroU32};
 
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
     boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry},
+    codec::buf,
     demux_fmp4_segment::Fmp4SegmentDemuxer,
     demux_mp4_file::{DemuxError, Input, RequiredInput, Sample, TrackInfo},
 };
@@ -116,7 +117,10 @@ pub struct Fmp4FileDemuxer {
 
 impl Fmp4FileDemuxer {
     /// 新しい [`Fmp4FileDemuxer`] を生成する
-    #[expect(clippy::new_without_default)]
+    #[expect(
+        clippy::new_without_default,
+        reason = "demuxer requires explicit initialization state"
+    )]
     pub fn new() -> Self {
         Self {
             phase: Phase::ReadFtypBoxHeader,
@@ -205,8 +209,11 @@ impl Fmp4FileDemuxer {
         }
         if !self.is_initialized() {
             return Err(DemuxError::InputRequired(
-                self.required_input()
-                    .expect("bug: required input missing before initialization"),
+                self.required_input().ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: required input missing before initialization",
+                    ))
+                })?,
             ));
         }
         Ok(&self.track_infos)
@@ -219,14 +226,17 @@ impl Fmp4FileDemuxer {
         }
 
         if let Some(pending) = self.pending_samples.pop_front() {
-            return Ok(Some(self.build_sample(pending)));
+            return Ok(Some(self.build_sample(pending)?));
         }
 
         match self.phase {
             Phase::EndOfFile => Ok(None),
             _ => Err(DemuxError::InputRequired(
-                self.required_input()
-                    .expect("bug: required input missing before next_sample"),
+                self.required_input().ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: required input missing before next_sample",
+                    ))
+                })?,
             )),
         }
     }
@@ -266,20 +276,25 @@ impl Fmp4FileDemuxer {
 
     fn read_ftyp_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadFtypBox { box_size } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data = self.available_bytes(input, 0, box_size)?;
-        let (_ftyp_box, ftyp_box_size) = FtypBox::decode(&data[..box_size])?;
+        let ftyp_data = buf::range(data, 0, box_size).map_err(DemuxError::DecodeError)?;
+        let (_ftyp_box, ftyp_box_size) = FtypBox::decode(ftyp_data)?;
         self.phase = Phase::ReadMoovBoxHeader {
-            offset: ftyp_box_size as u64,
+            offset: buf::usize_to_u64(ftyp_box_size).map_err(DemuxError::DecodeError)?,
         };
         Ok(())
     }
 
     fn read_moov_box_header(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMoovBoxHeader { offset } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data = self.available_bytes(input, offset, BoxHeader::MAX_SIZE)?;
@@ -298,9 +313,11 @@ impl Fmp4FileDemuxer {
             self.phase = Phase::ReadMoovBox { offset, box_size };
         } else {
             self.phase = Phase::ReadMoovBoxHeader {
-                offset: offset.checked_add(box_size as u64).ok_or_else(|| {
-                    DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
-                })?,
+                offset: offset
+                    .checked_add(buf::usize_to_u64(box_size).map_err(DemuxError::DecodeError)?)
+                    .ok_or_else(|| {
+                        DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
+                    })?,
             };
         }
         Ok(())
@@ -308,11 +325,14 @@ impl Fmp4FileDemuxer {
 
     fn read_moov_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMoovBox { offset, box_size } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data = self.available_bytes(input, offset, box_size)?;
-        let (moov_box, _) = MoovBox::decode(&data[..box_size])?;
+        let moov_data = buf::range(data, 0, box_size).map_err(DemuxError::DecodeError)?;
+        let (moov_box, _) = MoovBox::decode(moov_data)?;
 
         self.track_infos.clear();
         self.track_runtimes.clear();
@@ -336,18 +356,22 @@ impl Fmp4FileDemuxer {
                 .push(TrackRuntime { sample_entry: None });
         }
 
-        self.inner.handle_init_segment(&data[..box_size])?;
+        self.inner.handle_init_segment(moov_data)?;
         self.phase = Phase::ReadTopLevelBoxHeader {
-            offset: offset.checked_add(box_size as u64).ok_or_else(|| {
-                DemuxError::DecodeError(Error::invalid_data("moov offset overflow"))
-            })?,
+            offset: offset
+                .checked_add(buf::usize_to_u64(box_size).map_err(DemuxError::DecodeError)?)
+                .ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data("moov offset overflow"))
+                })?,
         };
         Ok(())
     }
 
     fn read_top_level_box_header(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadTopLevelBoxHeader { offset } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let Some(data) = input.slice_range(offset, None) else {
@@ -380,9 +404,11 @@ impl Fmp4FileDemuxer {
             self.phase = Phase::ReadMoofBox { offset, box_size };
         } else {
             self.phase = Phase::ReadTopLevelBoxHeader {
-                offset: offset.checked_add(box_size as u64).ok_or_else(|| {
-                    DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
-                })?,
+                offset: offset
+                    .checked_add(buf::usize_to_u64(box_size).map_err(DemuxError::DecodeError)?)
+                    .ok_or_else(|| {
+                        DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
+                    })?,
             };
         }
         Ok(())
@@ -390,11 +416,14 @@ impl Fmp4FileDemuxer {
 
     fn read_moof_box(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMoofBox { offset, box_size } = self.phase else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data = self.available_bytes(input, offset, box_size)?;
-        let (moof_box, moof_size) = MoofBox::decode(&data[..box_size])?;
+        let moof_data = buf::range(data, 0, box_size).map_err(DemuxError::DecodeError)?;
+        let (moof_box, moof_size) = MoofBox::decode(moof_data)?;
         for traf in &moof_box.traf_boxes {
             if traf.tfhd_box.base_data_offset.is_some() {
                 return Err(DemuxError::DecodeError(Error::invalid_data(
@@ -404,7 +433,7 @@ impl Fmp4FileDemuxer {
         }
 
         let mdat_offset = offset
-            .checked_add(moof_size as u64)
+            .checked_add(buf::usize_to_u64(moof_size).map_err(DemuxError::DecodeError)?)
             .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("mdat offset overflow")))?;
         self.phase = Phase::ReadMdatBoxHeader {
             moof_offset: offset,
@@ -421,7 +450,9 @@ impl Fmp4FileDemuxer {
             mdat_offset,
         } = self.phase
         else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let Some(data) = input.slice_range(mdat_offset, None) else {
@@ -457,7 +488,7 @@ impl Fmp4FileDemuxer {
                 DemuxError::DecodeError(Error::invalid_data("segment size overflow"))
             })?;
             let next_offset = moof_offset
-                .checked_add(segment_size as u64)
+                .checked_add(buf::usize_to_u64(segment_size).map_err(DemuxError::DecodeError)?)
                 .ok_or_else(|| {
                     DemuxError::DecodeError(Error::invalid_data("segment offset overflow"))
                 })?;
@@ -479,7 +510,9 @@ impl Fmp4FileDemuxer {
             next_offset,
         } = self.phase
         else {
-            panic!("bug");
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: invalid phase for read_ftyp_box",
+            )));
         };
 
         let data = match segment_size {
@@ -602,7 +635,7 @@ impl Fmp4FileDemuxer {
         Ok(pending_samples)
     }
 
-    fn build_sample(&mut self, pending: PendingSample) -> Sample<'_> {
+    fn build_sample(&mut self, pending: PendingSample) -> Result<Sample<'_>, DemuxError> {
         let PendingSample {
             track_index,
             timestamp,
@@ -616,27 +649,41 @@ impl Fmp4FileDemuxer {
 
         let has_sample_entry = sample_entry.is_some();
         if let Some(sample_entry) = sample_entry {
-            self.track_runtimes[track_index].sample_entry = Some(sample_entry);
+            self.track_runtimes
+                .get_mut(track_index)
+                .ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "internal bug: track runtime index out of range",
+                    ))
+                })?
+                .sample_entry = Some(sample_entry);
         }
 
-        let track_info = &self.track_infos[track_index];
-        let track_runtime = &self.track_runtimes[track_index];
+        let track_info = self.track_infos.get(track_index).ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: track info index out of range",
+            ))
+        })?;
+        let track_runtime = self.track_runtimes.get(track_index).ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "internal bug: track runtime index out of range",
+            ))
+        })?;
 
-        Sample {
+        Ok(Sample {
             track: track_info,
-            sample_entry: has_sample_entry.then_some(
-                track_runtime
-                    .sample_entry
-                    .as_ref()
-                    .expect("bug: sample entry must be cached before borrowing"),
-            ),
+            sample_entry: if has_sample_entry {
+                track_runtime.sample_entry.as_ref()
+            } else {
+                None
+            },
             keyframe,
             timestamp,
             duration,
             data_offset,
             data_size,
             composition_time_offset,
-        }
+        })
     }
 }
 
@@ -645,10 +692,16 @@ fn compare_pending_samples(
     lhs: &PendingSample,
     rhs: &PendingSample,
 ) -> Ordering {
-    let lhs_scaled =
-        u128::from(lhs.timestamp) * u128::from(track_infos[rhs.track_index].timescale.get());
-    let rhs_scaled =
-        u128::from(rhs.timestamp) * u128::from(track_infos[lhs.track_index].timescale.get());
+    let lhs_timescale = track_infos
+        .get(rhs.track_index)
+        .map(|track| track.timescale.get())
+        .unwrap_or(NonZeroU32::MIN.get());
+    let rhs_timescale = track_infos
+        .get(lhs.track_index)
+        .map(|track| track.timescale.get())
+        .unwrap_or(NonZeroU32::MIN.get());
+    let lhs_scaled = u128::from(lhs.timestamp) * u128::from(lhs_timescale);
+    let rhs_scaled = u128::from(rhs.timestamp) * u128::from(rhs_timescale);
 
     lhs_scaled
         .cmp(&rhs_scaled)

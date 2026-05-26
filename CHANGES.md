@@ -29,6 +29,8 @@
 - [ADD] `SampleTableAccessor` の fuzz ターゲット (`fuzz_sample_table_accessor`) を追加する
   - `StblBox::decode()` から直接構築し、全アクセサメソッドのパニック安全性を検証する
   - @voluntas
+- [UPDATE] `fuzz_basic_types` に `SampleFlags` の decode/encode を追加する
+  - @voluntas
 
 ## 2026.3.0
 

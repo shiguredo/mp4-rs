@@ -2,6 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-05-26
+- Completed: 2026-05-26
 - Model: Opus 4.7
 - Branch: feature/add-fuzz-sample-table-accessor
 
@@ -103,3 +104,14 @@ fuzz ターゲットの追加は機能に直接影響しない変更のため、
 - `fuzz/fuzz_targets/fuzz_sample_table_accessor.rs` が追加されている
 - `fuzz/Cargo.toml` に `[[bin]]` エントリが追加されている
 - `cargo fuzz build fuzz_sample_table_accessor` が成功する
+
+## 解決方法
+
+- `fuzz/fuzz_targets/fuzz_sample_table_accessor.rs` を新規作成した
+  - 任意バイト列を `StblBox::decode()` でデコードし、成功した場合に `SampleTableAccessor::new()` でインスタンスを生成する
+  - `SampleTableAccessor` の全 public メソッドを呼び出す: `sample_count()`, `chunk_count()`, `stbl_box()`, `samples()`, `chunks()`, `get_sample()`, `get_chunk()`, `get_sample_by_timestamp()`
+  - `SampleAccessor` の全メソッドを `exercise_sample_accessor` ヘルパーで網羅: `index()`, `duration()`, `timestamp()`, `data_size()`, `data_offset()`, `is_sync_sample()`, `sync_sample()`, `composition_time_offset()`, `chunk()`
+  - `ChunkAccessor` の全メソッドを `exercise_chunk_accessor` ヘルパーで網羅: `index()`, `offset()`, `sample_entry()`, `sample_entry_index()`, `sample_count()`, `samples()`
+  - 境界値 (`NonZeroU32::MIN`, `NonZeroU32::MAX`) とタイムスタンプ境界値 (`0`, `u64::MAX`) でのアクセスもカバー
+- `fuzz/Cargo.toml` に `[[bin]]` エントリを追加した
+- 30 秒間の fuzzing 実行（9,468,287 回）でクラッシュなしを確認した

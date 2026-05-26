@@ -500,3 +500,10 @@ path = "fuzz_targets/fuzz_mp4_file_mux.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_sample_table_accessor"
+path = "fuzz_targets/fuzz_sample_table_accessor.rs"
+test = false
+doc = false
+bench = false

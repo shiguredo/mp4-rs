@@ -2,7 +2,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, FullBoxFlags, FullBoxHeader, Utf8String, boxes::Brand,
+    Decode, Encode, FixedPointNumber, FullBoxFlags, FullBoxHeader, SampleFlags, Utf8String,
+    boxes::Brand,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -20,5 +21,8 @@ fuzz_target!(|data: &[u8]| {
     }
     if let Ok((brand, _)) = Brand::decode(data) {
         let _ = brand.encode_to_vec();
+    }
+    if let Ok((flags, _)) = SampleFlags::decode(data) {
+        let _ = flags.encode_to_vec();
     }
 });

@@ -7,12 +7,9 @@
 
 ## 目的
 
-`basic_types.rs` の `SampleFlags` は `impl Decode for SampleFlags` (`basic_types.rs:780`) を持つが、
-`fuzz_basic_types.rs` に含まれていない。
-
-`fuzz_basic_types.rs` は `FullBoxHeader` / `FullBoxFlags` / `Utf8String` / `FixedPointNumber` / `Brand` を
-対象としており、`Decode` を実装する基本型のパニック安全性を検証する役割を担っている。
-`SampleFlags` も同じ役割に含まれるべき。
+`fuzz_basic_types.rs` は `basic_types.rs` 内で `Decode` を実装する全ての基本型を対象とする
+fuzz ターゲットだが、`SampleFlags` だけが漏れている。
+`fuzz_basic_types.rs` の網羅性を担保するために追加する。
 
 ## 優先度根拠
 
@@ -41,6 +38,10 @@ if let Ok((flags, _)) = SampleFlags::decode(data) {
     let _ = flags.encode_to_vec();
 }
 ```
+
+## CHANGES.md
+
+fuzz ターゲットの変更は機能に直接影響しない変更のため、`### misc` に記載する。
 
 ## 完了条件
 

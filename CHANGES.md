@@ -26,6 +26,9 @@
 - [ADD] `Mp4FileMuxer` の fuzz ターゲット (`fuzz_mp4_file_mux`) を追加する
   - demux → mux パターンで任意バイト列に対するパニック安全性を検証する
   - @voluntas
+- [ADD] `SampleTableAccessor` の fuzz ターゲット (`fuzz_sample_table_accessor`) を追加する
+  - `StblBox::decode()` から直接構築し、全アクセサメソッドのパニック安全性を検証する
+  - @voluntas
 
 ## 2026.3.0
 

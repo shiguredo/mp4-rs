@@ -21,6 +21,12 @@
   - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - @voluntas
 
+### misc
+
+- [ADD] `Mp4FileMuxer` の fuzz ターゲット (`fuzz_mp4_file_mux`) を追加する
+  - demux → mux パターンで任意バイト列に対するパニック安全性を検証する
+  - @voluntas
+
 ## 2026.3.0
 
 - [ADD] `Mp4FileMuxer::advance_position()` メソッドを追加する

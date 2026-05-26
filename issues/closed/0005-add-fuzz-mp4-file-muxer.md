@@ -2,6 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-05-26
+- Completed: 2026-05-26
 - Model: Opus 4.7
 - Branch: feature/add-fuzz-mp4-file-muxer
 
@@ -101,3 +102,14 @@ fuzz ターゲットの追加は機能に直接影響しない変更のため、
 - `fuzz/fuzz_targets/fuzz_mp4_file_mux.rs` が追加されている
 - `fuzz/Cargo.toml` に `[[bin]]` エントリが追加されている
 - `cargo fuzz build fuzz_mp4_file_mux` が成功する
+
+## 解決方法
+
+- `fuzz/fuzz_targets/fuzz_mp4_file_mux.rs` を新規作成した
+  - `fuzz_fmp4_segment_mux.rs` の demux → mux パターンをベースに、`Mp4FileMuxer` 固有の制約に対応
+  - demux ループ内で直接 `mux::Sample` を構築し `Vec<Sample>` に収集する
+  - `data_offset` は 0 起点で積み上げ、muxer 生成後に `initial_boxes_bytes().len()` を一括加算する
+  - 先頭 1 バイトの最上位ビットで `new()` / `with_options(reserved_moov_box_size: 8192)` を切り替え、faststart 経路をカバーする
+  - `finalize()` 後に `FinalizedBoxes` の全メソッドを呼び出してパニック安全性を確認する
+- `fuzz/Cargo.toml` に `[[bin]]` エントリを追加した
+- 30 秒間の fuzzing 実行（8,220,271 回）でクラッシュなしを確認した

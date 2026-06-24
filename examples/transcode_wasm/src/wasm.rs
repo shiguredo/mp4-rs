@@ -33,6 +33,9 @@ pub struct Encoded {
     pub data: Vec<u8>,
 }
 
+// Rust 1.96.0 以降、未定義シンボルのリンクが厳格化されたため、
+// JS 側から提供される関数を "env" モジュールからインポートすることを明示する。
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     pub fn consoleLog(msg: *const u8, msg_len: i32);
 

@@ -222,7 +222,7 @@ impl Decode for BoxHeader {
         box_type.copy_from_slice(&buf[offset..offset + 4]);
         offset += 4;
 
-        let box_type = if box_type == [b'u', b'u', b'i', b'd'] {
+        let box_type = if box_type == *b"uuid" {
             Error::check_buffer_size(offset + 16, buf)?;
 
             let mut uuid = [0; 16];

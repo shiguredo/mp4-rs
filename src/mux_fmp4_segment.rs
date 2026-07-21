@@ -604,10 +604,8 @@ impl Fmp4SegmentMuxer {
                 track_kind: entry.track_kind,
             })?;
         // tkhd の volume / width / height はトラック種別によって決まる。
-        // 従来は `visual = match sample_entry` の結果 (Some/None) だけで決めていたが、
-        // Audio と Subtitle の両方で visual = None に落ちるため、Audio 用 volume が
-        // Subtitle にも採用されてしまう不整合があった。
-        // Step 7 以降は `entry.track_kind` を外側で明示 match して決定する。
+        // visual = None に落ちる Audio と Subtitle を区別するため、
+        // `entry.track_kind` を外側で明示 match して決定する。
         let (volume, width, height) = match entry.track_kind {
             TrackKind::Video => {
                 let visual = match sample_entry {
@@ -638,8 +636,7 @@ impl Fmp4SegmentMuxer {
                         )
                     }
                     // Video に非映像系 SampleEntry が渡された変則ケース。
-                    // 従来は audio volume に落ちていたが、Video トラックとして扱う以上
-                    // DEFAULT_VIDEO_VOLUME に統一する
+                    // Video トラックとして扱う以上 DEFAULT_VIDEO_VOLUME を採用する
                     None => (
                         TkhdBox::DEFAULT_VIDEO_VOLUME,
                         FixedPointNumber::default(),
@@ -653,7 +650,7 @@ impl Fmp4SegmentMuxer {
                 FixedPointNumber::default(),
             ),
             // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
-            // width / height は 0（表示領域の指定が必要になった場合は 0043-0045 側で拡張する）
+            // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）
             TrackKind::Subtitle => (
                 TkhdBox::DEFAULT_VIDEO_VOLUME,
                 FixedPointNumber::default(),
@@ -681,8 +678,9 @@ impl Fmp4SegmentMuxer {
         let handler_type = match entry.track_kind {
             TrackKind::Video => HdlrBox::HANDLER_TYPE_VIDE,
             TrackKind::Audio => HdlrBox::HANDLER_TYPE_SOUN,
-            // 0042 の暫定実装として `subt` を固定選択する。
-            // 0043-0045 で SampleEntry 種別（stpp / wvtt / tx3g）ごとの分岐に完全置換する
+            // 暫定実装として `subt` を固定選択する。
+            // 方式固有 SampleEntry（stpp / wvtt / tx3g）が実装され次第、
+            // SampleEntry 種別ごとの分岐に完全置換する
             TrackKind::Subtitle => HdlrBox::HANDLER_TYPE_SUBT,
         };
 
@@ -694,8 +692,9 @@ impl Fmp4SegmentMuxer {
         let media_header = match entry.track_kind {
             TrackKind::Audio => Some(MediaHeader::Smhd(SmhdBox::default())),
             TrackKind::Video => Some(MediaHeader::Vmhd(VmhdBox::default())),
-            // 0042 の暫定実装として `sthd` を固定選択する。
-            // 0043-0045 で SampleEntry 種別（stpp / wvtt / tx3g）ごとの分岐に完全置換する
+            // 暫定実装として `sthd` を固定選択する。
+            // 方式固有 SampleEntry（stpp / wvtt / tx3g）が実装され次第、
+            // SampleEntry 種別ごとの分岐に完全置換する
             TrackKind::Subtitle => Some(MediaHeader::Sthd(SthdBox)),
         };
 

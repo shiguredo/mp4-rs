@@ -204,8 +204,8 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に `SampleEntry::Unknown` を 1 つ持つ。0042 の時点では方式固有の
-/// SampleEntry（Stpp / Wvtt / Tx3g）は未実装のため、Unknown フォールバックを利用する。
+/// stsd 内に `SampleEntry::Unknown` を 1 つ持つ。方式固有の
+/// SampleEntry（Stpp / Wvtt / Tx3g）は現時点で未実装のため、Unknown フォールバックを利用する。
 /// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
 fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
     StsdBox {
@@ -235,8 +235,8 @@ fn minimal_stbl_box_subtitle(sample_entry_box_type: [u8; 4]) -> StblBox {
 
 /// 最小限の MinfBox (subtitle) を生成
 ///
-/// Media Header には `SthdBox` を使う（0042 の暫定選択と同じ）。
-/// 0043-0045 で必要に応じて Nmhd に切り替える形にリファクタする想定
+/// Media Header には `SthdBox` を使う（`Fmp4SegmentMuxer` の暫定選択と同じ）。
+/// 方式固有 SampleEntry の実装時に必要に応じて `NmhdBox` に切り替える形へリファクタする想定
 fn minimal_minf_box_subtitle(sample_entry_box_type: [u8; 4]) -> MinfBox {
     MinfBox {
         media_header: Some(MediaHeader::Sthd(SthdBox)),

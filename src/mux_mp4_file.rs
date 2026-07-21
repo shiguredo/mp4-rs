@@ -180,11 +180,6 @@ impl FinalizedBoxes {
 ///
 /// - [`Self::keyframe`] = `true`（字幕サンプルは通常すべて独立サンプル）
 /// - [`Self::composition_time_offset`] = [`None`]
-///
-/// なお [`Mp4FileMuxer`] は現時点で [`TrackKind::Subtitle`] の受け入れに未対応で、
-/// [`Self::track_kind`] が [`TrackKind::Subtitle`] の [`Sample`] を
-/// [`Mp4FileMuxer::append_sample()`] に渡すと [`MuxError::UnsupportedTrackKind`] を返す。
-/// 字幕トラックは [`crate::mux::Fmp4SegmentMuxer`] 経由でのみ扱える。
 #[derive(Debug, Clone)]
 pub struct Sample {
     /// サンプルのトラック種別
@@ -558,6 +553,10 @@ impl Mp4FileMuxer {
     /// `last_sample_kind`) は変更されないため、呼び出し側は内容を補正したサンプルで再呼び出しできる。
     /// ただし、対象トラック種別の最初のサンプル投入直後に `MissingSampleEntry` エラーになった場合は、
     /// そのトラックの `audio_track_timescale` または `video_track_timescale` だけは記録済みとなる。
+    ///
+    /// [`TrackKind::Subtitle`] のサンプルは受け付けず、常に [`MuxError::UnsupportedTrackKind`] を返す
+    /// （内部フィールドが Audio / Video 専用の 2 系統ハードコードのため受け入れ経路がない）。
+    /// 字幕トラックは [`crate::mux::Fmp4SegmentMuxer`] 経由でのみ扱える。
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
@@ -609,8 +608,9 @@ impl Mp4FileMuxer {
 
                 &mut self.video_chunks
             }
-            // 字幕トラックは Mp4FileMuxer 側は未対応（issue 0046 で対応予定）
-            // 現状は明示的に UnsupportedTrackKind を返して拒否する
+            // 字幕トラックは Mp4FileMuxer 側は未対応（内部フィールドが Audio / Video 専用の
+            // 2 系統ハードコードのため受け入れ経路がない）。
+            // 明示的に UnsupportedTrackKind を返して拒否する
             TrackKind::Subtitle => {
                 return Err(MuxError::UnsupportedTrackKind {
                     track_kind: TrackKind::Subtitle,
@@ -652,8 +652,11 @@ impl Mp4FileMuxer {
         let chunks = match sample.track_kind {
             TrackKind::Audio => &self.audio_chunks,
             TrackKind::Video => &self.video_chunks,
-            // 字幕トラックはこのメソッド呼び出し前の append_sample() で
-            // UnsupportedTrackKind エラーになるため、ここには到達しない想定
+            // 字幕トラックは append_sample() 内で必ず拒否されるため
+            // last_sample_kind に Subtitle が入ることはない。
+            // したがって上の `last_sample_kind != Some(sample.track_kind)`
+            // 早期リターンで抜けて、ここには到達しない想定。
+            // 万一到達した場合の防衛値として true を返す
             TrackKind::Subtitle => return true,
         };
 
@@ -1266,8 +1269,8 @@ mod tests {
 
     /// Mp4FileMuxer が字幕トラック（TrackKind::Subtitle）を拒否することを検証する
     ///
-    /// 0042 のスコープでは Mp4FileMuxer は字幕トラック未対応で、
-    /// UnsupportedTrackKind エラーを返して拒否する（受け入れは 0046 で対応する）
+    /// Mp4FileMuxer は現時点で字幕トラック未対応で、
+    /// UnsupportedTrackKind エラーを返して拒否する
     #[test]
     fn test_unsupported_track_kind_error_for_subtitle() {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");

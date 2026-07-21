@@ -97,7 +97,7 @@ mod tests {
     ///
     /// MuxError は #[non_exhaustive] のため、明示的な arm を追加せずに
     /// 末尾の `_ => Self::MP4_ERROR_OTHER` フォールバックへ落ちても
-    /// コンパイルは通ってしまう。0042 では UnsupportedTrackKind に
+    /// コンパイルは通ってしまう。UnsupportedTrackKind には
     /// 明示的な UNSUPPORTED マッピングを与える方針なので、
     /// OTHER に落ちていないことをテストで担保する
     #[test]

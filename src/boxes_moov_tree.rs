@@ -1042,9 +1042,8 @@ impl Decode for MinfBox {
             while offset < payload.len() {
                 let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
                 match child_header.box_type {
-                    // Media Header 系のいずれかが最初に見つかった時点で採用する。
-                    // 仕様上 `minf` 直下に Media Header は 1 種類しか出ないため
-                    // 「最初発見」で問題なく、複数現れた場合は後続を unknown_boxes に落とす。
+                    // Media Header 系のいずれかが最初に見つかった時点で採用する（仕様上 1 種類のみ出る前提）。
+                    // 複数現れた場合、2 個目以降は unknown_boxes に落ちる
                     SmhdBox::TYPE | VmhdBox::TYPE | SthdBox::TYPE | NmhdBox::TYPE
                         if media_header.is_none() =>
                     {
@@ -1384,9 +1383,8 @@ impl Decode for MediaHeader {
             VmhdBox::TYPE => VmhdBox::decode(buf).map(|(b, n)| (Self::Vmhd(b), n)),
             SthdBox::TYPE => SthdBox::decode(buf).map(|(b, n)| (Self::Sthd(b), n)),
             NmhdBox::TYPE => NmhdBox::decode(buf).map(|(b, n)| (Self::Nmhd(b), n)),
-            // 通常は `MinfBox::decode` 側で 4 種の box_type を事前判別してから
-            // ここに来るため到達しないが、公開 API として単独で呼ばれた場合に備えて
-            // 防衛的にエラーを返す（`SampleEntry::decode` のような Unknown フォールバックは持たない）
+            // 未知の box_type は防衛的にエラーを返す
+            // （`SampleEntry::decode` のような Unknown フォールバックは持たない）
             _ => Err(Error::invalid_data(format!(
                 "unexpected box type for MediaHeader: {}",
                 header.box_type

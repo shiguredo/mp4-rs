@@ -175,6 +175,16 @@ impl FinalizedBoxes {
 }
 
 /// MP4 ファイルに追加するメディアサンプル
+///
+/// 字幕トラック（[`TrackKind::Subtitle`]）の場合、以下の値の指定を推奨する。
+///
+/// - [`Self::keyframe`] = `true`（字幕サンプルは通常すべて独立サンプル）
+/// - [`Self::composition_time_offset`] = [`None`]
+///
+/// なお [`Mp4FileMuxer`] は現時点で [`TrackKind::Subtitle`] の受け入れに未対応で、
+/// [`Self::track_kind`] が [`TrackKind::Subtitle`] の [`Sample`] を
+/// [`Mp4FileMuxer::append_sample()`] に渡すと [`MuxError::UnsupportedTrackKind`] を返す。
+/// 字幕トラックは [`crate::mux::Fmp4SegmentMuxer`] 経由でのみ扱える。
 #[derive(Debug, Clone)]
 pub struct Sample {
     /// サンプルのトラック種別

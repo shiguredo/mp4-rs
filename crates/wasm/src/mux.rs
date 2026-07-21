@@ -73,7 +73,10 @@ fn parse_json_mp4_mux_sample(
     let track_kind = match track_kind_value.to_unquoted_string_str()?.as_ref() {
         "audio" => Mp4TrackKind::MP4_TRACK_KIND_AUDIO,
         "video" => Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
-        _ => return Err(track_kind_value.invalid("must be \"audio\" or \"video\"")),
+        "subtitle" => Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE,
+        _ => {
+            return Err(track_kind_value.invalid("must be \"audio\", \"video\", or \"subtitle\""));
+        }
     };
 
     let keyframe: bool = value.to_member("keyframe")?.required()?.try_into()?;

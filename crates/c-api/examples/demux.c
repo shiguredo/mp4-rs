@@ -35,6 +35,8 @@ const char *get_track_kind_name(enum Mp4TrackKind kind) {
             return "Audio";
         case MP4_TRACK_KIND_VIDEO:
             return "Video";
+        case MP4_TRACK_KIND_SUBTITLE:
+            return "Subtitle";
         default:
             return "Unknown";
     }
@@ -314,4 +316,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-

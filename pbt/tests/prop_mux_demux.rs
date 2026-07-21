@@ -582,6 +582,8 @@ proptest! {
             match sample.track.kind {
                 TrackKind::Video => video_count += 1,
                 TrackKind::Audio => audio_count += 1,
+                // このテストは Audio / Video 系トラックのみを扱う。字幕が現れたらテスト条件外
+                TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外"),
             }
         }
         prop_assert_eq!(video_count, video_samples.len());
@@ -888,6 +890,8 @@ proptest! {
                     actual_video_ctos.push(sample.composition_time_offset);
                 }
                 TrackKind::Audio => actual_audio.push((sample.duration, sample.data_size)),
+                // このテストは Audio / Video 系トラックのみを扱う。字幕が現れたらテスト条件外
+                TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外"),
             }
         }
         prop_assert_eq!(actual_video.len(), expected_video.len());

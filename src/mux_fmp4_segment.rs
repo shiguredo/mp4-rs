@@ -655,6 +655,9 @@ impl Fmp4SegmentMuxer {
         let handler_type = match entry.track_kind {
             TrackKind::Video => HdlrBox::HANDLER_TYPE_VIDE,
             TrackKind::Audio => HdlrBox::HANDLER_TYPE_SOUN,
+            // 字幕トラックの handler type は issue 0042 の step 3 (定数追加) と
+            // step 7 (Fmp4SegmentMuxer の Subtitle 経路実装) で埋める
+            TrackKind::Subtitle => todo!("subtitle: 0042 step 3/7 で実装"),
         };
 
         let hdlr_box = HdlrBox {
@@ -665,6 +668,9 @@ impl Fmp4SegmentMuxer {
         let smhd_or_vmhd = match entry.track_kind {
             TrackKind::Audio => Some(Either::A(SmhdBox::default())),
             TrackKind::Video => Some(Either::B(VmhdBox::default())),
+            // 字幕トラックの Media Header は step 4 (SthdBox/NmhdBox 実装) と
+            // step 5 (MediaHeader enum への刷新) で埋める
+            TrackKind::Subtitle => todo!("subtitle: 0042 step 4/5 で実装"),
         };
 
         // fMP4 の初期化セグメントでは stbl は stsd のみ持てばよく、

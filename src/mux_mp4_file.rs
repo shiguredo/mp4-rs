@@ -599,6 +599,13 @@ impl Mp4FileMuxer {
 
                 &mut self.video_chunks
             }
+            // 字幕トラックは Mp4FileMuxer 側は未対応（issue 0046 で対応予定）
+            // 現状は明示的に UnsupportedTrackKind を返して拒否する
+            TrackKind::Subtitle => {
+                return Err(MuxError::UnsupportedTrackKind {
+                    track_kind: TrackKind::Subtitle,
+                });
+            }
         };
 
         if is_new_chunk_needed {
@@ -635,6 +642,9 @@ impl Mp4FileMuxer {
         let chunks = match sample.track_kind {
             TrackKind::Audio => &self.audio_chunks,
             TrackKind::Video => &self.video_chunks,
+            // 字幕トラックはこのメソッド呼び出し前の append_sample() で
+            // UnsupportedTrackKind エラーになるため、ここには到達しない想定
+            TrackKind::Subtitle => return true,
         };
 
         let Some(sample_entry) = &sample.sample_entry else {

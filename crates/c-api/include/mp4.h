@@ -64,6 +64,10 @@ typedef enum Mp4TrackKind {
    * 映像トラック
    */
   MP4_TRACK_KIND_VIDEO = 1,
+  /**
+   * 字幕トラック
+   */
+  MP4_TRACK_KIND_SUBTITLE = 2,
 } Mp4TrackKind;
 
 /**

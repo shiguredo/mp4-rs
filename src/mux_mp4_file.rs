@@ -1264,6 +1264,50 @@ mod tests {
         ));
     }
 
+    /// Mp4FileMuxer が字幕トラック（TrackKind::Subtitle）を拒否することを検証する
+    ///
+    /// 0042 のスコープでは Mp4FileMuxer は字幕トラック未対応で、
+    /// UnsupportedTrackKind エラーを返して拒否する（受け入れは 0046 で対応する）
+    #[test]
+    fn test_unsupported_track_kind_error_for_subtitle() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 字幕トラックの Sample を渡すと拒否される
+        let sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: None,
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 20,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 128,
+        };
+        assert!(matches!(
+            muxer.append_sample(&sample),
+            Err(MuxError::UnsupportedTrackKind {
+                track_kind: TrackKind::Subtitle
+            })
+        ));
+    }
+
+    /// UnsupportedTrackKind の Display 出力にトラック種別名が含まれることを検証する
+    ///
+    /// エラーメッセージにトラック種別が反映されないと、
+    /// 呼び出し側が何を拒否されたのかログから判別できないため確認する
+    #[test]
+    fn test_unsupported_track_kind_display_contains_subtitle() {
+        let err = MuxError::UnsupportedTrackKind {
+            track_kind: TrackKind::Subtitle,
+        };
+        let display = format!("{err}");
+        assert!(
+            display.contains("Subtitle"),
+            "Display 出力に \"Subtitle\" が含まれていない: {display}",
+        );
+    }
+
     /// サンプルエントリー不在エラーのテスト
     #[test]
     fn test_missing_sample_entry_error() {

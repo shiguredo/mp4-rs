@@ -1090,6 +1090,81 @@ impl BaseBox for MinfBox {
     }
 }
 
+/// [`MinfBox`] 直下に配置される Media Header ボックスをまとめた列挙型
+///
+/// トラック種別ごとに以下のいずれかを保持する。
+///
+/// - [`SmhdBox`] (`smhd`): 音声トラック
+/// - [`VmhdBox`] (`vmhd`): 映像トラック
+/// - [`SthdBox`] (`sthd`): 字幕トラック
+/// - [`NmhdBox`] (`nmhd`): 上記に該当しない汎用トラック（ヒントトラック等）
+///
+/// 実装パターンは [`crate::boxes::SampleEntry`] に揃えており、[`BaseBox`] のメソッドは
+/// [`inner_box()`](Self::inner_box) 経由で内包する各 Box に委譲する。
+/// [`Encode`] は各バリアント別に inner box の実装を呼ぶ（`&dyn BaseBox` からは `encode` を呼べないため）。
+/// [`FullBox`] は各 Box 側で実装されるため列挙型側では持たない。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(missing_docs)]
+pub enum MediaHeader {
+    Smhd(SmhdBox),
+    Vmhd(VmhdBox),
+    Sthd(SthdBox),
+    Nmhd(NmhdBox),
+}
+
+impl MediaHeader {
+    /// 内包する Box を [`BaseBox`] トレイトオブジェクトとして返す
+    ///
+    /// [`box_type()`](BaseBox::box_type) / [`children()`](BaseBox::children) の委譲実装で使う
+    fn inner_box(&self) -> &dyn BaseBox {
+        match self {
+            Self::Smhd(b) => b,
+            Self::Vmhd(b) => b,
+            Self::Sthd(b) => b,
+            Self::Nmhd(b) => b,
+        }
+    }
+}
+
+impl Encode for MediaHeader {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        match self {
+            Self::Smhd(b) => b.encode(buf),
+            Self::Vmhd(b) => b.encode(buf),
+            Self::Sthd(b) => b.encode(buf),
+            Self::Nmhd(b) => b.encode(buf),
+        }
+    }
+}
+
+impl Decode for MediaHeader {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let (header, _) = BoxHeader::decode(buf)?;
+        match header.box_type {
+            SmhdBox::TYPE => SmhdBox::decode(buf).map(|(b, n)| (Self::Smhd(b), n)),
+            VmhdBox::TYPE => VmhdBox::decode(buf).map(|(b, n)| (Self::Vmhd(b), n)),
+            SthdBox::TYPE => SthdBox::decode(buf).map(|(b, n)| (Self::Sthd(b), n)),
+            NmhdBox::TYPE => NmhdBox::decode(buf).map(|(b, n)| (Self::Nmhd(b), n)),
+            // 未知の box_type は防衛的にエラーを返す
+            // （`SampleEntry::decode` のような Unknown フォールバックは持たない）
+            _ => Err(Error::invalid_data(format!(
+                "unexpected box type for MediaHeader: {}",
+                header.box_type
+            ))),
+        }
+    }
+}
+
+impl BaseBox for MediaHeader {
+    fn box_type(&self) -> BoxType {
+        self.inner_box().box_type()
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        self.inner_box().children()
+    }
+}
+
 /// [ISO/IEC 14496-12] SoundMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 #[expect(missing_docs)]
@@ -1341,75 +1416,6 @@ impl FullBox for NmhdBox {
 
     fn full_box_flags(&self) -> FullBoxFlags {
         FullBoxFlags::new(0)
-    }
-}
-
-/// [ISO/IEC 14496-12] `MinfBox` 直下に配置される Media Header ボックスをまとめた列挙型
-///
-/// トラック種別ごとに以下のいずれかを保持する。
-///
-/// - [`SmhdBox`] (`smhd`): 音声トラック
-/// - [`VmhdBox`] (`vmhd`): 映像トラック
-/// - [`SthdBox`] (`sthd`): 字幕トラック
-/// - [`NmhdBox`] (`nmhd`): 上記に該当しない汎用トラック（ヒントトラック等）
-///
-/// 実装パターンは [`crate::boxes::SampleEntry`] に揃えており、[`Encode`] / [`Decode`] は
-/// 内包する各 Box にそのまま委譲する（[`FullBox`] は各 Box 側で実装されるため列挙型側では持たない）。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
-pub enum MediaHeader {
-    Smhd(SmhdBox),
-    Vmhd(VmhdBox),
-    Sthd(SthdBox),
-    Nmhd(NmhdBox),
-}
-
-impl Encode for MediaHeader {
-    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        match self {
-            Self::Smhd(b) => b.encode(buf),
-            Self::Vmhd(b) => b.encode(buf),
-            Self::Sthd(b) => b.encode(buf),
-            Self::Nmhd(b) => b.encode(buf),
-        }
-    }
-}
-
-impl Decode for MediaHeader {
-    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        let (header, _) = BoxHeader::decode(buf)?;
-        match header.box_type {
-            SmhdBox::TYPE => SmhdBox::decode(buf).map(|(b, n)| (Self::Smhd(b), n)),
-            VmhdBox::TYPE => VmhdBox::decode(buf).map(|(b, n)| (Self::Vmhd(b), n)),
-            SthdBox::TYPE => SthdBox::decode(buf).map(|(b, n)| (Self::Sthd(b), n)),
-            NmhdBox::TYPE => NmhdBox::decode(buf).map(|(b, n)| (Self::Nmhd(b), n)),
-            // 未知の box_type は防衛的にエラーを返す
-            // （`SampleEntry::decode` のような Unknown フォールバックは持たない）
-            _ => Err(Error::invalid_data(format!(
-                "unexpected box type for MediaHeader: {}",
-                header.box_type
-            ))),
-        }
-    }
-}
-
-impl BaseBox for MediaHeader {
-    fn box_type(&self) -> BoxType {
-        match self {
-            Self::Smhd(b) => b.box_type(),
-            Self::Vmhd(b) => b.box_type(),
-            Self::Sthd(b) => b.box_type(),
-            Self::Nmhd(b) => b.box_type(),
-        }
-    }
-
-    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
-        match self {
-            Self::Smhd(b) => b.children(),
-            Self::Vmhd(b) => b.children(),
-            Self::Sthd(b) => b.children(),
-            Self::Nmhd(b) => b.children(),
-        }
     }
 }
 

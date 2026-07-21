@@ -561,6 +561,15 @@ impl Mp4FileMuxer {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
         }
+        // 字幕トラックは Mp4FileMuxer では未対応（内部フィールドが Audio / Video 専用の
+        // 2 系統ハードコードのため受け入れ経路がない）。
+        // PositionMismatch や data_size の EncodeError より前に拒否することで
+        // ユーザーが段階的にエラーを潰す手間を避ける
+        if sample.track_kind == TrackKind::Subtitle {
+            return Err(MuxError::UnsupportedTrackKind {
+                track_kind: TrackKind::Subtitle,
+            });
+        }
         if self.next_position != sample.data_offset {
             return Err(MuxError::PositionMismatch {
                 expected: self.next_position,
@@ -608,9 +617,9 @@ impl Mp4FileMuxer {
 
                 &mut self.video_chunks
             }
-            // 字幕トラックは Mp4FileMuxer 側は未対応（内部フィールドが Audio / Video 専用の
-            // 2 系統ハードコードのため受け入れ経路がない）。
-            // 明示的に UnsupportedTrackKind を返して拒否する
+            // この arm は関数冒頭の早期 return により通常到達しない。
+            // TrackKind は #[non_exhaustive] ではないため網羅性を満たす必要があり、
+            // 万一到達した場合の防衛値として同じエラーを返す
             TrackKind::Subtitle => {
                 return Err(MuxError::UnsupportedTrackKind {
                     track_kind: TrackKind::Subtitle,

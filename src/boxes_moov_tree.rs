@@ -921,6 +921,17 @@ impl HdlrBox {
 
     /// 映像用のハンドラー種別
     pub const HANDLER_TYPE_VIDE: [u8; 4] = *b"vide";
+
+    /// 字幕用のハンドラー種別（`stpp` サンプルエントリー用）
+    ///
+    /// ISO/IEC 14496-30 の XMLSubtitleSampleEntry (`stpp`) が要求する handler type。
+    pub const HANDLER_TYPE_SUBT: [u8; 4] = *b"subt";
+
+    /// テキスト系トラック用のハンドラー種別（`wvtt` / `tx3g` サンプルエントリー用）
+    ///
+    /// ISO/IEC 14496-30 の WVTTSampleEntry (`wvtt`) および
+    /// 3GPP TS 26.245 の TX3GSampleEntry (`tx3g`) が要求する handler type。
+    pub const HANDLER_TYPE_TEXT: [u8; 4] = *b"text";
 }
 
 impl Encode for HdlrBox {

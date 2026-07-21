@@ -1229,6 +1229,119 @@ impl FullBox for VmhdBox {
     }
 }
 
+/// [ISO/IEC 14496-12] SubtitleMediaHeaderBox class (親: [`MinfBox`]）
+///
+/// 字幕トラックの `minf` 直下に配置される Media Header ボックス。
+/// バージョン 0 の FullBox のみで追加ペイロードは持たない。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct SthdBox;
+
+impl SthdBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"sthd");
+}
+
+impl Encode for SthdBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for SthdBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _full_header = FullBoxHeader::decode_at(payload, &mut offset)?;
+
+            Ok((Self, header.external_size() + payload.len()))
+        })
+    }
+}
+
+impl BaseBox for SthdBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+impl FullBox for SthdBox {
+    fn full_box_version(&self) -> u8 {
+        0
+    }
+
+    fn full_box_flags(&self) -> FullBoxFlags {
+        FullBoxFlags::new(0)
+    }
+}
+
+/// [ISO/IEC 14496-12] NullMediaHeaderBox class (親: [`MinfBox`]）
+///
+/// メディアハンドラーに対応する Media Header が特にない場合に置かれる汎用ボックス。
+/// 字幕トラック（例えば `tx3g`）だけでなくヒントトラック等でも使われる。
+/// バージョン 0 の FullBox のみで追加ペイロードは持たない。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct NmhdBox;
+
+impl NmhdBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"nmhd");
+}
+
+impl Encode for NmhdBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for NmhdBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _full_header = FullBoxHeader::decode_at(payload, &mut offset)?;
+
+            Ok((Self, header.external_size() + payload.len()))
+        })
+    }
+}
+
+impl BaseBox for NmhdBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+impl FullBox for NmhdBox {
+    fn full_box_version(&self) -> u8 {
+        0
+    }
+
+    fn full_box_flags(&self) -> FullBoxFlags {
+        FullBoxFlags::new(0)
+    }
+}
+
 /// [ISO/IEC 14496-12] DataInformationBox class (親: [`MinfBox`]）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[expect(missing_docs)]

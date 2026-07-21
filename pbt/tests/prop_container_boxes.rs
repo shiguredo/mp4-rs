@@ -9,8 +9,9 @@ use shiguredo_mp4::{
     Decode, Either, Encode, FixedPointNumber, Mp4FileTime,
     boxes::{
         AudioSampleEntryFields, Co64Box, DinfBox, DopsBox, HdlrBox, MdhdBox, MdiaBox, MinfBox,
-        MoovBox, MvhdBox, OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox, StscEntry,
-        StsdBox, StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox, VmhdBox,
+        MoovBox, MvhdBox, NmhdBox, OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
+        StscEntry, StsdBox, SthdBox, StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox,
+        VmhdBox,
     },
 };
 
@@ -449,6 +450,30 @@ mod boundary_tests {
         let encoded = moov.encode_to_vec().unwrap();
         let (decoded, _) = MoovBox::decode(&encoded).unwrap();
         assert_eq!(decoded.trak_boxes.len(), 1);
+    }
+
+    /// SthdBox: encode/decode roundtrip
+    ///
+    /// SthdBox はペイロードを持たないため、encode→decode で同一の値が復元されることのみを確認する
+    #[test]
+    fn sthd_box_roundtrip() {
+        let sthd = SthdBox;
+        let encoded = sthd.encode_to_vec().unwrap();
+        let (decoded, size) = SthdBox::decode(&encoded).unwrap();
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sthd);
+    }
+
+    /// NmhdBox: encode/decode roundtrip
+    ///
+    /// NmhdBox もペイロードを持たないため、encode→decode で同一の値が復元されることのみを確認する
+    #[test]
+    fn nmhd_box_roundtrip() {
+        let nmhd = NmhdBox;
+        let encoded = nmhd.encode_to_vec().unwrap();
+        let (decoded, size) = NmhdBox::decode(&encoded).unwrap();
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, nmhd);
     }
 
     /// MoovBox: 複数トラック

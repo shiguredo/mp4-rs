@@ -61,8 +61,8 @@ use crate::{
     Utf8String,
     boxes::{
         Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
-        MdiaBox, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
-        StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox,
+        StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
 };
 
@@ -932,7 +932,7 @@ impl Mp4FileMuxer {
         };
 
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: Some(Either::A(SmhdBox::default())),
+            media_header: Some(MediaHeader::Smhd(SmhdBox::default())),
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box: self.build_stbl_box(&self.audio_chunks)?,
             unknown_boxes: Vec::new(),
@@ -968,7 +968,7 @@ impl Mp4FileMuxer {
         };
 
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: Some(Either::B(VmhdBox::default())),
+            media_header: Some(MediaHeader::Vmhd(VmhdBox::default())),
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box: self.build_stbl_box(&self.video_chunks)?,
             unknown_boxes: Vec::new(),

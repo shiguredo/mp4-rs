@@ -8,10 +8,10 @@ use proptest::prelude::*;
 use shiguredo_mp4::{
     Decode, Either, Encode, FixedPointNumber, Mp4FileTime,
     boxes::{
-        AudioSampleEntryFields, Co64Box, DinfBox, DopsBox, HdlrBox, MdhdBox, MdiaBox, MinfBox,
-        MoovBox, MvhdBox, NmhdBox, OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
-        StscEntry, StsdBox, SthdBox, StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox,
-        VmhdBox,
+        AudioSampleEntryFields, Co64Box, DinfBox, DopsBox, HdlrBox, MdhdBox, MdiaBox, MediaHeader,
+        MinfBox, MoovBox, MvhdBox, NmhdBox, OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox,
+        SthdBox, StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox, SttsEntry, TkhdBox,
+        TrakBox, VmhdBox,
     },
 };
 
@@ -151,7 +151,7 @@ fn minimal_stbl_box_audio() -> StblBox {
 /// 最小限の MinfBox (audio) を生成
 fn minimal_minf_box_audio() -> MinfBox {
     MinfBox {
-        smhd_or_vmhd_box: Some(Either::A(minimal_smhd_box())),
+        media_header: Some(MediaHeader::Smhd(minimal_smhd_box())),
         dinf_box: minimal_dinf_box(),
         stbl_box: minimal_stbl_box_audio(),
         unknown_boxes: vec![],
@@ -288,7 +288,7 @@ proptest! {
         balance_frac in any::<u8>()
     ) {
         let minf = MinfBox {
-            smhd_or_vmhd_box: Some(Either::A(SmhdBox {
+            media_header: Some(MediaHeader::Smhd(SmhdBox {
                 balance: FixedPointNumber::new(balance_int, balance_frac),
             })),
             dinf_box: minimal_dinf_box(),
@@ -299,8 +299,8 @@ proptest! {
         let (decoded, size) = MinfBox::decode(&encoded).unwrap();
 
         prop_assert_eq!(size, encoded.len());
-        match &decoded.smhd_or_vmhd_box {
-            Some(Either::A(_smhd)) => {}
+        match &decoded.media_header {
+            Some(MediaHeader::Smhd(_smhd)) => {}
             _ => prop_assert!(false, "Expected SmhdBox"),
         }
     }
@@ -312,7 +312,7 @@ proptest! {
         opcolor in any::<[u16; 3]>()
     ) {
         let minf = MinfBox {
-            smhd_or_vmhd_box: Some(Either::B(VmhdBox { graphicsmode, opcolor })),
+            media_header: Some(MediaHeader::Vmhd(VmhdBox { graphicsmode, opcolor })),
             dinf_box: minimal_dinf_box(),
             stbl_box: minimal_stbl_box_audio(),
             unknown_boxes: vec![],
@@ -321,8 +321,8 @@ proptest! {
         let (decoded, size) = MinfBox::decode(&encoded).unwrap();
 
         prop_assert_eq!(size, encoded.len());
-        match &decoded.smhd_or_vmhd_box {
-            Some(Either::B(vmhd)) => prop_assert_eq!(vmhd.graphicsmode, graphicsmode),
+        match &decoded.media_header {
+            Some(MediaHeader::Vmhd(vmhd)) => prop_assert_eq!(vmhd.graphicsmode, graphicsmode),
             _ => prop_assert!(false, "Expected VmhdBox"),
         }
     }
@@ -522,7 +522,7 @@ mod boundary_tests {
         let minf = minimal_minf_box_audio();
         let encoded = minf.encode_to_vec().unwrap();
         let (decoded, _) = MinfBox::decode(&encoded).unwrap();
-        assert!(matches!(decoded.smhd_or_vmhd_box, Some(Either::A(_))));
+        assert!(matches!(decoded.media_header, Some(MediaHeader::Smhd(_))));
     }
 
     /// StblBox: 空の sample table

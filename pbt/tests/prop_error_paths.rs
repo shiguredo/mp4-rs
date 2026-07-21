@@ -961,15 +961,15 @@ mod moov_tree_error_tests {
 
     // ===== MinfBox のテスト =====
 
-    /// MinfBox: smhd_or_vmhd_box なし
+    /// MinfBox: media_header なし
     #[test]
-    fn minf_box_without_smhd_vmhd() {
+    fn minf_box_without_media_header() {
         use shiguredo_mp4::Either;
         use shiguredo_mp4::boxes::{AudioSampleEntryFields, DopsBox, OpusBox, SampleEntry};
         use std::num::NonZeroU16;
 
         let minf = MinfBox {
-            smhd_or_vmhd_box: None,
+            media_header: None,
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box: StblBox {
                 stsd_box: StsdBox {
@@ -1008,7 +1008,7 @@ mod moov_tree_error_tests {
         };
         let encoded = minf.encode_to_vec().expect("encode should succeed");
         let (decoded, _) = MinfBox::decode(&encoded).expect("decode should succeed");
-        assert!(decoded.smhd_or_vmhd_box.is_none());
+        assert!(decoded.media_header.is_none());
     }
 
     // ===== HdlrBox のテスト =====
@@ -1485,8 +1485,8 @@ mod base_box_tests {
         boxes::{
             AudioSampleEntryFields, Avc1Box, AvccBox, Co64Box, DinfBox, DopsBox, DrefBox, EdtsBox,
             ElstBox, ElstEntry, HdlrBox, Hev1Box, HvccBox, HvccNalUintArray, MdhdBox, MdiaBox,
-            MinfBox, MoovBox, MvhdBox, OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
-            StsdBox, StszBox, SttsBox, TkhdBox, TrakBox, UrlBox, VmhdBox,
+            MediaHeader, MinfBox, MoovBox, MvhdBox, OpusBox, SampleEntry, SmhdBox, StblBox,
+            StcoBox, StscBox, StsdBox, StszBox, SttsBox, TkhdBox, TrakBox, UrlBox, VmhdBox,
         },
     };
 
@@ -1886,7 +1886,7 @@ mod base_box_tests {
 
     fn create_video_minf_box() -> MinfBox {
         MinfBox {
-            smhd_or_vmhd_box: Some(Either::B(VmhdBox {
+            media_header: Some(MediaHeader::Vmhd(VmhdBox {
                 graphicsmode: VmhdBox::DEFAULT_GRAPHICSMODE,
                 opcolor: VmhdBox::DEFAULT_OPCOLOR,
             })),

@@ -60,10 +60,11 @@ use crate::{
     BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
     TrackKind, Utf8String,
     boxes::{
-        Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MehdBox, MfhdBox, MfraBox,
-        MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, SampleEntry, SidxBox, SidxReference,
-        SmhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TfdtBox, TfhdBox, TfraBox,
-        TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, VmhdBox,
+        Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
+        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, SampleEntry, SidxBox,
+        SidxReference, SmhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TfdtBox,
+        TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample,
+        VmhdBox,
     },
     mux_mp4_file::{MuxError, Sample},
 };
@@ -665,12 +666,11 @@ impl Fmp4SegmentMuxer {
             name: Utf8String::EMPTY.into_null_terminated_bytes(),
         };
 
-        let smhd_or_vmhd = match entry.track_kind {
-            TrackKind::Audio => Some(Either::A(SmhdBox::default())),
-            TrackKind::Video => Some(Either::B(VmhdBox::default())),
-            // 字幕トラックの Media Header は step 4 (SthdBox/NmhdBox 実装) と
-            // step 5 (MediaHeader enum への刷新) で埋める
-            TrackKind::Subtitle => todo!("subtitle: 0042 step 4/5 で実装"),
+        let media_header = match entry.track_kind {
+            TrackKind::Audio => Some(MediaHeader::Smhd(SmhdBox::default())),
+            TrackKind::Video => Some(MediaHeader::Vmhd(VmhdBox::default())),
+            // 字幕トラックの Media Header は step 7 で本実装する（暫定 sthd を選ぶ）
+            TrackKind::Subtitle => todo!("subtitle: 0042 step 7 で実装"),
         };
 
         // fMP4 の初期化セグメントでは stbl は stsd のみ持てばよく、
@@ -703,7 +703,7 @@ impl Fmp4SegmentMuxer {
         };
 
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: smhd_or_vmhd,
+            media_header,
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box,
             unknown_boxes: Vec::new(),

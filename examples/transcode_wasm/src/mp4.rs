@@ -4,9 +4,9 @@ use shiguredo_mp4::{
     Decode, Either, Encode, FixedPointNumber, Mp4File, Mp4FileTime, Utf8String,
     aux::SampleTableAccessor,
     boxes::{
-        Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MinfBox, MoovBox, MvhdBox,
-        RootBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox,
-        StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MinfBox, MoovBox,
+        MvhdBox, RootBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox,
+        StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
 };
 
@@ -146,10 +146,10 @@ impl OutputMp4Builder {
             name: Utf8String::EMPTY.into_null_terminated_bytes(),
         };
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: if track.is_audio {
-                Some(Either::A(SmhdBox::default()))
+            media_header: if track.is_audio {
+                Some(MediaHeader::Smhd(SmhdBox::default()))
             } else {
-                Some(Either::B(VmhdBox::default()))
+                Some(MediaHeader::Vmhd(VmhdBox::default()))
             },
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box: self.build_stbl_box(track)?,

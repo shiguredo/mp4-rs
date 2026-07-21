@@ -993,8 +993,13 @@ impl FullBox for HdlrBox {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[expect(missing_docs)]
 pub struct MinfBox {
-    // 音声・映像トラック以外の場合は None になる
-    pub smhd_or_vmhd_box: Option<Either<SmhdBox, VmhdBox>>,
+    /// トラックの Media Header
+    ///
+    /// トラック種別に応じて `smhd` (音声) / `vmhd` (映像) / `sthd` (字幕) / `nmhd` (汎用) の
+    /// いずれかが入る。仕様上 `minf` 直下には Media Header は 1 種類しか出ないため、
+    /// [`MediaHeader`] を [`Option`] でラップして保持する（メディアトラック以外を含む MP4 でも
+    /// `minf` を持てるようにするため、[`None`] も許容する）。
+    pub media_header: Option<MediaHeader>,
     pub dinf_box: DinfBox,
     pub stbl_box: StblBox,
     pub unknown_boxes: Vec<UnknownBox>,
@@ -1009,11 +1014,8 @@ impl Encode for MinfBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        if let Some(smhd_or_vmhd_box) = &self.smhd_or_vmhd_box {
-            match smhd_or_vmhd_box {
-                Either::A(b) => offset += b.encode(&mut buf[offset..])?,
-                Either::B(b) => offset += b.encode(&mut buf[offset..])?,
-            }
+        if let Some(media_header) = &self.media_header {
+            offset += media_header.encode(&mut buf[offset..])?;
         }
         offset += self.dinf_box.encode(&mut buf[offset..])?;
         offset += self.stbl_box.encode(&mut buf[offset..])?;
@@ -1032,8 +1034,7 @@ impl Decode for MinfBox {
             header.box_type.expect(Self::TYPE)?;
 
             let mut offset = 0;
-            let mut smhd_box = None;
-            let mut vmhd_box = None;
+            let mut media_header = None;
             let mut dinf_box = None;
             let mut stbl_box = None;
             let mut unknown_boxes = Vec::new();
@@ -1041,11 +1042,13 @@ impl Decode for MinfBox {
             while offset < payload.len() {
                 let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
                 match child_header.box_type {
-                    SmhdBox::TYPE if smhd_box.is_none() => {
-                        smhd_box = Some(SmhdBox::decode_at(payload, &mut offset)?);
-                    }
-                    VmhdBox::TYPE if vmhd_box.is_none() => {
-                        vmhd_box = Some(VmhdBox::decode_at(payload, &mut offset)?);
+                    // Media Header 系のいずれかが最初に見つかった時点で採用する。
+                    // 仕様上 `minf` 直下に Media Header は 1 種類しか出ないため
+                    // 「最初発見」で問題なく、複数現れた場合は後続を unknown_boxes に落とす。
+                    SmhdBox::TYPE | VmhdBox::TYPE | SthdBox::TYPE | NmhdBox::TYPE
+                        if media_header.is_none() =>
+                    {
+                        media_header = Some(MediaHeader::decode_at(payload, &mut offset)?);
                     }
                     DinfBox::TYPE if dinf_box.is_none() => {
                         dinf_box = Some(DinfBox::decode_at(payload, &mut offset)?);
@@ -1061,7 +1064,7 @@ impl Decode for MinfBox {
 
             Ok((
                 Self {
-                    smhd_or_vmhd_box: smhd_box.map(Either::A).or(vmhd_box.map(Either::B)),
+                    media_header,
                     dinf_box: check_mandatory_box(dinf_box, "dinf", "minf")?,
                     stbl_box: check_mandatory_box(stbl_box, "stbl", "minf")?,
                     unknown_boxes,
@@ -1080,7 +1083,7 @@ impl BaseBox for MinfBox {
     fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
         Box::new(
             core::iter::empty()
-                .chain(self.smhd_or_vmhd_box.iter().map(as_box_object))
+                .chain(self.media_header.iter().map(as_box_object))
                 .chain(core::iter::once(&self.dinf_box).map(as_box_object))
                 .chain(core::iter::once(&self.stbl_box).map(as_box_object))
                 .chain(self.unknown_boxes.iter().map(as_box_object)),
@@ -1339,6 +1342,76 @@ impl FullBox for NmhdBox {
 
     fn full_box_flags(&self) -> FullBoxFlags {
         FullBoxFlags::new(0)
+    }
+}
+
+/// [ISO/IEC 14496-12] `MinfBox` 直下に配置される Media Header ボックスをまとめた列挙型
+///
+/// トラック種別ごとに以下のいずれかを保持する。
+///
+/// - [`SmhdBox`] (`smhd`): 音声トラック
+/// - [`VmhdBox`] (`vmhd`): 映像トラック
+/// - [`SthdBox`] (`sthd`): 字幕トラック
+/// - [`NmhdBox`] (`nmhd`): 上記に該当しない汎用トラック（ヒントトラック等）
+///
+/// 実装パターンは [`crate::boxes::SampleEntry`] に揃えており、[`Encode`] / [`Decode`] は
+/// 内包する各 Box にそのまま委譲する（[`FullBox`] は各 Box 側で実装されるため列挙型側では持たない）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(missing_docs)]
+pub enum MediaHeader {
+    Smhd(SmhdBox),
+    Vmhd(VmhdBox),
+    Sthd(SthdBox),
+    Nmhd(NmhdBox),
+}
+
+impl Encode for MediaHeader {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        match self {
+            Self::Smhd(b) => b.encode(buf),
+            Self::Vmhd(b) => b.encode(buf),
+            Self::Sthd(b) => b.encode(buf),
+            Self::Nmhd(b) => b.encode(buf),
+        }
+    }
+}
+
+impl Decode for MediaHeader {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let (header, _) = BoxHeader::decode(buf)?;
+        match header.box_type {
+            SmhdBox::TYPE => SmhdBox::decode(buf).map(|(b, n)| (Self::Smhd(b), n)),
+            VmhdBox::TYPE => VmhdBox::decode(buf).map(|(b, n)| (Self::Vmhd(b), n)),
+            SthdBox::TYPE => SthdBox::decode(buf).map(|(b, n)| (Self::Sthd(b), n)),
+            NmhdBox::TYPE => NmhdBox::decode(buf).map(|(b, n)| (Self::Nmhd(b), n)),
+            // 通常は `MinfBox::decode` 側で 4 種の box_type を事前判別してから
+            // ここに来るため到達しないが、公開 API として単独で呼ばれた場合に備えて
+            // 防衛的にエラーを返す（`SampleEntry::decode` のような Unknown フォールバックは持たない）
+            _ => Err(Error::invalid_data(format!(
+                "unexpected box type for MediaHeader: {}",
+                header.box_type
+            ))),
+        }
+    }
+}
+
+impl BaseBox for MediaHeader {
+    fn box_type(&self) -> BoxType {
+        match self {
+            Self::Smhd(b) => b.box_type(),
+            Self::Vmhd(b) => b.box_type(),
+            Self::Sthd(b) => b.box_type(),
+            Self::Nmhd(b) => b.box_type(),
+        }
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        match self {
+            Self::Smhd(b) => b.children(),
+            Self::Vmhd(b) => b.children(),
+            Self::Sthd(b) => b.children(),
+            Self::Nmhd(b) => b.children(),
+        }
     }
 }
 

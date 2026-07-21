@@ -9,9 +9,9 @@ pub use crate::boxes_fmp4::{
 };
 pub use crate::boxes_moov_tree::{
     Co64Box, CslgBox, CttsBox, CttsEntry, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, EsdsBox,
-    HdlrBox, MdhdBox, MdiaBox, MehdBox, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SdtpBox,
-    SdtpSampleFlags, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-    SthdBox, SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UrlBox, VmhdBox,
+    HdlrBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox,
+    SdtpBox, SdtpSampleFlags, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StscEntry, StsdBox,
+    StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UrlBox, VmhdBox,
 };
 pub use crate::boxes_sample_entry::{
     AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, FlacBox,

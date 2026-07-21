@@ -544,8 +544,8 @@ mod boundary_tests {
     #[test]
     fn sthd_box_roundtrip() {
         let sthd = SthdBox;
-        let encoded = sthd.encode_to_vec().unwrap();
-        let (decoded, size) = SthdBox::decode(&encoded).unwrap();
+        let encoded = sthd.encode_to_vec().expect("sthd の encode に失敗した");
+        let (decoded, size) = SthdBox::decode(&encoded).expect("sthd の decode に失敗した");
         assert_eq!(size, encoded.len());
         assert_eq!(decoded, sthd);
     }
@@ -556,8 +556,8 @@ mod boundary_tests {
     #[test]
     fn nmhd_box_roundtrip() {
         let nmhd = NmhdBox;
-        let encoded = nmhd.encode_to_vec().unwrap();
-        let (decoded, size) = NmhdBox::decode(&encoded).unwrap();
+        let encoded = nmhd.encode_to_vec().expect("nmhd の encode に失敗した");
+        let (decoded, size) = NmhdBox::decode(&encoded).expect("nmhd の decode に失敗した");
         assert_eq!(size, encoded.len());
         assert_eq!(decoded, nmhd);
     }
@@ -599,10 +599,18 @@ mod boundary_tests {
     #[test]
     fn minf_box_decode_uses_first_media_header() {
         // 個別に box をエンコードして minf の内容として直列に並べる
-        let vmhd_bytes = VmhdBox::default().encode_to_vec().unwrap();
-        let smhd_bytes = SmhdBox::default().encode_to_vec().unwrap();
-        let dinf_bytes = minimal_dinf_box().encode_to_vec().unwrap();
-        let stbl_bytes = minimal_stbl_box_audio().encode_to_vec().unwrap();
+        let vmhd_bytes = VmhdBox::default()
+            .encode_to_vec()
+            .expect("vmhd の encode に失敗した");
+        let smhd_bytes = SmhdBox::default()
+            .encode_to_vec()
+            .expect("smhd の encode に失敗した");
+        let dinf_bytes = minimal_dinf_box()
+            .encode_to_vec()
+            .expect("dinf の encode に失敗した");
+        let stbl_bytes = minimal_stbl_box_audio()
+            .encode_to_vec()
+            .expect("stbl の encode に失敗した");
 
         // minf 内容: vmhd → smhd → dinf → stbl（vmhd が Media Header として最初）
         let mut inner = Vec::new();
@@ -646,8 +654,10 @@ mod boundary_tests {
             stbl_box: minimal_stbl_box_subtitle(*b"stpp"),
             unknown_boxes: vec![],
         };
-        let encoded = minf.encode_to_vec().unwrap();
-        let (decoded, size) = MinfBox::decode(&encoded).unwrap();
+        let encoded = minf
+            .encode_to_vec()
+            .expect("minf (sthd) の encode に失敗した");
+        let (decoded, size) = MinfBox::decode(&encoded).expect("minf (sthd) の decode に失敗した");
         assert_eq!(size, encoded.len());
         assert!(matches!(
             decoded.media_header,
@@ -664,8 +674,10 @@ mod boundary_tests {
             stbl_box: minimal_stbl_box_subtitle(*b"tx3g"),
             unknown_boxes: vec![],
         };
-        let encoded = minf.encode_to_vec().unwrap();
-        let (decoded, size) = MinfBox::decode(&encoded).unwrap();
+        let encoded = minf
+            .encode_to_vec()
+            .expect("minf (nmhd) の encode に失敗した");
+        let (decoded, size) = MinfBox::decode(&encoded).expect("minf (nmhd) の decode に失敗した");
         assert_eq!(size, encoded.len());
         assert!(matches!(
             decoded.media_header,
@@ -716,8 +728,8 @@ mod boundary_tests {
             mvex_box: None,
             unknown_boxes: vec![],
         };
-        let mut bytes = ftyp.encode_to_vec().unwrap();
-        bytes.extend_from_slice(&moov.encode_to_vec().unwrap());
+        let mut bytes = ftyp.encode_to_vec().expect("ftyp の encode に失敗した");
+        bytes.extend_from_slice(&moov.encode_to_vec().expect("moov の encode に失敗した"));
         bytes
     }
 
@@ -755,8 +767,8 @@ mod boundary_tests {
             mvex_box: Some(mvex),
             unknown_boxes: vec![],
         };
-        let mut bytes = ftyp.encode_to_vec().unwrap();
-        bytes.extend_from_slice(&moov.encode_to_vec().unwrap());
+        let mut bytes = ftyp.encode_to_vec().expect("ftyp の encode に失敗した");
+        bytes.extend_from_slice(&moov.encode_to_vec().expect("moov の encode に失敗した"));
         bytes
     }
 
@@ -800,7 +812,8 @@ mod boundary_tests {
             let mut demuxer = Fmp4FileDemuxer::new();
             while let Some(required) = demuxer.required_input() {
                 let start = required.position as usize;
-                let end = start.saturating_add(required.size.unwrap_or(bytes.len() - start));
+                let end = start
+                    .saturating_add(required.size.unwrap_or(bytes.len().saturating_sub(start)));
                 demuxer.handle_input(Input {
                     position: required.position,
                     data: bytes.get(start..end).unwrap_or(&[]),
@@ -877,10 +890,16 @@ mod boundary_tests {
         };
 
         let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
-        let mut media_segment = muxer
+        // media segment を生成して muxer にトラック情報を蓄積させる
+        // （`init_segment_bytes` は tracks が空だと `EmptyTracks` エラーになるため）
+        let media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
             .expect("failed to create media segment");
-        media_segment.extend_from_slice(sample_payload);
+        assert!(
+            !media_segment.is_empty(),
+            "media segment のバイト列が空になっている"
+        );
+        // sample_payload は本テストの tkhd 検証には不要のため付加しない
 
         let init_bytes = muxer
             .init_segment_bytes()

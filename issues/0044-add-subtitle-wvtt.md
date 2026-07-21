@@ -44,12 +44,14 @@ ISO/IEC 14496-30 に従い、`WVTTSampleEntry` (`wvtt`) を追加する。
 ## 依存関係
 
 - 0042（共通基盤）の完了が前提
+- 0046（`Mp4FileMuxer` の Subtitle 受け入れ）は「MP4 のラウンドトリップ」検証で前提となる。0046 未完了時は `Fmp4SegmentMuxer` 経由の fMP4 ラウンドトリップのみで完了と判断する
 
 ## 完了条件
 
 - `wvtt` サンプルエントリーの decode / encode ラウンドトリップができる
 - `vttC` サブボックスの decode / encode ができる
-- 実サンプルデータ（不透明バイト列扱い）を含む MP4 / fMP4 のラウンドトリップができる
+- 実サンプルデータ（不透明バイト列扱い）を含む fMP4 のラウンドトリップができる（`Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` 経由）
+- 0046 完了後、`Mp4FileMuxer` / `Mp4FileDemuxer` 経由の MP4 ラウンドトリップも検証する
 - 既存の SampleEntry の動作が変わらない
 - `cargo clippy` が通る
 

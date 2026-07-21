@@ -48,12 +48,14 @@ Low。緊急要求は無いが、旧 QuickTime / iTunes 由来の MP4 を読め�
 ## 依存関係
 
 - 0042（共通基盤）の完了が前提
+- 0046（`Mp4FileMuxer` の Subtitle 受け入れ）は「MP4 のラウンドトリップ」検証で前提となる。0046 未完了時は `Fmp4SegmentMuxer` 経由の fMP4 ラウンドトリップのみで完了と判断する
 
 ## 完了条件
 
 - `tx3g` サンプルエントリーの decode / encode ラウンドトリップができる
 - `ftab` サブボックスの decode / encode ができる
-- 実サンプルデータ（不透明バイト列扱い）を含む MP4 のラウンドトリップができる
+- 実サンプルデータ（不透明バイト列扱い）を含む fMP4 のラウンドトリップができる（`Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` 経由）
+- 0046 完了後、`Mp4FileMuxer` / `Mp4FileDemuxer` 経由の MP4 ラウンドトリップも検証する
 - 既存の SampleEntry の動作が変わらない
 - `cargo clippy` が通る
 
@@ -64,7 +66,7 @@ Low。緊急要求は無いが、旧 QuickTime / iTunes 由来の MP4 を読め�
 1. `FtabBox` を実装（`Encode` / `Decode` / `BaseBox`）
 2. `Tx3gBox` を実装（子として `FtabBox` を含む）
 3. `SampleEntry::Tx3g(Tx3gBox)` を追加
-4. handler type / Media Header の対応方針を 0042 側と揃える（QuickTime 系での `text` handler + `gmhd` 系の慣習も含めて 0042 で調整）
+4. handler type / Media Header の対応方針を 0042 側と揃える（0042 の対応表 `tx3g → text + nmhd` に従う。QuickTime 系の `gmhd` 慣習は 0042 のスコープ外のため、必要になれば別途起票する）
 5. C API / WASM API に必要な露出を追加
 6. PBT・単体テストを追加
 

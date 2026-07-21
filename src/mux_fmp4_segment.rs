@@ -19,8 +19,9 @@
 //!
 //! そのため、`Mp4FileMuxer` と同様にサンプルごとに `track_kind` / `timescale` /
 //! `sample_entry` を受け取る設計になっている。
-//! 現時点では `Mp4FileMuxer` と同様に、同時に扱えるトラックは
-//! Audio 1 本と Video 1 本までに制限している。
+//! 現時点では同一 [`TrackKind`] のトラックは 1 本までに制限している（Audio / Video / Subtitle 各 1 本）。
+//! [`Mp4FileMuxer`] は現時点で Subtitle 未対応のため、Subtitle トラックは
+//! [`Fmp4SegmentMuxer`] 経由でのみ扱える。
 //! 将来、同種複数トラックに対応する場合は file muxer と合わせて拡張する想定である。
 //!
 //! # Examples
@@ -62,9 +63,9 @@ use crate::{
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, SampleEntry, SidxBox,
-        SidxReference, SmhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TfdtBox,
-        TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample,
-        VmhdBox,
+        SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox, SttsBox,
+        TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
+        TrunSample, VmhdBox,
     },
     mux_mp4_file::{MuxError, Sample},
 };
@@ -602,35 +603,59 @@ impl Fmp4SegmentMuxer {
             .ok_or(MuxError::MissingSampleEntry {
                 track_kind: entry.track_kind,
             })?;
-        let visual = match sample_entry {
-            SampleEntry::Avc1(b) => Some(&b.visual),
-            SampleEntry::Hev1(b) => Some(&b.visual),
-            SampleEntry::Hvc1(b) => Some(&b.visual),
-            SampleEntry::Vp08(b) => Some(&b.visual),
-            SampleEntry::Vp09(b) => Some(&b.visual),
-            SampleEntry::Av01(b) => Some(&b.visual),
-            _ => None,
-        };
-        let (volume, width, height) = match visual {
-            Some(v) => {
-                let w = i16::try_from(v.width).map_err(|_| {
-                    MuxError::EncodeError(crate::Error::invalid_data(
-                        "video width exceeds i16::MAX",
-                    ))
-                })?;
-                let h = i16::try_from(v.height).map_err(|_| {
-                    MuxError::EncodeError(crate::Error::invalid_data(
-                        "video height exceeds i16::MAX",
-                    ))
-                })?;
-                (
-                    TkhdBox::DEFAULT_VIDEO_VOLUME,
-                    FixedPointNumber::new(w, 0),
-                    FixedPointNumber::new(h, 0),
-                )
+        // tkhd の volume / width / height はトラック種別によって決まる。
+        // 従来は `visual = match sample_entry` の結果 (Some/None) だけで決めていたが、
+        // Audio と Subtitle の両方で visual = None に落ちるため、Audio 用 volume が
+        // Subtitle にも採用されてしまう不整合があった。
+        // Step 7 以降は `entry.track_kind` を外側で明示 match して決定する。
+        let (volume, width, height) = match entry.track_kind {
+            TrackKind::Video => {
+                let visual = match sample_entry {
+                    SampleEntry::Avc1(b) => Some(&b.visual),
+                    SampleEntry::Hev1(b) => Some(&b.visual),
+                    SampleEntry::Hvc1(b) => Some(&b.visual),
+                    SampleEntry::Vp08(b) => Some(&b.visual),
+                    SampleEntry::Vp09(b) => Some(&b.visual),
+                    SampleEntry::Av01(b) => Some(&b.visual),
+                    _ => None,
+                };
+                match visual {
+                    Some(v) => {
+                        let w = i16::try_from(v.width).map_err(|_| {
+                            MuxError::EncodeError(crate::Error::invalid_data(
+                                "video width exceeds i16::MAX",
+                            ))
+                        })?;
+                        let h = i16::try_from(v.height).map_err(|_| {
+                            MuxError::EncodeError(crate::Error::invalid_data(
+                                "video height exceeds i16::MAX",
+                            ))
+                        })?;
+                        (
+                            TkhdBox::DEFAULT_VIDEO_VOLUME,
+                            FixedPointNumber::new(w, 0),
+                            FixedPointNumber::new(h, 0),
+                        )
+                    }
+                    // Video に非映像系 SampleEntry が渡された変則ケース。
+                    // 従来は audio volume に落ちていたが、Video トラックとして扱う以上
+                    // DEFAULT_VIDEO_VOLUME に統一する
+                    None => (
+                        TkhdBox::DEFAULT_VIDEO_VOLUME,
+                        FixedPointNumber::default(),
+                        FixedPointNumber::default(),
+                    ),
+                }
             }
-            None => (
+            TrackKind::Audio => (
                 TkhdBox::DEFAULT_AUDIO_VOLUME,
+                FixedPointNumber::default(),
+                FixedPointNumber::default(),
+            ),
+            // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
+            // width / height は 0（表示領域の指定が必要になった場合は 0043-0045 側で拡張する）
+            TrackKind::Subtitle => (
+                TkhdBox::DEFAULT_VIDEO_VOLUME,
                 FixedPointNumber::default(),
                 FixedPointNumber::default(),
             ),
@@ -656,9 +681,9 @@ impl Fmp4SegmentMuxer {
         let handler_type = match entry.track_kind {
             TrackKind::Video => HdlrBox::HANDLER_TYPE_VIDE,
             TrackKind::Audio => HdlrBox::HANDLER_TYPE_SOUN,
-            // 字幕トラックの handler type は issue 0042 の step 3 (定数追加) と
-            // step 7 (Fmp4SegmentMuxer の Subtitle 経路実装) で埋める
-            TrackKind::Subtitle => todo!("subtitle: 0042 step 3/7 で実装"),
+            // 0042 の暫定実装として `subt` を固定選択する。
+            // 0043-0045 で SampleEntry 種別（stpp / wvtt / tx3g）ごとの分岐に完全置換する
+            TrackKind::Subtitle => HdlrBox::HANDLER_TYPE_SUBT,
         };
 
         let hdlr_box = HdlrBox {
@@ -669,8 +694,9 @@ impl Fmp4SegmentMuxer {
         let media_header = match entry.track_kind {
             TrackKind::Audio => Some(MediaHeader::Smhd(SmhdBox::default())),
             TrackKind::Video => Some(MediaHeader::Vmhd(VmhdBox::default())),
-            // 字幕トラックの Media Header は step 7 で本実装する（暫定 sthd を選ぶ）
-            TrackKind::Subtitle => todo!("subtitle: 0042 step 7 で実装"),
+            // 0042 の暫定実装として `sthd` を固定選択する。
+            // 0043-0045 で SampleEntry 種別（stpp / wvtt / tx3g）ごとの分岐に完全置換する
+            TrackKind::Subtitle => Some(MediaHeader::Sthd(SthdBox)),
         };
 
         // fMP4 の初期化セグメントでは stbl は stsd のみ持てばよく、

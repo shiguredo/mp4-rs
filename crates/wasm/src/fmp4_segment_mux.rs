@@ -42,6 +42,9 @@ fn same_track_kind(
         ) | (
             c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
             c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
+        ) | (
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE,
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE,
         )
     )
 }

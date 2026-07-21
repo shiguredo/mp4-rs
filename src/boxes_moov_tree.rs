@@ -1100,7 +1100,7 @@ impl BaseBox for MinfBox {
 /// - [`NmhdBox`] (`nmhd`): 上記に該当しない汎用トラック（ヒントトラック等）
 ///
 /// 実装パターンは [`crate::boxes::SampleEntry`] に揃えており、[`BaseBox`] のメソッドは
-/// [`inner_box()`](Self::inner_box) 経由で内包する各 Box に委譲する。
+/// 内包する各 Box に委譲する。
 /// [`Encode`] は各バリアント別に inner box の実装を呼ぶ（`&dyn BaseBox` からは `encode` を呼べないため）。
 /// [`FullBox`] は各 Box 側で実装されるため列挙型側では持たない。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

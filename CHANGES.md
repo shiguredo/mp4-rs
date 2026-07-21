@@ -11,6 +11,36 @@
 
 ## develop
 
+- [CHANGE] `TrackKind` に `Subtitle` バリアントを追加する
+  - 字幕トラックを扱う共通基盤の導入に伴う変更
+  - `TrackKind` は `#[non_exhaustive]` ではないため既存の網羅 `match` は破壊する
+  - C API `Mp4TrackKind` に `MP4_TRACK_KIND_SUBTITLE = 2` を追加する
+  - WASM の JSON API で `"subtitle"` の入出力に対応する
+  - @sile
+- [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
+  - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
+  - フィールド名と型の同時変更のため、`pub` フィールドを直接参照している利用者コードに影響する
+  - 新規 `MediaHeader` enum は別エントリで追加する
+  - @sile
+- [ADD] ISO/IEC 14496-12 の `SthdBox` (`sthd`) と `NmhdBox` (`nmhd`) を追加する
+  - 字幕トラック等で使われる Media Header ボックス
+  - どちらも追加ペイロードを持たない FullBox
+  - @sile
+- [ADD] `MediaHeader` enum を追加する
+  - `MinfBox::media_header` フィールドで利用する多態コンテナ
+  - `Smhd` / `Vmhd` / `Sthd` / `Nmhd` の 4 バリアントを持つ
+  - `MinfBox` の Media Header 保持構造刷新のために導入する
+  - @sile
+- [ADD] `HdlrBox` に字幕用 handler type 定数を追加する
+  - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)
+  - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
+  - @sile
+- [ADD] 字幕トラックの mux / demux 経路を追加する
+  - `Fmp4SegmentMuxer` で `TrackKind::Subtitle` を受け入れる（暫定 `subt` + `sthd` 固定）
+  - `Mp4FileMuxer` は字幕未対応のため、新規 `MuxError::UnsupportedTrackKind` を返して拒否する
+  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックを skip せず取り出せるようにする
+  - C API `Mp4Error` マッピングに `UnsupportedTrackKind => MP4_ERROR_UNSUPPORTED` を追加する
+  - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
   - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった
   - `u32::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
@@ -20,6 +50,11 @@
   - これまでは `u16` から `i16` への暗黙キャストで符号が反転し、`tkhd` の `width` / `height` が負の値になる可能性があった
   - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - @voluntas
+- [FIX] `Fmp4SegmentMuxer::build_init_trak()` で `TrackKind::Video` に非映像系 `SampleEntry` が渡された場合の tkhd `volume` を修正する
+  - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
+  - Video トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると audio 用 volume が採用される不整合があった
+  - `entry.track_kind` を外側で明示 `match` するよう刷新し、Video では常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
+  - @sile
 
 ### misc
 

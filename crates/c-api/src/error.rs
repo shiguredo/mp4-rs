@@ -81,6 +81,8 @@ impl From<MuxError> for Mp4Error {
             | MuxError::MissingSampleEntry { .. }
             | MuxError::TimescaleMismatch { .. }
             | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            // サポート対象外の操作なので INVALID_INPUT ではなく UNSUPPORTED にマッピングする
+            MuxError::UnsupportedTrackKind { .. } => Self::MP4_ERROR_UNSUPPORTED,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

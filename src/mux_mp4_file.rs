@@ -303,6 +303,15 @@ pub enum MuxError {
         track_kind: TrackKind,
     },
 
+    /// サポートされていないトラック種別が指定された
+    ///
+    /// 例えば `Mp4FileMuxer` は現状 [`TrackKind::Subtitle`] を受け付けないため、
+    /// 該当トラックが与えられた場合にこのエラーを返す
+    UnsupportedTrackKind {
+        /// サポート対象外だったトラック種別
+        track_kind: TrackKind,
+    },
+
     /// マルチプレックス処理中の内部カウンタがオーバーフローした
     Overflow,
 }
@@ -357,6 +366,9 @@ impl core::fmt::Display for MuxError {
                     f,
                     "{track_kind:?} track uses multiple sample entries within one segment"
                 )
+            }
+            MuxError::UnsupportedTrackKind { track_kind } => {
+                write!(f, "Unsupported track kind: {track_kind:?}")
             }
             MuxError::Overflow => write!(f, "Internal counter overflow"),
         }

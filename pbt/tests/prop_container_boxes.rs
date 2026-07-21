@@ -562,6 +562,81 @@ mod boundary_tests {
         assert_eq!(decoded, nmhd);
     }
 
+    /// `HdlrBox` の字幕用 handler type 定数が仕様通りのバイト列であることを検証する
+    ///
+    /// テスト側の合成 MP4 では生バイト列 `b"subt"` / `b"text"` を渡す形になっており、
+    /// 定数側が誤って書き換わっても demuxer 側だけ壊れて他のテストは pass するリスクがある。
+    /// spec 値との一致を明示的にアサートしておく
+    #[test]
+    fn hdlr_box_subtitle_handler_type_constants() {
+        assert_eq!(HdlrBox::HANDLER_TYPE_SUBT, *b"subt");
+        assert_eq!(HdlrBox::HANDLER_TYPE_TEXT, *b"text");
+    }
+
+    /// `MediaHeader::decode` に既知でない box_type を渡すとエラーを返すことを検証する
+    ///
+    /// `MediaHeader` は `SampleEntry` のような Unknown フォールバックを持たない。
+    /// smhd / vmhd / sthd / nmhd 以外の box_type が来た場合、防衛的にエラーを返す
+    /// 挙動が意図した設計。回帰で誤ってフォールバックに戻す変更を検出できるよう明示テストする
+    #[test]
+    fn media_header_decode_rejects_unknown_box_type() {
+        // 4 種のいずれでもない box_type ("hdlr") を持つ最小 box を組み立てる
+        // BoxHeader レイアウト: size (u32, big-endian, 8 bytes) + type ([u8; 4] = "hdlr")
+        let bytes: [u8; 8] = [0, 0, 0, 8, b'h', b'd', b'l', b'r'];
+        let result = MediaHeader::decode(&bytes);
+        assert!(
+            result.is_err(),
+            "MediaHeader::decode は未知の box_type に対して Err を返すべきだが Ok が返った"
+        );
+    }
+
+    /// `MinfBox::decode` は Media Header が複数現れた場合、最初のものを採用する
+    ///
+    /// 仕様上 minf 直下には Media Header は 1 種類しか出ないが、
+    /// 異常入力（vmhd → smhd の順で 2 個並ぶ等）が来た場合、
+    /// 実装は「最初に見つかったもの」を採用し、後続は `unknown_boxes` に落とすことを担保する。
+    /// 旧実装の「smhd 優先」から挙動が変わっているため、この宣言的挙動をテストで固定する
+    #[test]
+    fn minf_box_decode_uses_first_media_header() {
+        // 個別に box をエンコードして minf の内容として直列に並べる
+        let vmhd_bytes = VmhdBox::default().encode_to_vec().unwrap();
+        let smhd_bytes = SmhdBox::default().encode_to_vec().unwrap();
+        let dinf_bytes = minimal_dinf_box().encode_to_vec().unwrap();
+        let stbl_bytes = minimal_stbl_box_audio().encode_to_vec().unwrap();
+
+        // minf 内容: vmhd → smhd → dinf → stbl（vmhd が Media Header として最初）
+        let mut inner = Vec::new();
+        inner.extend_from_slice(&vmhd_bytes);
+        inner.extend_from_slice(&smhd_bytes);
+        inner.extend_from_slice(&dinf_bytes);
+        inner.extend_from_slice(&stbl_bytes);
+
+        // minf ヘッダー (size u32 + type "minf") を先頭に付ける
+        let box_size = u32::try_from(8 + inner.len()).expect("minf size fits in u32");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"minf");
+        bytes.extend_from_slice(&inner);
+
+        let (decoded, _) = MinfBox::decode(&bytes).expect("minf の decode に失敗した");
+
+        // 最初に現れた vmhd が採用される
+        assert!(
+            matches!(decoded.media_header, Some(MediaHeader::Vmhd(_))),
+            "最初に現れた vmhd が採用されるべきだが media_header = {:?}",
+            decoded.media_header,
+        );
+
+        // 後続の smhd は unknown_boxes に落ちる
+        assert!(
+            decoded
+                .unknown_boxes
+                .iter()
+                .any(|b| b.box_type == BoxType::Normal(*b"smhd")),
+            "後続の smhd が unknown_boxes に落ちていない",
+        );
+    }
+
     /// MinfBox (subtitle, sthd Media Header) の encode/decode roundtrip
     #[test]
     fn minf_box_subtitle_sthd_roundtrip() {

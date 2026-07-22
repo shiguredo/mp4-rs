@@ -61,8 +61,8 @@ use crate::{
     Utf8String,
     boxes::{
         Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
-        MdiaBox, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
-        StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox,
+        StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
 };
 
@@ -175,6 +175,11 @@ impl FinalizedBoxes {
 }
 
 /// MP4 ファイルに追加するメディアサンプル
+///
+/// 字幕トラック（[`TrackKind::Subtitle`]）の場合、以下の値の指定を推奨する。
+///
+/// - [`Self::keyframe`] = `true`（字幕サンプルは通常すべて独立サンプル）
+/// - [`Self::composition_time_offset`] = [`None`]
 #[derive(Debug, Clone)]
 pub struct Sample {
     /// サンプルのトラック種別
@@ -303,6 +308,15 @@ pub enum MuxError {
         track_kind: TrackKind,
     },
 
+    /// サポートされていないトラック種別が指定された
+    ///
+    /// 例えば `Mp4FileMuxer` は現状 [`TrackKind::Subtitle`] を受け付けないため、
+    /// 該当トラックが与えられた場合にこのエラーを返す
+    UnsupportedTrackKind {
+        /// サポート対象外だったトラック種別
+        track_kind: TrackKind,
+    },
+
     /// マルチプレックス処理中の内部カウンタがオーバーフローした
     Overflow,
 }
@@ -357,6 +371,9 @@ impl core::fmt::Display for MuxError {
                     f,
                     "{track_kind:?} track uses multiple sample entries within one segment"
                 )
+            }
+            MuxError::UnsupportedTrackKind { track_kind } => {
+                write!(f, "Unsupported track kind: {track_kind:?}")
             }
             MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
@@ -536,9 +553,22 @@ impl Mp4FileMuxer {
     /// `last_sample_kind`) は変更されないため、呼び出し側は内容を補正したサンプルで再呼び出しできる。
     /// ただし、対象トラック種別の最初のサンプル投入直後に `MissingSampleEntry` エラーになった場合は、
     /// そのトラックの `audio_track_timescale` または `video_track_timescale` だけは記録済みとなる。
+    ///
+    /// [`TrackKind::Subtitle`] のサンプルは受け付けず、常に [`MuxError::UnsupportedTrackKind`] を返す
+    /// （内部フィールドが Audio / Video 専用の 2 系統ハードコードのため受け入れ経路がない）。
+    /// 字幕トラックは [`crate::mux::Fmp4SegmentMuxer`] 経由でのみ扱える。
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
+        }
+        // 字幕トラックは Mp4FileMuxer では未対応（内部フィールドが Audio / Video 専用の
+        // 2 系統ハードコードのため受け入れ経路がない）。
+        // PositionMismatch や data_size の EncodeError より前に拒否することで
+        // ユーザーが段階的にエラーを潰す手間を避ける
+        if sample.track_kind == TrackKind::Subtitle {
+            return Err(MuxError::UnsupportedTrackKind {
+                track_kind: TrackKind::Subtitle,
+            });
         }
         if self.next_position != sample.data_offset {
             return Err(MuxError::PositionMismatch {
@@ -587,6 +617,14 @@ impl Mp4FileMuxer {
 
                 &mut self.video_chunks
             }
+            // この分岐は関数冒頭の早期 return により通常到達しない。
+            // 将来 TrackKind にバリアントが追加された際にコンパイルエラーで気付けるよう
+            // `_` を避けて明示し、万一到達した場合の防衛値として同じエラーを返す
+            TrackKind::Subtitle => {
+                return Err(MuxError::UnsupportedTrackKind {
+                    track_kind: TrackKind::Subtitle,
+                });
+            }
         };
 
         if is_new_chunk_needed {
@@ -623,6 +661,12 @@ impl Mp4FileMuxer {
         let chunks = match sample.track_kind {
             TrackKind::Audio => &self.audio_chunks,
             TrackKind::Video => &self.video_chunks,
+            // 字幕トラックは append_sample() 内で必ず拒否されるため
+            // last_sample_kind に Subtitle が入ることはない。
+            // したがって上の `last_sample_kind != Some(sample.track_kind)`
+            // 早期リターンで抜けて、ここには到達しない想定。
+            // 万一到達した場合の防衛値として true を返す
+            TrackKind::Subtitle => return true,
         };
 
         let Some(sample_entry) = &sample.sample_entry else {
@@ -910,7 +954,7 @@ impl Mp4FileMuxer {
         };
 
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: Some(Either::A(SmhdBox::default())),
+            media_header: Some(MediaHeader::Smhd(SmhdBox::default())),
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box: self.build_stbl_box(&self.audio_chunks)?,
             unknown_boxes: Vec::new(),
@@ -946,7 +990,7 @@ impl Mp4FileMuxer {
         };
 
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: Some(Either::B(VmhdBox::default())),
+            media_header: Some(MediaHeader::Vmhd(VmhdBox::default())),
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box: self.build_stbl_box(&self.video_chunks)?,
             unknown_boxes: Vec::new(),
@@ -1230,6 +1274,50 @@ mod tests {
             Err(MuxError::PositionMismatch { expected, actual })
             if expected == initial_size && actual == initial_size + 100
         ));
+    }
+
+    /// Mp4FileMuxer が字幕トラック（TrackKind::Subtitle）を拒否することを検証する
+    ///
+    /// Mp4FileMuxer は現時点で字幕トラック未対応で、
+    /// UnsupportedTrackKind エラーを返して拒否する
+    #[test]
+    fn test_unsupported_track_kind_error_for_subtitle() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 字幕トラックの Sample を渡すと拒否される
+        let sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: None,
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 20,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 128,
+        };
+        assert!(matches!(
+            muxer.append_sample(&sample),
+            Err(MuxError::UnsupportedTrackKind {
+                track_kind: TrackKind::Subtitle
+            })
+        ));
+    }
+
+    /// UnsupportedTrackKind の Display 出力にトラック種別名が含まれることを検証する
+    ///
+    /// エラーメッセージにトラック種別が反映されないと、
+    /// 呼び出し側が何を拒否されたのかログから判別できないため確認する
+    #[test]
+    fn test_unsupported_track_kind_display_contains_subtitle() {
+        let err = MuxError::UnsupportedTrackKind {
+            track_kind: TrackKind::Subtitle,
+        };
+        let display = format!("{err}");
+        assert!(
+            display.contains("Subtitle"),
+            "Display 出力に \"Subtitle\" が含まれていない: {display}",
+        );
     }
 
     /// サンプルエントリー不在エラーのテスト

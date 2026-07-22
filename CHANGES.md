@@ -11,6 +11,30 @@
 
 ## develop
 
+- [CHANGE] `TrackKind` に `Subtitle` バリアントを追加する
+  - C API `Mp4TrackKind` に `MP4_TRACK_KIND_SUBTITLE = 2` を追加する
+  - WASM の JSON API で `"subtitle"` の入出力に対応する
+  - @sile
+- [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
+  - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
+  - @sile
+- [ADD] ISO/IEC 14496-12 の `SthdBox` (`sthd`) と `NmhdBox` (`nmhd`) を追加する
+  - 字幕トラック等で使われるメディアヘッダーボックス
+  - @sile
+- [ADD] `MediaHeader` enum を追加する
+  - `MinfBox::media_header` フィールドで利用する
+  - `Smhd` / `Vmhd` / `Sthd` / `Nmhd` の 4 バリアントを持つ
+  - @sile
+- [ADD] `HdlrBox` に字幕用ハンドラー種別定数を追加する
+  - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)
+  - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
+  - @sile
+- [ADD] 字幕トラックの mux / demux 経路を追加する
+  - `Fmp4SegmentMuxer` で `TrackKind::Subtitle` を受け入れる（暫定 `subt` + `sthd` 固定）
+  - `Mp4FileMuxer` は字幕未対応のため、新規 `MuxError::UnsupportedTrackKind` を返して拒否する
+  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
+  - C API `Mp4Error` マッピングに `UnsupportedTrackKind => MP4_ERROR_UNSUPPORTED` を追加する
+  - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
   - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった
   - `u32::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
@@ -20,6 +44,11 @@
   - これまでは `u16` から `i16` への暗黙キャストで符号が反転し、`tkhd` の `width` / `height` が負の値になる可能性があった
   - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - @voluntas
+- [FIX] `Fmp4SegmentMuxer::build_init_trak()` で `TrackKind::Video` に非映像系 `SampleEntry` が渡された場合の tkhd `volume` を修正する
+  - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
+  - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
+  - `entry.track_kind` で外側に分岐する形に刷新し、映像トラックでは常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
+  - @sile
 
 ### misc
 

@@ -42,6 +42,9 @@ fn same_track_kind(
         ) | (
             c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
             c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
+        ) | (
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE,
+            c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE,
         )
     )
 }
@@ -290,11 +293,12 @@ fn parse_json_sample_metas(
             let track_kind = match track_kind_str.as_ref() {
                 "audio" => c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_AUDIO,
                 "video" => c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO,
+                "subtitle" => c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE,
                 _ => {
                     return Err(item
                         .to_member("track_kind")?
                         .required()?
-                        .invalid("must be \"audio\" or \"video\""));
+                        .invalid("must be \"audio\", \"video\", or \"subtitle\""));
                 }
             };
             let timescale: u32 = item.to_member("timescale")?.required()?.try_into()?;

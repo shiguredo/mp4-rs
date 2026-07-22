@@ -680,6 +680,14 @@ pub enum TrackKind {
 
     /// 映像トラック
     Video,
+
+    /// 字幕トラック
+    ///
+    /// ISO/IEC 14496-30 の `stpp` / `wvtt` や 3GPP TS 26.245 の `tx3g` などの
+    /// Timed Text 系サンプルエントリーを持つトラックを表す。
+    /// 対応するハンドラー種別は `subt`（`stpp` 用）または `text`（`wvtt` / `tx3g` 用）で、
+    /// どちらもこのバリアントにマップされる。
+    Subtitle,
 }
 
 /// [ISO/IEC 14496-12] Sample Flags

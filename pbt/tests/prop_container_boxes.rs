@@ -945,6 +945,121 @@ mod boundary_tests {
         assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
     }
 
+    // ===== Stpp 正常経路担保テスト =====
+
+    /// stpp サンプルエントリーを持つ Sample を Fmp4SegmentMuxer 経由で組み立てて
+    /// init segment と media segment のバイト列を返すヘルパー
+    ///
+    /// 既存 `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `build_complete_media_segment`
+    /// と同じ形の組み立て（integration test の性質上、直接再利用できないためコピー）。
+    /// サンプルデータは TTML 最小 XML の合成バイト列を使う
+    fn build_stpp_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
+        // 型付きの Stpp サンプルエントリーを構築する
+        let stpp_sample_entry = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        });
+
+        // TTML の最小 XML をサンプルデータとして使う
+        let sample_payload: &[u8] = b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>";
+        let sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(stpp_sample_entry),
+            keyframe: true,
+            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            duration: 1000,
+            composition_time_offset: None,
+            data_offset: 0,
+            data_size: sample_payload.len(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        // media segment metadata を生成した後、サンプル payload を連結する
+        let mut media_segment = muxer
+            .create_media_segment_metadata(std::slice::from_ref(&sample))
+            .expect("failed to create media segment metadata");
+        media_segment.extend_from_slice(sample_payload);
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("failed to build init segment");
+
+        (init_bytes, media_segment)
+    }
+
+    /// Fmp4FileDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
+    ///
+    /// `TrackInfo` に `sample_entries` フィールドが無いため、`Sample.sample_entry` 経由で検証する。
+    /// init segment + media segment + サンプルデータの合成バイト列を組み立てて
+    /// `Fmp4FileDemuxer::next_sample()` から取り出したサンプルの `sample_entry` を検証する
+    #[test]
+    fn stpp_sample_entry_via_fmp4_file_demuxer() {
+        let (init_bytes, media_segment) = build_stpp_fmp4_segments();
+        let mut fmp4_bytes = init_bytes;
+        fmp4_bytes.extend_from_slice(&media_segment);
+
+        // Fmp4FileDemuxer は required_input()/handle_input() で段階的にデータを消費する
+        let mut demuxer = Fmp4FileDemuxer::new();
+        while let Some(required) = demuxer.required_input() {
+            let start = required.position as usize;
+            let end = start
+                .saturating_add(
+                    required
+                        .size
+                        .unwrap_or(fmp4_bytes.len().saturating_sub(start)),
+                )
+                .min(fmp4_bytes.len());
+            demuxer.handle_input(Input {
+                position: required.position,
+                data: fmp4_bytes.get(start..end).unwrap_or(&[]),
+            });
+        }
+
+        // 最初のサンプルを取り出して sample_entry が Stpp バリアントであることを検証する
+        let sample = demuxer
+            .next_sample()
+            .expect("failed to fetch next_sample")
+            .expect("no sample returned from Fmp4FileDemuxer");
+        let entry = sample
+            .sample_entry
+            .expect("最初のサンプルは SampleEntry を持つ");
+        assert!(
+            matches!(entry, SampleEntry::Stpp(_)),
+            "stpp サンプルエントリーが型付きで取り出せること"
+        );
+    }
+
+    /// Fmp4SegmentDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
+    ///
+    /// init segment を `handle_init_segment` に渡し、続いて media segment を
+    /// `handle_media_segment` に渡す。戻り値の各 `Sample.sample_entry` を検証する
+    #[test]
+    fn stpp_sample_entry_via_fmp4_segment_demuxer() {
+        let (init_bytes, media_segment) = build_stpp_fmp4_segments();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+        let samples = demuxer
+            .handle_media_segment(&media_segment)
+            .expect("failed to handle media segment");
+        assert!(
+            !samples.is_empty(),
+            "media segment から少なくとも 1 サンプル取り出せる"
+        );
+        let entry = samples[0]
+            .sample_entry
+            .expect("最初のサンプルは SampleEntry を持つ");
+        assert!(
+            matches!(entry, SampleEntry::Stpp(_)),
+            "stpp サンプルエントリーが型付きで取り出せること"
+        );
+    }
+
     /// MoovBox: 複数トラック
     #[test]
     fn moov_box_multiple_tracks() {

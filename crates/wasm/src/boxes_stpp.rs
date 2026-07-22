@@ -33,12 +33,14 @@ pub fn fmt_json_mp4_sample_entry_stpp(
 
 /// JSON から Mp4SampleEntryStpp に変換する
 ///
-/// 3 本の文字列フィールドを WASM メモリに割り当てて `*const u8` + `u32` のペアで保持する。
-/// パースと allocate を交互に行うと途中失敗時に確保済みバッファがリークするため、
-/// まず 3 本の `&str` を全部取り出してから一括で allocate する
+/// 返り値の Mp4SampleEntryStpp は内部でメモリを確保する。
+/// 不要になったら [`mp4_sample_entry_stpp_free()`] で解放すること
 pub fn parse_json_mp4_sample_entry_stpp(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryStpp, nojson::JsonParseError> {
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず 3 本の &str を全部取り出してから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
     let namespace_str = value
         .to_member("namespace")?
         .required()?
@@ -71,7 +73,7 @@ pub fn parse_json_mp4_sample_entry_stpp(
 
 /// stpp サンプルエントリーのメモリを解放する
 ///
-/// [`parse_json_mp4_sample_entry_stpp()`] で割り当てられた 3 本のバイト列を解放する
+/// [`parse_json_mp4_sample_entry_stpp()`] で割り当てられたバッファを解放する
 pub fn mp4_sample_entry_stpp_free(entry: &mut Mp4SampleEntryStpp) {
     if !entry.namespace_data.is_null() && entry.namespace_size > 0 {
         unsafe {

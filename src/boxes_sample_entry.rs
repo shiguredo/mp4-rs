@@ -1915,18 +1915,19 @@ impl BaseBox for DopsBox {
 /// XML 形式の字幕（TTML / IMSC 等）を格納するためのサンプルエントリー。
 /// サンプルデータ自体は不透明な XML ドキュメントとして扱い、内部構造の解釈は利用側の責務とする
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StppBox {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
     pub data_reference_index: NonZeroU16,
     /// XML 名前空間 URI のスペース区切りリスト
     ///
     /// 仕様上は非空前提だが、パーサの堅牢性のため空文字列も受け入れる。
-    /// 複数名前空間を扱う場合は利用側で split する運用
+    /// 複数名前空間を扱う場合は利用側で分割する運用
     pub namespace: Utf8String,
     /// 対応する XML スキーマの URL のスペース区切りリスト（空可）
     pub schema_location: Utf8String,
     /// 補助 MIME タイプのスペース区切りリスト（空可）
     pub auxiliary_mime_types: Utf8String,
+    /// 型付き実装を持たない任意の子ボックス（`btrt` / `m4ds` 等）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 

@@ -765,7 +765,7 @@ typedef struct Mp4SampleEntryFlac {
  *
  * XML 形式の字幕（TTML / IMSC 等）のトラックが持つメタデータを表現する。
  * 3 本の文字列フィールドは各々 `_data` + `_size` のペアで露出し、
- * バイト列は null 終端を含まない（既存 `dec_specific_info` / `streaminfo_data` パターンと同じ）
+ * バイト列は null 終端を含まない UTF-8 バイト列で `_size` は正味のバイト数を表す
  */
 typedef struct Mp4SampleEntryStpp {
   /**

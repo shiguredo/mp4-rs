@@ -474,7 +474,7 @@ impl Mp4SampleEntryOwned {
             }
             Self::Stpp { inner } => {
                 // Utf8String の内部バッファのポインタ・長さを直接露出する。
-                // 長さは null 終端を含まない（既存 `_data + _size` パターンと揃える）
+                // 長さは null 終端を含まない（`_size` は `&str::len()` そのもの）
                 let namespace_bytes = inner.namespace.get().as_bytes();
                 let schema_location_bytes = inner.schema_location.get().as_bytes();
                 let auxiliary_mime_types_bytes = inner.auxiliary_mime_types.get().as_bytes();
@@ -1462,7 +1462,7 @@ impl Mp4SampleEntryFlac {
 ///
 /// XML 形式の字幕（TTML / IMSC 等）のトラックが持つメタデータを表現する。
 /// 3 本の文字列フィールドは各々 `_data` + `_size` のペアで露出し、
-/// バイト列は null 終端を含まない（既存 `dec_specific_info` / `streaminfo_data` パターンと同じ）
+/// バイト列は null 終端を含まない UTF-8 バイト列で `_size` は正味のバイト数を表す
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Mp4SampleEntryStpp {

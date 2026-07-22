@@ -990,7 +990,7 @@ impl FullBox for HdlrBox {
 pub struct MinfBox {
     /// [`MediaHeader`] を保持する
     ///
-    /// 仕様上 `minf` 直下に Media Header は 1 種類しか出ないため [`Option`] でラップする。
+    /// 仕様上 `minf` 直下にメディアヘッダーは 1 種類しか出ないため [`Option`] でラップする。
     /// メディアトラック以外を含む MP4 で `minf` を持てるよう [`None`] も許容する
     pub media_header: Option<MediaHeader>,
     pub dinf_box: DinfBox,
@@ -1035,7 +1035,7 @@ impl Decode for MinfBox {
             while offset < payload.len() {
                 let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
                 match child_header.box_type {
-                    // Media Header 系のいずれかが最初に見つかった時点で採用する（仕様上 1 種類のみ出る前提）。
+                    // メディアヘッダー系のいずれかが最初に見つかった時点で採用する（仕様上 1 種類のみ出る前提）。
                     // 複数現れた場合、2 個目以降は unknown_boxes に落ちる
                     SmhdBox::TYPE | VmhdBox::TYPE | SthdBox::TYPE | NmhdBox::TYPE
                         if media_header.is_none() =>
@@ -1083,25 +1083,16 @@ impl BaseBox for MinfBox {
     }
 }
 
-/// [`MinfBox`] 直下に配置される Media Header ボックスをまとめた列挙型
-///
-/// トラック種別ごとに以下のいずれかを保持する。
-///
-/// - [`SmhdBox`] (`smhd`): 音声トラック
-/// - [`VmhdBox`] (`vmhd`): 映像トラック
-/// - [`SthdBox`] (`sthd`): 字幕トラック
-/// - [`NmhdBox`] (`nmhd`): 上記に該当しない汎用トラック（ヒントトラック等）
-///
-/// 実装パターンは [`crate::boxes::SampleEntry`] に揃えており、[`BaseBox`] のメソッドは
-/// 内包する各 Box に委譲する。
-/// [`Encode`] は各バリアント別に inner box の実装を呼ぶ（`&dyn BaseBox` からは `encode` を呼べないため）。
-/// [`FullBox`] は各 Box 側で実装されるため列挙型側では持たない。
+/// トラック種別に応じたメディアヘッダーを表す列挙型
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub enum MediaHeader {
+    /// 音声トラック用（`smhd`）
     Smhd(SmhdBox),
+    /// 映像トラック用（`vmhd`）
     Vmhd(VmhdBox),
+    /// 字幕トラック用（`sthd`）
     Sthd(SthdBox),
+    /// 汎用トラック用（`nmhd`。ヒントトラック等で使われる）
     Nmhd(NmhdBox),
 }
 
@@ -1301,7 +1292,7 @@ impl FullBox for VmhdBox {
 
 /// [ISO/IEC 14496-12] SubtitleMediaHeaderBox class (親: [`MinfBox`]）
 ///
-/// 字幕トラックの `minf` 直下に配置される Media Header ボックス。
+/// 字幕トラックの `minf` 直下に配置されるメディアヘッダーボックス。
 /// バージョン 0 の FullBox のみで追加ペイロードは持たない。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct SthdBox;
@@ -1357,7 +1348,7 @@ impl FullBox for SthdBox {
 
 /// [ISO/IEC 14496-12] NullMediaHeaderBox class (親: [`MinfBox`]）
 ///
-/// メディアハンドラーに対応する Media Header が特にない場合に置かれる汎用ボックス。
+/// メディアハンドラーに対応するメディアヘッダーが特にない場合に置かれる汎用ボックス。
 /// 字幕トラック（例えば `tx3g`）だけでなくヒントトラック等でも使われる。
 /// バージョン 0 の FullBox のみで追加ペイロードは持たない。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]

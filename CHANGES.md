@@ -23,13 +23,13 @@
   - 新規 `MediaHeader` enum は別エントリで追加する
   - @sile
 - [ADD] ISO/IEC 14496-12 の `SthdBox` (`sthd`) と `NmhdBox` (`nmhd`) を追加する
-  - 字幕トラック等で使われる Media Header ボックス
+  - 字幕トラック等で使われるメディアヘッダーボックス
   - どちらも追加ペイロードを持たない FullBox
   - @sile
 - [ADD] `MediaHeader` enum を追加する
   - `MinfBox::media_header` フィールドで利用する多態コンテナ
   - `Smhd` / `Vmhd` / `Sthd` / `Nmhd` の 4 バリアントを持つ
-  - `MinfBox` の Media Header 保持構造刷新のために導入する
+  - `MinfBox` のメディアヘッダー保持構造刷新のために導入する
   - @sile
 - [ADD] `HdlrBox` に字幕用ハンドラー種別定数を追加する
   - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)

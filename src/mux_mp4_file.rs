@@ -617,9 +617,9 @@ impl Mp4FileMuxer {
 
                 &mut self.video_chunks
             }
-            // この arm は関数冒頭の早期 return により通常到達しない。
-            // TrackKind は #[non_exhaustive] ではないため網羅性を満たす必要があり、
-            // 万一到達した場合の防衛値として同じエラーを返す
+            // この分岐は関数冒頭の早期 return により通常到達しない。
+            // 将来 TrackKind にバリアントが追加された際にコンパイルエラーで気付けるよう
+            // `_` を避けて明示し、万一到達した場合の防衛値として同じエラーを返す
             TrackKind::Subtitle => {
                 return Err(MuxError::UnsupportedTrackKind {
                     track_kind: TrackKind::Subtitle,

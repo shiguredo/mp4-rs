@@ -1918,23 +1918,15 @@ impl BaseBox for DopsBox {
 #[expect(missing_docs)]
 pub struct StppBox {
     pub data_reference_index: NonZeroU16,
-
-    /// XML 名前空間 URI をスペース区切りで連結した文字列
+    /// XML 名前空間 URI のスペース区切りリスト
     ///
     /// 仕様上は非空前提だが、パーサの堅牢性のため空文字列も受け入れる。
     /// 複数名前空間を扱う場合は利用側で split する運用
     pub namespace: Utf8String,
-
-    /// 対応する XML スキーマの URL
-    ///
-    /// 常に書き出す。指定不要な場合は空文字列（`\0` 1 バイト）で表現する
+    /// 対応する XML スキーマの URL のスペース区切りリスト（空可）
     pub schema_location: Utf8String,
-
-    /// 補助 MIME タイプ
-    ///
-    /// 常に書き出す。指定不要な場合は空文字列（`\0` 1 バイト）で表現する
+    /// 補助 MIME タイプのスペース区切りリスト（空可）
     pub auxiliary_mime_types: Utf8String,
-
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1950,14 +1942,11 @@ impl Encode for StppBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
-        // SampleEntry 由来のヘッダー（6 bytes reserved + data_reference_index）
         offset += [0u8; 6].encode(&mut buf[offset..])?;
         offset += self.data_reference_index.encode(&mut buf[offset..])?;
-        // XMLSubtitleSampleEntry 本体フィールド（3 本の null 終端文字列）
         offset += self.namespace.encode(&mut buf[offset..])?;
         offset += self.schema_location.encode(&mut buf[offset..])?;
         offset += self.auxiliary_mime_types.encode(&mut buf[offset..])?;
-        // 任意の子ボックス（btrt / m4ds 等は unknown_boxes に落とす）
         for b in &self.unknown_boxes {
             offset += b.encode(&mut buf[offset..])?;
         }
@@ -1973,11 +1962,10 @@ impl Decode for StppBox {
             header.box_type.expect(Self::TYPE)?;
 
             let mut offset = 0;
-            // SampleEntry 由来のヘッダーを読み飛ばして data_reference_index を取り出す
             let _ = <[u8; 6]>::decode_at(payload, &mut offset)?;
             let data_reference_index = NonZeroU16::decode_at(payload, &mut offset)?;
 
-            // 3 本の null 終端文字列は Utf8String::decode の元エラーメッセージを保持しつつ、
+            // Utf8String::decode の元エラーメッセージを保持しつつ、
             // どのフィールドで失敗したかを接頭辞で示す
             let namespace = Utf8String::decode_at(payload, &mut offset)
                 .map_err(|e| Error::invalid_input(format!("stpp.namespace: {e}")))?;
@@ -1986,7 +1974,6 @@ impl Decode for StppBox {
             let auxiliary_mime_types = Utf8String::decode_at(payload, &mut offset)
                 .map_err(|e| Error::invalid_input(format!("stpp.auxiliary_mime_types: {e}")))?;
 
-            // 残りは任意の子ボックス（現状は全て unknown_boxes に落とす）
             let mut unknown_boxes = Vec::new();
             while offset < payload.len() {
                 unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
@@ -2012,6 +1999,6 @@ impl BaseBox for StppBox {
     }
 
     fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
-        Box::new(core::iter::empty().chain(self.unknown_boxes.iter().map(as_box_object)))
+        Box::new(self.unknown_boxes.iter().map(as_box_object))
     }
 }

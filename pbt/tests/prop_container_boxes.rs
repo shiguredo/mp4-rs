@@ -204,7 +204,7 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に SampleEntry を 1 つ持つ。stpp は 0043 で型付き実装が入ったため
+/// stsd 内に SampleEntry を 1 つ持つ。stpp は型付き実装のため
 /// `SampleEntry::Stpp` の最小構成（3 本の Utf8String すべて空文字列）を使う。
 /// 未実装の wvtt / tx3g は Unknown フォールバックのままにする。
 /// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
@@ -884,8 +884,7 @@ mod boundary_tests {
     /// - height == 0
     #[test]
     fn subtitle_track_mux_tkhd_via_fmp4_segment_muxer() {
-        // 0043 で型付きの Stpp バリアントが追加されたため、Unknown フォールバックではなく
-        // Stpp を直接使う（tkhd 検証のため sample_entry の型は問わない）
+        // tkhd 検証のため sample_entry の型は問わない。型付き Stpp バリアントを直接使う
         let subtitle_sample_entry = SampleEntry::Stpp(StppBox {
             data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
             namespace: Utf8String::EMPTY,

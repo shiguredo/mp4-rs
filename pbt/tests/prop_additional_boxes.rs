@@ -240,7 +240,7 @@ fn arb_av1c_box() -> impl Strategy<Value = Av1cBox> {
 ///
 /// `Utf8String` は null 文字を含む文字列を受け入れないため、null 文字を除外する
 /// （`pbt/tests/prop_basic_types.rs:41` の `arb_utf8_string` と同じ正規表現）
-fn arb_utf8_string_no_null() -> impl Strategy<Value = String> {
+fn arb_utf8_string() -> impl Strategy<Value = String> {
     "[^\x00]{0,100}"
 }
 
@@ -250,10 +250,10 @@ fn arb_utf8_string_no_null() -> impl Strategy<Value = String> {
 /// 独立に生成する（それぞれの空・非空パターンを網羅する）
 fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
     (
-        1u16..=u16::MAX,           // data_reference_index
-        arb_utf8_string_no_null(), // namespace
-        arb_utf8_string_no_null(), // schema_location
-        arb_utf8_string_no_null(), // auxiliary_mime_types
+        1u16..=u16::MAX,   // data_reference_index
+        arb_utf8_string(), // namespace
+        arb_utf8_string(), // schema_location
+        arb_utf8_string(), // auxiliary_mime_types
     )
         .prop_map(|(dri, ns, sl, am)| StppBox {
             data_reference_index: NonZeroU16::new(dri).unwrap(),
@@ -1121,7 +1121,6 @@ mod sample_entry_tests {
 
     /// SampleEntry::Stpp の encode/decode ラウンドトリップ
     ///
-    /// 独立関数として追加する（既存の Opus 版はそのまま残す）。
     /// stpp サンプルエントリーが型付きで decode されて Stpp バリアントに復元されることを検証する
     #[test]
     fn sample_entry_stpp_encode_decode_roundtrip() {
@@ -1283,8 +1282,8 @@ mod sample_entry_tests {
 
     /// SampleEntry::decode で stpp box_type を持つ入力が Stpp バリアントとして取り出されることを検証する
     ///
-    /// 0043 完了以前は `SampleEntry::Unknown` にフォールバックしていた挙動が
-    /// 型付きの `SampleEntry::Stpp(_)` に変わる回帰確認
+    /// 型付き Stpp バリアント追加前は `SampleEntry::Unknown` にフォールバックしていたため、
+    /// dispatch の回帰確認として置く
     #[test]
     fn sample_entry_decode_stpp_dispatches_to_stpp_variant() {
         let bytes = build_valid_stpp_bytes(b"http://www.w3.org/ns/ttml", b"", b"");

@@ -108,8 +108,6 @@ fn raw_bytes_as_str<'a>(data: *const u8, size: u32) -> &'a str {
     if size == 0 || data.is_null() {
         return "";
     }
-    // SAFETY: parse_json_mp4_sample_entry_stpp で割り当てたバイト列、
-    // または c-api 側で inner.namespace.get().as_bytes() から直接露出したバイト列を想定
     let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
     std::str::from_utf8(bytes).unwrap_or("")
 }
@@ -119,7 +117,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stpp_サンプルエントリーを_json_に変換できる() {
+    fn test_stpp_to_json() {
         static NAMESPACE: &[u8] = b"http://www.w3.org/ns/ttml";
         static SCHEMA_LOCATION: &[u8] = b"";
         static AUX_MIME: &[u8] = b"";
@@ -141,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn json_から_stpp_サンプルエントリーへ変換して解放できる() {
+    fn test_json_to_stpp_and_free() {
         let json_str = r#"{
             "kind": "stpp",
             "namespace": "http://www.w3.org/ns/ttml",

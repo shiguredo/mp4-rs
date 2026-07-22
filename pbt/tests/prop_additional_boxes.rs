@@ -244,23 +244,40 @@ fn arb_utf8_string() -> impl Strategy<Value = String> {
     "[^\x00]{0,100}"
 }
 
+/// UnknownBox を生成する Strategy
+///
+/// 必須子ボックスを持たない SampleEntry（例: StppBox）で子ボックス経路を
+/// PBT でカバーするために使う
+fn arb_unknown_box() -> impl Strategy<Value = UnknownBox> {
+    (any::<[u8; 4]>(), prop::collection::vec(any::<u8>(), 0..64)).prop_map(|(box_type, payload)| {
+        UnknownBox {
+            box_type: BoxType::Normal(box_type),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
+            payload,
+        }
+    })
+}
+
 /// StppBox を生成する Strategy
 ///
 /// `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールドを
-/// 独立に生成する（それぞれの空・非空パターンを網羅する）
+/// 独立に生成する（それぞれの空・非空パターンを網羅する）。
+/// StppBox は必須子ボックスを持たないため、`unknown_boxes` を Strategy 経由で
+/// 生成して decode / encode の子ボックス処理経路もカバーする
 fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
     (
-        1u16..=u16::MAX,   // data_reference_index
-        arb_utf8_string(), // namespace
-        arb_utf8_string(), // schema_location
-        arb_utf8_string(), // auxiliary_mime_types
+        1u16..=u16::MAX,                                // data_reference_index
+        arb_utf8_string(),                              // namespace
+        arb_utf8_string(),                              // schema_location
+        arb_utf8_string(),                              // auxiliary_mime_types
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
     )
-        .prop_map(|(dri, ns, sl, am)| StppBox {
+        .prop_map(|(dri, ns, sl, am, unknown_boxes)| StppBox {
             data_reference_index: NonZeroU16::new(dri).unwrap(),
             namespace: Utf8String::new(&ns).expect("null 文字を含まない"),
             schema_location: Utf8String::new(&sl).expect("null 文字を含まない"),
             auxiliary_mime_types: Utf8String::new(&am).expect("null 文字を含まない"),
-            unknown_boxes: vec![],
+            unknown_boxes,
         })
 }
 
@@ -500,8 +517,8 @@ proptest! {
 
     /// StppBox の encode/decode roundtrip
     ///
-    /// 3 フィールドすべてに任意の UTF-8 文字列（空文字列も含む）を割り当てて
-    /// ラウンドトリップを検証する
+    /// 3 フィールドすべてに任意の UTF-8 文字列（空文字列も含む）と、
+    /// 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
     #[test]
     fn stpp_box_roundtrip(stpp in arb_stpp_box()) {
         let encoded = stpp.encode_to_vec().unwrap();
@@ -512,7 +529,7 @@ proptest! {
         prop_assert_eq!(&decoded.namespace, &stpp.namespace);
         prop_assert_eq!(&decoded.schema_location, &stpp.schema_location);
         prop_assert_eq!(&decoded.auxiliary_mime_types, &stpp.auxiliary_mime_types);
-        prop_assert!(decoded.unknown_boxes.is_empty());
+        prop_assert_eq!(&decoded.unknown_boxes, &stpp.unknown_boxes);
     }
 }
 

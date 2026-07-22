@@ -99,6 +99,13 @@ Subtitle トラックの handler type と Media Header は `Fmp4SegmentMuxer` �
 - `cargo clippy --all-targets --all-features` が通る
 - PBT に Subtitle トラック含む `Mp4FileMuxer` ラウンドトリップテストを追加する
 
+## 本 issue 完了後の追随タスク
+
+本 issue の完了により、以下の姉妹字幕方式 issue で保留された `Mp4FileDemuxer` 経路検証テストの追加が可能となる。本 issue のスコープには含めないが、本 issue のマージ後に該当 issue 側で追加する運用とする。
+
+- **0043 (`issues/0043-add-subtitle-stpp.md`)**: `stpp_sample_entry_via_mp4_file_demuxer` PBT の追加（`pbt/tests/prop_container_boxes.rs`）。0043 では `Mp4FileMuxer` が Subtitle 拒否のため合成データを Muxer 経由で吐かせられず、本 issue 完了を待つ形になった（0043 の「### 3 経路デマルチプレクサ検証と合成ラウンドトリップ」節参照）
+- **0044 (`issues/0044-add-subtitle-wvtt.md`) / 0045 (`issues/0045-add-subtitle-tx3g.md`)**: 同種の `wvtt_sample_entry_via_mp4_file_demuxer` / `tx3g_sample_entry_via_mp4_file_demuxer` PBT を同じ理由で保留する可能性がある。各 issue の refresh 状況に応じて同時に追加する
+
 ## 解決方法
 
 0042 完了後に着手する。以下の順で実装する見込み。

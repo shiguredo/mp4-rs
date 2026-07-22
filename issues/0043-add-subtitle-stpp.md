@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-22
 - Model: Opus 4.7
 - Branch: feature/add-subtitle-stpp
 - Polished: 2026-07-22
@@ -303,7 +303,7 @@ Fmp4 経路 2 本の合成は `Fmp4SegmentMuxer`（0042 で Subtitle 受け入�
 
 ## 解決方法
 
-以下の順で実装する見込み。相互依存で「単独では cargo build が通らない」手順は同一コミット単位でまとめる。途中コミットも `cargo build` が通ることを目安とし、`cargo clippy` / `cargo test` は最終コミット時点で通れば良い。
+以下の順で実装した。相互依存で「単独では cargo build が通らない」手順は同一コミット単位でまとめた。途中コミットも `cargo build` が通ることを目安とし、`cargo clippy` / `cargo test` は最終コミット時点で通ることを確認した。
 
 1. `StppBox` を実装（`Encode` / `Decode` / `BaseBox`。`StppBox::DEFAULT_DATA_REFERENCE_INDEX = NonZeroU16::MIN` の関連定数も定義する）。doc コメントは既存 SampleEntry の形式（半角括弧で終わる）に揃え、`` /// [ISO/IEC 14496-30] XMLSubtitleSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox]) `` とする（既存 `Avc1Box` を参考にする）
 2. **同一コミット単位で実施**: `SampleEntry::Stpp(StppBox)` バリアントを追加し、「### `SampleEntry` の網羅 match 箇所」で列挙した 3 箇所の網羅 match（`inner_box` / `Encode` / `Decode`）に arm を追加する。バリアント追加と match arm 追加を分けると `cargo build` が通らない

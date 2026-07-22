@@ -12,24 +12,18 @@
 ## develop
 
 - [CHANGE] `TrackKind` に `Subtitle` バリアントを追加する
-  - 字幕トラックを扱う共通基盤の導入に伴う変更
-  - `TrackKind` は `#[non_exhaustive]` ではないため既存の網羅 `match` は破壊する
   - C API `Mp4TrackKind` に `MP4_TRACK_KIND_SUBTITLE = 2` を追加する
   - WASM の JSON API で `"subtitle"` の入出力に対応する
   - @sile
 - [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
   - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
-  - フィールド名と型の同時変更のため、`pub` フィールドを直接参照している利用者コードに影響する
-  - 新規 `MediaHeader` enum は別エントリで追加する
   - @sile
 - [ADD] ISO/IEC 14496-12 の `SthdBox` (`sthd`) と `NmhdBox` (`nmhd`) を追加する
   - 字幕トラック等で使われるメディアヘッダーボックス
-  - どちらも追加ペイロードを持たない FullBox
   - @sile
 - [ADD] `MediaHeader` enum を追加する
-  - `MinfBox::media_header` フィールドで利用する多態コンテナ
+  - `MinfBox::media_header` フィールドで利用する
   - `Smhd` / `Vmhd` / `Sthd` / `Nmhd` の 4 バリアントを持つ
-  - `MinfBox` のメディアヘッダー保持構造刷新のために導入する
   - @sile
 - [ADD] `HdlrBox` に字幕用ハンドラー種別定数を追加する
   - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)
@@ -38,7 +32,7 @@
 - [ADD] 字幕トラックの mux / demux 経路を追加する
   - `Fmp4SegmentMuxer` で `TrackKind::Subtitle` を受け入れる（暫定 `subt` + `sthd` 固定）
   - `Mp4FileMuxer` は字幕未対応のため、新規 `MuxError::UnsupportedTrackKind` を返して拒否する
-  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックを skip せず取り出せるようにする
+  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
   - C API `Mp4Error` マッピングに `UnsupportedTrackKind => MP4_ERROR_UNSUPPORTED` を追加する
   - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする

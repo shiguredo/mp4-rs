@@ -32,7 +32,9 @@ pub fn fmt_json_mp4_sample_entry_stpp(
 
 /// JSON から Mp4SampleEntryStpp に変換する
 ///
-/// 3 本の文字列フィールドを WASM メモリに割り当てて `*const u8` + `u32` のペアで保持する
+/// 3 本の文字列フィールドを WASM メモリに割り当てて `*const u8` + `u32` のペアで保持する。
+/// パースと allocate を交互に行うと途中失敗時に確保済みバッファがリークするため、
+/// まず 3 本の `&str` を全部取り出してから一括で allocate する
 pub fn parse_json_mp4_sample_entry_stpp(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryStpp, nojson::JsonParseError> {
@@ -40,20 +42,19 @@ pub fn parse_json_mp4_sample_entry_stpp(
         .to_member("namespace")?
         .required()?
         .to_unquoted_string_str()?;
-    let (namespace_data, namespace_size) =
-        crate::boxes::allocate_and_copy_bytes(namespace_str.as_bytes());
-
     let schema_location_str = value
         .to_member("schemaLocation")?
         .required()?
         .to_unquoted_string_str()?;
-    let (schema_location_data, schema_location_size) =
-        crate::boxes::allocate_and_copy_bytes(schema_location_str.as_bytes());
-
     let auxiliary_mime_types_str = value
         .to_member("auxiliaryMimeTypes")?
         .required()?
         .to_unquoted_string_str()?;
+
+    let (namespace_data, namespace_size) =
+        crate::boxes::allocate_and_copy_bytes(namespace_str.as_bytes());
+    let (schema_location_data, schema_location_size) =
+        crate::boxes::allocate_and_copy_bytes(schema_location_str.as_bytes());
     let (auxiliary_mime_types_data, auxiliary_mime_types_size) =
         crate::boxes::allocate_and_copy_bytes(auxiliary_mime_types_str.as_bytes());
 

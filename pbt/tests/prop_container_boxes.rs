@@ -562,7 +562,7 @@ mod boundary_tests {
         assert_eq!(decoded, nmhd);
     }
 
-    /// `HdlrBox` の字幕用 handler type 定数が仕様通りのバイト列であることを検証する
+    /// `HdlrBox` の字幕用ハンドラー種別定数が仕様通りのバイト列であることを検証する
     ///
     /// テスト側の合成 MP4 では生バイト列 `b"subt"` / `b"text"` を渡す形になっており、
     /// 定数側が誤って書き換わっても demuxer 側だけ壊れて他のテストは pass するリスクがある。
@@ -913,7 +913,7 @@ mod boundary_tests {
         assert_eq!(moov.trak_boxes.len(), 1);
         let trak = &moov.trak_boxes[0];
 
-        // handler type と Media Header の暫定選択（subt + sthd）を確認
+        // ハンドラー種別と Media Header の暫定選択（subt + sthd）を確認
         assert_eq!(
             trak.mdia_box.hdlr_box.handler_type,
             HdlrBox::HANDLER_TYPE_SUBT

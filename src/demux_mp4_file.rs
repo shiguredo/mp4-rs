@@ -511,7 +511,7 @@ impl Mp4FileDemuxer {
             let kind = match trak_box.mdia_box.hdlr_box.handler_type {
                 HdlrBox::HANDLER_TYPE_VIDE => TrackKind::Video,
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
-                // 字幕トラックの handler type は `subt` (stpp) / `text` (wvtt / tx3g) の 2 種類
+                // 字幕トラックのハンドラー種別は `subt` (stpp) / `text` (wvtt / tx3g) の 2 種類
                 HdlrBox::HANDLER_TYPE_SUBT | HdlrBox::HANDLER_TYPE_TEXT => TrackKind::Subtitle,
                 _ => continue,
             };

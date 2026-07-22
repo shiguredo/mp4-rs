@@ -31,7 +31,7 @@
   - `Smhd` / `Vmhd` / `Sthd` / `Nmhd` の 4 バリアントを持つ
   - `MinfBox` の Media Header 保持構造刷新のために導入する
   - @sile
-- [ADD] `HdlrBox` に字幕用 handler type 定数を追加する
+- [ADD] `HdlrBox` に字幕用ハンドラー種別定数を追加する
   - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)
   - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
   - @sile

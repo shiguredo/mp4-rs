@@ -685,8 +685,8 @@ pub enum TrackKind {
     ///
     /// ISO/IEC 14496-30 の `stpp` / `wvtt` や 3GPP TS 26.245 の `tx3g` などの
     /// Timed Text 系サンプルエントリーを持つトラックを表す。
-    /// 対応する handler type は `subt`（`stpp` 用）または `text`（`wvtt` / `tx3g` 用）で、
-    /// どちらもこのバリアントに射影する。
+    /// 対応するハンドラー種別は `subt`（`stpp` 用）または `text`（`wvtt` / `tx3g` 用）で、
+    /// どちらもこのバリアントにマップされる。
     Subtitle,
 }
 

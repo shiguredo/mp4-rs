@@ -922,15 +922,10 @@ impl HdlrBox {
     /// 映像用のハンドラー種別
     pub const HANDLER_TYPE_VIDE: [u8; 4] = *b"vide";
 
-    /// 字幕用のハンドラー種別（`stpp` サンプルエントリー用）
-    ///
-    /// ISO/IEC 14496-30 の XMLSubtitleSampleEntry (`stpp`) が要求する handler type。
+    /// 字幕用のハンドラー種別
     pub const HANDLER_TYPE_SUBT: [u8; 4] = *b"subt";
 
-    /// テキスト系トラック用のハンドラー種別（`wvtt` / `tx3g` サンプルエントリー用）
-    ///
-    /// ISO/IEC 14496-30 の WVTTSampleEntry (`wvtt`) および
-    /// 3GPP TS 26.245 の TX3GSampleEntry (`tx3g`) が要求する handler type。
+    /// 字幕テキスト系トラック用のハンドラー種別
     pub const HANDLER_TYPE_TEXT: [u8; 4] = *b"text";
 }
 
@@ -993,12 +988,10 @@ impl FullBox for HdlrBox {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[expect(missing_docs)]
 pub struct MinfBox {
-    /// トラックの Media Header
+    /// [`MediaHeader`] を保持する
     ///
-    /// トラック種別に応じて `smhd` (音声) / `vmhd` (映像) / `sthd` (字幕) / `nmhd` (汎用) の
-    /// いずれかが入る。仕様上 `minf` 直下には Media Header は 1 種類しか出ないため、
-    /// [`MediaHeader`] を [`Option`] でラップして保持する（メディアトラック以外を含む MP4 でも
-    /// `minf` を持てるようにするため、[`None`] も許容する）。
+    /// 仕様上 `minf` 直下に Media Header は 1 種類しか出ないため [`Option`] でラップする。
+    /// メディアトラック以外を含む MP4 で `minf` を持てるよう [`None`] も許容する
     pub media_header: Option<MediaHeader>,
     pub dinf_box: DinfBox,
     pub stbl_box: StblBox,

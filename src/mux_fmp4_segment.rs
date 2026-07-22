@@ -603,7 +603,7 @@ impl Fmp4SegmentMuxer {
             .ok_or(MuxError::MissingSampleEntry {
                 track_kind: entry.track_kind,
             })?;
-        // トラック種別依存の tkhd 属性・handler type・Media Header を 1 箇所で決める
+        // トラック種別依存の tkhd 属性・ハンドラー種別・Media Header を 1 箇所で決める
         let derived = derive_trak_attributes(entry, sample_entry)?;
 
         let tkhd_box = TkhdBox {
@@ -939,7 +939,7 @@ type TkhdDimensions = (FixedPointNumber<i16, u16>, FixedPointNumber<i16, u16>);
 
 /// `build_init_trak` 内で `entry.track_kind` から派生する属性群
 ///
-/// tkhd の volume / width / height、handler type、Media Header はすべて
+/// tkhd の volume / width / height、ハンドラー種別、Media Header はすべて
 /// トラック種別ごとに決まる。3 箇所で個別に match するのを避け、決定表として
 /// 1 つの構造体に集約する
 struct TrakDerivation {
@@ -979,7 +979,7 @@ fn derive_trak_attributes(
         // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
         // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
         //
-        // 暫定実装として handler type = `subt`、Media Header = `sthd` を固定選択する。
+        // 暫定実装としてハンドラー種別 = `subt`、Media Header = `sthd` を固定選択する。
         // 方式固有 SampleEntry（stpp / wvtt / tx3g）が実装され次第、
         // ここを SampleEntry 種別ごとの分岐に完全置換する
         TrackKind::Subtitle => Ok(TrakDerivation {

@@ -16,7 +16,7 @@ pub use crate::boxes_moov_tree::{
 pub use crate::boxes_sample_entry::{
     AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, FlacBox,
     FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, HvccNalUintArray, Mp4aBox, OpusBox, SampleEntry,
-    VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+    StppBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
 };
 
 pub(crate) fn with_box_type<F, T>(ty: BoxType, f: F) -> Result<T>

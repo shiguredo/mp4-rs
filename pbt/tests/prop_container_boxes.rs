@@ -7,12 +7,12 @@ use std::num::{NonZeroU16, NonZeroU32};
 use proptest::prelude::*;
 use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Either, Encode, FixedPointNumber, Mp4FileTime, SampleFlags,
-    TrackKind,
+    TrackKind, Utf8String,
     boxes::{
         AudioSampleEntryFields, Brand, Co64Box, DinfBox, DopsBox, FtypBox, HdlrBox, MdhdBox,
         MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox, OpusBox, SampleEntry,
-        SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox,
-        SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox,
+        SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
+        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox,
     },
     demux::{Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, Mp4FileDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -204,16 +204,28 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に `SampleEntry::Unknown` を 1 つ持つ。方式固有の
-/// SampleEntry（Stpp / Wvtt / Tx3g）は現時点で未実装のため、Unknown フォールバックを利用する。
+/// stsd 内に SampleEntry を 1 つ持つ。stpp は 0043 で型付き実装が入ったため
+/// `SampleEntry::Stpp` の最小構成（3 本の Utf8String すべて空文字列）を使う。
+/// 未実装の wvtt / tx3g は Unknown フォールバックのままにする。
 /// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
 fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
-    StsdBox {
-        entries: vec![SampleEntry::Unknown(UnknownBox {
+    let entry = if sample_entry_box_type == *b"stpp" {
+        SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::EMPTY,
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        })
+    } else {
+        SampleEntry::Unknown(UnknownBox {
             box_type: BoxType::Normal(sample_entry_box_type),
             box_size: BoxSize::U32(8),
             payload: vec![],
-        })],
+        })
+    };
+    StsdBox {
+        entries: vec![entry],
     }
 }
 
@@ -872,10 +884,14 @@ mod boundary_tests {
     /// - height == 0
     #[test]
     fn subtitle_track_mux_tkhd_via_fmp4_segment_muxer() {
-        let subtitle_sample_entry = SampleEntry::Unknown(UnknownBox {
-            box_type: BoxType::Normal(*b"stpp"),
-            box_size: BoxSize::U32(8),
-            payload: vec![],
+        // 0043 で型付きの Stpp バリアントが追加されたため、Unknown フォールバックではなく
+        // Stpp を直接使う（tkhd 検証のため sample_entry の型は問わない）
+        let subtitle_sample_entry = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::EMPTY,
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
         });
         let sample_payload = b"hello subtitle";
         let sample = Sample {

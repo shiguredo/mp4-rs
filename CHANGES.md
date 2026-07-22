@@ -46,8 +46,8 @@
   - @voluntas
 - [FIX] `Fmp4SegmentMuxer::build_init_trak()` で `TrackKind::Video` に非映像系 `SampleEntry` が渡された場合の tkhd `volume` を修正する
   - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
-  - Video トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると audio 用 volume が採用される不整合があった
-  - `entry.track_kind` を外側で明示 `match` するよう刷新し、Video では常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
+  - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
+  - `entry.track_kind` で外側に分岐する形に刷新し、映像トラックでは常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
   - @sile
 
 ### misc

@@ -952,8 +952,10 @@ struct TrakDerivation {
 
 /// `entry.track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
-/// 字幕系サンプルエントリー（`stpp` / `wvtt` / `tx3g`）の SampleEntry バリアントが実装され次第、
-/// [`TrackKind::Subtitle`] 分岐内を SampleEntry 種別ごとの実装に置き換える
+/// [`SampleEntry::Stpp`] は本関数で受け入れているが、対応表が暫定固定選択と同じ `subt` + `sthd` のため
+/// arm 追加は行わず fallback で処理している。字幕系サンプルエントリーのうち `wvtt` / `tx3g` の
+/// SampleEntry バリアントが実装され次第、[`TrackKind::Subtitle`] 分岐内を SampleEntry 種別ごとの
+/// 実装に置き換え、暫定固定選択を除去する
 fn derive_trak_attributes(
     entry: &TrackEntry,
     sample_entry: &SampleEntry,
@@ -980,7 +982,8 @@ fn derive_trak_attributes(
         // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
         //
         // 暫定実装としてハンドラー種別 = `subt`、メディアヘッダー = `sthd` を固定選択する。
-        // 方式固有 SampleEntry（stpp / wvtt / tx3g）が実装され次第、
+        // stpp の対応表も `subt` + `sthd` のためこの暫定と一致する。
+        // wvtt / tx3g の SampleEntry バリアントが実装され次第、
         // ここを SampleEntry 種別ごとの分岐に完全置換する
         TrackKind::Subtitle => Ok(TrakDerivation {
             volume: TkhdBox::DEFAULT_VIDEO_VOLUME,

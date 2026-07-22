@@ -1487,17 +1487,12 @@ pub struct Mp4SampleEntryStpp {
 
 impl Mp4SampleEntryStpp {
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        let namespace =
-            Self::decode_utf8_string(self.namespace_data, self.namespace_size, "stpp.namespace")?;
-        let schema_location = Self::decode_utf8_string(
-            self.schema_location_data,
-            self.schema_location_size,
-            "stpp.schema_location",
-        )?;
+        let namespace = Self::decode_utf8_string(self.namespace_data, self.namespace_size)?;
+        let schema_location =
+            Self::decode_utf8_string(self.schema_location_data, self.schema_location_size)?;
         let auxiliary_mime_types = Self::decode_utf8_string(
             self.auxiliary_mime_types_data,
             self.auxiliary_mime_types_size,
-            "stpp.auxiliary_mime_types",
         )?;
 
         let stpp_box = shiguredo_mp4::boxes::StppBox {
@@ -1514,11 +1509,12 @@ impl Mp4SampleEntryStpp {
     /// C 側から受け取った `*const u8 + u32` のペアを [`Utf8String`] に復元する
     ///
     /// `size == 0` の場合は空文字列（`Utf8String::EMPTY`）を返す。
-    /// UTF-8 として不正な場合や、null 文字を含む場合は [`Mp4Error::MP4_ERROR_INVALID_INPUT`] を返す
+    /// UTF-8 として不正 または null 文字混入は、いずれもデータ内容の不正なので
+    /// [`Mp4Error::MP4_ERROR_INVALID_INPUT`] にマッピングする
+    /// （C API では列挙値のみで内容を返すため、どのフィールドで失敗したかは伝えない）
     fn decode_utf8_string(
         data: *const u8,
         size: u32,
-        field_name: &'static str,
     ) -> Result<shiguredo_mp4::Utf8String, Mp4Error> {
         if size == 0 {
             return Ok(shiguredo_mp4::Utf8String::EMPTY);
@@ -1527,9 +1523,6 @@ impl Mp4SampleEntryStpp {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
         let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
-        // UTF-8 として不正 または null 文字混入は、いずれもデータ内容の不正なので
-        // MP4_ERROR_INVALID_INPUT にマッピングする（C API では列挙値のみで内容を返す）
-        let _ = field_name;
         let s = std::str::from_utf8(bytes).map_err(|_| Mp4Error::MP4_ERROR_INVALID_INPUT)?;
         shiguredo_mp4::Utf8String::new(s).ok_or(Mp4Error::MP4_ERROR_INVALID_INPUT)
     }

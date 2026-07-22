@@ -104,8 +104,9 @@ pub fn mp4_sample_entry_stpp_free(entry: &mut Mp4SampleEntryStpp) {
 
 /// `Mp4SampleEntryStpp` の `*const u8 + u32` フィールドを `&str` に復元する
 ///
-/// バイト列は必ず有効な UTF-8 である前提。
-/// UTF-8 として不正な場合は空文字列を返す（JSON 出力時のフォールバック）。
+/// バイト列は必ず有効な UTF-8 でなければならない（`Utf8String` の invariant で保証、
+/// および JSON parse 経由でも valid UTF-8 が渡される）。invariant が壊れて
+/// UTF-8 不正なバイト列が渡された場合は実装バグとして panic する。
 /// 返り値のライフタイムは `entry` の借用に紐付いており、`entry` より長生きする
 /// 参照は返せないことを型システムが保証する
 fn raw_bytes_as_str(_entry: &Mp4SampleEntryStpp, data: *const u8, size: u32) -> &str {
@@ -113,7 +114,7 @@ fn raw_bytes_as_str(_entry: &Mp4SampleEntryStpp, data: *const u8, size: u32) -> 
         return "";
     }
     let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
-    std::str::from_utf8(bytes).unwrap_or("")
+    std::str::from_utf8(bytes).expect("Mp4SampleEntryStpp field bytes must be valid UTF-8")
 }
 
 #[cfg(test)]

@@ -6,11 +6,11 @@ use std::num::NonZeroU16;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint,
+    BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
         FlacBox, FlacMetadataBlock, FreeBox, Hev1Box, Hvc1Box, HvccBox, MdatBox, Mp4aBox, OpusBox,
-        UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+        StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
     },
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
@@ -234,6 +234,51 @@ fn arb_av1c_box() -> impl Strategy<Value = Av1cBox> {
             config_obus: vec![],
         }
     })
+}
+
+/// null 文字を含まない任意の UTF-8 文字列を生成する Strategy
+///
+/// `Utf8String` は null 文字を含む文字列を受け入れないため、null 文字を除外する
+/// （`pbt/tests/prop_basic_types.rs:41` の `arb_utf8_string` と同じ正規表現）
+fn arb_utf8_string() -> impl Strategy<Value = String> {
+    "[^\x00]{0,100}"
+}
+
+/// UnknownBox を生成する Strategy
+///
+/// 必須子ボックスを持たない SampleEntry（例: StppBox）で子ボックス経路を
+/// PBT でカバーするために使う
+fn arb_unknown_box() -> impl Strategy<Value = UnknownBox> {
+    (any::<[u8; 4]>(), prop::collection::vec(any::<u8>(), 0..64)).prop_map(|(box_type, payload)| {
+        UnknownBox {
+            box_type: BoxType::Normal(box_type),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
+            payload,
+        }
+    })
+}
+
+/// StppBox を生成する Strategy
+///
+/// `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールドを
+/// 独立に生成する（それぞれの空・非空パターンを網羅する）。
+/// StppBox は必須子ボックスを持たないため、`unknown_boxes` を Strategy 経由で
+/// 生成して decode / encode の子ボックス処理経路もカバーする
+fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
+    (
+        1u16..=u16::MAX,                                // data_reference_index
+        arb_utf8_string(),                              // namespace
+        arb_utf8_string(),                              // schema_location
+        arb_utf8_string(),                              // auxiliary_mime_types
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
+    )
+        .prop_map(|(dri, ns, sl, am, unknown_boxes)| StppBox {
+            data_reference_index: NonZeroU16::new(dri).unwrap(),
+            namespace: Utf8String::new(&ns).expect("null 文字を含まない"),
+            schema_location: Utf8String::new(&sl).expect("null 文字を含まない"),
+            auxiliary_mime_types: Utf8String::new(&am).expect("null 文字を含まない"),
+            unknown_boxes,
+        })
 }
 
 proptest! {
@@ -466,6 +511,25 @@ proptest! {
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, av01.visual.width);
         prop_assert_eq!(decoded.visual.height, av01.visual.height);
+    }
+
+    // ===== Subtitle Sample Entry Box のテスト =====
+
+    /// StppBox の encode/decode roundtrip
+    ///
+    /// 3 フィールドすべてに任意の UTF-8 文字列（空文字列も含む）と、
+    /// 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
+    #[test]
+    fn stpp_box_roundtrip(stpp in arb_stpp_box()) {
+        let encoded = stpp.encode_to_vec().unwrap();
+        let (decoded, size) = StppBox::decode(&encoded).unwrap();
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded.data_reference_index, stpp.data_reference_index);
+        prop_assert_eq!(&decoded.namespace, &stpp.namespace);
+        prop_assert_eq!(&decoded.schema_location, &stpp.schema_location);
+        prop_assert_eq!(&decoded.auxiliary_mime_types, &stpp.auxiliary_mime_types);
+        prop_assert_eq!(&decoded.unknown_boxes, &stpp.unknown_boxes);
     }
 }
 
@@ -725,14 +789,27 @@ mod sample_entry_tests {
     use std::num::NonZeroU16;
 
     use shiguredo_mp4::{
-        BaseBox, BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint,
+        BaseBox, BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint, Utf8String,
         boxes::{
             AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DopsBox, EsdsBox, FlacBox,
-            FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry,
+            FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry, StppBox,
             UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
+
+    /// テスト用の StppBox を生成する
+    ///
+    /// TTML 名前空間を持つ最小構成（schema_location / auxiliary_mime_types は空文字列）
+    fn create_stpp_box() -> StppBox {
+        StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        }
+    }
 
     fn create_audio_fields() -> AudioSampleEntryFields {
         AudioSampleEntryFields {
@@ -1041,5 +1118,196 @@ mod sample_entry_tests {
         // Opus の children は dops_box
         let children: Vec<_> = entry.children().collect();
         assert_eq!(children.len(), 1);
+    }
+
+    /// SampleEntry::Stpp のメソッドおよび分類のテスト
+    ///
+    /// 字幕トラックなので audio_*・video_resolution はいずれも None を返し、
+    /// is_unknown_box は false（型付きの Stpp バリアントとして識別される）
+    #[test]
+    fn sample_entry_stpp_methods() {
+        let entry = SampleEntry::Stpp(create_stpp_box());
+
+        assert_eq!(entry.audio_channel_count(), None);
+        assert_eq!(entry.audio_sample_rate(), None);
+        assert_eq!(entry.audio_sample_size(), None);
+        assert_eq!(entry.video_resolution(), None);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.box_type(), StppBox::TYPE);
+    }
+
+    /// SampleEntry::Stpp の encode/decode ラウンドトリップ
+    ///
+    /// stpp サンプルエントリーが型付きで decode されて Stpp バリアントに復元されることを検証する
+    #[test]
+    fn sample_entry_stpp_encode_decode_roundtrip() {
+        let entry = SampleEntry::Stpp(create_stpp_box());
+
+        let encoded = entry.encode_to_vec().unwrap();
+        let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
+
+        assert_eq!(size, encoded.len());
+        assert!(matches!(decoded, SampleEntry::Stpp(_)));
+        // 3 フィールドが正しく復元されていることを確認する
+        let SampleEntry::Stpp(decoded_stpp) = decoded else {
+            unreachable!();
+        };
+        assert_eq!(decoded_stpp.namespace.get(), "http://www.w3.org/ns/ttml");
+        assert_eq!(decoded_stpp.schema_location.get(), "");
+        assert_eq!(decoded_stpp.auxiliary_mime_types.get(), "");
+    }
+
+    /// 有効な stpp box のバイト列を組み立てるヘルパー
+    ///
+    /// SampleEntry ヘッダー（8 バイト）と 3 本の null 終端文字列で構成する。
+    /// エラーテストで一部フィールドを差し替える起点として使う
+    fn build_valid_stpp_bytes(
+        namespace: &[u8],
+        schema_location: &[u8],
+        auxiliary_mime_types: &[u8],
+    ) -> Vec<u8> {
+        // ペイロード: 6 bytes reserved + data_reference_index (u16) + 3 本の null 終端文字列
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(namespace);
+        payload.push(0); // null 終端
+        payload.extend_from_slice(schema_location);
+        payload.push(0);
+        payload.extend_from_slice(auxiliary_mime_types);
+        payload.push(0);
+
+        // BoxHeader: size (4B) + type (4B, "stpp")
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"stpp");
+        bytes.extend(payload);
+        bytes
+    }
+
+    /// 有効なバイト列で組み立てて decode できることを念のため確認する
+    #[test]
+    fn stpp_box_decode_valid_bytes() {
+        let bytes = build_valid_stpp_bytes(b"http://www.w3.org/ns/ttml", b"", b"");
+        let (decoded, _) = StppBox::decode(&bytes).unwrap();
+        assert_eq!(decoded.namespace.get(), "http://www.w3.org/ns/ttml");
+    }
+
+    /// namespace の null 終端が無いと invalid_input エラーになる
+    ///
+    /// エラーメッセージには "stpp.namespace" が含まれる（`StppBox::decode` 内で
+    /// `.map_err(|e| Error::invalid_input(format!("stpp.namespace: {e}")))` している）
+    #[test]
+    fn stpp_box_missing_namespace_null_terminator() {
+        // namespace の後の null 終端バイトを削って組み立てる。
+        // 手作業でバイト列を組み立てる（build_valid_stpp_bytes は必ず null を付けるため）
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(b"http://www.w3.org/ns/ttml");
+        // ここで null 終端を意図的に省略する（残りバッファに 0 バイトを含めない）
+
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"stpp");
+        bytes.extend(payload);
+
+        let err = StppBox::decode(&bytes).unwrap_err();
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("stpp.namespace"),
+            "エラーメッセージに stpp.namespace が含まれること: {err}"
+        );
+    }
+
+    /// schema_location の null 終端が無いと invalid_input エラーになる
+    #[test]
+    fn stpp_box_missing_schema_location_null_terminator() {
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(b"http://example/");
+        payload.push(0); // namespace の null 終端
+        payload.extend_from_slice(b"https://example/schema.xsd");
+        // ここで schema_location の null 終端を省略する
+
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"stpp");
+        bytes.extend(payload);
+
+        let err = StppBox::decode(&bytes).unwrap_err();
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("stpp.schema_location"),
+            "エラーメッセージに stpp.schema_location が含まれること: {err}"
+        );
+    }
+
+    /// auxiliary_mime_types の null 終端が無いと invalid_input エラーになる
+    #[test]
+    fn stpp_box_missing_auxiliary_mime_types_null_terminator() {
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(b"http://example/");
+        payload.push(0);
+        payload.push(0); // 空の schema_location
+        payload.extend_from_slice(b"application/mp4");
+        // ここで auxiliary_mime_types の null 終端を省略する
+
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"stpp");
+        bytes.extend(payload);
+
+        let err = StppBox::decode(&bytes).unwrap_err();
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("stpp.auxiliary_mime_types"),
+            "エラーメッセージに stpp.auxiliary_mime_types が含まれること: {err}"
+        );
+    }
+
+    /// namespace に UTF-8 として不正なバイト列が入っているとエラーになる
+    ///
+    /// `Utf8String::decode` は UTF-8 不正時にも invalid_input を返す。
+    /// エラーメッセージに "stpp.namespace" が含まれる
+    #[test]
+    fn stpp_box_invalid_utf8_in_namespace() {
+        // 0xff は UTF-8 として無効なバイト
+        let bytes = build_valid_stpp_bytes(&[0xff, 0xfe], b"", b"");
+
+        let err = StppBox::decode(&bytes).unwrap_err();
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("stpp.namespace"),
+            "エラーメッセージに stpp.namespace が含まれること: {err}"
+        );
+    }
+
+    /// StppBox::decode に stpp 以外の box_type を持つバイト列を渡すとエラーになる
+    #[test]
+    fn stpp_box_decode_wrong_box_type() {
+        // box_type だけ "wvtt" に書き換えたバイト列
+        let mut bytes = build_valid_stpp_bytes(b"http://www.w3.org/ns/ttml", b"", b"");
+        bytes[4..8].copy_from_slice(b"wvtt");
+
+        let result = StppBox::decode(&bytes);
+        assert!(result.is_err(), "stpp 以外の box_type ではエラーになること");
+    }
+
+    /// SampleEntry::decode で stpp box_type を持つ入力が Stpp バリアントとして取り出されることを検証する
+    ///
+    /// 型付き Stpp バリアント追加前は `SampleEntry::Unknown` にフォールバックしていたため、
+    /// dispatch の回帰確認として置く
+    #[test]
+    fn sample_entry_decode_stpp_dispatches_to_stpp_variant() {
+        let bytes = build_valid_stpp_bytes(b"http://www.w3.org/ns/ttml", b"", b"");
+        let (decoded, _) = SampleEntry::decode(&bytes).unwrap();
+        assert!(
+            matches!(decoded, SampleEntry::Stpp(_)),
+            "stpp box_type は SampleEntry::Stpp として取り出せること"
+        );
     }
 }

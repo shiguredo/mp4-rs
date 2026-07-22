@@ -63,6 +63,8 @@ const char *get_sample_entry_kind_name(enum Mp4SampleEntryKind kind) {
             return "MP4A (AAC)";
         case MP4_SAMPLE_ENTRY_KIND_FLAC:
             return "FLAC";
+        case MP4_SAMPLE_ENTRY_KIND_STPP:
+            return "stpp (XML Subtitle)";
         default:
             return "Unknown";
     }

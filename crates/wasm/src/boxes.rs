@@ -43,6 +43,10 @@ pub(crate) fn fmt_json_mp4_sample_entry(
             let data = unsafe { &sample_entry.data.flac };
             crate::boxes_flac::fmt_json_mp4_sample_entry_flac(f, data)?;
         }
+        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP => {
+            let data = unsafe { &sample_entry.data.stpp };
+            crate::boxes_stpp::fmt_json_mp4_sample_entry_stpp(f, data)?;
+        }
     }
     Ok(())
 }
@@ -118,6 +122,13 @@ pub fn parse_json_mp4_sample_entry(
                 data: c_api::boxes::Mp4SampleEntryData { flac },
             })
         }
+        "stpp" => {
+            let stpp = crate::boxes_stpp::parse_json_mp4_sample_entry_stpp(value)?;
+            Ok(Mp4SampleEntry {
+                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP,
+                data: c_api::boxes::Mp4SampleEntryData { stpp },
+            })
+        }
         _ => Err(kind_value.invalid("unknown sample entry kind")),
     }
 }
@@ -163,6 +174,10 @@ pub unsafe fn mp4_sample_entry_free(sample_entry: *mut Mp4SampleEntry) {
         Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_FLAC => {
             let data = unsafe { &mut sample_entry.data.flac };
             crate::boxes_flac::mp4_sample_entry_flac_free(data);
+        }
+        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP => {
+            let data = unsafe { &mut sample_entry.data.stpp };
+            crate::boxes_stpp::mp4_sample_entry_stpp_free(data);
         }
     }
 

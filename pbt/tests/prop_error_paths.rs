@@ -379,11 +379,11 @@ mod sample_entry_inner_box_tests {
     use std::num::NonZeroU16;
 
     use shiguredo_mp4::{
-        BaseBox, BoxSize, BoxType, FixedPointNumber, Uint,
+        BaseBox, BoxSize, BoxType, FixedPointNumber, Uint, Utf8String,
         boxes::{
             AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
             FlacBox, FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry,
-            UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+            StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
@@ -622,6 +622,25 @@ mod sample_entry_inner_box_tests {
 
         assert_eq!(entry.box_type(), FlacBox::TYPE);
         assert!(!entry.is_unknown_box());
+    }
+
+    /// SampleEntry::Stpp の inner_box() テスト
+    ///
+    /// Stpp は必須の型付き子ボックスを持たないため、`unknown_boxes` が空なら
+    /// children も空になる（既存 SampleEntry の `assert!(count >= 1)` パターンとは異なる）
+    #[test]
+    fn sample_entry_stpp_inner_box() {
+        let entry = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        });
+
+        assert_eq!(entry.box_type(), StppBox::TYPE);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.children().count(), 0);
     }
 
     /// SampleEntry::Unknown の inner_box() テスト

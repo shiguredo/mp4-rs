@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-22
 - Model: Opus 4.7
 - Branch: feature/add-subtitle-track-common
 - Polished: 2026-07-21
@@ -208,7 +208,7 @@ ISO/IEC 14496-12 に従って以下を追加する。
 
 ## 解決方法
 
-以下の順で実装する。相互依存で「単独では cargo build が通らない」手順があるため、指示された束は 1 コミット単位でまとめて実施する。
+以下の順で実装した。相互依存で「単独では cargo build が通らない」手順があるため、指示された束は 1 コミット単位でまとめて実施した。
 
 1. `MuxError` に `UnsupportedTrackKind` バリアントを追加、`Display` を実装、C API `Mp4Error` マッピングに `MP4_ERROR_UNSUPPORTED` の arm を追加
 2. **同一コミット単位で実施**: `Mp4TrackKind` に `MP4_TRACK_KIND_SUBTITLE = 2` を追加、`TrackKind::Subtitle` を追加、コンパイルエラーになる網羅 match（「現状」セクションで列挙した箇所）を機械的に修正する。`TrackKind` と `Mp4TrackKind` の双方向 `From` impl は互いの新バリアントを参照するため、片方だけ追加すると必ずコンパイルエラーになる。`Mp4FileMuxer` の 2 箇所は手順 1 で追加した `MuxError::UnsupportedTrackKind` を返す arm を追加

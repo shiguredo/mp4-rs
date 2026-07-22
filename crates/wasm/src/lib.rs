@@ -12,6 +12,7 @@ pub mod boxes_hev1;
 pub mod boxes_hvc1;
 pub mod boxes_mp4a;
 pub mod boxes_opus;
+pub mod boxes_stpp;
 pub mod boxes_vp08;
 pub mod boxes_vp09;
 pub mod demux;

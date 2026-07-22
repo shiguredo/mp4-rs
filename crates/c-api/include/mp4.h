@@ -112,6 +112,10 @@ typedef enum Mp4SampleEntryKind {
    * FLAC
    */
   MP4_SAMPLE_ENTRY_KIND_FLAC,
+  /**
+   * stpp (XMLSubtitleSampleEntry, ISO/IEC 14496-30)
+   */
+  MP4_SAMPLE_ENTRY_KIND_STPP,
 } Mp4SampleEntryKind;
 
 typedef enum Mp4FileKind {
@@ -757,6 +761,40 @@ typedef struct Mp4SampleEntryFlac {
 } Mp4SampleEntryFlac;
 
 /**
+ * stpp（XMLSubtitleSampleEntry, ISO/IEC 14496-30）用のサンプルエントリー
+ *
+ * XML 形式の字幕（TTML / IMSC 等）のトラックが持つメタデータを表現する。
+ * 3 本の文字列フィールドは各々 `_data` + `_size` のペアで露出し、
+ * バイト列は null 終端を含まない（既存 `dec_specific_info` / `streaminfo_data` パターンと同じ）
+ */
+typedef struct Mp4SampleEntryStpp {
+  /**
+   * XML 名前空間 URI のスペース区切り文字列（null 終端なし、UTF-8）
+   */
+  const uint8_t *namespace_data;
+  /**
+   * [`Mp4SampleEntryStpp::namespace_data`] の長さ（バイト単位）
+   */
+  uint32_t namespace_size;
+  /**
+   * 対応する XML スキーマの URL（null 終端なし、UTF-8。空文字列は `size == 0`）
+   */
+  const uint8_t *schema_location_data;
+  /**
+   * [`Mp4SampleEntryStpp::schema_location_data`] の長さ（バイト単位）
+   */
+  uint32_t schema_location_size;
+  /**
+   * 補助 MIME タイプ（null 終端なし、UTF-8。空文字列は `size == 0`）
+   */
+  const uint8_t *auxiliary_mime_types_data;
+  /**
+   * [`Mp4SampleEntryStpp::auxiliary_mime_types_data`] の長さ（バイト単位）
+   */
+  uint32_t auxiliary_mime_types_size;
+} Mp4SampleEntryStpp;
+
+/**
  * MP4 サンプルエントリーの詳細データを格納するユニオン型
  *
  * このユニオン型は、`Mp4SampleEntry` の `kind` フィールドで指定されたコーデック種別に応じて、
@@ -799,6 +837,10 @@ typedef union Mp4SampleEntryData {
    * FLAC 音声コーデック用のサンプルエントリー
    */
   struct Mp4SampleEntryFlac flac;
+  /**
+   * stpp（XML 字幕）用のサンプルエントリー
+   */
+  struct Mp4SampleEntryStpp stpp;
 } Mp4SampleEntryData;
 
 /**

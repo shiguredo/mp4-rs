@@ -14,15 +14,16 @@ pub fn fmt_json_mp4_sample_entry_stpp(
         f.member("kind", "stpp")?;
         f.member(
             "namespace",
-            raw_bytes_as_str(data.namespace_data, data.namespace_size),
+            raw_bytes_as_str(data, data.namespace_data, data.namespace_size),
         )?;
         f.member(
             "schemaLocation",
-            raw_bytes_as_str(data.schema_location_data, data.schema_location_size),
+            raw_bytes_as_str(data, data.schema_location_data, data.schema_location_size),
         )?;
         f.member(
             "auxiliaryMimeTypes",
             raw_bytes_as_str(
+                data,
                 data.auxiliary_mime_types_data,
                 data.auxiliary_mime_types_size,
             ),
@@ -101,11 +102,13 @@ pub fn mp4_sample_entry_stpp_free(entry: &mut Mp4SampleEntryStpp) {
     }
 }
 
-/// `*const u8 + u32` のペアを `&str` に復元する
+/// `Mp4SampleEntryStpp` の `*const u8 + u32` フィールドを `&str` に復元する
 ///
 /// バイト列は必ず有効な UTF-8 である前提。
-/// UTF-8 として不正な場合は空文字列を返す（JSON 出力時のフォールバック）
-fn raw_bytes_as_str<'a>(data: *const u8, size: u32) -> &'a str {
+/// UTF-8 として不正な場合は空文字列を返す（JSON 出力時のフォールバック）。
+/// 返り値のライフタイムは `entry` の借用に紐付いており、`entry` より長生きする
+/// 参照は返せないことを型システムが保証する
+fn raw_bytes_as_str(_entry: &Mp4SampleEntryStpp, data: *const u8, size: u32) -> &str {
     if size == 0 || data.is_null() {
         return "";
     }

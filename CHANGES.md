@@ -11,6 +11,16 @@
 
 ## develop
 
+- [CHANGE] `SampleEntry` に `Stpp` バリアントを追加する
+  - `stpp` サンプルエントリー（ISO/IEC 14496-30 `XMLSubtitleSampleEntry`）を型付きで扱えるようにする
+  - 網羅 match への影響がある（利用者側でコンパイルエラーになりうる）
+  - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_STPP` を追加し、`Mp4SampleEntryStpp` 構造体を新設する
+  - WASM の JSON API で `{ "kind": "stpp", ... }` の入出力に対応する
+  - @sile
+- [ADD] ISO/IEC 14496-30 の `StppBox` (`stpp`) を追加する
+  - `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールド（`Utf8String`）と任意子ボックスを持つ
+  - サンプルデータは XML ドキュメント（TTML / IMSC 等）を不透明バイト列として扱う
+  - @sile
 - [CHANGE] `TrackKind` に `Subtitle` バリアントを追加する
   - C API `Mp4TrackKind` に `MP4_TRACK_KIND_SUBTITLE = 2` を追加する
   - WASM の JSON API で `"subtitle"` の入出力に対応する

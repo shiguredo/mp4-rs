@@ -346,7 +346,7 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_last_error(
 ///     int32_t required_size;
 ///     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
 ///     if (required_size == 0) break; // 初期化完了
-///    
+///
 ///     // ファイルから必要なデータを読み込む
 ///     //
 ///     // NOTE: 実際には `required_size == -1` の場合には、ファイル末尾までを読み込む必要がある

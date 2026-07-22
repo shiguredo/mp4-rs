@@ -5,12 +5,11 @@ edition = "2024"
 publish = false
 
 [lib]
+crate-type = ["cdylib", "rlib", "staticlib"]
 name = "mp4"
-crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 shiguredo_mp4 = { path = "../../" }
 
 [build-dependencies]
 cbindgen = { version = "0.29.2", default-features = false }
-

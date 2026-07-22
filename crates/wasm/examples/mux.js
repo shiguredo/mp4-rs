@@ -265,4 +265,3 @@ if (args.length === 0) {
 
 const outputPath = args[0];
 await createMP4WithOpus(outputPath);
-

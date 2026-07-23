@@ -64,13 +64,11 @@ pub fn parse_json_mp4_sample_entry_tx3g(
         })
         .collect::<Result<_, nojson::JsonParseError>>()?;
 
-    let font_ids_vec: Vec<u16> = ftab_pairs.iter().map(|(id, _)| *id).collect();
-    let font_names_vec: Vec<Vec<u8>> = ftab_pairs.into_iter().map(|(_, name)| name).collect();
+    let (font_ids_vec, font_names_vec): (Vec<u16>, Vec<Vec<u8>>) = ftab_pairs.into_iter().unzip();
 
-    let (ftab_font_ids, ftab_count_u16) = crate::boxes::allocate_and_copy_u16_array(&font_ids_vec);
-    let (ftab_font_name_ptrs, ftab_font_name_sizes, ftab_count_names) =
+    let (ftab_font_ids, ftab_count) = crate::boxes::allocate_and_copy_u16_array(&font_ids_vec);
+    let (ftab_font_name_ptrs, ftab_font_name_sizes, _) =
         crate::boxes::allocate_and_copy_array_list(&font_names_vec);
-    debug_assert_eq!(ftab_count_u16, ftab_count_names);
 
     Ok(Mp4SampleEntryTx3g {
         display_flags: value.to_member("display_flags")?.required()?.try_into()?,
@@ -114,7 +112,7 @@ pub fn parse_json_mp4_sample_entry_tx3g(
         ftab_font_ids,
         ftab_font_name_ptrs,
         ftab_font_name_sizes,
-        ftab_count: ftab_count_u16,
+        ftab_count,
     })
 }
 

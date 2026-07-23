@@ -952,11 +952,7 @@ struct TrakDerivation {
 
 /// `entry.track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
-/// [`TrackKind::Subtitle`] 分岐は方式ごとの対応表に従い `SampleEntry::Stpp` /
-/// `SampleEntry::Wvtt` / `SampleEntry::Tx3g` を個別 arm で扱う
-///（stpp / wvtt は `sthd`、tx3g は `nmhd` の Media Header を返す）。
-/// 未知の Subtitle 系サンプルエントリー（`SampleEntry::Unknown` にフォールバックしたもの）は
-/// 防御的に `subt` + `sthd` を返す
+/// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は本体コメントを参照
 fn derive_trak_attributes(
     entry: &TrackEntry,
     sample_entry: &SampleEntry,

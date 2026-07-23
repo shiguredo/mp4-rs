@@ -1788,16 +1788,6 @@ mod sample_entry_tests {
         bytes
     }
 
-    /// 有効なバイト列で組み立てて decode できることを念のため確認する
-    #[test]
-    fn tx3g_box_decode_valid_bytes() {
-        let bytes = build_valid_tx3g_bytes(&[(1, b"Serif")]);
-        let (decoded, _) = Tx3gBox::decode(&bytes).expect("有効な tx3g バイト列は decode 可能");
-        assert_eq!(decoded.ftab_box.entries.len(), 1);
-        assert_eq!(decoded.ftab_box.entries[0].font_id, 1);
-        assert_eq!(decoded.ftab_box.entries[0].font_name, b"Serif");
-    }
-
     /// ftab 子ボックスが無い tx3g payload では必須子欠落エラーになる
     #[test]
     fn tx3g_box_missing_ftab() {
@@ -1897,9 +1887,11 @@ mod sample_entry_tests {
     fn sample_entry_decode_tx3g_dispatches_to_tx3g_variant() {
         let bytes = build_valid_tx3g_bytes(&[(1, b"Serif")]);
         let (decoded, _) = SampleEntry::decode(&bytes).expect("有効な tx3g バイト列は decode 可能");
-        assert!(
-            matches!(decoded, SampleEntry::Tx3g(_)),
-            "tx3g box_type は SampleEntry::Tx3g として取り出せること"
-        );
+        let SampleEntry::Tx3g(tx3g) = decoded else {
+            panic!("tx3g box_type は SampleEntry::Tx3g として取り出せること");
+        };
+        assert_eq!(tx3g.ftab_box.entries.len(), 1);
+        assert_eq!(tx3g.ftab_box.entries[0].font_id, 1);
+        assert_eq!(tx3g.ftab_box.entries[0].font_name, b"Serif");
     }
 }

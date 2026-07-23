@@ -2285,8 +2285,6 @@ impl Decode for FontRecord {
         let mut offset = 0;
         let font_id = u16::decode_at(buf, &mut offset)?;
         let font_name_length = u8::decode_at(buf, &mut offset)?;
-        // 悪意ある入力（`FtabBox::entry_count` を過大に指定して各 FontRecord の残バイトを
-        // 使い切ろうとするケース等）に対する境界チェック
         Error::check_buffer_size(font_name_length as usize, &buf[offset..])?;
         let font_name = buf[offset..offset + font_name_length as usize].to_vec();
         offset += font_name_length as usize;
@@ -2332,8 +2330,6 @@ impl Decode for FtabBox {
 
             let mut offset = 0;
             let entry_count = u16::decode_at(payload, &mut offset)?;
-            // 入力データが破損している場合に極端に大きなキャパシティを確保しないため
-            // Vec::with_capacity() は使わず Vec::new() から push で伸ばす
             let mut entries = Vec::new();
             for _ in 0..entry_count {
                 entries.push(FontRecord::decode_at(payload, &mut offset)?);
@@ -2354,7 +2350,7 @@ impl BaseBox for FtabBox {
     }
 }
 
-/// [3GPP TS 26.245] TextSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+/// [3GPP TS 26.245] TextSampleEntry class (§5.16、親: [`StsdBox`][crate::boxes::StsdBox])
 ///
 /// 3GPP Timed Text 形式の字幕を格納するためのサンプルエントリー。
 /// サンプルデータ自体は `text_length: u16` (BE) + テキスト + 任意 modifier boxes

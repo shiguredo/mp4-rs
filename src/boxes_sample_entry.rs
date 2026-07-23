@@ -2098,13 +2098,12 @@ impl BaseBox for WvttBox {
 }
 
 /// [ISO/IEC 14496-30] WebVTTConfigurationBox class (親: [`WvttBox`])
-///
-/// WebVTT の設定テキスト（`"WEBVTT"` 行で始まる UTF-8 文字列）を保持する。
-/// ペイロードは BoxHeader 残バイト全体を 1 個の UTF-8 テキストとして扱う。
-/// null 終端はしない（サイズは box_size から一意に決まる）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VttCBox {
-    /// WebVTT 設定テキスト
+    /// WebVTT の設定テキスト（`"WEBVTT"` 行で始まる UTF-8 文字列）
+    ///
+    /// null 終端せず、BoxHeader 残バイト全体を 1 個の UTF-8 テキストとして扱う
+    /// （バイト数はボックスサイズから一意に決まる）
     pub config: String,
 }
 

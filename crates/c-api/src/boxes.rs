@@ -557,17 +557,16 @@ impl Mp4SampleEntryOwned {
                 ftab_font_name_ptrs,
                 ftab_font_name_sizes,
             } => {
+                // 3 並列 Vec は同一ループで push される invariant を持つ。
+                // refactor で長さがズレると C 側で from_raw_parts が OOB になるため防御
+                debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_ptrs.len());
+                debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_sizes.len());
                 let tx3g = Mp4SampleEntryTx3g {
                     display_flags: inner.display_flags,
                     horizontal_justification: inner.horizontal_justification,
                     vertical_justification: inner.vertical_justification,
                     background_color_rgba: inner.background_color_rgba,
-                    default_text_box: [
-                        inner.default_text_box.top,
-                        inner.default_text_box.left,
-                        inner.default_text_box.bottom,
-                        inner.default_text_box.right,
-                    ],
+                    default_text_box: inner.default_text_box.into(),
                     default_style_start_char: inner.default_style.start_char,
                     default_style_end_char: inner.default_style.end_char,
                     default_style_font_id: inner.default_style.font_id,
@@ -1763,6 +1762,12 @@ pub struct Mp4SampleEntryTx3g {
 impl Mp4SampleEntryTx3g {
     /// `Mp4SampleEntryTx3g` を [`shiguredo_mp4::boxes::SampleEntry::Tx3g`] に復元する
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        // `FtabBox::entry_count` は u16 のため 65535 以下でなければならない
+        // （超過状態のまま entries を全件 push すると FtabBox::encode で失敗するため、
+        // 無駄な heap 確保を避けて早期にエラー返却する）
+        if self.ftab_count > u16::MAX as u32 {
+            return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
+        }
         let mut entries = Vec::new();
         if self.ftab_count > 0 {
             if self.ftab_font_ids.is_null()
@@ -1805,12 +1810,7 @@ impl Mp4SampleEntryTx3g {
             horizontal_justification: self.horizontal_justification,
             vertical_justification: self.vertical_justification,
             background_color_rgba: self.background_color_rgba,
-            default_text_box: shiguredo_mp4::boxes::BoxRecord {
-                top: self.default_text_box[0],
-                left: self.default_text_box[1],
-                bottom: self.default_text_box[2],
-                right: self.default_text_box[3],
-            },
+            default_text_box: self.default_text_box.into(),
             default_style: shiguredo_mp4::boxes::StyleRecord {
                 start_char: self.default_style_start_char,
                 end_char: self.default_style_end_char,

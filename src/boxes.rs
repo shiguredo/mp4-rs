@@ -14,9 +14,10 @@ pub use crate::boxes_moov_tree::{
     StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UrlBox, VmhdBox,
 };
 pub use crate::boxes_sample_entry::{
-    AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, FlacBox,
-    FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, HvccNalUintArray, Mp4aBox, OpusBox, SampleEntry,
-    StppBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
+    AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox, DopsBox,
+    FlacBox, FlacMetadataBlock, FontRecord, FtabBox, Hev1Box, Hvc1Box, HvccBox, HvccNalUintArray,
+    Mp4aBox, OpusBox, SampleEntry, StppBox, StyleRecord, Tx3gBox, VisualSampleEntryFields, Vp08Box,
+    Vp09Box, VpccBox, VttCBox, WvttBox,
 };
 
 pub(crate) fn with_box_type<F, T>(ty: BoxType, f: F) -> Result<T>

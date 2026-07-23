@@ -81,7 +81,6 @@
 - [UPDATE] `fuzz_basic_types` に `SampleFlags` の decode/encode を追加する
   - @voluntas
 - [UPDATE] `pbt/tests/prop_error_paths.rs` を対応する各 PBT ファイル（`prop_boxes_moov_tree.rs` / `prop_boxes_sample_entry.rs` を新設）に再配置する
-  - `shiguredo-rust` の PBT ファイル命名規則違反を解消する
   - @sile
 
 ## 2026.3.0

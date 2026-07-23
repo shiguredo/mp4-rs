@@ -37,7 +37,7 @@ Low。緊急要求は無いが、旧 QuickTime / iTunes 由来の MP4 を読め�
 サンプルデータの扱い方針:
 
 - サンプルデータは `text_length` (u16) + テキスト本体 + 任意の modifier boxes（`styl` / `hlit` / `hclr` / `krok` / `dlay` / `href` / `tbox` / `blnk` / `twrp`）で構成される
-- 本 issue では **サンプルデータ全体は不透明なバイト列** として扱い、内部構造の parse / build は consumer 側に委ねる
+- 本 issue では **サンプルデータ全体は生バイト列** として扱い、内部構造の parse / build は consumer 側に委ねる
 - 理由: 既存の映像・音声サンプルの扱いと一貫させ、実装スコープを抑えるため
 - 追加で modifier boxes を型付きで扱いたくなった場合は別 issue とする
 
@@ -54,7 +54,7 @@ Low。緊急要求は無いが、旧 QuickTime / iTunes 由来の MP4 を読め�
 
 - `tx3g` サンプルエントリーの decode / encode ラウンドトリップができる
 - `ftab` サブボックスの decode / encode ができる
-- 実サンプルデータ（不透明バイト列扱い）を含む fMP4 のラウンドトリップができる（`Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` 経由）
+- 実サンプルデータ（生バイト列扱い）を含む fMP4 のラウンドトリップができる（`Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` 経由）
 - 0046 完了後、`Mp4FileMuxer` / `Mp4FileDemuxer` 経由の MP4 ラウンドトリップも検証する
 - 既存の SampleEntry の動作が変わらない
 - `cargo clippy` が通る

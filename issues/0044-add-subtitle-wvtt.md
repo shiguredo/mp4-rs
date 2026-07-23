@@ -12,7 +12,7 @@
 
 WebVTT を ISO BMFF に格納する `wvtt` サンプルエントリー（`WVTTSampleEntry`、ISO/IEC 14496-30）の decode / encode 対応を追加する。HLS の fMP4 プロファイルと DASH で現役の標準であり、Web 系プレイヤーとの親和性が最も高い。
 
-本 issue は「WebVTT 設定テキストと cue ボックス列を格納するコンテナ」の対応であって、cue 内部（timestamp / settings / payload text）の型付きパースは行わない。サンプルデータは不透明バイト列として扱う（詳細は「### サンプルデータの扱い方針」節を参照）。
+本 issue は「WebVTT 設定テキストと cue ボックス列を格納するコンテナ」の対応であって、cue 内部（timestamp / settings / payload text）の型付きパースは行わない。サンプルデータは生バイト列として扱う（詳細は「### サンプルデータの扱い方針」節を参照）。
 
 ## 優先度根拠
 
@@ -248,8 +248,8 @@ let config = if self.config_size == 0 {
 
 ### サンプルデータの扱い方針
 
-- 本 issue では **サンプルデータ全体は不透明なバイト列** として扱い、内部構造の parse / build は consumer 側に委ねる
-- サンプルデータは WebVTT の cue box 列（ISO/IEC 14496-30 §7.6 の `vttc` / `vtte` / `vtta` 等）で構成される
+- 本 issue では **サンプルデータ全体は生バイト列** として扱い、内部構造の parse / build は consumer 側に委ねる
+- サンプルデータは WebVTT の cue ボックス列（ISO/IEC 14496-30 §7.6 の `vttc` / `vtte` / `vtta` 等）で構成される
 - 理由: 既存の映像・音声サンプルの扱いと一貫させ、実装スコープを抑えるため。WebVTT の cue 内部（timestamp / settings / payload text）の型付きパースを本ライブラリで持つと WebVTT パーサ依存が発生して no_std / wasm 前提と競合するのも避けたい
 - サンプル単位の推奨値は既存の `Sample` 構造体（`src/mux_mp4_file.rs:179-215`、0042 で subtitle 全般に対応済み）で文書化済み（`keyframe = true`、`composition_time_offset = None`）を踏襲する
 - 追加で内部構造の型付き対応が必要になった場合は別 issue とする
@@ -386,5 +386,5 @@ sample payload は任意のバイト列（例: `b"WEBVTT-cue-payload-placeholder
 - `[ADD]` ISO/IEC 14496-30 の `WvttBox` (`wvtt`) と `VttCBox` (`vttC`) を追加する
   - `WvttBox` は必須子 `VttCBox` を持つ
   - `VttCBox` は WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列。null 終端なし、box payload 全体）を保持する
-  - サンプルデータは WebVTT の cue box 列（`vttc` / `vtte` / `vtta` 等）を不透明バイト列として扱う
+  - サンプルデータは WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）を生バイト列として扱う
   - `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐に wvtt arm（`text` + `sthd`）を追加する（0042 の暫定固定選択 `subt` + `sthd` からの細分化を開始）

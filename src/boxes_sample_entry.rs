@@ -1917,7 +1917,7 @@ impl BaseBox for DopsBox {
 /// [ISO/IEC 14496-30] XMLSubtitleSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 ///
 /// XML 形式の字幕（TTML / IMSC 等）を格納するためのサンプルエントリー。
-/// サンプルデータ自体は不透明な XML ドキュメントとして扱い、内部構造の解釈は利用側の責務とする
+/// サンプルデータ自体は生バイト列として扱い、XML 構造の解釈は利用側の責務とする
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StppBox {
     /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
@@ -2010,11 +2010,9 @@ impl BaseBox for StppBox {
 
 /// [ISO/IEC 14496-30] WVTTSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 ///
-/// WebVTT 字幕を格納するためのサンプルエントリー。必須子ボックスとして
-/// [`VttCBox`] を持ち、その他の任意子ボックス（`vlab` / `btrt` 等）は
-/// [`unknown_boxes`](Self::unknown_boxes) にまとめて保持する。
-/// サンプルデータ自体は WebVTT の cue box 列（`vttc` / `vtte` / `vtta` 等）で
-/// 構成される不透明バイト列として扱い、内部構造の解釈は利用側の責務とする
+/// WebVTT 字幕を格納するためのサンプルエントリー。
+/// サンプルデータ自体は WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）で
+/// 構成される生バイト列として扱い、内部構造の解釈は利用側の責務とする
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WvttBox {
     /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）

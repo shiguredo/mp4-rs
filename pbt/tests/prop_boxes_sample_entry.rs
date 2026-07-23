@@ -4,13 +4,10 @@ use std::num::NonZeroU16;
 
 use shiguredo_mp4::{
     FixedPointNumber, Uint,
-    boxes::{AudioSampleEntryFields, Av1cBox, VisualSampleEntryFields, VpccBox},
+    boxes::{AudioSampleEntryFields, Av1cBox, AvccBox, HvccBox, VisualSampleEntryFields, VpccBox},
 };
 
 // ===== 各 mod 共通のヘルパー =====
-//
-// 各 mod 内に閉じた重複を避けるため、ファイルスコープに 1 個ずつ集約する。
-// 各 mod からは `use super::{...};` で参照する。
 
 fn create_audio_fields() -> AudioSampleEntryFields {
     AudioSampleEntryFields {
@@ -64,57 +61,60 @@ fn create_av1c_box() -> Av1cBox {
     }
 }
 
+fn create_avcc_box() -> AvccBox {
+    AvccBox {
+        avc_profile_indication: 66,
+        profile_compatibility: 0,
+        avc_level_indication: 30,
+        length_size_minus_one: Uint::new(3),
+        sps_list: vec![],
+        pps_list: vec![],
+        chroma_format: None,
+        bit_depth_luma_minus8: None,
+        bit_depth_chroma_minus8: None,
+        sps_ext_list: vec![],
+    }
+}
+
+fn create_hvcc_box() -> HvccBox {
+    HvccBox {
+        general_profile_space: Uint::new(0),
+        general_tier_flag: Uint::new(0),
+        general_profile_idc: Uint::new(1),
+        general_profile_compatibility_flags: 0,
+        general_constraint_indicator_flags: Uint::new(0),
+        general_level_idc: 93,
+        min_spatial_segmentation_idc: Uint::new(0),
+        parallelism_type: Uint::new(0),
+        chroma_format_idc: Uint::new(1),
+        bit_depth_luma_minus8: Uint::new(0),
+        bit_depth_chroma_minus8: Uint::new(0),
+        avg_frame_rate: 0,
+        constant_frame_rate: Uint::new(0),
+        num_temporal_layers: Uint::new(1),
+        temporal_id_nested: Uint::new(0),
+        length_size_minus_one: Uint::new(3),
+        nalu_arrays: vec![],
+    }
+}
+
 // ===== SampleEntry のメソッド網羅テスト =====
 
 mod sample_entry_inner_box_tests {
     use shiguredo_mp4::{
         BaseBox, BoxSize, BoxType, Uint, Utf8String,
         boxes::{
-            Av01Box, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox, FlacBox, FlacMetadataBlock,
-            Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry, StppBox, UnknownBox, Vp08Box,
-            Vp09Box, VttCBox, WvttBox,
+            Av01Box, Avc1Box, DflaBox, DopsBox, EsdsBox, FlacBox, FlacMetadataBlock, Hev1Box,
+            Hvc1Box, Mp4aBox, OpusBox, SampleEntry, StppBox, UnknownBox, Vp08Box, Vp09Box, VttCBox,
+            WvttBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
 
-    use super::{create_audio_fields, create_av1c_box, create_visual_fields, create_vpcc_box};
-
-    fn create_avcc_box() -> AvccBox {
-        AvccBox {
-            avc_profile_indication: 66,
-            profile_compatibility: 0,
-            avc_level_indication: 30,
-            length_size_minus_one: Uint::new(3),
-            sps_list: vec![],
-            pps_list: vec![],
-            chroma_format: None,
-            bit_depth_luma_minus8: None,
-            bit_depth_chroma_minus8: None,
-            sps_ext_list: vec![],
-        }
-    }
-
-    fn create_hvcc_box() -> HvccBox {
-        HvccBox {
-            general_profile_space: Uint::new(0),
-            general_tier_flag: Uint::new(0),
-            general_profile_idc: Uint::new(1),
-            general_profile_compatibility_flags: 0,
-            general_constraint_indicator_flags: Uint::new(0),
-            general_level_idc: 93,
-            min_spatial_segmentation_idc: Uint::new(0),
-            parallelism_type: Uint::new(0),
-            chroma_format_idc: Uint::new(1),
-            bit_depth_luma_minus8: Uint::new(0),
-            bit_depth_chroma_minus8: Uint::new(0),
-            avg_frame_rate: 0,
-            constant_frame_rate: Uint::new(0),
-            num_temporal_layers: Uint::new(1),
-            temporal_id_nested: Uint::new(0),
-            length_size_minus_one: Uint::new(3),
-            nalu_arrays: vec![],
-        }
-    }
+    use super::{
+        create_audio_fields, create_av1c_box, create_avcc_box, create_hvcc_box,
+        create_visual_fields, create_vpcc_box,
+    };
 
     /// SampleEntry::Avc1 の inner_box() テスト
     #[test]
@@ -318,17 +318,21 @@ mod sample_entry_inner_box_tests {
 // ===== SampleEntry / boxes_sample_entry.rs 系 BaseBox の実装テスト =====
 
 mod sample_entry_base_box_tests {
-    use std::num::NonZeroU16;
-
     use shiguredo_mp4::{
-        BaseBox, BoxType, Decode, Encode, FixedPointNumber,
+        BaseBox, BoxType, Decode, Encode, Uint,
         boxes::{
-            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, Hev1Box, HvccBox, HvccNalUintArray,
-            OpusBox, SampleEntry,
+            Av01Box, Avc1Box, DflaBox, DopsBox, EsdsBox, FlacBox, FlacMetadataBlock, Hev1Box,
+            Hvc1Box, Mp4aBox, OpusBox, SampleEntry, Vp08Box, Vp09Box,
+        },
+        descriptors::{
+            DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
         },
     };
 
-    use super::{create_av1c_box, create_vpcc_box};
+    use super::{
+        create_audio_fields, create_av1c_box, create_avcc_box, create_hvcc_box,
+        create_visual_fields, create_vpcc_box,
+    };
 
     // ===== SampleEntry の box_type() と children() テスト =====
 
@@ -344,18 +348,7 @@ mod sample_entry_base_box_tests {
     /// AvccBox の box_type() と children() テスト
     #[test]
     fn avcc_box_base_box() {
-        let avcc = AvccBox {
-            avc_profile_indication: 66,
-            profile_compatibility: 0,
-            avc_level_indication: 30,
-            length_size_minus_one: shiguredo_mp4::Uint::new(3),
-            sps_list: vec![],
-            pps_list: vec![],
-            chroma_format: None,
-            bit_depth_luma_minus8: None,
-            bit_depth_chroma_minus8: None,
-            sps_ext_list: vec![],
-        };
+        let avcc = create_avcc_box();
         assert_eq!(avcc.box_type(), BoxType::Normal(*b"avcC"));
         let children: Vec<_> = avcc.children().collect();
         assert!(children.is_empty());
@@ -373,25 +366,7 @@ mod sample_entry_base_box_tests {
     /// HvccBox の box_type() と children() テスト
     #[test]
     fn hvcc_box_base_box() {
-        let hvcc = HvccBox {
-            general_profile_space: shiguredo_mp4::Uint::new(0),
-            general_tier_flag: shiguredo_mp4::Uint::new(0),
-            general_profile_idc: shiguredo_mp4::Uint::new(1),
-            general_profile_compatibility_flags: 0,
-            general_constraint_indicator_flags: shiguredo_mp4::Uint::new(0),
-            general_level_idc: 93,
-            min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(0),
-            parallelism_type: shiguredo_mp4::Uint::new(0),
-            chroma_format_idc: shiguredo_mp4::Uint::new(1),
-            bit_depth_luma_minus8: shiguredo_mp4::Uint::new(0),
-            bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(0),
-            avg_frame_rate: 0,
-            constant_frame_rate: shiguredo_mp4::Uint::new(0),
-            num_temporal_layers: shiguredo_mp4::Uint::new(1),
-            temporal_id_nested: shiguredo_mp4::Uint::new(0),
-            length_size_minus_one: shiguredo_mp4::Uint::new(3),
-            nalu_arrays: vec![],
-        };
+        let hvcc = create_hvcc_box();
         assert_eq!(hvcc.box_type(), BoxType::Normal(*b"hvcC"));
         let children: Vec<_> = hvcc.children().collect();
         assert!(children.is_empty());
@@ -433,9 +408,9 @@ mod sample_entry_base_box_tests {
         assert_eq!(opus.box_type(), BoxType::Normal(*b"Opus"));
     }
 
-    /// SampleEntry の children() テスト
+    /// SampleEntry::children() の非空検証 (Avc1 / Opus)
     #[test]
-    fn sample_entry_children() {
+    fn sample_entry_children_non_empty() {
         let avc1 = SampleEntry::Avc1(create_avc1_box());
         let children: Vec<_> = avc1.children().collect();
         assert!(!children.is_empty());
@@ -446,83 +421,24 @@ mod sample_entry_base_box_tests {
     }
 
     fn create_avc1_box() -> Avc1Box {
-        use shiguredo_mp4::boxes::VisualSampleEntryFields;
         Avc1Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
-            avcc_box: AvccBox {
-                avc_profile_indication: 66,
-                profile_compatibility: 0,
-                avc_level_indication: 30,
-                length_size_minus_one: shiguredo_mp4::Uint::new(3),
-                sps_list: vec![],
-                pps_list: vec![],
-                chroma_format: None,
-                bit_depth_luma_minus8: None,
-                bit_depth_chroma_minus8: None,
-                sps_ext_list: vec![],
-            },
+            visual: create_visual_fields(),
+            avcc_box: create_avcc_box(),
             unknown_boxes: vec![],
         }
     }
 
     fn create_hev1_box() -> Hev1Box {
-        use shiguredo_mp4::boxes::VisualSampleEntryFields;
         Hev1Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
-            hvcc_box: HvccBox {
-                general_profile_space: shiguredo_mp4::Uint::new(0),
-                general_tier_flag: shiguredo_mp4::Uint::new(0),
-                general_profile_idc: shiguredo_mp4::Uint::new(1),
-                general_profile_compatibility_flags: 0,
-                general_constraint_indicator_flags: shiguredo_mp4::Uint::new(0),
-                general_level_idc: 93,
-                min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(0),
-                parallelism_type: shiguredo_mp4::Uint::new(0),
-                chroma_format_idc: shiguredo_mp4::Uint::new(1),
-                bit_depth_luma_minus8: shiguredo_mp4::Uint::new(0),
-                bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(0),
-                avg_frame_rate: 0,
-                constant_frame_rate: shiguredo_mp4::Uint::new(0),
-                num_temporal_layers: shiguredo_mp4::Uint::new(1),
-                temporal_id_nested: shiguredo_mp4::Uint::new(0),
-                length_size_minus_one: shiguredo_mp4::Uint::new(3),
-                nalu_arrays: vec![HvccNalUintArray {
-                    array_completeness: shiguredo_mp4::Uint::new(0),
-                    nal_unit_type: shiguredo_mp4::Uint::new(32),
-                    nalus: vec![],
-                }],
-            },
+            visual: create_visual_fields(),
+            hvcc_box: create_hvcc_box(),
             unknown_boxes: vec![],
         }
     }
 
     fn create_opus_box() -> OpusBox {
         OpusBox {
-            audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1)
-                    .expect("data_reference_index should be non-zero"),
-                channelcount: 2,
-                samplesize: 16,
-                samplerate: FixedPointNumber::new(48000, 0),
-            },
+            audio: create_audio_fields(),
             dops_box: DopsBox {
                 output_channel_count: 2,
                 pre_skip: 312,
@@ -618,121 +534,53 @@ mod sample_entry_base_box_tests {
 
     // ===== 追加ヘルパー関数 =====
 
-    fn create_hvc1_box() -> shiguredo_mp4::boxes::Hvc1Box {
-        use shiguredo_mp4::boxes::{Hvc1Box, VisualSampleEntryFields};
+    fn create_hvc1_box() -> Hvc1Box {
         Hvc1Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
-            hvcc_box: HvccBox {
-                general_profile_space: shiguredo_mp4::Uint::new(0),
-                general_tier_flag: shiguredo_mp4::Uint::new(0),
-                general_profile_idc: shiguredo_mp4::Uint::new(1),
-                general_profile_compatibility_flags: 0,
-                general_constraint_indicator_flags: shiguredo_mp4::Uint::new(0),
-                general_level_idc: 93,
-                min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(0),
-                parallelism_type: shiguredo_mp4::Uint::new(0),
-                chroma_format_idc: shiguredo_mp4::Uint::new(1),
-                bit_depth_luma_minus8: shiguredo_mp4::Uint::new(0),
-                bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(0),
-                avg_frame_rate: 0,
-                constant_frame_rate: shiguredo_mp4::Uint::new(0),
-                num_temporal_layers: shiguredo_mp4::Uint::new(1),
-                temporal_id_nested: shiguredo_mp4::Uint::new(0),
-                length_size_minus_one: shiguredo_mp4::Uint::new(3),
-                nalu_arrays: vec![],
-            },
+            visual: create_visual_fields(),
+            hvcc_box: create_hvcc_box(),
             unknown_boxes: vec![],
         }
     }
 
-    fn create_vp08_box() -> shiguredo_mp4::boxes::Vp08Box {
-        use shiguredo_mp4::boxes::{VisualSampleEntryFields, Vp08Box};
+    fn create_vp08_box() -> Vp08Box {
         Vp08Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
+            visual: create_visual_fields(),
             vpcc_box: create_vpcc_box(),
             unknown_boxes: vec![],
         }
     }
 
-    fn create_vp09_box() -> shiguredo_mp4::boxes::Vp09Box {
-        use shiguredo_mp4::boxes::{VisualSampleEntryFields, Vp09Box};
+    fn create_vp09_box() -> Vp09Box {
         Vp09Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
+            visual: create_visual_fields(),
             vpcc_box: create_vpcc_box(),
             unknown_boxes: vec![],
         }
     }
 
-    fn create_av01_box() -> shiguredo_mp4::boxes::Av01Box {
-        use shiguredo_mp4::boxes::{Av01Box, VisualSampleEntryFields};
+    fn create_av01_box() -> Av01Box {
         Av01Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
+            visual: create_visual_fields(),
             av1c_box: create_av1c_box(),
             unknown_boxes: vec![],
         }
     }
 
-    fn create_mp4a_box() -> shiguredo_mp4::boxes::Mp4aBox {
-        use shiguredo_mp4::boxes::{EsdsBox, Mp4aBox};
-        use shiguredo_mp4::descriptors::{
-            DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
-        };
+    fn create_mp4a_box() -> Mp4aBox {
         Mp4aBox {
-            audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1)
-                    .expect("data_reference_index should be non-zero"),
-                channelcount: 2,
-                samplesize: 16,
-                samplerate: FixedPointNumber::new(48000, 0),
-            },
+            audio: create_audio_fields(),
             esds_box: EsdsBox {
                 es: EsDescriptor {
                     es_id: 1,
-                    stream_priority: shiguredo_mp4::Uint::new(0),
+                    stream_priority: Uint::new(0),
                     depends_on_es_id: None,
                     url_string: None,
                     ocr_es_id: None,
                     dec_config_descr: DecoderConfigDescriptor {
-                        object_type_indication: 0x40,             // AAC
-                        stream_type: shiguredo_mp4::Uint::new(5), // Audio
-                        up_stream: shiguredo_mp4::Uint::new(0),
-                        buffer_size_db: shiguredo_mp4::Uint::new(0),
+                        object_type_indication: 0x40, // AAC
+                        stream_type: Uint::new(5),    // Audio
+                        up_stream: Uint::new(0),
+                        buffer_size_db: Uint::new(0),
                         max_bitrate: 128000,
                         avg_bitrate: 128000,
                         dec_specific_info: Some(DecoderSpecificInfo { payload: vec![] }),
@@ -744,19 +592,12 @@ mod sample_entry_base_box_tests {
         }
     }
 
-    fn create_flac_box() -> shiguredo_mp4::boxes::FlacBox {
-        use shiguredo_mp4::boxes::{DflaBox, FlacBox, FlacMetadataBlock};
+    fn create_flac_box() -> FlacBox {
         FlacBox {
-            audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1)
-                    .expect("data_reference_index should be non-zero"),
-                channelcount: 2,
-                samplesize: 16,
-                samplerate: FixedPointNumber::new(48000, 0),
-            },
+            audio: create_audio_fields(),
             dfla_box: DflaBox {
                 metadata_blocks: vec![FlacMetadataBlock {
-                    last_metadata_block_flag: shiguredo_mp4::Uint::new(1),
+                    last_metadata_block_flag: Uint::new(1),
                     block_type: FlacMetadataBlock::BLOCK_TYPE_STREAMINFO,
                     block_data: vec![0; 34],
                 }],
@@ -765,11 +606,10 @@ mod sample_entry_base_box_tests {
         }
     }
 
-    fn create_dfla_box() -> shiguredo_mp4::boxes::DflaBox {
-        use shiguredo_mp4::boxes::{DflaBox, FlacMetadataBlock};
+    fn create_dfla_box() -> DflaBox {
         DflaBox {
             metadata_blocks: vec![FlacMetadataBlock {
-                last_metadata_block_flag: shiguredo_mp4::Uint::new(1),
+                last_metadata_block_flag: Uint::new(1),
                 block_type: FlacMetadataBlock::BLOCK_TYPE_STREAMINFO,
                 block_data: vec![0; 34],
             }],
@@ -1172,9 +1012,9 @@ mod sample_entry_tests {
         assert_eq!(decoded.audio_channel_count(), Some(2));
     }
 
-    /// SampleEntry::children() のテスト
+    /// SampleEntry::Opus の children() 件数検証
     #[test]
-    fn sample_entry_children() {
+    fn sample_entry_opus_children_count() {
         let entry = SampleEntry::Opus(OpusBox {
             audio: create_audio_fields(),
             dops_box: DopsBox {

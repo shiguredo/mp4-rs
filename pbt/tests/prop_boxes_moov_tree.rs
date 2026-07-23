@@ -3,14 +3,7 @@
 mod moov_tree_error_tests {
     use std::num::NonZeroU32;
 
-    use shiguredo_mp4::{
-        Decode, Encode, FixedPointNumber, Mp4FileTime, Utf8String,
-        boxes::{
-            Co64Box, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, HdlrBox, MdhdBox, MinfBox,
-            MvhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TkhdBox, UrlBox,
-            VmhdBox,
-        },
-    };
+    use shiguredo_mp4::{Encode, Mp4FileTime, boxes::MdhdBox};
 
     // ===== MdhdBox の不正な言語コードエラー =====
 
@@ -55,6 +48,21 @@ mod moov_tree_error_tests {
         let result = mdhd.encode_to_vec();
         assert!(result.is_err());
     }
+}
+
+// ===== boxes_moov_tree.rs 系ボックスの境界値・バリアント違いテスト =====
+
+mod moov_tree_boundary_tests {
+    use std::num::NonZeroU32;
+
+    use shiguredo_mp4::{
+        Decode, Encode, FixedPointNumber, Mp4FileTime, Utf8String,
+        boxes::{
+            Co64Box, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, HdlrBox, MdhdBox, MinfBox,
+            MvhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TkhdBox, UrlBox,
+            VmhdBox,
+        },
+    };
 
     // ===== FullBox version == 1 パスのテスト (64ビット版) =====
 

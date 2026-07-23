@@ -1131,63 +1131,9 @@ mod mux_error_tests {
     use std::num::NonZeroU32;
 
     use shiguredo_mp4::{
-        FixedPointNumber, TrackKind, Uint,
-        boxes::{
-            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry,
-            VisualSampleEntryFields,
-        },
+        TrackKind,
         mux::{Mp4FileMuxer, MuxError, Sample},
     };
-
-    // 引数なしで固定値を返すヘルパー。トップレベルの `create_avc1_sample_entry(width, height)` と
-    // シグネチャが異なるため、mod スコープに閉じたまま名前を変えて区別する。
-    fn create_fixed_avc1_sample_entry() -> SampleEntry {
-        SampleEntry::Avc1(Avc1Box {
-            visual: VisualSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                width: 1920,
-                height: 1080,
-                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-            },
-            avcc_box: AvccBox {
-                avc_profile_indication: 66,
-                profile_compatibility: 0,
-                avc_level_indication: 30,
-                length_size_minus_one: Uint::new(3),
-                sps_list: vec![],
-                pps_list: vec![],
-                chroma_format: None,
-                bit_depth_luma_minus8: None,
-                bit_depth_chroma_minus8: None,
-                sps_ext_list: vec![],
-            },
-            unknown_boxes: vec![],
-        })
-    }
-
-    // 引数なしで固定値を返すヘルパー。トップレベルの `create_opus_sample_entry(channel_count)` と
-    // シグネチャが異なるため、mod スコープに閉じたまま名前を変えて区別する。
-    fn create_fixed_opus_sample_entry() -> SampleEntry {
-        SampleEntry::Opus(OpusBox {
-            audio: AudioSampleEntryFields {
-                data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-                channelcount: 2,
-                samplesize: AudioSampleEntryFields::DEFAULT_SAMPLESIZE,
-                samplerate: FixedPointNumber::new(48000u16, 0),
-            },
-            dops_box: DopsBox {
-                output_channel_count: 2,
-                pre_skip: 312,
-                input_sample_rate: 48000,
-                output_gain: 0,
-            },
-            unknown_boxes: vec![],
-        })
-    }
 
     /// タイムスケール不一致エラー (Video)
     #[test]
@@ -1198,7 +1144,7 @@ mod mux_error_tests {
         // 最初のサンプル (timescale = 30)
         let sample1 = Sample {
             track_kind: TrackKind::Video,
-            sample_entry: Some(create_fixed_avc1_sample_entry()),
+            sample_entry: Some(super::create_avc1_sample_entry(1920, 1080)),
             keyframe: true,
             timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
             duration: 1,
@@ -1240,7 +1186,7 @@ mod mux_error_tests {
         // 最初のサンプル (timescale = 48000)
         let sample1 = Sample {
             track_kind: TrackKind::Audio,
-            sample_entry: Some(create_fixed_opus_sample_entry()),
+            sample_entry: Some(super::create_opus_sample_entry(2)),
             keyframe: false,
             timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
             duration: 960,
@@ -1349,7 +1295,7 @@ mod mux_error_tests {
 
         let sample = Sample {
             track_kind: TrackKind::Video,
-            sample_entry: Some(create_fixed_avc1_sample_entry()),
+            sample_entry: Some(super::create_avc1_sample_entry(1920, 1080)),
             keyframe: true,
             timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
             duration: 1,

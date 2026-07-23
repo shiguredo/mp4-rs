@@ -981,21 +981,19 @@ fn derive_trak_attributes(
         // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
         // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
         //
-        // wvtt は `text` + `sthd`、それ以外（stpp / 非 wvtt Unknown）は暫定的に
-        // `subt` + `sthd` を返す（tx3g 実装時に明示化予定）。
-        // tuple 形は tx3g が加わる際に MediaHeader::Nmhd(NmhdBox) を持たせるための
-        // 拡張余地として先取り
+        // wvtt は handler_type = `text`、それ以外（stpp / 非 wvtt Unknown）は暫定的に
+        // `subt` を返す（tx3g 実装時に明示化予定）。Media Header は現状すべて `sthd`
         TrackKind::Subtitle => {
-            let (handler_type, media_header) = match sample_entry {
-                SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
-                _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+            let handler_type = match sample_entry {
+                SampleEntry::Wvtt(_) => HdlrBox::HANDLER_TYPE_TEXT,
+                _ => HdlrBox::HANDLER_TYPE_SUBT,
             };
             Ok(TrakDerivation {
                 volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
                 width: FixedPointNumber::default(),
                 height: FixedPointNumber::default(),
                 handler_type,
-                media_header,
+                media_header: MediaHeader::Sthd(SthdBox),
             })
         }
     }

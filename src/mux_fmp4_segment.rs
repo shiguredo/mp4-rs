@@ -952,10 +952,10 @@ struct TrakDerivation {
 
 /// `entry.track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
-/// 現状 [`TrackKind::Subtitle`] 分岐は `sample_entry` の内容を参照せず、一律に
-/// `subt` + `sthd` を返す暫定固定選択となっている。stpp の対応表もこれと一致するため
-/// 個別分岐は不要。wvtt / tx3g の SampleEntry バリアントが実装された時点で、
-/// この分岐を `sample_entry` の種別で細分化し暫定固定選択を除去する
+/// 現状 [`TrackKind::Subtitle`] 分岐は `SampleEntry::Wvtt` のみ個別に扱い、その他は
+/// `subt` + `sthd` の暫定 fallback にフォールバックする（stpp の対応表は fallback と一致する）。
+/// tx3g の SampleEntry バリアントが実装された時点で、fallback を除去して
+/// SampleEntry 種別ごとの分岐に完全置換する
 fn derive_trak_attributes(
     entry: &TrackEntry,
     sample_entry: &SampleEntry,
@@ -981,17 +981,25 @@ fn derive_trak_attributes(
         // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
         // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
         //
-        // ハンドラー種別 = `subt`、メディアヘッダー = `sthd` を暫定固定選択する。
-        // stpp の対応表はこれと一致する。
-        // wvtt / tx3g の SampleEntry バリアントが実装された時点で
-        // SampleEntry 種別ごとの分岐に完全置換する
-        TrackKind::Subtitle => Ok(TrakDerivation {
-            volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
-            width: FixedPointNumber::default(),
-            height: FixedPointNumber::default(),
-            handler_type: HdlrBox::HANDLER_TYPE_SUBT,
-            media_header: MediaHeader::Sthd(SthdBox),
-        }),
+        // wvtt は `text` + `sthd`、それ以外（stpp / 非 wvtt Unknown）は暫定 fallback として
+        // `subt` + `sthd` を返す。
+        // fallback: stpp と非 wvtt Unknown を含む（tx3g は 0045 で明示化予定）。
+        // tx3g の SampleEntry バリアントが実装された時点で fallback を除去する。
+        // tuple 形は 0045 で tx3g が加わる際に MediaHeader::Nmhd(NmhdBox) を持たせるための
+        // 拡張余地として先取り
+        TrackKind::Subtitle => {
+            let (handler_type, media_header) = match sample_entry {
+                SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
+                _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+            };
+            Ok(TrakDerivation {
+                volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
+                width: FixedPointNumber::default(),
+                height: FixedPointNumber::default(),
+                handler_type,
+                media_header,
+            })
+        }
     }
 }
 

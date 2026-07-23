@@ -1218,7 +1218,6 @@ mod sample_entry_tests {
         let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
 
         assert_eq!(size, encoded.len());
-        assert!(matches!(decoded, SampleEntry::Stpp(_)));
         // 3 フィールドが正しく復元されていることを確認する
         let SampleEntry::Stpp(decoded_stpp) = decoded else {
             unreachable!();
@@ -1412,7 +1411,6 @@ mod sample_entry_tests {
             SampleEntry::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
         assert_eq!(size, encoded.len());
-        assert!(matches!(decoded, SampleEntry::Wvtt(_)));
         // vttc_box の config フィールドが正しく復元されていることを確認する
         let SampleEntry::Wvtt(decoded_wvtt) = decoded else {
             unreachable!();

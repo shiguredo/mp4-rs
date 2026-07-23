@@ -954,27 +954,18 @@ mod boundary_tests {
 
     // ===== Stpp 正常経路担保テスト =====
 
-    /// stpp サンプルエントリーを持つ Sample を Fmp4SegmentMuxer 経由で組み立てて
-    /// init segment と media segment のバイト列を返すヘルパー
+    /// 字幕トラック用の Sample を Fmp4SegmentMuxer 経由で組み立てて
+    /// init segment と media segment のバイト列を返す共通ヘルパー
     ///
     /// 既存 `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `build_complete_media_segment`
-    /// と同じ形の組み立て（integration test の性質上、直接再利用できないためコピー）。
-    /// サンプルデータは TTML 最小 XML の合成バイト列を使う
-    fn build_stpp_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
-        // 型付きの Stpp サンプルエントリーを構築する
-        let stpp_sample_entry = SampleEntry::Stpp(StppBox {
-            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
-            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
-            schema_location: Utf8String::EMPTY,
-            auxiliary_mime_types: Utf8String::EMPTY,
-            unknown_boxes: vec![],
-        });
-
-        // TTML の最小 XML をサンプルデータとして使う
-        let sample_payload: &[u8] = b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>";
+    /// と同じ形の組み立て（integration test の性質上、直接再利用できないためコピー）
+    fn build_subtitle_fmp4_segments(
+        sample_entry: SampleEntry,
+        sample_payload: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
         let sample = Sample {
             track_kind: TrackKind::Subtitle,
-            sample_entry: Some(stpp_sample_entry),
+            sample_entry: Some(sample_entry),
             keyframe: true,
             timescale: NonZeroU32::new(1000).expect("non-zero"),
             duration: 1000,
@@ -995,6 +986,22 @@ mod boundary_tests {
             .expect("failed to build init segment");
 
         (init_bytes, media_segment)
+    }
+
+    /// stpp サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    fn build_stpp_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
+        let stpp_sample_entry = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        });
+        // TTML の最小 XML をサンプルデータとして使う
+        build_subtitle_fmp4_segments(
+            stpp_sample_entry,
+            b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>",
+        )
     }
 
     /// Fmp4FileDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
@@ -1132,12 +1139,10 @@ mod boundary_tests {
         assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
     }
 
-    /// wvtt サンプルエントリーを持つ Sample を Fmp4SegmentMuxer 経由で組み立てて
-    /// init segment と media segment のバイト列を返すヘルパー
+    /// wvtt サンプルエントリーを持つ Sample の init/media segment を組み立てる
     ///
-    /// 既存 `build_stpp_fmp4_segments` と同じ形の組み立て（integration test の性質上、
-    /// 直接再利用できないためコピー）。
-    /// サンプル payload は任意のバイト列で、Fmp4SegmentMuxer は payload 内部構造を検証しない
+    /// sample payload は任意のバイト列で、Fmp4SegmentMuxer は payload 内部構造を検証しない
+    /// （既存 stpp テストも TTML 断片を任意バイト列扱い）
     fn build_wvtt_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
         let wvtt_sample_entry = SampleEntry::Wvtt(WvttBox {
             data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
@@ -1146,31 +1151,7 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         });
-
-        // sample payload は任意バイト列で十分（既存 stpp テストも TTML 断片を任意バイト列扱い）
-        let sample_payload: &[u8] = b"WEBVTT-cue-payload-placeholder";
-        let sample = Sample {
-            track_kind: TrackKind::Subtitle,
-            sample_entry: Some(wvtt_sample_entry),
-            keyframe: true,
-            timescale: NonZeroU32::new(1000).expect("non-zero"),
-            duration: 1000,
-            composition_time_offset: None,
-            data_offset: 0,
-            data_size: sample_payload.len(),
-        };
-
-        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
-        let mut media_segment = muxer
-            .create_media_segment_metadata(std::slice::from_ref(&sample))
-            .expect("failed to create media segment metadata");
-        media_segment.extend_from_slice(sample_payload);
-
-        let init_bytes = muxer
-            .init_segment_bytes()
-            .expect("failed to build init segment");
-
-        (init_bytes, media_segment)
+        build_subtitle_fmp4_segments(wvtt_sample_entry, b"WEBVTT-cue-payload-placeholder")
     }
 
     /// Fmp4FileDemuxer 経由で wvtt サンプルエントリーが `SampleEntry::Wvtt(_)` として取り出せる

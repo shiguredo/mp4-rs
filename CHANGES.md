@@ -32,7 +32,7 @@
   - `WvttBox` は必須子 `VttCBox` を持つ
   - `VttCBox` は WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列。null 終端なし、box payload 全体）を保持する
   - サンプルデータは WebVTT の cue box 列（`vttc` / `vtte` / `vtta` 等）を不透明バイト列として扱う
-  - `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐に wvtt arm（`text` + `sthd`）を追加する（0042 の暫定固定選択 `subt` + `sthd` からの細分化を開始）
+  - `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐に wvtt arm（`text` + `sthd`）を追加する（既存の暫定固定選択 `subt` + `sthd` からの細分化を開始）
   - @sile
 - [ADD] ISO/IEC 14496-30 の `StppBox` (`stpp`) を追加する
   - `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールド（`Utf8String`）と任意子ボックスを持つ

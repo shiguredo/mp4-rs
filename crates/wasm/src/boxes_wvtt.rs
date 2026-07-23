@@ -107,7 +107,7 @@ mod tests {
         };
         assert_eq!(config, b"WEBVTT\n\nSTYLE");
 
-        // メモリ解放が全フィールドに対して行われることを検証する
+        // config フィールドのメモリが解放されることを検証する
         mp4_sample_entry_wvtt_free(&mut sample_entry);
         assert_eq!(sample_entry.config_size, 0);
         assert!(sample_entry.config_data.is_null());

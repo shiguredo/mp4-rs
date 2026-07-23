@@ -283,10 +283,9 @@ fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
 
 /// VttCBox の config を生成する Strategy
 ///
-/// `VttCBox::config: String` は valid UTF-8 のみを invariant として持ち、
-/// interior null と改行を許容する。proptest 内部の `regex_syntax` は既定で
-/// `.` が `\n` を除外するため dotall フラグ `(?s)` を明示して改行・null 両方を
-/// 含む文字列を生成する
+/// interior null と改行を含む任意の valid UTF-8 文字列を生成する。
+/// `.` は既定で null を含むが `\n` を除外するため、dotall フラグ `(?s)` を明示して
+/// 改行も含める
 fn arb_wvtt_config() -> impl Strategy<Value = String> {
     "(?s).{0,100}"
 }

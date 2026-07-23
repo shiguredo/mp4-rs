@@ -1071,7 +1071,7 @@ mod boundary_tests {
 
     /// Fmp4SegmentMuxer 経由で wvtt トラックの init/media segment を生成し tkhd 属性を確認する
     ///
-    /// wvtt は 0042 の対応表で handler_type = `text`（stpp の `subt` と異なる）と規定されるため、
+    /// wvtt は ISO/IEC 14496-30 の対応表で handler_type = `text`（stpp の `subt` と異なる）と規定されるため、
     /// `derive_trak_attributes` の Wvtt arm が正しく動作するかの回帰テストとしても機能する。
     /// 併せて Media Header が `sthd`、tkhd 属性が字幕トラック用の (0, 0, 0) になっていることも確認する
     #[test]

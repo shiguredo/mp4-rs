@@ -122,7 +122,9 @@ pub enum Mp4SampleEntryOwned {
         // [NOTE]
         // Stpp と同様に backing storage を持たない。
         // C 側に露出する `config_data` は `inner.vttc_box.config.as_bytes().as_ptr()`
-        // として `String` の heap バッファを直接指す
+        // として `String` の heap バッファを直接指す。
+        // ただし `String` 由来のため invariant は Stpp の `Utf8String` と異なり
+        // interior null を許容する（詳細は `Mp4SampleEntryWvtt` doc 参照）
     },
 }
 
@@ -1588,6 +1590,11 @@ pub struct Mp4SampleEntryWvtt {
 }
 
 impl Mp4SampleEntryWvtt {
+    /// `Mp4SampleEntryWvtt` を [`shiguredo_mp4::boxes::SampleEntry::Wvtt`] に復元する
+    ///
+    /// C 側から渡す `config_data` は interior null を含んでも valid とみなす
+    /// （`VttCBox::config` は `String` で invariant が「valid UTF-8」のみ）。
+    /// これは既存 `Mp4SampleEntryStpp` の `Utf8String` invariant（null 除外）と異なる
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
         // size == 0 は空 config として許容する（vttC の "WEBVTT" 必須検証は本ライブラリのスコープ外）
         let config = if self.config_size == 0 {

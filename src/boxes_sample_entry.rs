@@ -2026,7 +2026,7 @@ pub struct WvttBox {
 }
 
 impl WvttBox {
-    /// ボックス種別（`wvtt` は全て小文字。子の `vttC` の末尾大文字と混同しないこと）
+    /// ボックス種別
     pub const TYPE: BoxType = BoxType::Normal(*b"wvtt");
 
     /// [`WvttBox::data_reference_index`] のデフォルト値
@@ -2106,12 +2106,12 @@ impl BaseBox for WvttBox {
 /// null 終端はしない（サイズは box_size から一意に決まる）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VttCBox {
-    /// WebVTT 設定テキスト（`"WEBVTT"` 行で始まる UTF-8 文字列。null 終端なし、box payload 全体）
+    /// WebVTT 設定テキスト
     pub config: String,
 }
 
 impl VttCBox {
-    /// ボックス種別（末尾大文字 C に注意。`vpcC` と同じ Configuration Box 慣習）
+    /// ボックス種別
     pub const TYPE: BoxType = BoxType::Normal(*b"vttC");
 }
 

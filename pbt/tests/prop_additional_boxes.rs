@@ -306,7 +306,7 @@ fn arb_wvtt_box() -> impl Strategy<Value = WvttBox> {
         prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
     )
         .prop_map(|(dri, vttc_box, unknown_boxes)| WvttBox {
-            data_reference_index: NonZeroU16::new(dri).unwrap(),
+            data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
             vttc_box,
             unknown_boxes,
         })
@@ -569,8 +569,8 @@ proptest! {
     /// 割り当ててラウンドトリップを検証する
     #[test]
     fn vttc_box_roundtrip(vttc in arb_vttc_box()) {
-        let encoded = vttc.encode_to_vec().unwrap();
-        let (decoded, size) = VttCBox::decode(&encoded).unwrap();
+        let encoded = vttc.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = VttCBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(&decoded.config, &vttc.config);
@@ -581,8 +581,8 @@ proptest! {
     /// 必須子 vttC と 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
     #[test]
     fn wvtt_box_roundtrip(wvtt in arb_wvtt_box()) {
-        let encoded = wvtt.encode_to_vec().unwrap();
-        let (decoded, size) = WvttBox::decode(&encoded).unwrap();
+        let encoded = wvtt.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = WvttBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.data_reference_index, wvtt.data_reference_index);
@@ -1407,8 +1407,9 @@ mod sample_entry_tests {
     fn sample_entry_wvtt_encode_decode_roundtrip() {
         let entry = SampleEntry::Wvtt(create_wvtt_box());
 
-        let encoded = entry.encode_to_vec().unwrap();
-        let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
+        let encoded = entry.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) =
+            SampleEntry::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, SampleEntry::Wvtt(_)));
@@ -1449,7 +1450,7 @@ mod sample_entry_tests {
     #[test]
     fn wvtt_box_decode_valid_bytes() {
         let bytes = build_valid_wvtt_bytes(b"WEBVTT");
-        let (decoded, _) = WvttBox::decode(&bytes).unwrap();
+        let (decoded, _) = WvttBox::decode(&bytes).expect("有効な wvtt バイト列は decode 可能");
         assert_eq!(decoded.vttc_box.config, "WEBVTT");
     }
 
@@ -1466,7 +1467,7 @@ mod sample_entry_tests {
         bytes.extend_from_slice(b"wvtt");
         bytes.extend(payload);
 
-        let err = WvttBox::decode(&bytes).unwrap_err();
+        let err = WvttBox::decode(&bytes).expect_err("vttC 欠落で decode がエラーを返すはず");
         assert!(
             err.to_string().contains("vttC"),
             "エラーメッセージに vttC の欠落が示されること: {err}"
@@ -1495,7 +1496,7 @@ mod sample_entry_tests {
         // 0xff は UTF-8 として無効なバイト
         let bytes = build_valid_wvtt_bytes(&[0xff, 0xfe]);
 
-        let err = WvttBox::decode(&bytes).unwrap_err();
+        let err = WvttBox::decode(&bytes).expect_err("UTF-8 不正で decode がエラーを返すはず");
         assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InvalidInput);
         assert!(
             err.to_string().contains("vttC.config"),
@@ -1525,7 +1526,7 @@ mod sample_entry_tests {
     #[test]
     fn sample_entry_decode_wvtt_dispatches_to_wvtt_variant() {
         let bytes = build_valid_wvtt_bytes(b"WEBVTT");
-        let (decoded, _) = SampleEntry::decode(&bytes).unwrap();
+        let (decoded, _) = SampleEntry::decode(&bytes).expect("有効な wvtt バイト列は decode 可能");
         assert!(
             matches!(decoded, SampleEntry::Wvtt(_)),
             "wvtt box_type は SampleEntry::Wvtt として取り出せること"

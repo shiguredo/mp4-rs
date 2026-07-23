@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-23
 - Model: Opus 4.7
 - Branch: feature/add-subtitle-wvtt
 - Polished: 2026-07-23
@@ -362,7 +362,7 @@ sample payload は任意のバイト列（例: `b"WEBVTT-cue-payload-placeholder
 
 ## 解決方法
 
-以下の順で実装する見込み。相互依存で「単独では cargo build が通らない」手順は同一コミット単位でまとめる。途中コミットも `cargo build` が通ることを目安とし、`cargo clippy` / `cargo test` は最終コミット時点で通れば良い。
+以下の順で実装した。相互依存で「単独では cargo build が通らない」手順は同一コミット単位でまとめた。途中コミットも `cargo build` が通ることを目安とし、`cargo clippy` / `cargo test` は最終コミット時点で通ることを確認した。
 
 1. `VttCBox` を実装（`Encode` / `Decode` / `BaseBox`。`config: String` フィールド、`String::from_utf8` での decode、`as_bytes()` での encode）。doc コメントは既存の SampleEntry の子ボックス形式（半角括弧で終わる、`AvccBox` / `OpusSpecificBox` を参考）に揃え、`` /// [ISO/IEC 14496-30] WebVTTConfigurationBox class (親: [`WvttBox`]) `` とする
 2. `WvttBox` を実装（`Encode` / `Decode` / `BaseBox`。`WvttBox::TYPE = BoxType::Normal(*b"wvtt")` と `WvttBox::DEFAULT_DATA_REFERENCE_INDEX = NonZeroU16::MIN` の関連定数も定義する）。doc コメントは既存 SampleEntry の形式（半角括弧で終わる）に揃え、`` /// [ISO/IEC 14496-30] WVTTSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox]) `` とする（既存 `Avc1Box` / `StppBox` を参考にする）

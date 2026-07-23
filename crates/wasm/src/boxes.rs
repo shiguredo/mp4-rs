@@ -51,6 +51,10 @@ pub(crate) fn fmt_json_mp4_sample_entry(
             let data = unsafe { &sample_entry.data.wvtt };
             crate::boxes_wvtt::fmt_json_mp4_sample_entry_wvtt(f, data)?;
         }
+        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G => {
+            let data = unsafe { &sample_entry.data.tx3g };
+            crate::boxes_tx3g::fmt_json_mp4_sample_entry_tx3g(f, data)?;
+        }
     }
     Ok(())
 }
@@ -140,6 +144,13 @@ pub fn parse_json_mp4_sample_entry(
                 data: c_api::boxes::Mp4SampleEntryData { wvtt },
             })
         }
+        "tx3g" => {
+            let tx3g = crate::boxes_tx3g::parse_json_mp4_sample_entry_tx3g(value)?;
+            Ok(Mp4SampleEntry {
+                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G,
+                data: c_api::boxes::Mp4SampleEntryData { tx3g },
+            })
+        }
         _ => Err(kind_value.invalid("unknown sample entry kind")),
     }
 }
@@ -193,6 +204,10 @@ pub unsafe fn mp4_sample_entry_free(sample_entry: *mut Mp4SampleEntry) {
         Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT => {
             let data = unsafe { &mut sample_entry.data.wvtt };
             crate::boxes_wvtt::mp4_sample_entry_wvtt_free(data);
+        }
+        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G => {
+            let data = unsafe { &mut sample_entry.data.tx3g };
+            crate::boxes_tx3g::mp4_sample_entry_tx3g_free(data);
         }
     }
 
@@ -267,6 +282,37 @@ pub fn allocate_and_copy_array_list(arrays: &[Vec<u8>]) -> (*const *const u8, *c
     .0 as *const u32;
 
     (data_ptr, sizes_ptr, count)
+}
+
+/// u16 の 1 本の連続バッファを mp4_alloc で確保してコピーするユーティリティ関数
+///
+/// 返り値は「バッファ先頭ポインタ」と「要素数」。
+/// バイト数は `count * 2` として `free_u16_array` に渡す
+pub fn allocate_and_copy_u16_array(data: &[u16]) -> (*const u16, u32) {
+    if data.is_empty() {
+        return (std::ptr::null(), 0);
+    }
+    let byte_size = std::mem::size_of_val(data) as u32;
+    let ptr = unsafe {
+        let allocated = crate::mp4_alloc(byte_size);
+        if allocated.is_null() {
+            return (std::ptr::null(), 0);
+        }
+        std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, allocated, byte_size as usize);
+        allocated as *const u16
+    };
+    (ptr, data.len() as u32)
+}
+
+/// `allocate_and_copy_u16_array()` で割り当てられたメモリを解放する
+pub unsafe fn free_u16_array(ptr: *mut u16, count: u32) {
+    if ptr.is_null() || count == 0 {
+        return;
+    }
+    let byte_size = (count as usize * std::mem::size_of::<u16>()) as u32;
+    unsafe {
+        crate::mp4_free(ptr as *mut u8, byte_size);
+    }
 }
 
 /// `allocate_and_copy_array_list()` で割り当てられたメモリを解放する

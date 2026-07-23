@@ -67,6 +67,8 @@ const char *get_sample_entry_kind_name(enum Mp4SampleEntryKind kind) {
             return "stpp (XML Subtitle)";
         case MP4_SAMPLE_ENTRY_KIND_WVTT:
             return "wvtt (WebVTT)";
+        case MP4_SAMPLE_ENTRY_KIND_TX3G:
+            return "tx3g (3GPP Timed Text)";
         default:
             return "Unknown";
     }

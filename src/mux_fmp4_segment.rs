@@ -62,9 +62,9 @@ use crate::{
     TrackKind, Utf8String,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
-        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, SampleEntry, SidxBox,
-        SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox, SttsBox,
-        TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
+        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SampleEntry,
+        SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox,
+        SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
         TrunSample, VmhdBox,
     },
     mux_mp4_file::{MuxError, Sample},
@@ -952,10 +952,11 @@ struct TrakDerivation {
 
 /// `entry.track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
-/// 現状 [`TrackKind::Subtitle`] 分岐は `SampleEntry::Wvtt` のみ個別に扱い、それ以外
-///（stpp / 非 wvtt Unknown）は暫定的に `subt` + `sthd` を返す（stpp の対応表とも一致する）。
-/// tx3g の SampleEntry バリアントが実装された時点で、暫定分岐を除去して
-/// SampleEntry 種別ごとの分岐に完全置換する
+/// [`TrackKind::Subtitle`] 分岐は方式ごとの対応表に従い `SampleEntry::Stpp` /
+/// `SampleEntry::Wvtt` / `SampleEntry::Tx3g` を個別 arm で扱う
+///（stpp / wvtt は `sthd`、tx3g は `nmhd` の Media Header を返す）。
+/// 未知の Subtitle 系サンプルエントリー（`SampleEntry::Unknown` にフォールバックしたもの）は
+/// 防御的に `subt` + `sthd` を返す
 fn derive_trak_attributes(
     entry: &TrackEntry,
     sample_entry: &SampleEntry,
@@ -981,19 +982,25 @@ fn derive_trak_attributes(
         // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
         // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
         //
-        // wvtt は handler_type = `text`、それ以外（stpp / 非 wvtt Unknown）は暫定的に
-        // `subt` を返す（tx3g 実装時に明示化予定）。Media Header は現状すべて `sthd`
+        // (handler_type, media_header) の対応表:
+        //   stpp → subt + sthd (ISO/IEC 14496-30)
+        //   wvtt → text + sthd (ISO/IEC 14496-30)
+        //   tx3g → text + nmhd (3GPP TS 26.245)
+        // 未知バリアントは防御的に subt + sthd に丸める（demux → mux の invariant では
+        // Subtitle トラックに映像・音声系 SampleEntry は渡らないため、実質 Unknown の防御）
         TrackKind::Subtitle => {
-            let handler_type = match sample_entry {
-                SampleEntry::Wvtt(_) => HdlrBox::HANDLER_TYPE_TEXT,
-                _ => HdlrBox::HANDLER_TYPE_SUBT,
+            let (handler_type, media_header) = match sample_entry {
+                SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+                SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
+                SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
+                _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
             };
             Ok(TrakDerivation {
                 volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
                 width: FixedPointNumber::default(),
                 height: FixedPointNumber::default(),
                 handler_type,
-                media_header: MediaHeader::Sthd(SthdBox),
+                media_header,
             })
         }
     }

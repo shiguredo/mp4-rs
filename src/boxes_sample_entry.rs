@@ -2155,7 +2155,7 @@ impl BaseBox for VttCBox {
 /// [3GPP TS 26.245] BoxRecord (親: [`Tx3gBox`])
 ///
 /// テキスト表示領域の矩形を表す 8 バイト固定レコード。
-/// Box ではなく Record（`BaseBox` を実装しない）
+/// ボックスではないので [`BaseBox`] は実装しない
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BoxRecord {
     /// 表示領域の上端
@@ -2201,7 +2201,7 @@ impl Decode for BoxRecord {
 /// [3GPP TS 26.245] StyleRecord (親: [`Tx3gBox`])
 ///
 /// 既定のテキストスタイルを表す 12 バイト固定レコード。
-/// Box ではなく Record（`BaseBox` を実装しない）
+/// ボックスではないので [`BaseBox`] は実装しない
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StyleRecord {
     /// style を適用する文字範囲の開始インデックス
@@ -2256,7 +2256,7 @@ impl Decode for StyleRecord {
 
 /// [3GPP TS 26.245] FontRecord (親: [`FtabBox`])
 ///
-/// `FtabBox` 内のフォントエントリー。Box ではなく Record（`BaseBox` を実装しない）。
+/// `FtabBox` 内のフォントエントリー。ボックスではないので [`BaseBox`] は実装しない。
 /// `font_name` は Pascal string で、`font_name_length: u8` バイト分のバイト列を保持する。
 /// 3GPP TS 26.245 は文字エンコーディングを明示していないため、
 /// 本ライブラリは UTF-8 として検証せずに生バイト列として保持する

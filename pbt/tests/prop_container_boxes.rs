@@ -12,7 +12,7 @@ use shiguredo_mp4::{
         AudioSampleEntryFields, Brand, Co64Box, DinfBox, DopsBox, FtypBox, HdlrBox, MdhdBox,
         MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox, OpusBox, SampleEntry,
         SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox,
+        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox, VttCBox, WvttBox,
     },
     demux::{Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, Mp4FileDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -204,9 +204,9 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に SampleEntry を 1 つ持つ。stpp は型付き実装のため
-/// `SampleEntry::Stpp` の最小構成（3 本の Utf8String すべて空文字列）を使う。
-/// 未実装の wvtt / tx3g は Unknown フォールバックのままにする。
+/// stsd 内に SampleEntry を 1 つ持つ。stpp / wvtt は型付き実装のため
+/// それぞれ `SampleEntry::Stpp` / `SampleEntry::Wvtt` の最小構成を使う。
+/// 未実装の tx3g は Unknown フォールバックのままにする。
 /// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
 fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
     let entry = if sample_entry_box_type == *b"stpp" {
@@ -215,6 +215,14 @@ fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
             namespace: Utf8String::EMPTY,
             schema_location: Utf8String::EMPTY,
             auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        })
+    } else if sample_entry_box_type == *b"wvtt" {
+        SampleEntry::Wvtt(WvttBox {
+            data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: VttCBox {
+                config: String::from("WEBVTT"),
+            },
             unknown_boxes: vec![],
         })
     } else {

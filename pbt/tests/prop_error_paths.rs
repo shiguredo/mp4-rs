@@ -383,7 +383,8 @@ mod sample_entry_inner_box_tests {
         boxes::{
             AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
             FlacBox, FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry,
-            StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+            StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox,
+            WvttBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
@@ -641,6 +642,25 @@ mod sample_entry_inner_box_tests {
         assert_eq!(entry.box_type(), StppBox::TYPE);
         assert!(!entry.is_unknown_box());
         assert_eq!(entry.children().count(), 0);
+    }
+
+    /// SampleEntry::Wvtt の inner_box() テスト
+    ///
+    /// Wvtt は必須の型付き子ボックス `vttc_box` を持つため、`unknown_boxes` が空でも
+    /// children は 1 個（vttc_box）になる
+    #[test]
+    fn sample_entry_wvtt_inner_box() {
+        let entry = SampleEntry::Wvtt(WvttBox {
+            data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: VttCBox {
+                config: String::from("WEBVTT"),
+            },
+            unknown_boxes: vec![],
+        });
+
+        assert_eq!(entry.box_type(), WvttBox::TYPE);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.children().count(), 1);
     }
 
     /// SampleEntry::Unknown の inner_box() テスト

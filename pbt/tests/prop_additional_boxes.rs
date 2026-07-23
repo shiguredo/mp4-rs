@@ -10,7 +10,7 @@ use shiguredo_mp4::{
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
         FlacBox, FlacMetadataBlock, FreeBox, Hev1Box, Hvc1Box, HvccBox, MdatBox, Mp4aBox, OpusBox,
-        StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+        StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
     },
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
@@ -281,6 +281,37 @@ fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
         })
 }
 
+/// VttCBox の config を生成する Strategy
+///
+/// interior null と改行を含む任意の valid UTF-8 文字列を生成する。
+/// `.` は既定で null を含むが `\n` を除外するため、dotall フラグ `(?s)` を明示して
+/// 改行も含める
+fn arb_wvtt_config() -> impl Strategy<Value = String> {
+    "(?s).{0,100}"
+}
+
+/// VttCBox を生成する Strategy
+fn arb_vttc_box() -> impl Strategy<Value = VttCBox> {
+    arb_wvtt_config().prop_map(|config| VttCBox { config })
+}
+
+/// WvttBox を生成する Strategy
+///
+/// `data_reference_index` と必須子 `vttc_box` に加えて 0-3 個の任意子ボックスを
+/// 混ぜて decode / encode の子ボックス処理経路もカバーする
+fn arb_wvtt_box() -> impl Strategy<Value = WvttBox> {
+    (
+        1u16..=u16::MAX,                                // data_reference_index
+        arb_vttc_box(),                                 // vttc_box
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
+    )
+        .prop_map(|(dri, vttc_box, unknown_boxes)| WvttBox {
+            data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
+            vttc_box,
+            unknown_boxes,
+        })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -530,6 +561,33 @@ proptest! {
         prop_assert_eq!(&decoded.schema_location, &stpp.schema_location);
         prop_assert_eq!(&decoded.auxiliary_mime_types, &stpp.auxiliary_mime_types);
         prop_assert_eq!(&decoded.unknown_boxes, &stpp.unknown_boxes);
+    }
+
+    /// VttCBox の encode/decode roundtrip
+    ///
+    /// config は任意の UTF-8 文字列（空文字列・改行・interior null すべて含む）を
+    /// 割り当ててラウンドトリップを検証する
+    #[test]
+    fn vttc_box_roundtrip(vttc in arb_vttc_box()) {
+        let encoded = vttc.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = VttCBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(&decoded.config, &vttc.config);
+    }
+
+    /// WvttBox の encode/decode roundtrip
+    ///
+    /// 必須子 vttC と 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
+    #[test]
+    fn wvtt_box_roundtrip(wvtt in arb_wvtt_box()) {
+        let encoded = wvtt.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = WvttBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded.data_reference_index, wvtt.data_reference_index);
+        prop_assert_eq!(&decoded.vttc_box, &wvtt.vttc_box);
+        prop_assert_eq!(&decoded.unknown_boxes, &wvtt.unknown_boxes);
     }
 }
 
@@ -793,7 +851,7 @@ mod sample_entry_tests {
         boxes::{
             AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DopsBox, EsdsBox, FlacBox,
             FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry, StppBox,
-            UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+            UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
@@ -807,6 +865,19 @@ mod sample_entry_tests {
             namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
             schema_location: Utf8String::EMPTY,
             auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        }
+    }
+
+    /// テスト用の WvttBox を生成する
+    ///
+    /// 最小構成（`vttC.config = "WEBVTT"`、任意子は無し）
+    fn create_wvtt_box() -> WvttBox {
+        WvttBox {
+            data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: VttCBox {
+                config: String::from("WEBVTT"),
+            },
             unknown_boxes: vec![],
         }
     }
@@ -1147,7 +1218,6 @@ mod sample_entry_tests {
         let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
 
         assert_eq!(size, encoded.len());
-        assert!(matches!(decoded, SampleEntry::Stpp(_)));
         // 3 フィールドが正しく復元されていることを確認する
         let SampleEntry::Stpp(decoded_stpp) = decoded else {
             unreachable!();
@@ -1308,6 +1378,156 @@ mod sample_entry_tests {
         assert!(
             matches!(decoded, SampleEntry::Stpp(_)),
             "stpp box_type は SampleEntry::Stpp として取り出せること"
+        );
+    }
+
+    // ===== Wvtt Sample Entry Box のテスト =====
+
+    /// SampleEntry::Wvtt のメソッドおよび分類のテスト
+    ///
+    /// 字幕トラックなので audio_*・video_resolution はいずれも None を返し、
+    /// is_unknown_box は false（型付きの Wvtt バリアントとして識別される）
+    #[test]
+    fn sample_entry_wvtt_methods() {
+        let entry = SampleEntry::Wvtt(create_wvtt_box());
+
+        assert_eq!(entry.audio_channel_count(), None);
+        assert_eq!(entry.audio_sample_rate(), None);
+        assert_eq!(entry.audio_sample_size(), None);
+        assert_eq!(entry.video_resolution(), None);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.box_type(), WvttBox::TYPE);
+    }
+
+    /// SampleEntry::Wvtt の encode/decode ラウンドトリップ
+    ///
+    /// wvtt サンプルエントリーが型付きで decode されて Wvtt バリアントに復元されることを検証する
+    #[test]
+    fn sample_entry_wvtt_encode_decode_roundtrip() {
+        let entry = SampleEntry::Wvtt(create_wvtt_box());
+
+        let encoded = entry.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) =
+            SampleEntry::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        assert_eq!(size, encoded.len());
+        // vttc_box の config フィールドが正しく復元されていることを確認する
+        let SampleEntry::Wvtt(decoded_wvtt) = decoded else {
+            unreachable!();
+        };
+        assert_eq!(decoded_wvtt.vttc_box.config, "WEBVTT");
+    }
+
+    /// 有効な wvtt box のバイト列を組み立てるヘルパー
+    ///
+    /// SampleEntry ヘッダー（8 バイト）と必須子 vttC ボックスで構成する。
+    /// エラーテストで一部フィールドを差し替える起点として使う
+    fn build_valid_wvtt_bytes(config: &[u8]) -> Vec<u8> {
+        // vttC 子ボックス: BoxHeader 8 バイト + config バイト列
+        let vttc_size = 8 + config.len() as u32;
+        let mut vttc = Vec::with_capacity(vttc_size as usize);
+        vttc.extend_from_slice(&vttc_size.to_be_bytes());
+        vttc.extend_from_slice(b"vttC");
+        vttc.extend_from_slice(config);
+
+        // wvtt payload: 6 bytes reserved + data_reference_index (u16) + vttC 子ボックス
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(&vttc);
+
+        // BoxHeader: size (4B) + type (4B, "wvtt")
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"wvtt");
+        bytes.extend(payload);
+        bytes
+    }
+
+    /// 有効なバイト列で組み立てて decode できることを念のため確認する
+    #[test]
+    fn wvtt_box_decode_valid_bytes() {
+        let bytes = build_valid_wvtt_bytes(b"WEBVTT");
+        let (decoded, _) = WvttBox::decode(&bytes).expect("有効な wvtt バイト列は decode 可能");
+        assert_eq!(decoded.vttc_box.config, "WEBVTT");
+    }
+
+    /// vttC 子ボックスが無い wvtt payload では必須子欠落エラーになる
+    #[test]
+    fn wvtt_box_missing_vttc() {
+        // vttC 子ボックスを省略した wvtt payload（reserved + data_reference_index のみ）
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"wvtt");
+        bytes.extend(payload);
+
+        let err = WvttBox::decode(&bytes).expect_err("vttC 欠落で decode がエラーを返すはず");
+        assert!(
+            err.to_string().contains("vttC"),
+            "エラーメッセージに vttC の欠落が示されること: {err}"
+        );
+    }
+
+    /// WvttBox::decode に wvtt 以外の box_type を持つバイト列を渡すとエラーになる
+    #[test]
+    fn wvtt_box_decode_wrong_box_type() {
+        // box_type だけ "stpp" に書き換えたバイト列
+        let mut bytes = build_valid_wvtt_bytes(b"WEBVTT");
+        bytes[4..8].copy_from_slice(b"stpp");
+
+        let result = WvttBox::decode(&bytes);
+        assert!(result.is_err(), "wvtt 以外の box_type ではエラーになること");
+    }
+
+    /// vttC の payload に UTF-8 として不正なバイト列が入っているとエラーになる
+    ///
+    /// エラーメッセージには "vttC.config" が含まれる（`VttCBox::decode` 内で
+    /// `.map_err(|e| Error::invalid_input(format!("vttC.config: {e}")))` している）。
+    /// なお `{e}` の詳細は `FromUtf8Error` の Display 由来で Stpp（`Utf8String::decode`
+    /// 由来）と異なる文字列になるため、接頭辞 `"vttC.config"` のみを `contains` で照合する
+    #[test]
+    fn vttc_box_invalid_utf8_config() {
+        // 0xff は UTF-8 として無効なバイト
+        let bytes = build_valid_wvtt_bytes(&[0xff, 0xfe]);
+
+        let err = WvttBox::decode(&bytes).expect_err("UTF-8 不正で decode がエラーを返すはず");
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("vttC.config"),
+            "エラーメッセージに vttC.config が含まれること: {err}"
+        );
+    }
+
+    /// VttCBox::decode に vttC 以外の box_type を持つバイト列を渡すとエラーになる
+    #[test]
+    fn vttc_box_decode_wrong_box_type() {
+        // vttC 単体のバイト列を組み立て、box_type を "abcd" に書き換える
+        let config = b"WEBVTT";
+        let box_size = 8 + config.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"abcd");
+        bytes.extend_from_slice(config);
+
+        let result = VttCBox::decode(&bytes);
+        assert!(result.is_err(), "vttC 以外の box_type ではエラーになること");
+    }
+
+    /// SampleEntry::decode で wvtt box_type を持つ入力が Wvtt バリアントとして取り出されることを検証する
+    ///
+    /// 型付き Wvtt バリアント追加前は `SampleEntry::Unknown` にフォールバックしていたため、
+    /// dispatch の回帰確認として置く
+    #[test]
+    fn sample_entry_decode_wvtt_dispatches_to_wvtt_variant() {
+        let bytes = build_valid_wvtt_bytes(b"WEBVTT");
+        let (decoded, _) = SampleEntry::decode(&bytes).expect("有効な wvtt バイト列は decode 可能");
+        assert!(
+            matches!(decoded, SampleEntry::Wvtt(_)),
+            "wvtt box_type は SampleEntry::Wvtt として取り出せること"
         );
     }
 }

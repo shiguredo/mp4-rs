@@ -12,7 +12,7 @@ use shiguredo_mp4::{
         AudioSampleEntryFields, Brand, Co64Box, DinfBox, DopsBox, FtypBox, HdlrBox, MdhdBox,
         MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox, OpusBox, SampleEntry,
         SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox,
+        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox, VttCBox, WvttBox,
     },
     demux::{Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, Mp4FileDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -204,9 +204,9 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に SampleEntry を 1 つ持つ。stpp は型付き実装のため
-/// `SampleEntry::Stpp` の最小構成（3 本の Utf8String すべて空文字列）を使う。
-/// 未実装の wvtt / tx3g は Unknown フォールバックのままにする。
+/// stsd 内に SampleEntry を 1 つ持つ。stpp / wvtt は型付き実装のため
+/// それぞれ `SampleEntry::Stpp` / `SampleEntry::Wvtt` の最小構成を使う。
+/// 未実装の tx3g は Unknown フォールバックのままにする。
 /// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
 fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
     let entry = if sample_entry_box_type == *b"stpp" {
@@ -215,6 +215,14 @@ fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
             namespace: Utf8String::EMPTY,
             schema_location: Utf8String::EMPTY,
             auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        })
+    } else if sample_entry_box_type == *b"wvtt" {
+        SampleEntry::Wvtt(WvttBox {
+            data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: VttCBox {
+                config: String::from("WEBVTT"),
+            },
             unknown_boxes: vec![],
         })
     } else {
@@ -946,27 +954,18 @@ mod boundary_tests {
 
     // ===== Stpp 正常経路担保テスト =====
 
-    /// stpp サンプルエントリーを持つ Sample を Fmp4SegmentMuxer 経由で組み立てて
-    /// init segment と media segment のバイト列を返すヘルパー
+    /// 字幕トラック用の Sample を Fmp4SegmentMuxer 経由で組み立てて
+    /// init segment と media segment のバイト列を返す共通ヘルパー
     ///
     /// 既存 `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `build_complete_media_segment`
-    /// と同じ形の組み立て（integration test の性質上、直接再利用できないためコピー）。
-    /// サンプルデータは TTML 最小 XML の合成バイト列を使う
-    fn build_stpp_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
-        // 型付きの Stpp サンプルエントリーを構築する
-        let stpp_sample_entry = SampleEntry::Stpp(StppBox {
-            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
-            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
-            schema_location: Utf8String::EMPTY,
-            auxiliary_mime_types: Utf8String::EMPTY,
-            unknown_boxes: vec![],
-        });
-
-        // TTML の最小 XML をサンプルデータとして使う
-        let sample_payload: &[u8] = b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>";
+    /// と同じ形の組み立て（integration test の性質上、直接再利用できないためコピー）
+    fn build_subtitle_fmp4_segments(
+        sample_entry: SampleEntry,
+        sample_payload: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
         let sample = Sample {
             track_kind: TrackKind::Subtitle,
-            sample_entry: Some(stpp_sample_entry),
+            sample_entry: Some(sample_entry),
             keyframe: true,
             timescale: NonZeroU32::new(1000).expect("non-zero"),
             duration: 1000,
@@ -987,6 +986,22 @@ mod boundary_tests {
             .expect("failed to build init segment");
 
         (init_bytes, media_segment)
+    }
+
+    /// stpp サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    fn build_stpp_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
+        let stpp_sample_entry = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        });
+        // TTML の最小 XML をサンプルデータとして使う
+        build_subtitle_fmp4_segments(
+            stpp_sample_entry,
+            b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>",
+        )
     }
 
     /// Fmp4FileDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
@@ -1056,6 +1071,147 @@ mod boundary_tests {
         assert!(
             matches!(entry, SampleEntry::Stpp(_)),
             "stpp サンプルエントリーが型付きで取り出せること"
+        );
+    }
+
+    // ===== Wvtt 正常経路担保テスト =====
+
+    /// Fmp4SegmentMuxer 経由で wvtt トラックの init/media segment を生成し tkhd 属性を確認する
+    ///
+    /// wvtt は ISO/IEC 14496-30 の対応表で handler_type = `text`（stpp の `subt` と異なる）と規定されるため、
+    /// `derive_trak_attributes` の Wvtt arm が正しく動作するかの回帰テストとしても機能する。
+    /// 併せて Media Header が `sthd`、tkhd 属性が字幕トラック用の (0, 0, 0) になっていることも確認する
+    #[test]
+    fn subtitle_track_mux_tkhd_via_fmp4_segment_muxer_wvtt() {
+        let wvtt_sample_entry = SampleEntry::Wvtt(WvttBox {
+            data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: VttCBox {
+                config: String::from("WEBVTT"),
+            },
+            unknown_boxes: vec![],
+        });
+        let sample_payload = b"hello subtitle";
+        let sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(wvtt_sample_entry),
+            keyframe: true,
+            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            duration: 1000,
+            composition_time_offset: None,
+            data_offset: 0,
+            data_size: sample_payload.len(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        // media segment を生成して muxer にトラック情報を蓄積させる
+        let media_segment = muxer
+            .create_media_segment_metadata(std::slice::from_ref(&sample))
+            .expect("failed to create media segment");
+        assert!(
+            !media_segment.is_empty(),
+            "media segment のバイト列が空になっている"
+        );
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("failed to build init segment");
+
+        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("failed to decode ftyp");
+        let (moov, _moov_size) =
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("failed to decode moov");
+
+        assert_eq!(moov.trak_boxes.len(), 1);
+        let trak = &moov.trak_boxes[0];
+
+        // wvtt はハンドラー種別 `text` + `sthd` が対応表
+        assert_eq!(
+            trak.mdia_box.hdlr_box.handler_type,
+            HdlrBox::HANDLER_TYPE_TEXT
+        );
+        assert!(matches!(
+            trak.mdia_box.minf_box.media_header,
+            Some(MediaHeader::Sthd(SthdBox))
+        ));
+
+        // tkhd は字幕トラック用の (0, 0, 0) で stpp 版と同じ
+        assert_eq!(trak.tkhd_box.volume, TkhdBox::DEFAULT_VIDEO_VOLUME);
+        assert_eq!(trak.tkhd_box.width, FixedPointNumber::new(0, 0));
+        assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
+    }
+
+    /// wvtt サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    ///
+    /// sample payload は任意のバイト列で、Fmp4SegmentMuxer は payload 内部構造を検証しない
+    /// （既存 stpp テストも TTML 断片を任意バイト列扱い）
+    fn build_wvtt_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
+        let wvtt_sample_entry = SampleEntry::Wvtt(WvttBox {
+            data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: VttCBox {
+                config: String::from("WEBVTT"),
+            },
+            unknown_boxes: vec![],
+        });
+        build_subtitle_fmp4_segments(wvtt_sample_entry, b"WEBVTT-cue-payload-placeholder")
+    }
+
+    /// Fmp4FileDemuxer 経由で wvtt サンプルエントリーが `SampleEntry::Wvtt(_)` として取り出せる
+    #[test]
+    fn wvtt_sample_entry_via_fmp4_file_demuxer() {
+        let (init_bytes, media_segment) = build_wvtt_fmp4_segments();
+        let mut fmp4_bytes = init_bytes;
+        fmp4_bytes.extend_from_slice(&media_segment);
+
+        let mut demuxer = Fmp4FileDemuxer::new();
+        while let Some(required) = demuxer.required_input() {
+            let start = required.position as usize;
+            let end = start
+                .saturating_add(
+                    required
+                        .size
+                        .unwrap_or(fmp4_bytes.len().saturating_sub(start)),
+                )
+                .min(fmp4_bytes.len());
+            demuxer.handle_input(Input {
+                position: required.position,
+                data: fmp4_bytes.get(start..end).unwrap_or(&[]),
+            });
+        }
+
+        let sample = demuxer
+            .next_sample()
+            .expect("failed to fetch next_sample")
+            .expect("no sample returned from Fmp4FileDemuxer");
+        let entry = sample
+            .sample_entry
+            .expect("最初のサンプルは SampleEntry を持つ");
+        assert!(
+            matches!(entry, SampleEntry::Wvtt(_)),
+            "wvtt サンプルエントリーが型付きで取り出せること"
+        );
+    }
+
+    /// Fmp4SegmentDemuxer 経由で wvtt サンプルエントリーが `SampleEntry::Wvtt(_)` として取り出せる
+    #[test]
+    fn wvtt_sample_entry_via_fmp4_segment_demuxer() {
+        let (init_bytes, media_segment) = build_wvtt_fmp4_segments();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+        let samples = demuxer
+            .handle_media_segment(&media_segment)
+            .expect("failed to handle media segment");
+        assert!(
+            !samples.is_empty(),
+            "media segment から少なくとも 1 サンプル取り出せる"
+        );
+        let entry = samples[0]
+            .sample_entry
+            .expect("最初のサンプルは SampleEntry を持つ");
+        assert!(
+            matches!(entry, SampleEntry::Wvtt(_)),
+            "wvtt サンプルエントリーが型付きで取り出せること"
         );
     }
 

@@ -65,6 +65,8 @@ const char *get_sample_entry_kind_name(enum Mp4SampleEntryKind kind) {
             return "FLAC";
         case MP4_SAMPLE_ENTRY_KIND_STPP:
             return "stpp (XML Subtitle)";
+        case MP4_SAMPLE_ENTRY_KIND_WVTT:
+            return "wvtt (WebVTT)";
         default:
             return "Unknown";
     }

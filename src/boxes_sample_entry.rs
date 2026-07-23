@@ -1,7 +1,7 @@
 //! サンプルエントリー系のボックスをまとめたモジュール
 //!
 //! このモジュールは内部的なもので、構造体などの外部への提供は boxes モジュールを通して行う
-use alloc::{boxed::Box, format, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 use core::num::NonZeroU16;
 
 use crate::{
@@ -25,6 +25,7 @@ pub enum SampleEntry {
     Mp4a(Mp4aBox),
     Flac(FlacBox),
     Stpp(StppBox),
+    Wvtt(WvttBox),
     Unknown(UnknownBox),
 }
 
@@ -101,6 +102,7 @@ impl SampleEntry {
             Self::Mp4a(b) => b,
             Self::Flac(b) => b,
             Self::Stpp(b) => b,
+            Self::Wvtt(b) => b,
             Self::Unknown(b) => b,
         }
     }
@@ -119,6 +121,7 @@ impl Encode for SampleEntry {
             Self::Mp4a(b) => b.encode(buf),
             Self::Flac(b) => b.encode(buf),
             Self::Stpp(b) => b.encode(buf),
+            Self::Wvtt(b) => b.encode(buf),
             Self::Unknown(b) => b.encode(buf),
         }
     }
@@ -138,6 +141,7 @@ impl Decode for SampleEntry {
             Mp4aBox::TYPE => Mp4aBox::decode(buf).map(|(b, n)| (Self::Mp4a(b), n)),
             FlacBox::TYPE => FlacBox::decode(buf).map(|(b, n)| (Self::Flac(b), n)),
             StppBox::TYPE => StppBox::decode(buf).map(|(b, n)| (Self::Stpp(b), n)),
+            WvttBox::TYPE => WvttBox::decode(buf).map(|(b, n)| (Self::Wvtt(b), n)),
             _ => UnknownBox::decode(buf).map(|(b, n)| (Self::Unknown(b), n)),
         }
     }
@@ -1913,7 +1917,7 @@ impl BaseBox for DopsBox {
 /// [ISO/IEC 14496-30] XMLSubtitleSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 ///
 /// XML 形式の字幕（TTML / IMSC 等）を格納するためのサンプルエントリー。
-/// サンプルデータ自体は不透明な XML ドキュメントとして扱い、内部構造の解釈は利用側の責務とする
+/// サンプルデータ自体は生バイト列として扱い、XML 構造の解釈は利用側の責務とする
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StppBox {
     /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
@@ -2001,5 +2005,145 @@ impl BaseBox for StppBox {
 
     fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
         Box::new(self.unknown_boxes.iter().map(as_box_object))
+    }
+}
+
+/// [ISO/IEC 14496-30] WVTTSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// WebVTT 字幕を格納するためのサンプルエントリー。
+/// サンプルデータ自体は WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）で
+/// 構成される生バイト列として扱い、内部構造の解釈は利用側の責務とする
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WvttBox {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
+    pub data_reference_index: NonZeroU16,
+    /// 必須の WebVTT 設定ボックス
+    pub vttc_box: VttCBox,
+    /// 型付き実装を持たない任意の子ボックス（`vlab` / `btrt` 等）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl WvttBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"wvtt");
+
+    /// [`WvttBox::data_reference_index`] のデフォルト値
+    pub const DEFAULT_DATA_REFERENCE_INDEX: NonZeroU16 = NonZeroU16::MIN;
+}
+
+impl Encode for WvttBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += [0u8; 6].encode(&mut buf[offset..])?;
+        offset += self.data_reference_index.encode(&mut buf[offset..])?;
+        offset += self.vttc_box.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for WvttBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _ = <[u8; 6]>::decode_at(payload, &mut offset)?;
+            let data_reference_index = NonZeroU16::decode_at(payload, &mut offset)?;
+
+            let mut vttc_box = None;
+            let mut unknown_boxes = Vec::new();
+
+            while offset < payload.len() {
+                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                match child_header.box_type {
+                    VttCBox::TYPE if vttc_box.is_none() => {
+                        vttc_box = Some(VttCBox::decode_at(payload, &mut offset)?);
+                    }
+                    _ => {
+                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                    }
+                }
+            }
+
+            Ok((
+                Self {
+                    data_reference_index,
+                    vttc_box: check_mandatory_box(vttc_box, "vttC", "wvtt")?,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for WvttBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(
+            core::iter::empty()
+                .chain(core::iter::once(&self.vttc_box).map(as_box_object))
+                .chain(self.unknown_boxes.iter().map(as_box_object)),
+        )
+    }
+}
+
+/// [ISO/IEC 14496-30] WebVTTConfigurationBox class (親: [`WvttBox`])
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VttCBox {
+    /// WebVTT の設定テキスト（`"WEBVTT"` 行で始まる UTF-8 文字列）
+    ///
+    /// null 終端せず、BoxHeader 残バイト全体を 1 個の UTF-8 テキストとして扱う
+    /// （バイト数はボックスサイズから一意に決まる）
+    pub config: String,
+}
+
+impl VttCBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"vttC");
+}
+
+impl Encode for VttCBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += self.config.as_bytes().encode(&mut buf[offset..])?;
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for VttCBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            // BoxHeader 残バイト全体を 1 個の UTF-8 テキストとして復元する
+            // （null 終端ではなく、box_size からサイズが一意に決まる）
+            let config = String::from_utf8(payload.to_vec())
+                .map_err(|e| Error::invalid_input(format!("vttC.config: {e}")))?;
+
+            Ok((Self { config }, header.external_size() + payload.len()))
+        })
+    }
+}
+
+impl BaseBox for VttCBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
     }
 }

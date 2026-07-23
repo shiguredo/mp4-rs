@@ -6,6 +6,7 @@
 - Model: Opus 4.7
 - Branch: feature/add-subtitle-wvtt
 - Polished: 2026-07-23
+- Updated: 2026-07-23
 
 ## 目的
 
@@ -36,7 +37,7 @@ Low。バグ由来ではなく緊急要求も無い。0043 / 0045 と並ぶ字�
 一方、方式固有のサンプルエントリーとしては `wvtt` は未実装で、`wvtt` box_type のサンプルエントリーは `SampleEntry::Unknown` にフォールバックしている。
 
 - `src/boxes_sample_entry.rs:127-144` `SampleEntry::decode` で `wvtt` は `Unknown` へフォールバック
-- `pbt/tests/prop_container_boxes.rs:211-230` `minimal_stsd_box_subtitle` は 3 方式（stpp / wvtt / tx3g）のうち `stpp` のみ型付き `SampleEntry::Stpp`、`wvtt` / `tx3g` は `SampleEntry::Unknown` で組み立てられる（0043 完了時の判断）
+- `pbt/tests/prop_container_boxes.rs:205-238` `minimal_stsd_box_subtitle` は 3 方式（stpp / wvtt / tx3g）のうち `stpp` / `wvtt` は型付き `SampleEntry::Stpp` / `SampleEntry::Wvtt`、未実装の `tx3g` のみ `SampleEntry::Unknown` で組み立てられる
 - `pbt/tests/prop_container_boxes.rs:712-718` `subtitle_scheme_matrix` は 3 組すべてを回している（3 経路のデマルチプレクサテスト用）
 
 ### `SampleEntry` の網羅 match 箇所（バリアント追加で必ずコンパイル修正が必要）
@@ -93,7 +94,7 @@ pub struct WvttBox {
 }
 
 impl WvttBox {
-    /// ボックス種別（`wvtt` は全て小文字。子の `vttC` の末尾大文字と混同しないこと）
+    /// ボックス種別
     pub const TYPE: BoxType = BoxType::Normal(*b"wvtt");
     /// [`WvttBox::data_reference_index`] のデフォルト値
     pub const DEFAULT_DATA_REFERENCE_INDEX: NonZeroU16 = NonZeroU16::MIN;
@@ -111,12 +112,12 @@ impl WvttBox {
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VttCBox {
-    /// WebVTT 設定テキスト（"WEBVTT" 行で始まる UTF-8 文字列。null 終端なし、box payload 全体）
+    /// WebVTT 設定テキスト
     pub config: String,
 }
 
 impl VttCBox {
-    /// ボックス種別（末尾大文字 C に注意。`vpcC` と同じ Configuration Box 慣習）
+    /// ボックス種別
     pub const TYPE: BoxType = BoxType::Normal(*b"vttC");
 }
 ```
@@ -161,31 +162,31 @@ fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
 
 wvtt の対応表は `wvtt → text + sthd`（0042 の対応表: `issues/closed/0042-add-subtitle-track-common.md:98, 113`）。**stpp（`subt` + `sthd`）と handler_type が異なる**（`text` vs `subt`）ため、本 issue で SampleEntry 種別ごとの分岐を開始する。
 
-分岐追加の実装案（`src/mux_fmp4_segment.rs:988-994` を書き換え）:
+分岐追加の実装案（`src/mux_fmp4_segment.rs:988-1000` を書き換え）:
 
 ```rust
 TrackKind::Subtitle => {
-    // wvtt は text + sthd、Stpp / Unknown フォールバックは subt + sthd（暫定固定選択。0045 で fallback 除去予定）。
-    // tuple 形は 0045 で tx3g が加わる際に MediaHeader::Nmhd(NmhdBox) を持たせるための拡張余地として先取り
-    let (handler_type, media_header) = match sample_entry {
-        SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
-        _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+    // wvtt は handler_type = `text`、それ以外（stpp / 非 wvtt Unknown）は暫定的に
+    // `subt` を返す（tx3g 実装時に明示化予定）。Media Header は現状すべて `sthd`
+    let handler_type = match sample_entry {
+        SampleEntry::Wvtt(_) => HdlrBox::HANDLER_TYPE_TEXT,
+        _ => HdlrBox::HANDLER_TYPE_SUBT,
     };
     Ok(TrakDerivation {
         volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
         width: FixedPointNumber::default(),
         height: FixedPointNumber::default(),
         handler_type,
-        media_header,
+        media_header: MediaHeader::Sthd(SthdBox),
     })
 }
 ```
 
-- `Stpp(_)` arm は明示せず fallback に含める（対応表が fallback と一致するため。0045 で fallback 除去時に `Stpp(_)` / `Tx3g(_)` の arm を同時に明示化する運用）
-- Media Header は wvtt でも `sthd`（0042 の対応表通り）
-- 本 issue のコミットで以下 2 箇所を実態に合わせて更新する:
-  - doc コメント（`src/mux_fmp4_segment.rs:953-958`）: 現状「wvtt / tx3g の SampleEntry バリアントが実装された時点で、この分岐を `sample_entry` の種別で細分化し暫定固定選択を除去する」を、例えば「tx3g の SampleEntry バリアントが実装された時点で、fallback (subt + sthd) を除去して SampleEntry 種別ごとの分岐に完全置換する（wvtt は本 issue で追加された）」に書き換える
-  - インラインコメント（`src/mux_fmp4_segment.rs:981-987`）: 現状 7 行（空 `//` 1 行を含む）のうち末尾 2 行「`// wvtt / tx3g の SampleEntry バリアントが実装された時点で` / `// SampleEntry 種別ごとの分岐に完全置換する`」を「`// tx3g の SampleEntry バリアントが実装された時点で fallback を除去する`」に書き換える。tkhd volume 慣習・width / height の説明・空 `//`・「fallback: stpp と非 wvtt Unknown を含む（tx3g は 0045 で明示化予定）」の 5 行を残す（元の「stpp の対応表はこれと一致する」行は本 issue の fallback 網羅設計に合わせて書き換える）
+- `Stpp(_)` arm は明示せず fallback に含める（対応表が fallback と一致するため。tx3g 実装時に `Stpp(_)` / `Tx3g(_)` の arm を同時に明示化する運用）
+- Media Header は wvtt でも `sthd` で現状すべての Subtitle と共通のため match の外側に固定する（tx3g で `nmhd` を持ち込む時点で match 内に取り込む）
+- 0043 で残されている以下 2 箇所の doc / インラインコメントを実態に合わせて更新する:
+  - doc コメント（`src/mux_fmp4_segment.rs:953-958`）: 「wvtt / tx3g の SampleEntry バリアントが実装された時点で、この分岐を `sample_entry` の種別で細分化し暫定固定選択を除去する」を「`SampleEntry::Wvtt` のみ個別に扱い、それ以外（stpp / 非 wvtt Unknown）は暫定的に `subt` + `sthd` を返す（stpp の対応表とも一致する）。tx3g の SampleEntry バリアントが実装された時点で暫定分岐を除去する」等に書き換える
+  - インラインコメント（`src/mux_fmp4_segment.rs:981-987`）: 「wvtt / tx3g の SampleEntry バリアントが実装された時点で SampleEntry 種別ごとの分岐に完全置換する」を「wvtt は handler_type = `text`、それ以外は暫定的に `subt` を返す（tx3g 実装時に明示化予定）。Media Header は現状すべて `sthd`」等に置き換える。tkhd volume 慣習・width / height の説明は残す
 
 ### C API 露出
 
@@ -235,9 +236,9 @@ let config = if self.config_size == 0 {
 - `parse_json_mp4_sample_entry` の match arm 内実装は既存 stpp arm（`crates/wasm/src/boxes.rs:125-131`）と同じ形で `Mp4SampleEntry { kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT, data: Mp4SampleEntryData { wvtt } }` を組み立てる
 - 文字列は `value.to_member("config")?.required()?.to_unquoted_string_str()?` パターン（既存例: `crates/wasm/src/boxes_stpp.rs:44-47`）で読み取り、書き出しは nojson の `JsonFormatter::member(name, value)` に `&str` を渡す
 - 解放処理は `crates/wasm/src/boxes_stpp.rs` の `mp4_sample_entry_stpp_free` パターン（ポインタフィールドの解放処理を持つため必要）。バイト列を WASM メモリに確保する際は `crate::boxes::allocate_and_copy_bytes(bytes)`（`crates/wasm/src/boxes.rs:189-204`）を使う
-- `raw_bytes_as_str` は既存 stpp 版（`crates/wasm/src/boxes_stpp.rs:114-120`）と同じシグネチャで実装する。ただし `VttCBox::config: String` は Stpp の `Utf8String` と違い **interior null を許容する** invariant のため、JSON 出力パスでは `nojson::JsonFormatter` の escape に委ねる（`raw_bytes_as_str` の返り値は interior null を含み得る）。nojson が `\0` を RFC 8259 §7 に従い ` ` としてエスケープするかは実装時に確認し、interior null を含む config で `fmt_json` → JSON パーサ復元のラウンドトリップをテストで検証する。エスケープが不十分ならば JSON 出力前の手動エスケープ等の別対応が必要
+- `raw_bytes_as_str` は既存 stpp 版（`crates/wasm/src/boxes_stpp.rs:114-120`）と同じシグネチャで実装する。ただし `VttCBox::config: String` は Stpp の `Utf8String` と違い **interior null を許容する** invariant のため、JSON 出力パスでは `nojson::JsonFormatter` の escape に委ねる（`raw_bytes_as_str` の返り値は interior null を含み得る）。interior null を含む config で `fmt_json` → JSON パーサ復元のラウンドトリップをテストで検証する（escape 表現の詳細は nojson の責務のため、ラウンドトリップ整合性のみを assert する）
 - `parse_json_mp4_sample_entry_wvtt` は stpp 版と異なり `config` の 1 本のみ扱うため、`allocate_and_copy_bytes` 呼び出しも 1 回で、部分失敗リーク対策の順序制約（stpp 版で採用の「先に全 `&str` を取り出す」パターン）は原理的に不要
-- テスト（`test_wvtt_to_json` / `test_json_to_wvtt_and_free`）を `crates/wasm/src/boxes_stpp.rs:122-183` パターンで追加
+- テスト（`test_wvtt_to_json` / `test_json_to_wvtt_and_free` / `test_wvtt_json_roundtrip_with_interior_null`）を `crates/wasm/src/boxes_stpp.rs:122-183` パターンで追加。interior null テストは `b"WEBVTT\n\x00\nSTYLE"` を入力に fmt_json → parse_json のラウンドトリップで元のバイト列が保持されることを assert する
 
 ### `compatible_brands` の方針
 
@@ -322,7 +323,7 @@ let config = if self.config_size == 0 {
 
 ### 既存テストの更新
 
-- `pbt/tests/prop_container_boxes.rs:211-230` `minimal_stsd_box_subtitle` の wvtt 分岐は **`SampleEntry::Unknown` のまま維持する**（0045 完了までの Unknown フォールバック経路の互換性担保のため。3 方式が揃った時点で Stpp / Wvtt / Tx3g それぞれに置換するかを 0045 側で最終判断する）。合わせて同ヘルパ 205-210 行の doc コメント記述「未実装の wvtt / tx3g は Unknown フォールバックのままにする」を「型付き実装のある wvtt も Unknown フォールバック経路担保のため意図的に Unknown で作成する。未実装の tx3g は Unknown のまま」に書き換える
+- `pbt/tests/prop_container_boxes.rs:205-238` `minimal_stsd_box_subtitle` の wvtt 分岐は typed `SampleEntry::Wvtt` に切り替える（Unknown wvtt payload では `WvttBox::decode` が必須子 `vttC` 欠落で失敗し既存 `subtitle_track_via_*_demuxer` テストが round-trip で壊れるため）。Unknown フォールバック経路の担保は tx3g 分岐のみで継続する
 - `pbt/tests/prop_container_boxes.rs:787-876` `subtitle_track_via_*_demuxer`（3 経路のマトリクス）も Unknown 経路のまま維持する（fallback 経路の担保として）
 - `pbt/tests/prop_container_boxes.rs:886-945` `subtitle_track_mux_tkhd_via_fmp4_segment_muxer`（`SampleEntry::Stpp` を使用）は変更しない
 

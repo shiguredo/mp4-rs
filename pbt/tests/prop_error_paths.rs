@@ -381,10 +381,10 @@ mod sample_entry_inner_box_tests {
     use shiguredo_mp4::{
         BaseBox, BoxSize, BoxType, FixedPointNumber, Uint, Utf8String,
         boxes::{
-            AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
-            FlacBox, FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry,
-            StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox,
-            WvttBox,
+            AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox,
+            DopsBox, EsdsBox, FlacBox, FlacMetadataBlock, FtabBox, Hev1Box, Hvc1Box, HvccBox,
+            Mp4aBox, OpusBox, SampleEntry, StppBox, StyleRecord, Tx3gBox, UnknownBox,
+            VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
@@ -659,6 +659,28 @@ mod sample_entry_inner_box_tests {
         });
 
         assert_eq!(entry.box_type(), WvttBox::TYPE);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.children().count(), 1);
+    }
+
+    /// SampleEntry::Tx3g の inner_box() テスト
+    ///
+    /// 必須の型付き子ボックス `ftab_box` を 1 個持つため、`children().count()` は 1
+    #[test]
+    fn sample_entry_tx3g_inner_box() {
+        let entry = SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
+            unknown_boxes: vec![],
+        });
+
+        assert_eq!(entry.box_type(), Tx3gBox::TYPE);
         assert!(!entry.is_unknown_box());
         assert_eq!(entry.children().count(), 1);
     }

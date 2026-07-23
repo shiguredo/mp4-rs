@@ -9,10 +9,11 @@ use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Either, Encode, FixedPointNumber, Mp4FileTime, SampleFlags,
     TrackKind, Utf8String,
     boxes::{
-        AudioSampleEntryFields, Brand, Co64Box, DinfBox, DopsBox, FtypBox, HdlrBox, MdhdBox,
-        MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox, OpusBox, SampleEntry,
-        SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox, VttCBox, WvttBox,
+        AudioSampleEntryFields, BoxRecord, Brand, Co64Box, DinfBox, DopsBox, FtabBox, FtypBox,
+        HdlrBox, MdhdBox, MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox,
+        OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry,
+        StsdBox, StssBox, StszBox, SttsBox, SttsEntry, StyleRecord, TkhdBox, TrakBox, TrexBox,
+        Tx3gBox, UnknownBox, VmhdBox, VttCBox, WvttBox,
     },
     demux::{Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, Mp4FileDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -204,10 +205,10 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に SampleEntry を 1 つ持つ。stpp / wvtt は型付き実装のため
-/// それぞれ `SampleEntry::Stpp` / `SampleEntry::Wvtt` の最小構成を使う。
-/// 未実装の tx3g は Unknown フォールバックのままにする。
-/// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
+/// stsd 内に SampleEntry を 1 つ持つ。stpp / wvtt / tx3g は型付き実装のため
+/// それぞれ `SampleEntry::Stpp` / `SampleEntry::Wvtt` / `SampleEntry::Tx3g` の最小構成を使う。
+/// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える。
+/// それ以外の box_type は `SampleEntry::Unknown` フォールバック経路として扱う
 fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
     let entry = if sample_entry_box_type == *b"stpp" {
         SampleEntry::Stpp(StppBox {
@@ -223,6 +224,18 @@ fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
             vttc_box: VttCBox {
                 config: String::from("WEBVTT"),
             },
+            unknown_boxes: vec![],
+        })
+    } else if sample_entry_box_type == *b"tx3g" {
+        SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
             unknown_boxes: vec![],
         })
     } else {

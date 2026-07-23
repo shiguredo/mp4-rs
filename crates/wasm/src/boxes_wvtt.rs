@@ -112,4 +112,32 @@ mod tests {
         assert_eq!(sample_entry.config_size, 0);
         assert!(sample_entry.config_data.is_null());
     }
+
+    #[test]
+    fn test_wvtt_json_roundtrip_with_interior_null() {
+        // VttCBox::config は Stpp の Utf8String と違い interior null を許容する。
+        // JSON 経路（fmt_json → parse_json）でも interior null が保持されることを担保する
+        let original_config: &[u8] = b"WEBVTT\n\x00\nSTYLE";
+
+        let sample_entry = Mp4SampleEntryWvtt {
+            config_data: original_config.as_ptr(),
+            config_size: original_config.len() as u32,
+        };
+
+        let json = nojson::json(|f| fmt_json_mp4_sample_entry_wvtt(f, &sample_entry)).to_string();
+
+        let parsed_json = nojson::RawJson::parse(&json).expect("有効な JSON");
+        let mut roundtripped =
+            parse_json_mp4_sample_entry_wvtt(parsed_json.value()).expect("有効な wvtt JSON");
+
+        let roundtripped_bytes = unsafe {
+            std::slice::from_raw_parts(roundtripped.config_data, roundtripped.config_size as usize)
+        };
+        assert_eq!(
+            roundtripped_bytes, original_config,
+            "ラウンドトリップで interior null が保持されること"
+        );
+
+        mp4_sample_entry_wvtt_free(&mut roundtripped);
+    }
 }

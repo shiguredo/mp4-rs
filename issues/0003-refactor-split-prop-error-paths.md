@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-05-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-23
 - Model: opencode mimo-v2.5-pro
 - Branch: feature/refactor-split-prop-error-paths
 - Polished: 2026-07-23
@@ -101,29 +101,22 @@
 
 ## 解決方法
 
-以下の Step 1〜11 の順序で実施する。Step 3-7 の各コミットで、移送元 `prop_error_paths.rs` の不要になった `use` 文と移送先ファイルの `use` 文を同時に整理する（別ステップに分けない）。各コミットで `cargo test -p pbt` と `cargo clippy --workspace --all-targets -- -D warnings` が pass する状態を保つ。
+以下の順で実装した。分割先ファイルごとに 1 コミットとし、各コミット時点で `cargo test -p pbt` と `cargo clippy --workspace --all-targets -- -D warnings` が pass する状態を保った。事前計測で 464 テスト pass を記録し、移送後も 464 テストを維持した。
 
-1. **[準備]** develop で `git status` が clean なことを確認し、`cargo test -p pbt 2>&1 | grep "test result:" | awk '{s+=$4} END {print "total passed:", s}'` で総数を記録
-2. **[準備]** 新規ブランチ `feature/refactor-split-prop-error-paths` を切る
-3. `avcc_error_tests` / `hvcc_error_tests` / `dfla_error_tests` / `dops_error_tests` / `esds_error_tests` を `prop_codec_boxes.rs` に独立 mod として移送。合わせて `*_decode_no_panic` 5 テストを新規 `with_cases(50)` `proptest!` ブロックとして追加。Step 3 完了時点で `prop_error_paths.rs` のトップレベル `use` は全て unused になるため同時に削除する
-4. `descriptor_error_tests` を `prop_descriptors.rs` に独立 mod として移送
-5. `mux_error_tests` を `prop_mux_demux.rs` に移送（`create_fixed_avc1_sample_entry` / `create_fixed_opus_sample_entry` へのリネーム含む）
-6. `pbt/tests/prop_boxes_moov_tree.rs` を新規作成し、`moov_tree_error_tests` と `base_box_tests` の moov tree 系 22 テスト + 関連ヘルパー 6 個を移送（`moov_tree_base_box_tests` mod として配置）。この時点で `prop_error_paths.rs::base_box_tests` mod には SampleEntry 系 24 テスト + ヘルパー 12 個が残る（Step 7 で移送）
-7. `pbt/tests/prop_boxes_sample_entry.rs` を新規作成し、以下を集約:
+1. `avcc_error_tests` / `hvcc_error_tests` / `dfla_error_tests` / `dops_error_tests` / `esds_error_tests` の 5 mod を `prop_codec_boxes.rs` に独立 mod として移送し、合わせて `*_decode_no_panic` 5 テストを新規 `with_cases(50)` `proptest!` ブロックとして追加した。移送に伴い `prop_error_paths.rs` のトップレベル `use` を全削除し、`prop_codec_boxes.rs` の `use` に `DflaBox` を追加した
+2. `descriptor_error_tests` を `prop_descriptors.rs` に独立 mod として移送した
+3. `mux_error_tests` を `prop_mux_demux.rs` に移送した。`prop_mux_demux.rs` の既存 `create_avc1_sample_entry(width, height)` / `create_opus_sample_entry(channel_count)` と衝突するため、mod 内側を `create_fixed_avc1_sample_entry()` / `create_fixed_opus_sample_entry()` にリネームした
+4. `pbt/tests/prop_boxes_moov_tree.rs` を新設し、`moov_tree_error_tests` と `base_box_tests` の moov tree 系 22 テスト + 関連ヘルパー 6 個を移送した（`moov_tree_base_box_tests` mod として配置）。`base_box_tests` mod からは moov 系の `use` と関数のみを削除し、SampleEntry 系はそのまま残した
+5. `pbt/tests/prop_boxes_sample_entry.rs` を新設し、以下を集約した:
    - `sample_entry_inner_box_tests`（元 `prop_error_paths.rs`）
    - `base_box_tests` の SampleEntry 系 24 テスト + ヘルパー 12 個（`sample_entry_base_box_tests` mod として配置）
-   - `prop_additional_boxes.rs` の `sample_entry_tests` mod 全体
-   - ヘルパー統合（`create_audio_fields` / `create_visual_fields` / `create_vpcc_box` / `create_av1c_box` はファイルスコープに 1 個集約。残りは mod スコープに閉じたまま）
-   - コミット肥大化を許容する理由：ヘルパー統合の一貫性のため 1 コミットにまとめる
-8. `git rm pbt/tests/prop_error_paths.rs`
-9. **[最終確認、コミット無し]** Step 1 の総数と一致することを確認し、`cargo test --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo fmt --all -- --check` / `prek run --all-files` を全て pass させる
-10. `CHANGES.md` の `## develop` セクションの既存 `### misc` サブセクション末尾に `## CHANGES.md` 節の内容を追記
-11. **[追記コミット + rename]** 本 issue の `Completed:` を作業完了日に更新し、`## 解決方法` の Step 1-10 を過去形（実施内容）に書き換える（書き方は `issues/closed/0043-add-subtitle-stpp.md` の `## 解決方法` 節を参照）。同一コミットで `git mv issues/0003-bug-split-prop-error-paths.md issues/0003-refactor-split-prop-error-paths.md`（bug → refactor リネーム）を実施
-    - コミットメッセージ例：`0003 解決方法を追記する`
-12. **[closed 移動コミット]** `git mv issues/0003-refactor-split-prop-error-paths.md issues/closed/0003-refactor-split-prop-error-paths.md`
-    - コミットメッセージ例：`0003 closed prop_error_paths.rs を各 PBT ファイルへ再配置する`
-
-Step 11 と Step 12 の 2 段構成は `shiguredo-issues` の「closed 移動時は理由の追記コミットと移動コミットに分けること」規約に沿う。Step 11 に bug → refactor リネームを統合するのは、`shiguredo-git` 規約の VERB（`open` / `closed` / `pending` / `reopened` / `polished`）に rename 用が存在しないため（追記コミットに同梱することで規約想定内に収める）。ファイル内容変更を伴わない `git mv` なので git rename 検出は追記コミットの変更差分と合わせても similarity 90% 以上で効く。
+   - `prop_additional_boxes.rs` の `sample_entry_tests` mod 全体（`create_stpp_box` / `create_wvtt_box` / `build_valid_stpp_bytes` ヘルパー含む）
+6. 続くコミットで、`prop_boxes_sample_entry.rs` 内の重複ヘルパー（`create_audio_fields` / `create_visual_fields` / `create_vpcc_box` / `create_av1c_box`）をファイルスコープに 1 個ずつ集約し、各 mod から `use super::{...};` で参照する形に整理した。残りのヘルパーは mod スコープに閉じたまま維持した
+7. `git rm pbt/tests/prop_error_paths.rs` でファイルを削除した
+8. `CHANGES.md` の `## develop` セクションの既存 `### misc` サブセクション末尾に `[UPDATE]` エントリを追記した
+9. `cargo test --workspace`（535 テスト pass） / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo fmt --all -- --check` を pass させた。`prek run --all-files` は `check-symlinks` が既存の broken symlink（`examples/dump_wasm/dump_wasm.wasm` / `examples/transcode_wasm/transcode_wasm.wasm`、wasm 未ビルドによる本 issue と無関係の問題）を検出したが、それ以外の hook は全て pass した
+10. 本コミットで `Completed:` を作業完了日に更新し、`## 解決方法` を実施結果に書き換え、同一コミットで `git mv issues/0003-bug-split-prop-error-paths.md issues/0003-refactor-split-prop-error-paths.md` により bug → refactor にリネームした
+11. 続くコミットで `git mv issues/0003-refactor-split-prop-error-paths.md issues/closed/0003-refactor-split-prop-error-paths.md` により closed に移動した
 
 ## CHANGES.md
 

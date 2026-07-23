@@ -368,7 +368,7 @@ fn arb_font_record() -> impl Strategy<Value = FontRecord> {
 
 /// FtabBox を生成する Strategy
 ///
-/// エントリー数は combinatorial 爆発回避のため 0-8 個に制限する。
+/// エントリー数は組み合わせ爆発回避のため 0-8 個に制限する。
 /// 0 個も許容してパーサ堅牢性のエッジケースを含める
 fn arb_ftab_box() -> impl Strategy<Value = FtabBox> {
     prop::collection::vec(arb_font_record(), 0..=8).prop_map(|entries| FtabBox { entries })
@@ -1839,7 +1839,7 @@ mod sample_entry_tests {
         assert!(result.is_err(), "ftab 以外の box_type ではエラーになること");
     }
 
-    /// entry_count = 0 の ftab がラウンドトリップできることを deterministic に担保する
+    /// entry_count = 0 の ftab がラウンドトリップできることを決定的に担保する
     ///
     /// `minf_box_subtitle_nmhd_roundtrip` の tx3g typed 化後に依存する invariant
     /// （`ftab_box: FtabBox { entries: vec![] }` で最小構成が成立する）を明示テストする
@@ -1897,7 +1897,7 @@ mod sample_entry_tests {
     /// 過大な事前アロケーションを起こさずに早期エラーで抜ける
     ///
     /// `Vec::with_capacity(entry_count)` を使わず `Vec::new()` から push で伸ばす
-    /// 防御的実装の回帰確認（refactor で `with_capacity` に戻ると DoS/OOM リスクが発生する）
+    /// 防御的実装の回帰確認（リファクタリングで `with_capacity` に戻すと DoS/OOM リスクが発生する）
     #[test]
     fn ftab_box_decode_entry_count_overflow_returns_error() {
         // BoxHeader (size=10, type=b"ftab") + entry_count = u16::MAX (2B) だけを渡す。
@@ -1938,7 +1938,7 @@ mod sample_entry_tests {
     /// SampleEntry::decode で tx3g box_type を持つ入力が Tx3g バリアントとして取り出されることを検証する
     ///
     /// 型付き Tx3g バリアント追加前は `SampleEntry::Unknown` にフォールバックしていたため、
-    /// dispatch の回帰確認として置く
+    /// ディスパッチの回帰確認として置く
     #[test]
     fn sample_entry_decode_tx3g_dispatches_to_tx3g_variant() {
         let bytes = build_valid_tx3g_bytes(&[(1, b"Serif")]);

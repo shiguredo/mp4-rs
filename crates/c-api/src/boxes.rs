@@ -139,7 +139,7 @@ pub enum Mp4SampleEntryOwned {
         // `ftab_font_ids` は `FontRecord::font_id` を集約した u16 の連続バッファを
         // 新規に確保する必要がある（`inner.ftab_box.entries.as_ptr() as *const u16` は不可）。
         // `ftab_font_name_ptrs` / `ftab_font_name_sizes` は `inner.ftab_box.entries[i].font_name`
-        // の heap バッファをそのまま指す（`inner` が drop されるまで有効）
+        // のヒープバッファをそのまま指す（`inner` が破棄されるまで有効）
         ftab_font_ids: Vec<u16>,
         ftab_font_name_ptrs: Vec<*const u8>,
         ftab_font_name_sizes: Vec<u32>,
@@ -558,7 +558,7 @@ impl Mp4SampleEntryOwned {
                 ftab_font_name_sizes,
             } => {
                 // 3 並列 Vec は同一ループで push される invariant を持つ。
-                // refactor で長さがズレると C 側で from_raw_parts が OOB になるため防御
+                // リファクタリングで長さがズレると C 側で `from_raw_parts` が範囲外アクセスになるため防御
                 debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_ptrs.len());
                 debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_sizes.len());
                 let tx3g = Mp4SampleEntryTx3g {
@@ -1764,7 +1764,7 @@ impl Mp4SampleEntryTx3g {
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
         // `FtabBox::entry_count` は u16 のため 65535 以下でなければならない
         // （超過状態のまま entries を全件 push すると FtabBox::encode で失敗するため、
-        // 無駄な heap 確保を避けて早期にエラー返却する）
+        // 無駄なヒープ確保を避けて早期にエラー返却する）
         if self.ftab_count > u16::MAX as u32 {
             return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
         }

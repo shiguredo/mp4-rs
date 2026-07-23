@@ -2198,28 +2198,6 @@ impl Decode for BoxRecord {
     }
 }
 
-impl From<[i16; 4]> for BoxRecord {
-    /// `[top, left, bottom, right]` の順で 4 個の `i16` から変換する
-    ///
-    /// C ABI やテストで配列リテラルから直接組み立てる際にフィールド順序を
-    /// リテラルインデックスで仮定する箇所を減らすために提供する
-    fn from([top, left, bottom, right]: [i16; 4]) -> Self {
-        Self {
-            top,
-            left,
-            bottom,
-            right,
-        }
-    }
-}
-
-impl From<BoxRecord> for [i16; 4] {
-    /// `[top, left, bottom, right]` の順で 4 個の `i16` に変換する
-    fn from(r: BoxRecord) -> Self {
-        [r.top, r.left, r.bottom, r.right]
-    }
-}
-
 /// [3GPP TS 26.245] StyleRecord (親: [`Tx3gBox`])
 ///
 /// 既定のテキストスタイルを表す 12 バイト固定レコード。

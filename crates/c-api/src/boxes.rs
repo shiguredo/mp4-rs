@@ -566,7 +566,12 @@ impl Mp4SampleEntryOwned {
                     horizontal_justification: inner.horizontal_justification,
                     vertical_justification: inner.vertical_justification,
                     background_color_rgba: inner.background_color_rgba,
-                    default_text_box: inner.default_text_box.into(),
+                    default_text_box: [
+                        inner.default_text_box.top,
+                        inner.default_text_box.left,
+                        inner.default_text_box.bottom,
+                        inner.default_text_box.right,
+                    ],
                     default_style_start_char: inner.default_style.start_char,
                     default_style_end_char: inner.default_style.end_char,
                     default_style_font_id: inner.default_style.font_id,
@@ -1810,7 +1815,12 @@ impl Mp4SampleEntryTx3g {
             horizontal_justification: self.horizontal_justification,
             vertical_justification: self.vertical_justification,
             background_color_rgba: self.background_color_rgba,
-            default_text_box: self.default_text_box.into(),
+            default_text_box: shiguredo_mp4::boxes::BoxRecord {
+                top: self.default_text_box[0],
+                left: self.default_text_box[1],
+                bottom: self.default_text_box[2],
+                right: self.default_text_box[3],
+            },
             default_style: shiguredo_mp4::boxes::StyleRecord {
                 start_char: self.default_style_start_char,
                 end_char: self.default_style_end_char,

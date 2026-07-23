@@ -11,6 +11,11 @@
 
 ## develop
 
+- [CHANGE] `SampleEntry` に `Wvtt` バリアントを追加する
+  - `wvtt` サンプルエントリー（ISO/IEC 14496-30 `WVTTSampleEntry`）を型付きで扱えるようにする
+  - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_WVTT` を追加し、`Mp4SampleEntryWvtt` 構造体を新設する
+  - WASM の JSON API で `{ "kind": "wvtt", ... }` の入出力に対応する
+  - @sile
 - [CHANGE] `SampleEntry` に `Stpp` バリアントを追加する
   - `stpp` サンプルエントリー（ISO/IEC 14496-30 `XMLSubtitleSampleEntry`）を型付きで扱えるようにする
   - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_STPP` を追加し、`Mp4SampleEntryStpp` 構造体を新設する
@@ -22,6 +27,12 @@
   - @sile
 - [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
   - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
+  - @sile
+- [ADD] ISO/IEC 14496-30 の `WvttBox` (`wvtt`) と `VttCBox` (`vttC`) を追加する
+  - `WvttBox` は必須子 `VttCBox` を持つ
+  - `VttCBox` は WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列。null 終端なし、box payload 全体）を保持する
+  - サンプルデータは WebVTT の cue box 列（`vttc` / `vtte` / `vtta` 等）を不透明バイト列として扱う
+  - `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐に wvtt arm（`text` + `sthd`）を追加する（0042 の暫定固定選択 `subt` + `sthd` からの細分化を開始）
   - @sile
 - [ADD] ISO/IEC 14496-30 の `StppBox` (`stpp`) を追加する
   - `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールド（`Utf8String`）と任意子ボックスを持つ

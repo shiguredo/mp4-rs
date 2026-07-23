@@ -14,7 +14,7 @@ use shiguredo_mp4::{
 
 fn create_audio_fields() -> AudioSampleEntryFields {
     AudioSampleEntryFields {
-        data_reference_index: NonZeroU16::new(1).unwrap(),
+        data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
         channelcount: 2,
         samplesize: 16,
         samplerate: FixedPointNumber::new(48000, 0),
@@ -23,7 +23,7 @@ fn create_audio_fields() -> AudioSampleEntryFields {
 
 fn create_visual_fields() -> VisualSampleEntryFields {
     VisualSampleEntryFields {
-        data_reference_index: NonZeroU16::new(1).unwrap(),
+        data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
         width: 1920,
         height: 1080,
         horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,

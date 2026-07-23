@@ -1879,6 +1879,62 @@ mod sample_entry_tests {
         );
     }
 
+    /// FontRecord::decode で `font_name_length` が残りバイト数を超える場合に境界チェックでエラーになる
+    ///
+    /// 悪意ある入力（`FtabBox::entry_count` を過大に指定して各 FontRecord の残バイトを
+    /// 使い切ろうとするケース等）に対する防御コードの回帰確認
+    #[test]
+    fn font_record_decode_length_exceeds_buffer() {
+        // font_id (2B) + font_name_length = 0xFF (1B) だけを渡す。
+        // font_name として 255 バイトを読み込もうとするが残バイトは 0 なのでエラー
+        let bytes = [0x00, 0x01, 0xff];
+        let err = FontRecord::decode(&bytes)
+            .expect_err("font_name_length が残バイト超過で decode がエラーを返すはず");
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InsufficientBuffer);
+    }
+
+    /// FtabBox::decode で `entry_count = u16::MAX` かつ payload 不足の場合、
+    /// 過大な事前アロケーションを起こさずに早期エラーで抜ける
+    ///
+    /// `Vec::with_capacity(entry_count)` を使わず `Vec::new()` から push で伸ばす
+    /// 防御的実装の回帰確認（refactor で `with_capacity` に戻ると DoS/OOM リスクが発生する）
+    #[test]
+    fn ftab_box_decode_entry_count_overflow_returns_error() {
+        // BoxHeader (size=10, type=b"ftab") + entry_count = u16::MAX (2B) だけを渡す。
+        // FontRecord が 1 個も後続しないため、最初の FontRecord::decode_at で早期エラー
+        let box_size: u32 = 10;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"ftab");
+        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+        let err = FtabBox::decode(&bytes)
+            .expect_err("entry_count = u16::MAX + payload 不足で decode がエラーを返すはず");
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InsufficientBuffer);
+    }
+
+    /// Tx3gBox::decode で SampleEntry base (8B) + 本体固定 30B が満たされない payload は
+    /// `check_buffer_size` で早期エラーになる
+    ///
+    /// SampleEntry ヘッダー 8 バイトと本体 30 バイトの合計 38 バイトが必要だが、
+    /// 途中のバイト境界 (0 / 6 / 16 / 30) で切り詰めた payload はすべて decode に失敗する
+    #[test]
+    fn tx3g_box_decode_truncated_body_returns_error() {
+        for payload_len in [0usize, 6, 16, 30] {
+            // BoxHeader (size = 8 + payload_len, type = b"tx3g") + payload_len バイトの 0
+            let box_size = (8 + payload_len) as u32;
+            let mut bytes = Vec::with_capacity(box_size as usize);
+            bytes.extend_from_slice(&box_size.to_be_bytes());
+            bytes.extend_from_slice(b"tx3g");
+            bytes.extend(std::iter::repeat_n(0u8, payload_len));
+
+            let result = Tx3gBox::decode(&bytes);
+            assert!(
+                result.is_err(),
+                "payload_len = {payload_len} で decode がエラーを返すこと"
+            );
+        }
+    }
+
     /// SampleEntry::decode で tx3g box_type を持つ入力が Tx3g バリアントとして取り出されることを検証する
     ///
     /// 型付き Tx3g バリアント追加前は `SampleEntry::Unknown` にフォールバックしていたため、

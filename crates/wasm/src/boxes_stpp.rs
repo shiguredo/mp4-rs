@@ -14,15 +14,19 @@ pub fn fmt_json_mp4_sample_entry_stpp(
         f.member("kind", "stpp")?;
         f.member(
             "namespace",
-            raw_bytes_as_str(data, data.namespace_data, data.namespace_size),
+            crate::boxes::raw_bytes_as_str(data, data.namespace_data, data.namespace_size),
         )?;
         f.member(
             "schemaLocation",
-            raw_bytes_as_str(data, data.schema_location_data, data.schema_location_size),
+            crate::boxes::raw_bytes_as_str(
+                data,
+                data.schema_location_data,
+                data.schema_location_size,
+            ),
         )?;
         f.member(
             "auxiliaryMimeTypes",
-            raw_bytes_as_str(
+            crate::boxes::raw_bytes_as_str(
                 data,
                 data.auxiliary_mime_types_data,
                 data.auxiliary_mime_types_size,
@@ -102,21 +106,6 @@ pub fn mp4_sample_entry_stpp_free(entry: &mut Mp4SampleEntryStpp) {
         entry.auxiliary_mime_types_data = std::ptr::null();
         entry.auxiliary_mime_types_size = 0;
     }
-}
-
-/// `Mp4SampleEntryStpp` の `*const u8 + u32` フィールドを `&str` に復元する
-///
-/// バイト列は必ず有効な UTF-8 でなければならない（`Utf8String` の invariant で保証、
-/// および JSON parse 経由でも valid UTF-8 が渡される）。invariant が壊れて
-/// UTF-8 不正なバイト列が渡された場合は実装バグとして panic する。
-/// 返り値のライフタイムは `entry` の借用に紐付いており、`entry` より長生きする
-/// 参照は返せないことを型システムが保証する
-fn raw_bytes_as_str(_entry: &Mp4SampleEntryStpp, data: *const u8, size: u32) -> &str {
-    if size == 0 || data.is_null() {
-        return "";
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
-    std::str::from_utf8(bytes).expect("Mp4SampleEntryStpp field bytes must be valid UTF-8")
 }
 
 #[cfg(test)]

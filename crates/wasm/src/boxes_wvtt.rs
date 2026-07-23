@@ -14,7 +14,7 @@ pub fn fmt_json_mp4_sample_entry_wvtt(
         f.member("kind", "wvtt")?;
         f.member(
             "config",
-            raw_bytes_as_str(data, data.config_data, data.config_size),
+            crate::boxes::raw_bytes_as_str(data, data.config_data, data.config_size),
         )
     })
 }
@@ -51,25 +51,6 @@ pub fn mp4_sample_entry_wvtt_free(entry: &mut Mp4SampleEntryWvtt) {
         entry.config_data = std::ptr::null();
         entry.config_size = 0;
     }
-}
-
-/// `Mp4SampleEntryWvtt` の `*const u8 + u32` フィールドを `&str` に復元する
-///
-/// バイト列は必ず有効な UTF-8 でなければならない（`VttCBox::config: String` invariant で保証、
-/// および JSON parse 経由でも valid UTF-8 が渡される）。invariant が壊れて
-/// UTF-8 不正なバイト列が渡された場合は実装バグとして panic する。
-/// 返り値のライフタイムは `entry` の借用に紐付いており、`entry` より長生きする
-/// 参照は返せないことを型システムが保証する。
-///
-/// ただし `VttCBox::config: String` は Stpp の `Utf8String` と違い **interior null を許容する**
-/// invariant のため、返り値は interior null を含み得る。JSON 出力パスでは
-/// `nojson::JsonFormatter` の escape に委ねる
-fn raw_bytes_as_str(_entry: &Mp4SampleEntryWvtt, data: *const u8, size: u32) -> &str {
-    if size == 0 || data.is_null() {
-        return "";
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
-    std::str::from_utf8(bytes).expect("Mp4SampleEntryWvtt field bytes must be valid UTF-8")
 }
 
 #[cfg(test)]

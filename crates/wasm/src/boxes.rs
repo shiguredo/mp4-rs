@@ -200,6 +200,21 @@ pub unsafe fn mp4_sample_entry_free(sample_entry: *mut Mp4SampleEntry) {
     let _ = unsafe { Box::from_raw(sample_entry) };
 }
 
+/// Mp4SampleEntry* の `*const u8 + u32` フィールドを `&str` に復元する共通ヘルパ
+///
+/// バイト列は必ず有効な UTF-8 でなければならない（invariant は書き出し側で保証される）。
+/// invariant が壊れて UTF-8 不正なバイト列が渡された場合は実装バグとして panic する。
+///
+/// 第 1 引数 `_bound` は返り値 `&str` のライフタイムを借用に紐付けるためだけに存在し、
+/// 関数本体では未使用。呼び出し側はバッファを所有する struct への借用を渡す
+pub(crate) fn raw_bytes_as_str<T>(_bound: &T, data: *const u8, size: u32) -> &str {
+    if size == 0 || data.is_null() {
+        return "";
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
+    std::str::from_utf8(bytes).expect("Mp4SampleEntry field bytes must be valid UTF-8")
+}
+
 /// バイト配列を mp4_alloc で確保してコピーするユーティリティ関数
 pub fn allocate_and_copy_bytes(data: &[u8]) -> (*const u8, u32) {
     if data.is_empty() {

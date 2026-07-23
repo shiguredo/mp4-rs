@@ -38,6 +38,9 @@ pub enum Mp4SampleEntryKind {
 
     /// stpp (XMLSubtitleSampleEntry, ISO/IEC 14496-30)
     MP4_SAMPLE_ENTRY_KIND_STPP,
+
+    /// wvtt (WVTTSampleEntry, ISO/IEC 14496-30)
+    MP4_SAMPLE_ENTRY_KIND_WVTT,
 }
 
 pub enum Mp4SampleEntryOwned {
@@ -113,6 +116,13 @@ pub enum Mp4SampleEntryOwned {
         // として `Utf8String` 内部の `String` heap バッファを直接指すため、
         // 別途 `Vec<u8>` を保持する必要がない（`inner` が drop されるかフィールドが
         // 再代入されるとポインタは無効化されるので、外部からの変更は禁物）
+    },
+    Wvtt {
+        inner: shiguredo_mp4::boxes::WvttBox,
+        // [NOTE]
+        // Stpp と同様に backing storage を持たない。
+        // C 側に露出する `config_data` は `inner.vttc_box.config.as_bytes().as_ptr()`
+        // として `String` の heap バッファを直接指す
     },
 }
 
@@ -223,6 +233,7 @@ impl Mp4SampleEntryOwned {
                 })
             }
             shiguredo_mp4::boxes::SampleEntry::Stpp(inner) => Some(Self::Stpp { inner }),
+            shiguredo_mp4::boxes::SampleEntry::Wvtt(inner) => Some(Self::Wvtt { inner }),
             _ => None,
         }
     }
@@ -491,6 +502,19 @@ impl Mp4SampleEntryOwned {
                     data: Mp4SampleEntryData { stpp },
                 }
             }
+            Self::Wvtt { inner } => {
+                // VttCBox::config の内部 String heap バッファのポインタ・長さを直接露出する。
+                // Stpp と違い interior null を含み得るため、C 側は必ず `config_size` を長さとして使う
+                let config_bytes = inner.vttc_box.config.as_bytes();
+                let wvtt = Mp4SampleEntryWvtt {
+                    config_data: config_bytes.as_ptr(),
+                    config_size: config_bytes.len() as u32,
+                };
+                Mp4SampleEntry {
+                    kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT,
+                    data: Mp4SampleEntryData { wvtt },
+                }
+            }
         }
     }
 }
@@ -530,6 +554,9 @@ pub union Mp4SampleEntryData {
 
     /// stpp（XML 字幕）用のサンプルエントリー
     pub stpp: Mp4SampleEntryStpp,
+
+    /// wvtt（WebVTT 字幕）用のサンプルエントリー
+    pub wvtt: Mp4SampleEntryWvtt,
 }
 
 /// MP4 サンプルエントリー
@@ -614,6 +641,9 @@ impl Mp4SampleEntry {
             },
             Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP => unsafe {
                 self.data.stpp.to_sample_entry()
+            },
+            Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT => unsafe {
+                self.data.wvtt.to_sample_entry()
             },
         }
     }
@@ -1525,5 +1555,60 @@ impl Mp4SampleEntryStpp {
         let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
         let s = std::str::from_utf8(bytes).map_err(|_| Mp4Error::MP4_ERROR_INVALID_INPUT)?;
         shiguredo_mp4::Utf8String::new(s).ok_or(Mp4Error::MP4_ERROR_INVALID_INPUT)
+    }
+}
+
+/// wvtt（WVTTSampleEntry, ISO/IEC 14496-30）用のサンプルエントリー
+///
+/// WebVTT 字幕のトラックが持つメタデータを表現する。
+/// `config` フィールドは WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列）を保持する。
+///
+/// # data_reference_index の情報損失
+///
+/// 本構造体は `data_reference_index` を含まないため、C API 経由で
+/// `Mp4SampleEntry → WvttBox` に復元する際は常に
+/// [`WvttBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::WvttBox::DEFAULT_DATA_REFERENCE_INDEX]
+/// (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Mp4a と同じ
+///
+/// # interior null について
+///
+/// `config_data` は `String::as_bytes()` の生バイト列で、既存 `Mp4SampleEntryStpp` の
+/// [`Utf8String`][shiguredo_mp4::Utf8String] invariant（null 除外）と異なり
+/// **interior null を含み得る**。C consumer 側で `strlen` などバイト列内 null を
+/// ターミネータとみなす API を使うと途中で切れる恐れがあるため、必ず `config_size` を
+/// 長さとして利用すること
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Mp4SampleEntryWvtt {
+    /// WebVTT 設定テキストのバイト列（null 終端なし、UTF-8。空文字列は `size == 0`）
+    pub config_data: *const u8,
+
+    /// [`Mp4SampleEntryWvtt::config_data`] の長さ（バイト単位）
+    pub config_size: u32,
+}
+
+impl Mp4SampleEntryWvtt {
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        // size == 0 は空 config として許容する（vttC の "WEBVTT" 必須検証は本ライブラリのスコープ外）
+        let config = if self.config_size == 0 {
+            String::new()
+        } else {
+            if self.config_data.is_null() {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
+            let bytes =
+                unsafe { std::slice::from_raw_parts(self.config_data, self.config_size as usize) };
+            std::str::from_utf8(bytes)
+                .map(String::from)
+                .map_err(|_| Mp4Error::MP4_ERROR_INVALID_INPUT)?
+        };
+
+        let wvtt_box = shiguredo_mp4::boxes::WvttBox {
+            data_reference_index: shiguredo_mp4::boxes::WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: shiguredo_mp4::boxes::VttCBox { config },
+            unknown_boxes: Vec::new(),
+        };
+
+        Ok(shiguredo_mp4::boxes::SampleEntry::Wvtt(wvtt_box))
     }
 }

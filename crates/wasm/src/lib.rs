@@ -15,6 +15,7 @@ pub mod boxes_opus;
 pub mod boxes_stpp;
 pub mod boxes_vp08;
 pub mod boxes_vp09;
+pub mod boxes_wvtt;
 pub mod demux;
 pub mod fmp4_segment_demux;
 pub mod fmp4_segment_mux;

@@ -11,7 +11,7 @@
 //! use shiguredo_mp4::demux::{Input, Mp4FileDemuxer};
 //!
 //! // MP4 ファイル全体をメモリに読み込む
-//! let file_data = std::fs::read("sample.mp4").expect("ファイル読み込み失敗");
+//! let file_data = std::fs::read("sample.mp4").expect("failed to read file");
 //!
 //! // デマルチプレックス処理を初期化し、ファイルデータ全体を提供する
 //! let mut demuxer = Mp4FileDemuxer::new();
@@ -22,16 +22,16 @@
 //! demuxer.handle_input(input);
 //!
 //! // トラック情報を取得する
-//! let tracks = demuxer.tracks().expect("トラック取得失敗");
-//! println!("{}個のトラックが見つかりました", tracks.len());
+//! let tracks = demuxer.tracks().expect("failed to get tracks");
+//! println!("Found {} track(s)", tracks.len());
 //! for track in tracks {
-//!     println!("トラックID: {}, 種類: {:?}, 尺: {}, タイムスケール: {}",
+//!     println!("Track ID: {}, kind: {:?}, duration: {}, timescale: {}",
 //!              track.track_id, track.kind, track.duration, track.timescale);
 //! }
 //!
 //! // 時系列順にサンプルを抽出する
-//! while let Some(sample) = demuxer.next_sample().expect("サンプル読み込み失敗") {
-//!     println!("サンプル - トラックID: {}, タイムスタンプ: {}, サイズ: {} バイト",
+//! while let Some(sample) = demuxer.next_sample().expect("failed to read sample") {
+//!     println!("Sample - Track ID: {}, timestamp: {}, size: {} bytes",
 //!              sample.track.track_id, sample.timestamp, sample.data_size);
 //!     // sample.data_offset の位置から sample.data_size バイトのサンプルデータにアクセス
 //!     let sample_data = &file_data[sample.data_offset as usize..

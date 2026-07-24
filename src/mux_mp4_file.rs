@@ -29,7 +29,7 @@
 //! let sample_data = vec![0; 1024];
 //! file.write_all(&sample_data)?;
 //!
-//! let sample_entry = todo!("使用するコーデックに合わせたサンプルエントリーを構築する");
+//! let sample_entry = todo!("build a sample entry for the codec being used");
 //! let sample = Sample {
 //!     track_kind: TrackKind::Video,
 //!     sample_entry: Some(sample_entry),

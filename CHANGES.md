@@ -94,6 +94,8 @@
   - @voluntas
 - [UPDATE] `pbt/tests/prop_error_paths.rs` を対応する各 PBT ファイル（`prop_boxes_moov_tree.rs` / `prop_boxes_sample_entry.rs` を新設）に再配置する
   - @sile
+- [UPDATE] examples と doc コメント内サンプルコードの日本語出力文字列を英語に置換する
+  - @sile
 
 ## 2026.3.0
 

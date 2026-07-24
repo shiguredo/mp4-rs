@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-05-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-24
 - Model: opencode mimo-v2.5-pro
 - Branch: feature/update-examples-samples-english
 - Polished: 2026-07-24
@@ -126,52 +126,23 @@ Branch prefix は shiguredo-git の 6 種 (`fix-` / `add-` / `change-` / `update
 
 ## 解決方法
 
-`examples/fmp4.rs` の対象箇所は既存の呼び出し形態 (単一行 / 複数行、`println!` / `.expect()` / `assert_eq!`) を維持したまま、日本語文字列部分のみ英訳する。`src/*.rs` の doc コメント内サンプルは元の各行のインデント量 (`//!` プレフィックス以降のスペース数) と複数行フォーマットをそのまま維持する。
+以下の順で実装した。作業ブランチは `feature/update-examples-samples-english`。
 
-英訳ラベル語彙は `examples/demux.rs` を参考にする (`Track {}:`、`Track ID: {}`、`Duration: {}`、`Timestamp: {}`、`Data size: {} bytes` 等)。同一の日本語文字列は同一の英訳を使う (`"{}個のトラックが見つかりました"` → `"Found {} track(s)"` は 4 ファイル共通、`"使用するコーデックに合わせたサンプルエントリーを構築する"` → `"build a sample entry for the codec being used"` は 2 ファイル共通)。
+1. `examples/fmp4.rs` の日本語 `println!` 10 箇所・`.expect()` 2 箇所・`assert_eq!` メッセージ 1 箇所 (計 13 箇所) を英訳した。行 247-251 の `assert_eq!` は行 248 のインラインコメント `// u32 -> usize: 常に安全` を維持したまま複数行構造を保った。行 152 の複数行 `println!` は英訳後の文字列長が短くなったため cargo fmt (rustfmt) の判定で 1 行に自動整形された (行構造維持ルールより rustfmt を優先)。
+2. `src/*.rs` の doc コメント内サンプル 12 箇所を英訳した (`src/demux.rs` / `src/demux_mp4_file.rs` の `.expect()` と `println!`、および `src/demux_fmp4_file.rs` / `src/demux_fmp4_segment.rs` / `src/demux_mp4_file_kind_detector.rs` / `src/mux_mp4_file.rs` / `src/mux_fmp4_segment.rs` の `todo!()` と `println!`)。元の行構造・インデントを維持した。
+3. `examples/demux.rs` と `src/mux.rs` は対象マクロ引数の文字列が既に全て英語のため差分ゼロ (「そのまま維持」対象)。`src/demux_fmp4_file.rs:36` の `println!("track_id={}, ...")`、`src/mux_fmp4_segment.rs:42` の `.expect("non-zero")` 等の既存英語箇所もそのまま維持した。
+4. `CHANGES.md` の `## develop` セクションの既存 `### misc` サブセクション末尾に `[UPDATE]` エントリを追記した。
+5. `cargo test --doc` (8 tests pass) / `cargo doc --no-deps` (警告 0 件) / `cargo run --color=never --example demux tests/testdata/beep-aac-audio.mp4` / `cargo run --color=never --example fmp4` (いずれも正常終了、出力に日本語なし) を pass させた。対象マクロ直接 grep で日本語残存 0 件。全体 grep 結果 (Python で代替検証、下記残懸念参照) は「散文コメント」と既知の 4 箇所インラインコメント (`examples/demux.rs:8` / `examples/fmp4.rs:117` / `examples/fmp4.rs:248` / `src/mux_mp4_file.rs:1269`) のみで、それ以外の日本語残存なし。
+6. 本コミットで `Completed:` を作業完了日に更新し、`## 解決方法` を実施結果に書き換えた。
+7. 続くコミットで `git mv issues/0004-fmt-examples-samples-english.md issues/closed/` により closed に移動した。
 
-以下のコードブロックは対象マクロの文字列引数の英訳例のみを示す。実装時は元の呼び出しの行構造・インライン日本語コメント・引数の数と順序を必ず維持すること。
+### 完了条件検証の残懸念
 
-```rust
-// examples/fmp4.rs の日本語 println! / .expect() / assert_eq! の英訳例
-println!("Media segment {}: {} bytes", seg_idx + 1, segment.len());
-println!("Init segment: {} bytes", init_segment.len());
-println!("Segment with sidx: {} bytes", sidx_segment.len());
-println!("\nTracks: {}", tracks.len());
-println!("\nSamples:");
-println!("  Segment {}:", i + 1);
-println!("  Segment with sidx:");
-println!("\nmfra box: {} bytes", mfra.len());
-println!("mfro.size = {mfro_size} (matches the total mfra size)");
-println!("\nOK: fMP4 mux/demux completed successfully");
+issue の「完了条件」に記載した `LC_ALL=C grep -E '[^[:print:][:space:]]'` パターンは macOS BSD grep で日本語文字を検出できない (`printf 'あ\n' | LC_ALL=C grep -E '[^[:print:][:space:]]'` で 0 ヒット) ため、Python (`re.search(r'[^\x00-\x7f]', line)`) で代替検証した。issue の grep パターン修正は別途対応する。
 
-.expect("failed to create media segment")
-.expect("mfra must contain mfro.size in the last 4 bytes")
+## CHANGES.md
 
-assert_eq!(
-    mfro_size as usize, // u32 -> usize: 常に安全
-    mfra.len(),
-    "mfro.size does not match the mfra size"
-);
-```
-
-```rust
-// src/*.rs doc コメント内サンプルの英訳例
-.expect("failed to read file");
-.expect("failed to get tracks");
-.expect("failed to read sample");
-
-println!("Found {} track(s)", tracks.len());
-println!("Track ID: {}, kind: {:?}, duration: {}, timescale: {}", ...);
-println!("Sample - Track ID: {}, timestamp: {}, size: {} bytes", ...);
-```
-
-```rust
-// doc コメント内 todo!() 英訳例
-// Vec<u8> や &[u8] は一括ロード済みのバイト列なので "byte stream" ではなく "bytes" を用いる。
-todo!("bytes of the fMP4 file");
-todo!("bytes of the init segment");
-todo!("bytes of a media segment");
-todo!("bytes of the MP4 file");
-todo!("build a sample entry for the codec being used");
+```markdown
+- [UPDATE] examples と doc コメント内サンプルコードの日本語出力文字列を英語に置換する
+  - @sile
 ```

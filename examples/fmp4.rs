@@ -146,20 +146,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let segment_metadata = muxer
                 .create_media_segment_metadata(&samples)
-                .expect("メディアセグメント生成に失敗");
+                .expect("failed to create media segment");
             let segment = build_segment(&samples, &segment_metadata, &[&video_data, &audio_data]);
 
-            println!(
-                "メディアセグメント {}: {} バイト",
-                seg_idx + 1,
-                segment.len()
-            );
+            println!("Media segment {}: {} bytes", seg_idx + 1, segment.len());
             segment
         })
         .collect();
 
     let init_segment = muxer.init_segment_bytes()?;
-    println!("初期化セグメント: {} バイト", init_segment.len());
+    println!("Init segment: {} bytes", init_segment.len());
 
     // sidx 付きセグメントも生成してみる
     let video_data = dummy_video_frame(false, 1024);
@@ -188,14 +184,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let sidx_metadata = muxer.create_media_segment_metadata_with_sidx(&sidx_samples)?;
     let sidx_segment = build_segment(&sidx_samples, &sidx_metadata, &[&video_data, &audio_data]);
-    println!("sidx 付きセグメント: {} バイト", sidx_segment.len());
+    println!("Segment with sidx: {} bytes", sidx_segment.len());
 
     // Demuxer で初期化セグメントを処理する
     let mut demuxer = Fmp4SegmentDemuxer::new();
     demuxer.handle_init_segment(&init_segment)?;
 
     let tracks = demuxer.tracks()?;
-    println!("\nトラック数: {}", tracks.len());
+    println!("\nTracks: {}", tracks.len());
     for track in tracks {
         println!(
             "  track_id={}, kind={:?}, timescale={}",
@@ -204,10 +200,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // メディアセグメントを順番に処理する
-    println!("\nサンプル情報:");
+    println!("\nSamples:");
     for (i, segment) in segments.iter().enumerate() {
         let demuxed = demuxer.handle_media_segment(segment)?;
-        println!("  セグメント {}:", i + 1);
+        println!("  Segment {}:", i + 1);
         for sample in &demuxed {
             println!(
                 "    track_id={}, timestamp={}, duration={}, keyframe={}, size={}",
@@ -222,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // sidx 付きセグメントも処理する（sidx は自動的にスキップされる）
     let sidx_demuxed = demuxer.handle_media_segment(&sidx_segment)?;
-    println!("  sidx 付きセグメント:");
+    println!("  Segment with sidx:");
     for sample in &sidx_demuxed {
         println!(
             "    track_id={}, timestamp={}, duration={}, size={}",
@@ -235,22 +231,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // mfra はファイルをシークする際のランダムアクセスインデックスとして機能する。
     // 実際のファイルに書き出す場合は、全セグメントの後ろに追記する。
     let mfra = muxer.mfra_bytes()?;
-    println!("\nmfra ボックス: {} バイト", mfra.len());
+    println!("\nmfra box: {} bytes", mfra.len());
 
     // mfro ボックスの末尾 4 バイトが mfra 全体のサイズと一致することを確認する
     // (ISO 14496-12 Section 8.8.11: mfro.size は mfra ボックス全体のバイト数)
     let mfro_size = u32::from_be_bytes(
         mfra[mfra.len() - 4..]
             .try_into()
-            .expect("mfra は末尾 4 バイトに mfro.size を持つ"),
+            .expect("mfra must contain mfro.size in the last 4 bytes"),
     );
     assert_eq!(
         mfro_size as usize, // u32 -> usize: 常に安全
         mfra.len(),
-        "mfro.size が mfra サイズと一致しない"
+        "mfro.size does not match the mfra size"
     );
-    println!("mfro.size = {mfro_size} (mfra 全体サイズと一致)");
+    println!("mfro.size = {mfro_size} (matches the total mfra size)");
 
-    println!("\nOK: fMP4 の mux/demux が正常に完了しました");
+    println!("\nOK: fMP4 mux/demux completed successfully");
     Ok(())
 }

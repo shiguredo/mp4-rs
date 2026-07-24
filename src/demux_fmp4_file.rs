@@ -17,7 +17,7 @@
 //! use shiguredo_mp4::demux::{Fmp4FileDemuxer, Input};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
-//! let file_data: Vec<u8> = todo!("fMP4 ファイルのバイト列");
+//! let file_data: Vec<u8> = todo!("bytes of the fMP4 file");
 //! let mut demuxer = Fmp4FileDemuxer::new();
 //!
 //! while let Some(required) = demuxer.required_input() {
@@ -30,7 +30,7 @@
 //! }
 //!
 //! let tracks = demuxer.tracks()?;
-//! println!("{}個のトラックが見つかりました", tracks.len());
+//! println!("Found {} track(s)", tracks.len());
 //!
 //! while let Some(sample) = demuxer.next_sample()? {
 //!     println!(

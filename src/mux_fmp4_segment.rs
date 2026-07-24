@@ -33,7 +33,7 @@
 //! use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Sample};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
-//! let sample_entry = todo!("使用するコーデックに合わせたサンプルエントリーを構築する");
+//! let sample_entry = todo!("build a sample entry for the codec being used");
 //! let mut muxer = Fmp4SegmentMuxer::new()?;
 //!
 //! // 返り値は moof + mdat header であり、payload 自体は含まれない

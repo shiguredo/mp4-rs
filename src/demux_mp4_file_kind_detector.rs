@@ -12,7 +12,7 @@
 //! use shiguredo_mp4::demux::{Input, Mp4FileKind, Mp4FileKindDetector};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
-//! let file_data: Vec<u8> = todo!("MP4 ファイルのバイト列");
+//! let file_data: Vec<u8> = todo!("bytes of the MP4 file");
 //! let mut detector = Mp4FileKindDetector::new();
 //!
 //! while let Some(required) = detector.required_input() {

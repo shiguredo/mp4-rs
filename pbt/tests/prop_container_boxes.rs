@@ -1087,10 +1087,10 @@ mod boundary_tests {
         );
     }
 
-    /// 字幕トラック用 Sample を Mp4FileMuxer で 1 本 mux して MP4 バイト列を返す共通ヘルパー
+    /// 字幕トラック用 Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す共通ヘルパー
     ///
     /// Mp4FileMuxer の initial_boxes_bytes / append_sample / finalize の流れ全体を
-    /// この 1 関数にまとめる。stpp / wvtt / tx3g それぞれの build ヘルパから呼び出される
+    /// この 1 関数にまとめる。stpp / wvtt / tx3g それぞれの構築ヘルパーから呼び出される
     fn build_subtitle_mp4_file_bytes(sample_entry: SampleEntry, payload: &[u8]) -> Vec<u8> {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut output: Vec<u8> = muxer.initial_boxes_bytes().to_vec();
@@ -1128,11 +1128,11 @@ mod boundary_tests {
         output
     }
 
-    /// stpp サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本 mux して MP4 バイト列を返す
+    /// stpp サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
     ///
     /// Fmp4SegmentMuxer 経由のヘルパは Mp4FileMuxer の initial_boxes_bytes /
     /// append_sample / finalize の流れと異なるため直接再利用できない。
-    /// integration test の性質上、他ファイルのヘルパも直接再利用できないためコピーで inline する
+    /// 統合テストの性質上、他ファイルのヘルパも直接再利用できないためコピーで関数内に展開する
     fn build_stpp_mp4_file_bytes() -> Vec<u8> {
         let sample_entry = SampleEntry::Stpp(StppBox {
             data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
@@ -1310,7 +1310,7 @@ mod boundary_tests {
         );
     }
 
-    /// wvtt サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本 mux して MP4 バイト列を返す
+    /// wvtt サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
     fn build_wvtt_mp4_file_bytes() -> Vec<u8> {
         let sample_entry = SampleEntry::Wvtt(WvttBox {
             data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
@@ -1498,7 +1498,7 @@ mod boundary_tests {
         );
     }
 
-    /// tx3g サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本 mux して MP4 バイト列を返す
+    /// tx3g サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
     fn build_tx3g_mp4_file_bytes() -> Vec<u8> {
         let sample_entry = SampleEntry::Tx3g(Tx3gBox {
             data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,

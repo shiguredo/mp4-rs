@@ -282,8 +282,8 @@ struct SubtitleSampleInfo {
 
 /// 字幕サンプル情報を生成する Strategy
 ///
-/// keyframe は Sample doc の推奨に従い true 固定として本 struct には持たせない。
-/// duration / data_size は音声サンプル同型で値域は字幕想定に合わせて狭める
+/// keyframe は Sample 型の doc コメントの推奨に従い true 固定として本構造体には持たせない。
+/// duration / data_size は音声サンプルと同型で、値域は字幕想定に合わせて狭める
 fn arb_subtitle_sample_info() -> impl Strategy<Value = SubtitleSampleInfo> {
     (1u32..100, 100usize..2000).prop_map(|(duration, data_size)| SubtitleSampleInfo {
         duration,
@@ -710,7 +710,7 @@ proptest! {
 
         let mut total_data_size = 0usize;
 
-        // サンプル追加順は Video → Audio → Subtitle
+        // サンプル追加順は 映像 → 音声 → 字幕
         let mut video_sample_entry = Some(create_avc1_sample_entry(width, height));
         for sample_info in &video_samples {
             let sample = Sample {

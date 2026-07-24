@@ -586,7 +586,7 @@ impl Mp4FileMuxer {
 
         let is_new_chunk_needed = self.is_new_chunk_needed(sample);
 
-        // 新規チャンクが必要な場合のみ sample_entry を解決する
+        // 新規チャンクが必要な場合のみサンプルエントリーを解決する
         // （不要ならスキップして self.tracks への副作用を発生させない）
         let resolved_sample_entry = if is_new_chunk_needed {
             let entry = sample
@@ -606,7 +606,7 @@ impl Mp4FileMuxer {
             None
         };
 
-        // sample_entry 解決を先に済ませてから ensure_track_entry を呼ぶことで
+        // サンプルエントリーの解決を先に済ませてから ensure_track_entry を呼ぶことで
         // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ
         let track_index = self.ensure_track_entry(sample.track_kind, sample.timescale)?;
 
@@ -827,7 +827,7 @@ impl Mp4FileMuxer {
     fn build_moov_box(&self) -> Result<MoovBox, MuxError> {
         let mut trak_boxes = Vec::new();
 
-        // 空 chunks の TrackEntry は skip する（MissingSampleEntry エラー等で
+        // 空 chunks の TrackEntry はスキップする（MissingSampleEntry エラー等で
         // TrackEntry だけ push された状態でも 0 trak の MP4 を生成できるようにする）
         for entry in self.tracks.iter().filter(|t| !t.chunks.is_empty()) {
             let track_id = trak_boxes.len() as u32 + 1;
@@ -857,9 +857,9 @@ impl Mp4FileMuxer {
 
     /// 指定した [`TrackEntry`] から `trak` ボックスを構築する
     ///
-    /// `entry.chunks` が非空であることを invariant として要求する。
+    /// `entry.chunks` が非空であることを不変条件として要求する。
     /// 空 chunks で呼ばれた場合は `expect` で panic する。
-    /// 呼び出し側の [`Self::build_moov_box`] が空 chunks の [`TrackEntry`] を skip している
+    /// 呼び出し側の [`Self::build_moov_box`] が空 chunks の [`TrackEntry`] をスキップしている
     fn build_trak_box(&self, entry: &TrackEntry, track_id: u32) -> Result<TrakBox, MuxError> {
         let total_duration = entry
             .chunks
@@ -897,7 +897,7 @@ impl Mp4FileMuxer {
 
     /// トラック種別ごとの派生属性（tkhd / hdlr / media_header 用）を導出する
     ///
-    /// Video トラックだけは複数 sample_entry の最大幅・高さを採用する既存挙動を維持するため、
+    /// 映像トラックだけは複数のサンプルエントリーの最大幅・高さを採用する既存挙動を維持するため、
     /// `derive_trak_attributes` を呼ばず本メソッド内で [`TrakDerivation`] を直接組み立てる
     fn derive_trak_derivation(&self, entry: &TrackEntry) -> Result<TrakDerivation, MuxError> {
         let first_sample_entry = &entry
@@ -1296,14 +1296,14 @@ mod tests {
     ///
     /// 汎用構造化前は kind ごとの match arm で timescale だけ先に記録されていたため、
     /// 次のサンプルで別 timescale を渡すと TimescaleMismatch が返ってしまっていた。
-    /// 汎用構造化後は sample_entry 解決を ensure_track_entry より前に行うため、
+    /// 汎用構造化後はサンプルエントリーの解決を ensure_track_entry より前に行うため、
     /// MissingSampleEntry 後でも別 timescale の Sample を投入できる
     #[test]
     fn test_missing_sample_entry_error_leaves_tracks_unchanged() {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
-        // 新規 Audio トラックの初回サンプルで sample_entry = None を渡し MissingSampleEntry を発生させる
+        // 新規音声トラックの初回サンプルで sample_entry = None を渡し MissingSampleEntry を発生させる
         let bad_sample = Sample {
             track_kind: TrackKind::Audio,
             sample_entry: None,
@@ -1338,7 +1338,7 @@ mod tests {
             .expect("failed to append sample after MissingSampleEntry");
     }
 
-    /// 字幕トラック 1 本の append_sample → finalize の smoke test
+    /// 字幕トラック 1 本の append_sample → finalize のスモークテスト
     #[test]
     fn test_subtitle_track_append_and_finalize() {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");

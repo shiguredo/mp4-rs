@@ -13,7 +13,7 @@
 
 - [CHANGE] `Mp4FileMuxer` の内部フィールド構造化に伴う 2 つの挙動変化
   - `finalize` で生成される MP4 の trak_box 出力順が「Audio → Video の固定順」から「`append_sample` 呼び出し順（先に登場した `TrackKind` が先）」に変わる
-  - `MuxError::MissingSampleEntry` エラー返却時の副作用が消滅する（当該 kind の timescale が記録済みで残る挙動が無くなり、`self` の内部状態は完全に不変になる）
+  - `MuxError::MissingSampleEntry` エラー返却時の副作用が消滅する（当該トラック種別の timescale が記録済みで残る挙動が無くなり、`self` の内部状態は完全に不変になる）
   - @sile
 - [ADD] `Mp4FileMuxer` で `TrackKind::Subtitle` トラックの受け入れと mux に対応する
   - Audio + Video + Subtitle の 3 トラック mux が可能になる

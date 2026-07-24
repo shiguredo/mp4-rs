@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-24
 - Model: Opus 4.7
 - Branch: feature/add-subtitle-tx3g
 - Polished: 2026-07-23
@@ -605,30 +605,34 @@ sample payload は任意のバイト列（例: `b"\x00\x05HELLO"` = `text_length
 
 ## 解決方法
 
-以下の順で実装する。相互依存で「単独では cargo build が通らない」手順は同一コミット単位でまとめる。途中コミットも `cargo build` が通ることを目安とし、`cargo clippy` / `cargo test` は最終コミット時点で通ることを確認する。
+以下の順で実装した。相互依存で「単独では cargo build が通らない」手順は同一コミット単位でまとめた。途中コミットも `cargo build` が通ることを目安とし、`cargo clippy` / `cargo test --workspace` は最終コミット時点で通ることを確認した。
 
-1. `BoxRecord` / `StyleRecord` の 2 record 型を `boxes_sample_entry` に追加（`Encode` / `Decode` を実装、`BaseBox` は実装しない。`Default` を derive）。doc コメントは `` /// [3GPP TS 26.245] BoxRecord (親: [`Tx3gBox`]) `` / `` /// [3GPP TS 26.245] StyleRecord (親: [`Tx3gBox`]) `` 形式に揃える
-2. `FontRecord` / `FtabBox` を実装（`Encode` / `Decode` / `BaseBox`。`FontRecord` は record のため `BaseBox` 不要、`FtabBox` は Box のため実装。`FtabBox::TYPE = BoxType::Normal(*b"ftab")` の関連定数も定義）。doc コメントは `` /// [3GPP TS 26.245] FontTableBox (親: [`Tx3gBox`]) `` / `` /// [3GPP TS 26.245] FontRecord (親: [`FtabBox`]) `` 形式に揃える
-3. `Tx3gBox` を実装（`Encode` / `Decode` / `BaseBox`。`Tx3gBox::TYPE = BoxType::Normal(*b"tx3g")` と `Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX = NonZeroU16::MIN` の関連定数も定義する）。doc コメントは既存 SampleEntry の形式（半角括弧で終わる）に揃え、`` /// [3GPP TS 26.245] TextSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox]) `` とする
-4. **同一コミット単位で実施**: `SampleEntry::Tx3g(Tx3gBox)` バリアントを追加し、「### `SampleEntry` の網羅 match 箇所」で列挙した 7 箇所（`src/boxes_sample_entry.rs` の 3 箇所 / `crates/c-api/src/boxes.rs` の 2 箇所 / `crates/wasm/src/boxes.rs` の 2 箇所）すべてに arm を追加する。バリアント追加と網羅 match arm 追加を分けるとワークスペースの `cargo build` が通らない（非網羅 match 箇所 `Mp4SampleEntryOwned::new` は手順 6 の C API 露出詳細、`parse_json_mp4_sample_entry` は手順 7 の WASM 露出詳細で扱う。これらは別コミットに分けてもビルドは通る）
-5. `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐を SampleEntry 種別 match に切り替える（`Stpp` / `Wvtt` / `Tx3g` の 3 arm を明示化し、Media Header を match 内に取り込む。`SampleEntry::Unknown` 経路の防御的 fallback は残す）。同時に doc コメント / インラインコメントを「### `derive_trak_attributes` の分岐追加」節に従って書き換える
-6. **同一コミット単位で実施**: 網羅 match 以外の C API 露出詳細を追加する（`Mp4SampleEntryOwned::Tx3g` の match arm 内実装、`Mp4SampleEntryData::tx3g`、`Mp4SampleEntryTx3g` 構造体、`Mp4SampleEntryOwned::new` の Tx3g arm、`Mp4SampleEntryTx3g::to_sample_entry` の実装）。同時に `crates/c-api/examples/demux.c` / `remux.c` の switch も更新する。cbindgen によるヘッダー再生成を `cargo build` 後に確認する
-7. WASM 露出詳細を追加する（`crates/wasm/src/boxes_tx3g.rs` を新規作成、`boxes.rs` の 3 関数の arm 内実装）
-8. PBT を追加する（`pbt/tests/prop_additional_boxes.rs` に `box_record_roundtrip` / `style_record_roundtrip` / `ftab_box_roundtrip` / `tx3g_box_roundtrip`、`sample_entry_tx3g_methods` / `sample_entry_tx3g_encode_decode_roundtrip`、`arb_box_record` / `arb_style_record` / `arb_font_name` / `arb_font_record` / `arb_ftab_box` / `arb_tx3g_box` strategy 追加）
-9. 単体テストを追加する（`build_valid_tx3g_bytes` ヘルパ、必須子欠落 / 各 box_type 誤り / エントリー数超過 / `SampleEntry::decode` の tx3g 経路 / `pbt/tests/prop_error_paths.rs` の `sample_entry_tx3g_inner_box`）
-10. `minimal_stsd_box_subtitle` の tx3g 分岐を typed 化する（`SampleEntry::Tx3g` に切り替え。既存 `subtitle_track_via_*_demuxer` テストが typed 経路で pass するようになる）
-11. `derive_trak_attributes` の Tx3g 分岐検証テスト（`subtitle_track_mux_tkhd_via_fmp4_segment_muxer_tx3g`）と Fmp4 経路 2 本の Tx3g 検証テスト（`tx3g_sample_entry_via_fmp4_file_demuxer` / `tx3g_sample_entry_via_fmp4_segment_demuxer`）を追加する。サンプルデータを含む合成データを `Fmp4SegmentMuxer` 経由で組み立て、`Sample.sample_entry` から Tx3g を取り出せることを検証する。`Mp4FileDemuxer` 経路のテストは 0046 完了後に別途追加するため本 issue に含めない
-12. `cargo clippy --all-targets --all-features` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` / `cargo test --workspace` / cbindgen 出力の diff で検証する
+1. ビルド依存の `cbindgen` を `0.29.4` に更新し、`crates/c-api/Cargo.toml` のバージョン指定を shiguredo-rust のマイナー止め規約に揃える（本 issue 実装で cbindgen が再生成する `mp4.h` のバージョンコメントを安定させるための前置き）
+2. `BoxRecord` / `StyleRecord` の 2 record 型と `FontRecord` / `FtabBox` / `Tx3gBox` を `src/boxes_sample_entry.rs` に追加し、`SampleEntry::Tx3g(Tx3gBox)` バリアントを追加した。同時に `src/boxes_sample_entry.rs` の網羅 match 3 箇所（`inner_box` / `Encode` / `Decode`）に arm を追加した
+3. `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐を SampleEntry 種別 match に切り替え、`Stpp` / `Wvtt` / `Tx3g` の 3 arm を明示化した。tx3g は handler_type = `text` / Media Header = `nmhd` を返す。`SampleEntry::Unknown` 経路向けの防御的 fallback (`subt` + `sthd`) は維持する
+4. C API と WASM に tx3g サンプルエントリーの露出を 1 コミットで追加した（`Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G` / `Mp4SampleEntryOwned::Tx3g` / `Mp4SampleEntryData::tx3g` / `Mp4SampleEntryTx3g` 構造体 / `Mp4SampleEntryTx3g::to_sample_entry` / `crates/wasm/src/boxes_tx3g.rs` 新規作成 / `crates/wasm/src/boxes.rs` の 3 関数の arm）。`crates/wasm/src/boxes.rs` に u16 単一連続バッファ用の `allocate_and_copy_u16_array` / `free_u16_array` ヘルパを新設し、`ftab_font_ids` のアラインメント整合を取った。`crates/c-api/examples/demux.c` / `remux.c` の `get_sample_entry_kind_name` にも tx3g case を追加した
+5. PBT と単体テストを `pbt/tests/prop_additional_boxes.rs` / `pbt/tests/prop_error_paths.rs` / `pbt/tests/prop_container_boxes.rs` に追加した（`box_record_roundtrip` / `style_record_roundtrip` / `ftab_box_roundtrip` / `tx3g_box_roundtrip`、`sample_entry_tx3g_methods` / `sample_entry_tx3g_encode_decode_roundtrip` / `sample_entry_tx3g_inner_box` / `build_valid_tx3g_bytes` ヘルパと関連 strategy、必須子欠落 / 各 box_type 誤り / `SampleEntry::decode` の tx3g 経路、悪意ある入力の回帰確認 `font_record_decode_length_exceeds_buffer` / `ftab_box_decode_entry_count_overflow_returns_error` / `tx3g_box_decode_truncated_body_returns_error`）
+6. `minimal_stsd_box_subtitle` の tx3g 分岐を typed 化し、`derive_trak_attributes` の Tx3g 分岐検証テスト（`subtitle_track_mux_tkhd_via_fmp4_segment_muxer_tx3g`）と Fmp4 経路 2 本の Tx3g 検証テスト（`tx3g_sample_entry_via_fmp4_file_demuxer` / `tx3g_sample_entry_via_fmp4_segment_demuxer`）を追加した。`Mp4FileDemuxer` 経路のテストは 0046 完了後に別途追加するため本 issue には含めない
+7. `CHANGES.md` の `## develop` に `[CHANGE]` `SampleEntry` に `Tx3g` バリアントを追加する / `[UPDATE]` cbindgen `0.29.4` 更新 / `[ADD]` `Tx3gBox` + `FtabBox` の 3 エントリを追記した
+8. C API 露出に軽微な防御を追加した（`Mp4SampleEntryOwned::to_mp4_sample_entry` の Tx3g arm で 3 並列 Vec 長不変条件を `debug_assert_eq!` で担保、`Mp4SampleEntryTx3g::to_sample_entry` の先頭で `ftab_count > u16::MAX` を早期チェック）
+9. `origin/develop` で `prop_error_paths.rs` を各 PBT ファイルに分割する再構成 (0003) が入ったため、`sample_entry_tx3g_inner_box` を `prop_boxes_sample_entry.rs` の `sample_entry_inner_box_tests` mod に、その他 tx3g 系テストを同ファイルの `sample_entry_tests` mod に統合する merge を行った
+10. `cargo clippy --all-targets --all-features` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm`（全 558 テスト pass）で最終検証した
+
+### 実装中に別 issue へ切り出した項目
+
+`review-diff-code` レビューで指摘された以下 2 項目は、既存 avc1 / hev1 / hvc1 / av01 / mp4a / flac / stpp / wvtt と共通の refactor になるため別 issue に切り出した。
+
+- 0047: `parse_json_mp4_sample_entry_*` 系関数の部分失敗時メモリリーク回避（deferred allocate）
+- 0048: `mp4_alloc` / `allocate_and_copy_*` のアラインメント契約整合
 
 ## CHANGES.md
 
-機能単位に以下 2 エントリで記載する（担当者行 `- @ユーザー名` は実装時に補う）。0044 のスタイル（C API / WASM 露出は上位エントリの子項目として書く）に倣う。
+機能単位に以下 2 エントリで記載した（`[UPDATE]` cbindgen は本 issue の前置きとして独立エントリで追加した）。0044 のスタイル（C API / WASM 露出は上位エントリの子項目として書く）に倣う。
 
 - `[CHANGE]` `SampleEntry` に `Tx3g` バリアントを追加する
   - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
   - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_TX3G` を追加し、`Mp4SampleEntryTx3g` 構造体を新設する
   - WASM の JSON API で `{ "kind": "tx3g", ... }` の入出力に対応する
-  - `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐を対応表を持つ 3 方式（`Stpp` / `Wvtt` / `Tx3g`）で明示 arm 化し、0042 以来の暫定固定選択を廃止する。tx3g は handler_type = `text`、Media Header = `nmhd` を返す（0042 の対応表通り）。未知の Subtitle 系サンプルエントリー（`SampleEntry::Unknown` 経由）向けの防御的 fallback (`subt` + `sthd`) は維持する
 - `[ADD]` 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（displayFlags / justification / RGBA / BoxRecord / StyleRecord）を持つ
   - `FtabBox` はフォントテーブル（`FontRecord` の可変長配列、各エントリーは font-ID と Pascal-string font-name）を保持する

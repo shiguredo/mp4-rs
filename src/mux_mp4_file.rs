@@ -1164,7 +1164,8 @@ mod tests {
     use crate::{
         Uint,
         boxes::{
-            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, VisualSampleEntryFields,
+            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, StppBox,
+            VisualSampleEntryFields,
         },
     };
 
@@ -1289,6 +1290,76 @@ mod tests {
                 track_kind: TrackKind::Audio
             })
         ));
+    }
+
+    /// MissingSampleEntry エラー返却時に self.tracks が完全に不変であることを検証するテスト
+    ///
+    /// 汎用構造化前は kind ごとの match arm で timescale だけ先に記録されていたため、
+    /// 次のサンプルで別 timescale を渡すと TimescaleMismatch が返ってしまっていた。
+    /// 汎用構造化後は sample_entry 解決を ensure_track_entry より前に行うため、
+    /// MissingSampleEntry 後でも別 timescale の Sample を投入できる
+    #[test]
+    fn test_missing_sample_entry_error_leaves_tracks_unchanged() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 新規 Audio トラックの初回サンプルで sample_entry = None を渡し MissingSampleEntry を発生させる
+        let bad_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: None,
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 20,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 256,
+        };
+        assert!(matches!(
+            muxer.append_sample(&bad_sample),
+            Err(MuxError::MissingSampleEntry {
+                track_kind: TrackKind::Audio
+            })
+        ));
+
+        // ここで別 timescale を持つ Sample を再投入する。
+        // 内部状態が不変であれば TimescaleMismatch は発生せず、新規トラックとして受け入れられる
+        let good_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(48000 - 1),
+            duration: 1024,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&good_sample)
+            .expect("failed to append sample after MissingSampleEntry");
+    }
+
+    /// 字幕トラック 1 本の append_sample → finalize の smoke test
+    #[test]
+    fn test_subtitle_track_append_and_finalize() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(create_stpp_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 500,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 128,
+        };
+        muxer
+            .append_sample(&sample)
+            .expect("failed to append subtitle sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        assert!(!finalized.moov_box_bytes.is_empty());
     }
 
     /// ファイナライズ済みエラーのテスト
@@ -1576,6 +1647,63 @@ mod tests {
         assert!(!finalized.moov_box_bytes.is_empty());
     }
 
+    /// 音声・映像・字幕の 3 トラックの mux テスト
+    #[test]
+    fn test_audio_video_subtitle_tracks() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 映像サンプルを追加
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("failed to append video sample");
+
+        // 音声サンプルを追加
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 20,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&audio_sample)
+            .expect("failed to append audio sample");
+
+        // 字幕サンプルを追加
+        let subtitle_sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(create_stpp_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 500,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024 + 256,
+            data_size: 128,
+        };
+        muxer
+            .append_sample(&subtitle_sample)
+            .expect("failed to append subtitle sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        assert!(!finalized.moov_box_bytes.is_empty());
+        // 3 トラック分の trak_box が構築されていることを確認
+        assert_eq!(finalized.moov_box().trak_boxes.len(), 3);
+    }
+
     /// faststart 機能の有効化テスト
     #[test]
     fn test_faststart_enabled() {
@@ -1674,6 +1802,16 @@ mod tests {
                 input_sample_rate: 48000,
                 output_gain: 0,
             },
+            unknown_boxes: vec![],
+        })
+    }
+
+    fn create_stpp_sample_entry() -> SampleEntry {
+        SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
             unknown_boxes: vec![],
         })
     }

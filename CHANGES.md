@@ -11,14 +11,8 @@
 
 ## develop
 
-- [CHANGE] `Mp4FileMuxer` の内部フィールド構造化に伴う 2 つの挙動変化
-  - `finalize` で生成される MP4 の trak_box 出力順が「Audio → Video の固定順」から「`append_sample` 呼び出し順（先に登場した `TrackKind` が先）」に変わる
-  - `MuxError::MissingSampleEntry` エラー返却時の副作用が消滅する（当該トラック種別の timescale が記録済みで残る挙動が無くなり、`self` の内部状態は完全に不変になる）
-  - @sile
-- [ADD] `Mp4FileMuxer` で `TrackKind::Subtitle` トラックの受け入れと mux に対応する
-  - Audio + Video + Subtitle の 3 トラック mux が可能になる
-  - `stpp` / `wvtt` / `tx3g` の各 `SampleEntry` を含む Subtitle トラックを `Mp4FileMuxer` → `Mp4FileDemuxer` でラウンドトリップできる
-  - `MuxError::UnsupportedTrackKind` バリアント自体は残す（`Mp4FileMuxer` からは投げなくなる。C API の `MP4_ERROR_UNSUPPORTED` マッピングも維持）
+- [CHANGE] `Mp4FileMuxer::finalize()` で生成される MP4 の trak_box 出力順を変える
+  - これまでは 音声 → 映像 の固定順だったが、`append_sample` 呼び出し順（先に登場した `TrackKind` が先）に変わる
   - @sile
 - [CHANGE] `SampleEntry` に `Tx3g` バリアントを追加する
   - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
@@ -71,10 +65,9 @@
   - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
   - @sile
 - [ADD] 字幕トラックの mux / demux 経路を追加する
-  - `Fmp4SegmentMuxer` で `TrackKind::Subtitle` を受け入れる
-  - `Mp4FileMuxer` は字幕未対応のため、新規 `MuxError::UnsupportedTrackKind` を返して拒否する
+  - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両 muxer で `TrackKind::Subtitle` を受け入れ、`stpp` / `wvtt` / `tx3g` を含む字幕トラックを mux できる
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
-  - C API `Mp4Error` マッピングに `UnsupportedTrackKind => MP4_ERROR_UNSUPPORTED` を追加する
+  - `MuxError::UnsupportedTrackKind` バリアントを追加する（両 muxer からは投げないが、C API `Mp4Error` の `MP4_ERROR_UNSUPPORTED` マッピングと将来の拡張余地として保持）
   - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
   - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった

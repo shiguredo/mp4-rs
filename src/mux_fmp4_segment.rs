@@ -982,13 +982,15 @@ fn derive_trak_attributes(
         //   stpp → subt + sthd (ISO/IEC 14496-30)
         //   wvtt → text + sthd (ISO/IEC 14496-30)
         //   tx3g → text + nmhd (3GPP TS 26.245)
-        // 未知バリアントは防御的に subt + sthd に丸める（demux → mux の invariant では
-        // Subtitle トラックに映像・音声系 SampleEntry は渡らないため、実質 Unknown の防御）
         TrackKind::Subtitle => {
             let (handler_type, media_header) = match sample_entry {
                 SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
                 SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
                 SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
+                // 対応表に載っていないバリアントは防御的に subt + sthd に丸める。
+                // 字幕トラックに映像系・音声系のサンプルエントリーが紐付く運用は無く、
+                // 実際には未知の字幕系サンプルエントリー（`SampleEntry::decode` が
+                // 型付きに落とせずに `SampleEntry::Unknown` に落としたもの）だけがこの arm に到達する
                 _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
             };
             Ok(TrakDerivation {

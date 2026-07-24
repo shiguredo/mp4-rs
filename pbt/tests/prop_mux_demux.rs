@@ -1124,3 +1124,192 @@ mod estimate_moov_size_tests {
         assert!(result > 0);
     }
 }
+
+// ===== mux.rs のエラーパステスト =====
+
+mod mux_error_tests {
+    use std::num::NonZeroU32;
+
+    use shiguredo_mp4::{
+        TrackKind,
+        mux::{Mp4FileMuxer, MuxError, Sample},
+    };
+
+    /// タイムスケール不一致エラー (Video)
+    #[test]
+    fn timescale_mismatch_video() {
+        let mut muxer = Mp4FileMuxer::new().expect("muxer should be created");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 最初のサンプル (timescale = 30)
+        let sample1 = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(super::create_avc1_sample_entry(1920, 1080)),
+            keyframe: true,
+            timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&sample1)
+            .expect("sample1 should succeed");
+
+        // 2番目のサンプル (timescale = 60) - 不一致
+        let sample2 = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: None,
+            keyframe: false,
+            timescale: NonZeroU32::new(60).expect("timescale should be non-zero"), // 不一致
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 512,
+        };
+        let result = muxer.append_sample(&sample2);
+        assert!(matches!(
+            result,
+            Err(MuxError::TimescaleMismatch {
+                track_kind: TrackKind::Video,
+                ..
+            })
+        ));
+    }
+
+    /// タイムスケール不一致エラー (Audio)
+    #[test]
+    fn timescale_mismatch_audio() {
+        let mut muxer = Mp4FileMuxer::new().expect("muxer should be created");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 最初のサンプル (timescale = 48000)
+        let sample1 = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(super::create_opus_sample_entry(2)),
+            keyframe: false,
+            timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
+            duration: 960,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&sample1)
+            .expect("sample1 should succeed");
+
+        // 2番目のサンプル (timescale = 44100) - 不一致
+        let sample2 = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: None,
+            keyframe: false,
+            timescale: NonZeroU32::new(44100).expect("timescale should be non-zero"), // 不一致
+            duration: 1024,
+            composition_time_offset: None,
+            data_offset: initial_size + 256,
+            data_size: 256,
+        };
+        let result = muxer.append_sample(&sample2);
+        assert!(matches!(
+            result,
+            Err(MuxError::TimescaleMismatch {
+                track_kind: TrackKind::Audio,
+                ..
+            })
+        ));
+    }
+
+    /// MuxError の Display 実装テスト
+    #[test]
+    fn mux_error_display() {
+        // PositionMismatch
+        let pos_error = MuxError::PositionMismatch {
+            expected: 100,
+            actual: 200,
+        };
+        let display_str = format!("{}", pos_error);
+        assert!(display_str.contains("100"));
+        assert!(display_str.contains("200"));
+
+        // MissingSampleEntry
+        let missing_error = MuxError::MissingSampleEntry {
+            track_kind: TrackKind::Video,
+        };
+        let display_str = format!("{}", missing_error);
+        assert!(display_str.contains("Video"));
+
+        // AlreadyFinalized
+        let finalized_error = MuxError::AlreadyFinalized;
+        let display_str = format!("{}", finalized_error);
+        assert!(display_str.contains("finalized"));
+
+        // TimescaleMismatch
+        let timescale_error = MuxError::TimescaleMismatch {
+            track_kind: TrackKind::Audio,
+            expected: NonZeroU32::new(48000).expect("timescale should be non-zero"),
+            actual: NonZeroU32::new(44100).expect("timescale should be non-zero"),
+        };
+        let display_str = format!("{}", timescale_error);
+        assert!(display_str.contains("Audio"));
+        assert!(display_str.contains("48000"));
+        assert!(display_str.contains("44100"));
+    }
+
+    /// MuxError の Debug 実装テスト
+    /// Debug 実装は Display と同じ出力を返すため、Display の出力を検証する
+    #[test]
+    fn mux_error_debug() {
+        let error = MuxError::AlreadyFinalized;
+        let debug_str = format!("{:?}", error);
+        assert!(debug_str.contains("finalized"));
+
+        let pos_error = MuxError::PositionMismatch {
+            expected: 100,
+            actual: 200,
+        };
+        let debug_str = format!("{:?}", pos_error);
+        assert!(debug_str.contains("mismatch"));
+    }
+
+    /// MuxError::source() のテスト
+    #[test]
+    fn mux_error_source() {
+        use std::error::Error as StdError;
+
+        // 他のエラーでは source は None
+        let other_error = MuxError::AlreadyFinalized;
+        assert!(other_error.source().is_none());
+
+        let pos_error = MuxError::PositionMismatch {
+            expected: 100,
+            actual: 200,
+        };
+        assert!(pos_error.source().is_none());
+    }
+
+    /// 二重 finalize エラーのテスト
+    #[test]
+    fn double_finalize_error() {
+        let mut muxer = Mp4FileMuxer::new().expect("muxer should be created");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(super::create_avc1_sample_entry(1920, 1080)),
+            keyframe: true,
+            timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer.append_sample(&sample).expect("sample should succeed");
+
+        // 最初の finalize は成功
+        muxer.finalize().expect("first finalize should succeed");
+
+        // 2回目の finalize は失敗
+        let result = muxer.finalize();
+        assert!(matches!(result, Err(MuxError::AlreadyFinalized)));
+    }
+}

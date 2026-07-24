@@ -19,14 +19,14 @@
 //! let mut demuxer = Fmp4SegmentDemuxer::new();
 //!
 //! // 初期化セグメントを処理する
-//! let init_data: &[u8] = todo!("初期化セグメントのバイト列");
+//! let init_data: &[u8] = todo!("bytes of the init segment");
 //! demuxer.handle_init_segment(init_data)?;
 //!
 //! let tracks = demuxer.tracks()?;
-//! println!("{}個のトラックが見つかりました", tracks.len());
+//! println!("Found {} track(s)", tracks.len());
 //!
 //! // メディアセグメントを処理する
-//! let segment_data: &[u8] = todo!("メディアセグメントのバイト列");
+//! let segment_data: &[u8] = todo!("bytes of a media segment");
 //! let samples = demuxer.handle_media_segment(segment_data)?;
 //! for sample in &samples {
 //!     let data = &segment_data[sample.data_offset as usize

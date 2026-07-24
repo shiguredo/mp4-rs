@@ -15,7 +15,6 @@
   - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
   - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_TX3G` を追加し、`Mp4SampleEntryTx3g` 構造体を新設する
   - WASM の JSON API で `{ "kind": "tx3g", ... }` の入出力に対応する
-  - `Fmp4SegmentMuxer::derive_trak_attributes` は tx3g に対して handler_type = `text` / Media Header = `nmhd` を採用する
   - @sile
 - [CHANGE] `SampleEntry` に `Wvtt` バリアントを追加する
   - `wvtt` サンプルエントリー（ISO/IEC 14496-30 `WVTTSampleEntry`）を型付きで扱えるようにする
@@ -46,7 +45,6 @@
   - `WvttBox` は必須子 `VttCBox` を持つ
   - `VttCBox` は WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列。null 終端なし、box payload 全体）を保持する
   - サンプルデータは WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）を生バイト列として扱う
-  - `Fmp4SegmentMuxer::derive_trak_attributes` は wvtt に対して handler_type = `text` / Media Header = `sthd` を採用する
   - @sile
 - [ADD] ISO/IEC 14496-30 の `StppBox` (`stpp`) を追加する
   - `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールド（`Utf8String`）と任意子ボックスを持つ

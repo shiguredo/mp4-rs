@@ -41,6 +41,9 @@ pub enum Mp4SampleEntryKind {
 
     /// wvtt (WVTTSampleEntry, ISO/IEC 14496-30)
     MP4_SAMPLE_ENTRY_KIND_WVTT,
+
+    /// tx3g (TextSampleEntry, 3GPP TS 26.245)
+    MP4_SAMPLE_ENTRY_KIND_TX3G,
 }
 
 pub enum Mp4SampleEntryOwned {
@@ -125,6 +128,21 @@ pub enum Mp4SampleEntryOwned {
         // として `String` の heap バッファを直接指す。
         // ただし `String` 由来のため invariant は Stpp の `Utf8String` と異なり
         // interior null を許容する（詳細は `Mp4SampleEntryWvtt` doc 参照）
+    },
+    Tx3g {
+        inner: shiguredo_mp4::boxes::Tx3gBox,
+
+        // [NOTE]
+        // Avc1 のコメントを参照
+        //
+        // `FontRecord` は `font_id: u16` + `font_name: Vec<u8>` の非連続レイアウトのため、
+        // `ftab_font_ids` は `FontRecord::font_id` を集約した u16 の連続バッファを
+        // 新規に確保する必要がある（`inner.ftab_box.entries.as_ptr() as *const u16` は不可）。
+        // `ftab_font_name_ptrs` / `ftab_font_name_sizes` は `inner.ftab_box.entries[i].font_name`
+        // のヒープバッファをそのまま指す（`inner` が破棄されるまで有効）
+        ftab_font_ids: Vec<u16>,
+        ftab_font_name_ptrs: Vec<*const u8>,
+        ftab_font_name_sizes: Vec<u32>,
     },
 }
 
@@ -236,6 +254,22 @@ impl Mp4SampleEntryOwned {
             }
             shiguredo_mp4::boxes::SampleEntry::Stpp(inner) => Some(Self::Stpp { inner }),
             shiguredo_mp4::boxes::SampleEntry::Wvtt(inner) => Some(Self::Wvtt { inner }),
+            shiguredo_mp4::boxes::SampleEntry::Tx3g(inner) => {
+                let mut ftab_font_ids = Vec::new();
+                let mut ftab_font_name_ptrs = Vec::new();
+                let mut ftab_font_name_sizes = Vec::new();
+                for entry in &inner.ftab_box.entries {
+                    ftab_font_ids.push(entry.font_id);
+                    ftab_font_name_ptrs.push(entry.font_name.as_ptr());
+                    ftab_font_name_sizes.push(entry.font_name.len() as u32);
+                }
+                Some(Self::Tx3g {
+                    inner,
+                    ftab_font_ids,
+                    ftab_font_name_ptrs,
+                    ftab_font_name_sizes,
+                })
+            }
             _ => None,
         }
     }
@@ -517,6 +551,43 @@ impl Mp4SampleEntryOwned {
                     data: Mp4SampleEntryData { wvtt },
                 }
             }
+            Self::Tx3g {
+                inner,
+                ftab_font_ids,
+                ftab_font_name_ptrs,
+                ftab_font_name_sizes,
+            } => {
+                // 3 並列 Vec は同一ループで push される invariant を持つ。
+                // リファクタリングで長さがズレると C 側で `from_raw_parts` が範囲外アクセスになるため防御
+                debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_ptrs.len());
+                debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_sizes.len());
+                let tx3g = Mp4SampleEntryTx3g {
+                    display_flags: inner.display_flags,
+                    horizontal_justification: inner.horizontal_justification,
+                    vertical_justification: inner.vertical_justification,
+                    background_color_rgba: inner.background_color_rgba,
+                    default_text_box: [
+                        inner.default_text_box.top,
+                        inner.default_text_box.left,
+                        inner.default_text_box.bottom,
+                        inner.default_text_box.right,
+                    ],
+                    default_style_start_char: inner.default_style.start_char,
+                    default_style_end_char: inner.default_style.end_char,
+                    default_style_font_id: inner.default_style.font_id,
+                    default_style_face_style_flags: inner.default_style.face_style_flags,
+                    default_style_font_size: inner.default_style.font_size,
+                    default_style_text_color_rgba: inner.default_style.text_color_rgba,
+                    ftab_font_ids: ftab_font_ids.as_ptr(),
+                    ftab_font_name_ptrs: ftab_font_name_ptrs.as_ptr(),
+                    ftab_font_name_sizes: ftab_font_name_sizes.as_ptr(),
+                    ftab_count: ftab_font_ids.len() as u32,
+                };
+                Mp4SampleEntry {
+                    kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G,
+                    data: Mp4SampleEntryData { tx3g },
+                }
+            }
         }
     }
 }
@@ -559,6 +630,9 @@ pub union Mp4SampleEntryData {
 
     /// wvtt（WebVTT 字幕）用のサンプルエントリー
     pub wvtt: Mp4SampleEntryWvtt,
+
+    /// tx3g（3GPP Timed Text 字幕）用のサンプルエントリー
+    pub tx3g: Mp4SampleEntryTx3g,
 }
 
 /// MP4 サンプルエントリー
@@ -646,6 +720,9 @@ impl Mp4SampleEntry {
             },
             Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT => unsafe {
                 self.data.wvtt.to_sample_entry()
+            },
+            Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G => unsafe {
+                self.data.tx3g.to_sample_entry()
             },
         }
     }
@@ -1617,5 +1694,144 @@ impl Mp4SampleEntryWvtt {
         };
 
         Ok(shiguredo_mp4::boxes::SampleEntry::Wvtt(wvtt_box))
+    }
+}
+
+/// tx3g（TextSampleEntry, 3GPP TS 26.245）用のサンプルエントリー
+///
+/// 3GPP Timed Text 字幕のトラックが持つメタデータを表現する。
+/// 本体固定サイズ 30 バイト（displayFlags / justification / RGBA / BoxRecord / StyleRecord）と
+/// 可変長の FontTableBox を保持する。
+///
+/// # data_reference_index の情報損失
+///
+/// 本構造体は `data_reference_index` を含まないため、C API 経由で
+/// `Mp4SampleEntry → Tx3gBox` に復元する際は常に
+/// [`Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX]
+/// (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Wvtt / Mp4a と同じ
+///
+/// # font-name のエンコーディング
+///
+/// `ftab_font_name_ptrs[i]` は 3GPP TS 26.245 が文字エンコーディングを明示していないため、
+/// UTF-8 を保証しない生バイト列を指す。C consumer 側で文字列として扱う場合は
+/// UTF-8 として妥当性を検証してから利用すること
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Mp4SampleEntryTx3g {
+    /// 表示挙動フラグ（3GPP TS 26.245 §5.16.1.1 のビットマスク。値域チェックはしない）
+    pub display_flags: u32,
+
+    /// 水平方向のジャスティフィケーション（`0 = left` / `1 = centered` / `-1 = right`）
+    pub horizontal_justification: i8,
+
+    /// 垂直方向のジャスティフィケーション（`0 = top` / `1 = centered` / `-1 = bottom`）
+    pub vertical_justification: i8,
+
+    /// テキスト背景色（RGBA）
+    pub background_color_rgba: [u8; 4],
+
+    /// テキスト表示領域の既定矩形（`top` / `left` / `bottom` / `right` の順で `i16` 4 個）
+    pub default_text_box: [i16; 4],
+
+    /// 既定スタイル: style を適用する文字範囲の開始
+    pub default_style_start_char: u16,
+
+    /// 既定スタイル: style を適用する文字範囲の終了
+    pub default_style_end_char: u16,
+
+    /// 既定スタイル: font-ID
+    pub default_style_font_id: u16,
+
+    /// 既定スタイル: face-style-flags（3GPP TS 26.245 §5.16.1.2 のビットマスク）
+    pub default_style_face_style_flags: u8,
+
+    /// 既定スタイル: font-size（ピクセル）
+    pub default_style_font_size: u8,
+
+    /// 既定スタイル: text-color-rgba
+    pub default_style_text_color_rgba: [u8; 4],
+
+    /// ftab の font-ID 配列（長さは `ftab_count`）
+    pub ftab_font_ids: *const u16,
+
+    /// ftab の font-name ポインタ配列（各要素は `ftab_font_name_sizes[i]` バイト、null 終端なし）
+    pub ftab_font_name_ptrs: *const *const u8,
+
+    /// ftab の font-name 長さ配列（バイト単位）
+    pub ftab_font_name_sizes: *const u32,
+
+    /// ftab のエントリー数
+    pub ftab_count: u32,
+}
+
+impl Mp4SampleEntryTx3g {
+    /// `Mp4SampleEntryTx3g` を [`shiguredo_mp4::boxes::SampleEntry::Tx3g`] に復元する
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        // `FtabBox::entry_count` は u16 のため 65535 以下でなければならない
+        // （超過状態のまま entries を全件 push すると FtabBox::encode で失敗するため、
+        // 無駄なヒープ確保を避けて早期にエラー返却する）
+        if self.ftab_count > u16::MAX as u32 {
+            return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
+        }
+        let mut entries = Vec::new();
+        if self.ftab_count > 0 {
+            if self.ftab_font_ids.is_null()
+                || self.ftab_font_name_ptrs.is_null()
+                || self.ftab_font_name_sizes.is_null()
+            {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
+            let ids =
+                unsafe { std::slice::from_raw_parts(self.ftab_font_ids, self.ftab_count as usize) };
+            let ptrs = unsafe {
+                std::slice::from_raw_parts(self.ftab_font_name_ptrs, self.ftab_count as usize)
+            };
+            let sizes = unsafe {
+                std::slice::from_raw_parts(self.ftab_font_name_sizes, self.ftab_count as usize)
+            };
+            for i in 0..self.ftab_count as usize {
+                let size = sizes[i] as usize;
+                // `FontRecord::font_name_length` は u8 のため 255 バイト以下でなければならない
+                if size > u8::MAX as usize {
+                    return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
+                }
+                let font_name = if size == 0 {
+                    Vec::new()
+                } else {
+                    if ptrs[i].is_null() {
+                        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+                    }
+                    unsafe { std::slice::from_raw_parts(ptrs[i], size) }.to_vec()
+                };
+                entries.push(shiguredo_mp4::boxes::FontRecord {
+                    font_id: ids[i],
+                    font_name,
+                });
+            }
+        }
+        let tx3g_box = shiguredo_mp4::boxes::Tx3gBox {
+            data_reference_index: shiguredo_mp4::boxes::Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: self.display_flags,
+            horizontal_justification: self.horizontal_justification,
+            vertical_justification: self.vertical_justification,
+            background_color_rgba: self.background_color_rgba,
+            default_text_box: shiguredo_mp4::boxes::BoxRecord {
+                top: self.default_text_box[0],
+                left: self.default_text_box[1],
+                bottom: self.default_text_box[2],
+                right: self.default_text_box[3],
+            },
+            default_style: shiguredo_mp4::boxes::StyleRecord {
+                start_char: self.default_style_start_char,
+                end_char: self.default_style_end_char,
+                font_id: self.default_style_font_id,
+                face_style_flags: self.default_style_face_style_flags,
+                font_size: self.default_style_font_size,
+                text_color_rgba: self.default_style_text_color_rgba,
+            },
+            ftab_box: shiguredo_mp4::boxes::FtabBox { entries },
+            unknown_boxes: Vec::new(),
+        };
+        Ok(shiguredo_mp4::boxes::SampleEntry::Tx3g(tx3g_box))
     }
 }

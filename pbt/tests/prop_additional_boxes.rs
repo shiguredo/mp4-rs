@@ -8,9 +8,10 @@ use proptest::prelude::*;
 use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint, Utf8String,
     boxes::{
-        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
-        FlacBox, FlacMetadataBlock, FreeBox, Hev1Box, Hvc1Box, HvccBox, MdatBox, Mp4aBox, OpusBox,
-        StppBox, UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
+        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox, DopsBox,
+        EsdsBox, FlacBox, FlacMetadataBlock, FontRecord, FreeBox, FtabBox, Hev1Box, Hvc1Box,
+        HvccBox, MdatBox, Mp4aBox, OpusBox, StppBox, StyleRecord, Tx3gBox, UnknownBox,
+        VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
     },
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
@@ -312,6 +313,108 @@ fn arb_wvtt_box() -> impl Strategy<Value = WvttBox> {
         })
 }
 
+/// BoxRecord を生成する Strategy
+///
+/// `i16` 全域を許容する（3GPP TS 26.245 は値域を明示していない）
+fn arb_box_record() -> impl Strategy<Value = BoxRecord> {
+    (any::<i16>(), any::<i16>(), any::<i16>(), any::<i16>()).prop_map(
+        |(top, left, bottom, right)| BoxRecord {
+            top,
+            left,
+            bottom,
+            right,
+        },
+    )
+}
+
+/// StyleRecord を生成する Strategy
+///
+/// 各フィールドは仕様上のビットマスク / 値域制限をせず、全域を生成する
+fn arb_style_record() -> impl Strategy<Value = StyleRecord> {
+    (
+        any::<u16>(),     // start_char
+        any::<u16>(),     // end_char
+        any::<u16>(),     // font_id
+        any::<u8>(),      // face_style_flags
+        any::<u8>(),      // font_size
+        any::<[u8; 4]>(), // text_color_rgba
+    )
+        .prop_map(
+            |(start_char, end_char, font_id, face_style_flags, font_size, text_color_rgba)| {
+                StyleRecord {
+                    start_char,
+                    end_char,
+                    font_id,
+                    face_style_flags,
+                    font_size,
+                    text_color_rgba,
+                }
+            },
+        )
+}
+
+/// `FontRecord::font_name` を生成する Strategy
+///
+/// Pascal string の長さ制約（0-255 バイト）に合わせて任意バイト列を生成する
+fn arb_font_name() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(any::<u8>(), 0..=255)
+}
+
+/// FontRecord を生成する Strategy
+fn arb_font_record() -> impl Strategy<Value = FontRecord> {
+    (any::<u16>(), arb_font_name())
+        .prop_map(|(font_id, font_name)| FontRecord { font_id, font_name })
+}
+
+/// FtabBox を生成する Strategy
+///
+/// エントリー数は組み合わせ爆発回避のため 0-8 個に制限する。
+/// 0 個も許容してパーサ堅牢性のエッジケースを含める
+fn arb_ftab_box() -> impl Strategy<Value = FtabBox> {
+    prop::collection::vec(arb_font_record(), 0..=8).prop_map(|entries| FtabBox { entries })
+}
+
+/// Tx3gBox を生成する Strategy
+///
+/// 本体固定サイズ 30 バイトと必須子 `ftab_box` に加えて 0-3 個の任意子ボックスを
+/// 混ぜて decode / encode の子ボックス処理経路もカバーする
+fn arb_tx3g_box() -> impl Strategy<Value = Tx3gBox> {
+    (
+        1u16..=u16::MAX,                                // data_reference_index
+        any::<u32>(),                                   // display_flags
+        any::<i8>(),                                    // horizontal_justification
+        any::<i8>(),                                    // vertical_justification
+        any::<[u8; 4]>(),                               // background_color_rgba
+        arb_box_record(),                               // default_text_box
+        arb_style_record(),                             // default_style
+        arb_ftab_box(),                                 // ftab_box
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
+    )
+        .prop_map(
+            |(
+                dri,
+                display_flags,
+                horizontal_justification,
+                vertical_justification,
+                background_color_rgba,
+                default_text_box,
+                default_style,
+                ftab_box,
+                unknown_boxes,
+            )| Tx3gBox {
+                data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
+                display_flags,
+                horizontal_justification,
+                vertical_justification,
+                background_color_rgba,
+                default_text_box,
+                default_style,
+                ftab_box,
+                unknown_boxes,
+            },
+        )
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -588,6 +691,62 @@ proptest! {
         prop_assert_eq!(decoded.data_reference_index, wvtt.data_reference_index);
         prop_assert_eq!(&decoded.vttc_box, &wvtt.vttc_box);
         prop_assert_eq!(&decoded.unknown_boxes, &wvtt.unknown_boxes);
+    }
+
+    /// BoxRecord の encode/decode roundtrip
+    ///
+    /// `i16` 4 個の 8 バイト固定レコードを検証する
+    #[test]
+    fn box_record_roundtrip(record in arb_box_record()) {
+        let encoded = record.encode_to_vec().expect("encode に失敗しない想定");
+        prop_assert_eq!(encoded.len(), 8);
+        let (decoded, size) = BoxRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded, record);
+    }
+
+    /// StyleRecord の encode/decode roundtrip
+    ///
+    /// 12 バイト固定レコードのフィールド全域を検証する
+    #[test]
+    fn style_record_roundtrip(record in arb_style_record()) {
+        let encoded = record.encode_to_vec().expect("encode に失敗しない想定");
+        prop_assert_eq!(encoded.len(), 12);
+        let (decoded, size) = StyleRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded, record);
+    }
+
+    /// FtabBox の encode/decode roundtrip
+    ///
+    /// 空エントリー・複数エントリー・font_name の長さ境界（0 / 255）を含めて検証する
+    #[test]
+    fn ftab_box_roundtrip(ftab in arb_ftab_box()) {
+        let encoded = ftab.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = FtabBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(&decoded.entries, &ftab.entries);
+    }
+
+    /// Tx3gBox の encode/decode roundtrip
+    ///
+    /// 本体固定 30 バイト + 必須子 ftab + 0-3 個の任意子ボックスを割り当てて
+    /// ラウンドトリップを検証する
+    #[test]
+    fn tx3g_box_roundtrip(tx3g in arb_tx3g_box()) {
+        let encoded = tx3g.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = Tx3gBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded.data_reference_index, tx3g.data_reference_index);
+        prop_assert_eq!(decoded.display_flags, tx3g.display_flags);
+        prop_assert_eq!(decoded.horizontal_justification, tx3g.horizontal_justification);
+        prop_assert_eq!(decoded.vertical_justification, tx3g.vertical_justification);
+        prop_assert_eq!(decoded.background_color_rgba, tx3g.background_color_rgba);
+        prop_assert_eq!(decoded.default_text_box, tx3g.default_text_box);
+        prop_assert_eq!(decoded.default_style, tx3g.default_style);
+        prop_assert_eq!(&decoded.ftab_box, &tx3g.ftab_box);
+        prop_assert_eq!(&decoded.unknown_boxes, &tx3g.unknown_boxes);
     }
 }
 

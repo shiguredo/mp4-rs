@@ -26,6 +26,7 @@ pub enum SampleEntry {
     Flac(FlacBox),
     Stpp(StppBox),
     Wvtt(WvttBox),
+    Tx3g(Tx3gBox),
     Unknown(UnknownBox),
 }
 
@@ -103,6 +104,7 @@ impl SampleEntry {
             Self::Flac(b) => b,
             Self::Stpp(b) => b,
             Self::Wvtt(b) => b,
+            Self::Tx3g(b) => b,
             Self::Unknown(b) => b,
         }
     }
@@ -122,6 +124,7 @@ impl Encode for SampleEntry {
             Self::Flac(b) => b.encode(buf),
             Self::Stpp(b) => b.encode(buf),
             Self::Wvtt(b) => b.encode(buf),
+            Self::Tx3g(b) => b.encode(buf),
             Self::Unknown(b) => b.encode(buf),
         }
     }
@@ -142,6 +145,7 @@ impl Decode for SampleEntry {
             FlacBox::TYPE => FlacBox::decode(buf).map(|(b, n)| (Self::Flac(b), n)),
             StppBox::TYPE => StppBox::decode(buf).map(|(b, n)| (Self::Stpp(b), n)),
             WvttBox::TYPE => WvttBox::decode(buf).map(|(b, n)| (Self::Wvtt(b), n)),
+            Tx3gBox::TYPE => Tx3gBox::decode(buf).map(|(b, n)| (Self::Tx3g(b), n)),
             _ => UnknownBox::decode(buf).map(|(b, n)| (Self::Unknown(b), n)),
         }
     }
@@ -2145,5 +2149,323 @@ impl BaseBox for VttCBox {
 
     fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
         Box::new(core::iter::empty())
+    }
+}
+
+/// [3GPP TS 26.245] BoxRecord (親: [`Tx3gBox`])
+///
+/// テキスト表示領域の矩形を表す 8 バイト固定レコード。
+/// ボックスではないので [`BaseBox`] は実装しない
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BoxRecord {
+    /// 表示領域の上端
+    pub top: i16,
+    /// 表示領域の左端
+    pub left: i16,
+    /// 表示領域の下端
+    pub bottom: i16,
+    /// 表示領域の右端
+    pub right: i16,
+}
+
+impl Encode for BoxRecord {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut offset = 0;
+        offset += self.top.encode(&mut buf[offset..])?;
+        offset += self.left.encode(&mut buf[offset..])?;
+        offset += self.bottom.encode(&mut buf[offset..])?;
+        offset += self.right.encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for BoxRecord {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let top = i16::decode_at(buf, &mut offset)?;
+        let left = i16::decode_at(buf, &mut offset)?;
+        let bottom = i16::decode_at(buf, &mut offset)?;
+        let right = i16::decode_at(buf, &mut offset)?;
+        Ok((
+            Self {
+                top,
+                left,
+                bottom,
+                right,
+            },
+            offset,
+        ))
+    }
+}
+
+/// [3GPP TS 26.245] StyleRecord (親: [`Tx3gBox`])
+///
+/// 既定のテキストスタイルを表す 12 バイト固定レコード。
+/// ボックスではないので [`BaseBox`] は実装しない
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StyleRecord {
+    /// style を適用する文字範囲の開始インデックス
+    pub start_char: u16,
+    /// style を適用する文字範囲の終了インデックス
+    pub end_char: u16,
+    /// フォント識別子（`FtabBox::entries` の `font_id` を参照する）
+    pub font_id: u16,
+    /// 装飾ビットマスク（3GPP TS 26.245 §5.16.1.2 の `face-style-flags`。値域チェックはしない）
+    pub face_style_flags: u8,
+    /// フォントサイズ（ピクセル単位）
+    pub font_size: u8,
+    /// テキスト色（RGBA 4 バイト）
+    pub text_color_rgba: [u8; 4],
+}
+
+impl Encode for StyleRecord {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut offset = 0;
+        offset += self.start_char.encode(&mut buf[offset..])?;
+        offset += self.end_char.encode(&mut buf[offset..])?;
+        offset += self.font_id.encode(&mut buf[offset..])?;
+        offset += self.face_style_flags.encode(&mut buf[offset..])?;
+        offset += self.font_size.encode(&mut buf[offset..])?;
+        offset += self.text_color_rgba.encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for StyleRecord {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let start_char = u16::decode_at(buf, &mut offset)?;
+        let end_char = u16::decode_at(buf, &mut offset)?;
+        let font_id = u16::decode_at(buf, &mut offset)?;
+        let face_style_flags = u8::decode_at(buf, &mut offset)?;
+        let font_size = u8::decode_at(buf, &mut offset)?;
+        let text_color_rgba = <[u8; 4]>::decode_at(buf, &mut offset)?;
+        Ok((
+            Self {
+                start_char,
+                end_char,
+                font_id,
+                face_style_flags,
+                font_size,
+                text_color_rgba,
+            },
+            offset,
+        ))
+    }
+}
+
+/// [3GPP TS 26.245] FontRecord (親: [`FtabBox`])
+///
+/// `FtabBox` 内のフォントエントリー。ボックスではないので [`BaseBox`] は実装しない。
+/// `font_name` は Pascal string で、`font_name_length: u8` バイト分のバイト列を保持する。
+/// 3GPP TS 26.245 は文字エンコーディングを明示していないため、
+/// 本ライブラリは UTF-8 として検証せずに生バイト列として保持する
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FontRecord {
+    /// フォント識別子（[`StyleRecord::font_id`] からの参照先）
+    pub font_id: u16,
+    /// フォント名の生バイト列（Pascal string、null 終端なし、最大 255 バイト）
+    pub font_name: Vec<u8>,
+}
+
+impl Encode for FontRecord {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let font_name_length = u8::try_from(self.font_name.len())
+            .map_err(|_| Error::invalid_input("FontRecord.font_name_length exceeds u8::MAX"))?;
+        let mut offset = 0;
+        offset += self.font_id.encode(&mut buf[offset..])?;
+        offset += font_name_length.encode(&mut buf[offset..])?;
+        offset += self.font_name.as_slice().encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for FontRecord {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let font_id = u16::decode_at(buf, &mut offset)?;
+        let font_name_length = u8::decode_at(buf, &mut offset)?;
+        Error::check_buffer_size(font_name_length as usize, &buf[offset..])?;
+        let font_name = buf[offset..offset + font_name_length as usize].to_vec();
+        offset += font_name_length as usize;
+        Ok((Self { font_id, font_name }, offset))
+    }
+}
+
+/// [3GPP TS 26.245] FontTableBox class (親: [`Tx3gBox`])
+///
+/// `Tx3gBox` の必須子ボックスで、`Tx3gBox` から参照されるフォントテーブルを保持する。
+/// エントリー数（`entry_count`）は [`FtabBox::entries`] の要素数から一意に決まる
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct FtabBox {
+    /// フォントエントリー
+    pub entries: Vec<FontRecord>,
+}
+
+impl FtabBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"ftab");
+}
+
+impl Encode for FtabBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        let entry_count = u16::try_from(self.entries.len())
+            .map_err(|_| Error::invalid_input("ftab.entry_count exceeds u16::MAX"))?;
+        offset += entry_count.encode(&mut buf[offset..])?;
+        for entry in &self.entries {
+            offset += entry.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for FtabBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let entry_count = u16::decode_at(payload, &mut offset)?;
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(FontRecord::decode_at(payload, &mut offset)?);
+            }
+
+            Ok((Self { entries }, header.external_size() + payload.len()))
+        })
+    }
+}
+
+impl BaseBox for FtabBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+/// [3GPP TS 26.245] TextSampleEntry class (§5.16、親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// 3GPP Timed Text 形式の字幕を格納するためのサンプルエントリー。
+/// サンプルデータ自体は `text_length: u16` (BE) + テキスト + 任意 modifier boxes
+/// （`styl` / `hlit` / `hclr` / `krok` / `dlay` / `href` / `tbox` / `blnk` / `twrp`）で
+/// 構成される生バイト列として扱い、内部構造の解釈は利用側の責務とする
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Tx3gBox {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
+    pub data_reference_index: NonZeroU16,
+    /// 表示挙動フラグ（3GPP TS 26.245 §5.16.1.1 のビットマスク。値域チェックはしない）
+    pub display_flags: u32,
+    /// 水平方向のジャスティフィケーション（`0 = left` / `1 = centered` / `-1 = right`）
+    pub horizontal_justification: i8,
+    /// 垂直方向のジャスティフィケーション（`0 = top` / `1 = centered` / `-1 = bottom`）
+    pub vertical_justification: i8,
+    /// テキスト背景色（RGBA 4 バイト）
+    pub background_color_rgba: [u8; 4],
+    /// テキスト表示領域の既定矩形
+    pub default_text_box: BoxRecord,
+    /// 既定のテキストスタイル
+    pub default_style: StyleRecord,
+    /// 必須の FontTableBox
+    pub ftab_box: FtabBox,
+    /// 型付き実装を持たない任意の子ボックス（`dprp` 等）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl Tx3gBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"tx3g");
+
+    /// [`Tx3gBox::data_reference_index`] のデフォルト値
+    pub const DEFAULT_DATA_REFERENCE_INDEX: NonZeroU16 = NonZeroU16::MIN;
+}
+
+impl Encode for Tx3gBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += [0u8; 6].encode(&mut buf[offset..])?;
+        offset += self.data_reference_index.encode(&mut buf[offset..])?;
+        offset += self.display_flags.encode(&mut buf[offset..])?;
+        offset += self.horizontal_justification.encode(&mut buf[offset..])?;
+        offset += self.vertical_justification.encode(&mut buf[offset..])?;
+        offset += self.background_color_rgba.encode(&mut buf[offset..])?;
+        offset += self.default_text_box.encode(&mut buf[offset..])?;
+        offset += self.default_style.encode(&mut buf[offset..])?;
+        offset += self.ftab_box.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for Tx3gBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _ = <[u8; 6]>::decode_at(payload, &mut offset)?;
+            let data_reference_index = NonZeroU16::decode_at(payload, &mut offset)?;
+            let display_flags = u32::decode_at(payload, &mut offset)?;
+            let horizontal_justification = i8::decode_at(payload, &mut offset)?;
+            let vertical_justification = i8::decode_at(payload, &mut offset)?;
+            let background_color_rgba = <[u8; 4]>::decode_at(payload, &mut offset)?;
+            let default_text_box = BoxRecord::decode_at(payload, &mut offset)?;
+            let default_style = StyleRecord::decode_at(payload, &mut offset)?;
+
+            let mut ftab_box = None;
+            let mut unknown_boxes = Vec::new();
+
+            while offset < payload.len() {
+                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                match child_header.box_type {
+                    FtabBox::TYPE if ftab_box.is_none() => {
+                        ftab_box = Some(FtabBox::decode_at(payload, &mut offset)?);
+                    }
+                    _ => {
+                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                    }
+                }
+            }
+
+            Ok((
+                Self {
+                    data_reference_index,
+                    display_flags,
+                    horizontal_justification,
+                    vertical_justification,
+                    background_color_rgba,
+                    default_text_box,
+                    default_style,
+                    ftab_box: check_mandatory_box(ftab_box, "ftab", "tx3g")?,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for Tx3gBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(
+            core::iter::empty()
+                .chain(core::iter::once(&self.ftab_box).map(as_box_object))
+                .chain(self.unknown_boxes.iter().map(as_box_object)),
+        )
     }
 }

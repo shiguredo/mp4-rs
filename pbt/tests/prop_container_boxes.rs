@@ -9,10 +9,11 @@ use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Either, Encode, FixedPointNumber, Mp4FileTime, SampleFlags,
     TrackKind, Utf8String,
     boxes::{
-        AudioSampleEntryFields, Brand, Co64Box, DinfBox, DopsBox, FtypBox, HdlrBox, MdhdBox,
-        MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox, OpusBox, SampleEntry,
-        SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-        SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UnknownBox, VmhdBox, VttCBox, WvttBox,
+        AudioSampleEntryFields, BoxRecord, Brand, Co64Box, DinfBox, DopsBox, FtabBox, FtypBox,
+        HdlrBox, MdhdBox, MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox,
+        OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, SthdBox, StppBox, StscBox, StscEntry,
+        StsdBox, StssBox, StszBox, SttsBox, SttsEntry, StyleRecord, TkhdBox, TrakBox, TrexBox,
+        Tx3gBox, UnknownBox, VmhdBox, VttCBox, WvttBox,
     },
     demux::{Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, Mp4FileDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -204,10 +205,10 @@ fn minimal_hdlr_box_subtitle(handler_type: [u8; 4]) -> HdlrBox {
 
 /// 最小限の StsdBox (subtitle) を生成
 ///
-/// stsd 内に SampleEntry を 1 つ持つ。stpp / wvtt は型付き実装のため
-/// それぞれ `SampleEntry::Stpp` / `SampleEntry::Wvtt` の最小構成を使う。
-/// 未実装の tx3g は Unknown フォールバックのままにする。
-/// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える
+/// stsd 内に SampleEntry を 1 つ持つ。stpp / wvtt / tx3g は型付き実装のため
+/// それぞれ `SampleEntry::Stpp` / `SampleEntry::Wvtt` / `SampleEntry::Tx3g` の最小構成を使う。
+/// `sample_entry_box_type` に `stpp` / `wvtt` / `tx3g` を渡して切り替える。
+/// それ以外の box_type は `SampleEntry::Unknown` フォールバック経路として扱う
 fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
     let entry = if sample_entry_box_type == *b"stpp" {
         SampleEntry::Stpp(StppBox {
@@ -223,6 +224,18 @@ fn minimal_stsd_box_subtitle(sample_entry_box_type: [u8; 4]) -> StsdBox {
             vttc_box: VttCBox {
                 config: String::from("WEBVTT"),
             },
+            unknown_boxes: vec![],
+        })
+    } else if sample_entry_box_type == *b"tx3g" {
+        SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
             unknown_boxes: vec![],
         })
     } else {
@@ -1212,6 +1225,157 @@ mod boundary_tests {
         assert!(
             matches!(entry, SampleEntry::Wvtt(_)),
             "wvtt サンプルエントリーが型付きで取り出せること"
+        );
+    }
+
+    // ===== Tx3g 正常経路担保テスト =====
+
+    /// Fmp4SegmentMuxer 経由で tx3g トラックの init/media segment を生成し tkhd 属性を確認する
+    ///
+    /// tx3g は 3GPP TS 26.245 の対応表で handler_type = `text` + Media Header = `nmhd`
+    /// と規定される。stpp / wvtt は `sthd` のため、tx3g のみ `nmhd` に切り替わる点が本テストの
+    /// 決定的な差。`derive_trak_attributes` の Tx3g arm が正しく動作するかの回帰テストとして機能する
+    #[test]
+    fn subtitle_track_mux_tkhd_via_fmp4_segment_muxer_tx3g() {
+        let tx3g_sample_entry = SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
+            unknown_boxes: vec![],
+        });
+        // tx3g のサンプルデータは text_length(u16 BE) + テキスト + 任意 modifier boxes。
+        // 本テストは sample_entry の型解決のみを検証するため、text_length = 5 + "HELLO" の
+        // 最小構成を渡す（Fmp4SegmentMuxer は payload 内部構造を検証しない）
+        let sample_payload = b"\x00\x05HELLO";
+        let sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(tx3g_sample_entry),
+            keyframe: true,
+            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            duration: 1000,
+            composition_time_offset: None,
+            data_offset: 0,
+            data_size: sample_payload.len(),
+        };
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        let media_segment = muxer
+            .create_media_segment_metadata(std::slice::from_ref(&sample))
+            .expect("failed to create media segment");
+        assert!(
+            !media_segment.is_empty(),
+            "media segment のバイト列が空になっている"
+        );
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("failed to build init segment");
+
+        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("failed to decode ftyp");
+        let (moov, _moov_size) =
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("failed to decode moov");
+
+        assert_eq!(moov.trak_boxes.len(), 1);
+        let trak = &moov.trak_boxes[0];
+
+        // tx3g はハンドラー種別 `text` + `nmhd` が対応表
+        assert_eq!(
+            trak.mdia_box.hdlr_box.handler_type,
+            HdlrBox::HANDLER_TYPE_TEXT
+        );
+        assert!(matches!(
+            trak.mdia_box.minf_box.media_header,
+            Some(MediaHeader::Nmhd(NmhdBox))
+        ));
+
+        // tkhd は字幕トラック用の (0, 0, 0) で stpp / wvtt 版と同じ
+        assert_eq!(trak.tkhd_box.volume, TkhdBox::DEFAULT_VIDEO_VOLUME);
+        assert_eq!(trak.tkhd_box.width, FixedPointNumber::new(0, 0));
+        assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
+    }
+
+    /// tx3g サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    ///
+    /// sample payload は text_length(u16 BE) + テキスト の最小構成で、
+    /// Fmp4SegmentMuxer は payload 内部構造を検証しない
+    fn build_tx3g_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
+        let tx3g_sample_entry = SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
+            unknown_boxes: vec![],
+        });
+        build_subtitle_fmp4_segments(tx3g_sample_entry, b"\x00\x05HELLO")
+    }
+
+    /// Fmp4FileDemuxer 経由で tx3g サンプルエントリーが `SampleEntry::Tx3g(_)` として取り出せる
+    #[test]
+    fn tx3g_sample_entry_via_fmp4_file_demuxer() {
+        let (init_bytes, media_segment) = build_tx3g_fmp4_segments();
+        let mut fmp4_bytes = init_bytes;
+        fmp4_bytes.extend_from_slice(&media_segment);
+
+        let mut demuxer = Fmp4FileDemuxer::new();
+        while let Some(required) = demuxer.required_input() {
+            let start = required.position as usize;
+            let end = start
+                .saturating_add(
+                    required
+                        .size
+                        .unwrap_or(fmp4_bytes.len().saturating_sub(start)),
+                )
+                .min(fmp4_bytes.len());
+            demuxer.handle_input(Input {
+                position: required.position,
+                data: fmp4_bytes.get(start..end).unwrap_or(&[]),
+            });
+        }
+
+        let sample = demuxer
+            .next_sample()
+            .expect("failed to fetch next_sample")
+            .expect("no sample returned from Fmp4FileDemuxer");
+        let entry = sample
+            .sample_entry
+            .expect("最初のサンプルは SampleEntry を持つ");
+        assert!(
+            matches!(entry, SampleEntry::Tx3g(_)),
+            "tx3g サンプルエントリーが型付きで取り出せること"
+        );
+    }
+
+    /// Fmp4SegmentDemuxer 経由で tx3g サンプルエントリーが `SampleEntry::Tx3g(_)` として取り出せる
+    #[test]
+    fn tx3g_sample_entry_via_fmp4_segment_demuxer() {
+        let (init_bytes, media_segment) = build_tx3g_fmp4_segments();
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("failed to handle init segment");
+        let samples = demuxer
+            .handle_media_segment(&media_segment)
+            .expect("failed to handle media segment");
+        assert!(
+            !samples.is_empty(),
+            "media segment から少なくとも 1 サンプル取り出せる"
+        );
+        let entry = samples[0]
+            .sample_entry
+            .expect("最初のサンプルは SampleEntry を持つ");
+        assert!(
+            matches!(entry, SampleEntry::Tx3g(_)),
+            "tx3g サンプルエントリーが型付きで取り出せること"
         );
     }
 

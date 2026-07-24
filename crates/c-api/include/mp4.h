@@ -120,6 +120,10 @@ typedef enum Mp4SampleEntryKind {
    * wvtt (WVTTSampleEntry, ISO/IEC 14496-30)
    */
   MP4_SAMPLE_ENTRY_KIND_WVTT,
+  /**
+   * tx3g (TextSampleEntry, 3GPP TS 26.245)
+   */
+  MP4_SAMPLE_ENTRY_KIND_TX3G,
 } Mp4SampleEntryKind;
 
 typedef enum Mp4FileKind {
@@ -831,6 +835,89 @@ typedef struct Mp4SampleEntryWvtt {
 } Mp4SampleEntryWvtt;
 
 /**
+ * tx3g（TextSampleEntry, 3GPP TS 26.245）用のサンプルエントリー
+ *
+ * 3GPP Timed Text 字幕のトラックが持つメタデータを表現する。
+ * 本体固定サイズ 30 バイト（displayFlags / justification / RGBA / BoxRecord / StyleRecord）と
+ * 可変長の FontTableBox を保持する。
+ *
+ * # data_reference_index の情報損失
+ *
+ * 本構造体は `data_reference_index` を含まないため、C API 経由で
+ * `Mp4SampleEntry → Tx3gBox` に復元する際は常に
+ * [`Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX]
+ * (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Wvtt / Mp4a と同じ
+ *
+ * # font-name のエンコーディング
+ *
+ * `ftab_font_name_ptrs[i]` は 3GPP TS 26.245 が文字エンコーディングを明示していないため、
+ * UTF-8 を保証しない生バイト列を指す。C consumer 側で文字列として扱う場合は
+ * UTF-8 として妥当性を検証してから利用すること
+ */
+typedef struct Mp4SampleEntryTx3g {
+  /**
+   * 表示挙動フラグ（3GPP TS 26.245 §5.16.1.1 のビットマスク。値域チェックはしない）
+   */
+  uint32_t display_flags;
+  /**
+   * 水平方向のジャスティフィケーション（`0 = left` / `1 = centered` / `-1 = right`）
+   */
+  int8_t horizontal_justification;
+  /**
+   * 垂直方向のジャスティフィケーション（`0 = top` / `1 = centered` / `-1 = bottom`）
+   */
+  int8_t vertical_justification;
+  /**
+   * テキスト背景色（RGBA）
+   */
+  uint8_t background_color_rgba[4];
+  /**
+   * テキスト表示領域の既定矩形（`top` / `left` / `bottom` / `right` の順で `i16` 4 個）
+   */
+  int16_t default_text_box[4];
+  /**
+   * 既定スタイル: style を適用する文字範囲の開始
+   */
+  uint16_t default_style_start_char;
+  /**
+   * 既定スタイル: style を適用する文字範囲の終了
+   */
+  uint16_t default_style_end_char;
+  /**
+   * 既定スタイル: font-ID
+   */
+  uint16_t default_style_font_id;
+  /**
+   * 既定スタイル: face-style-flags（3GPP TS 26.245 §5.16.1.2 のビットマスク）
+   */
+  uint8_t default_style_face_style_flags;
+  /**
+   * 既定スタイル: font-size（ピクセル）
+   */
+  uint8_t default_style_font_size;
+  /**
+   * 既定スタイル: text-color-rgba
+   */
+  uint8_t default_style_text_color_rgba[4];
+  /**
+   * ftab の font-ID 配列（長さは `ftab_count`）
+   */
+  const uint16_t *ftab_font_ids;
+  /**
+   * ftab の font-name ポインタ配列（各要素は `ftab_font_name_sizes[i]` バイト、null 終端なし）
+   */
+  const uint8_t *const *ftab_font_name_ptrs;
+  /**
+   * ftab の font-name 長さ配列（バイト単位）
+   */
+  const uint32_t *ftab_font_name_sizes;
+  /**
+   * ftab のエントリー数
+   */
+  uint32_t ftab_count;
+} Mp4SampleEntryTx3g;
+
+/**
  * MP4 サンプルエントリーの詳細データを格納するユニオン型
  *
  * このユニオン型は、`Mp4SampleEntry` の `kind` フィールドで指定されたコーデック種別に応じて、
@@ -881,6 +968,10 @@ typedef union Mp4SampleEntryData {
    * wvtt（WebVTT 字幕）用のサンプルエントリー
    */
   struct Mp4SampleEntryWvtt wvtt;
+  /**
+   * tx3g（3GPP Timed Text 字幕）用のサンプルエントリー
+   */
+  struct Mp4SampleEntryTx3g tx3g;
 } Mp4SampleEntryData;
 
 /**

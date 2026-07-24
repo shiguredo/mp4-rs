@@ -11,6 +11,11 @@
 
 ## develop
 
+- [CHANGE] `SampleEntry` に `Tx3g` バリアントを追加する
+  - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
+  - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_TX3G` を追加し、`Mp4SampleEntryTx3g` 構造体を新設する
+  - WASM の JSON API で `{ "kind": "tx3g", ... }` の入出力に対応する
+  - @sile
 - [CHANGE] `SampleEntry` に `Wvtt` バリアントを追加する
   - `wvtt` サンプルエントリー（ISO/IEC 14496-30 `WVTTSampleEntry`）を型付きで扱えるようにする
   - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_WVTT` を追加し、`Mp4SampleEntryWvtt` 構造体を新設する
@@ -28,11 +33,18 @@
 - [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
   - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
   - @sile
+- [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
+  - @sile
+- [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
+  - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
+  - `FtabBox` はフォントテーブル（`FontRecord` の可変長配列、各エントリーは `font_id` と Pascal-string `font_name`）を保持する
+  - 補助型 `BoxRecord`（`i16` × 4）と `StyleRecord`（12 バイト固定）を追加する
+  - サンプルデータは 3GPP TS 26.245 §5.17 の `text_length: u16` (BE) + テキスト + 任意 modifier boxes を生バイト列として扱う
+  - @sile
 - [ADD] ISO/IEC 14496-30 の `WvttBox` (`wvtt`) と `VttCBox` (`vttC`) を追加する
   - `WvttBox` は必須子 `VttCBox` を持つ
   - `VttCBox` は WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列。null 終端なし、box payload 全体）を保持する
   - サンプルデータは WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）を生バイト列として扱う
-  - `Fmp4SegmentMuxer::derive_trak_attributes` の Subtitle 分岐に wvtt arm（`text` + `sthd`）を追加する（既存の暫定固定選択 `subt` + `sthd` からの細分化を開始）
   - @sile
 - [ADD] ISO/IEC 14496-30 の `StppBox` (`stpp`) を追加する
   - `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールド（`Utf8String`）と任意子ボックスを持つ
@@ -50,7 +62,7 @@
   - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
   - @sile
 - [ADD] 字幕トラックの mux / demux 経路を追加する
-  - `Fmp4SegmentMuxer` で `TrackKind::Subtitle` を受け入れる（暫定 `subt` + `sthd` 固定）
+  - `Fmp4SegmentMuxer` で `TrackKind::Subtitle` を受け入れる
   - `Mp4FileMuxer` は字幕未対応のため、新規 `MuxError::UnsupportedTrackKind` を返して拒否する
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
   - C API `Mp4Error` マッピングに `UnsupportedTrackKind => MP4_ERROR_UNSUPPORTED` を追加する

@@ -104,9 +104,9 @@ mod sample_entry_inner_box_tests {
     use shiguredo_mp4::{
         BaseBox, BoxSize, BoxType, Uint, Utf8String,
         boxes::{
-            Av01Box, Avc1Box, DflaBox, DopsBox, EsdsBox, FlacBox, FlacMetadataBlock, Hev1Box,
-            Hvc1Box, Mp4aBox, OpusBox, SampleEntry, StppBox, UnknownBox, Vp08Box, Vp09Box, VttCBox,
-            WvttBox,
+            Av01Box, Avc1Box, BoxRecord, DflaBox, DopsBox, EsdsBox, FlacBox, FlacMetadataBlock,
+            FtabBox, Hev1Box, Hvc1Box, Mp4aBox, OpusBox, SampleEntry, StppBox, StyleRecord,
+            Tx3gBox, UnknownBox, Vp08Box, Vp09Box, VttCBox, WvttBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
@@ -297,6 +297,28 @@ mod sample_entry_inner_box_tests {
         });
 
         assert_eq!(entry.box_type(), WvttBox::TYPE);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.children().count(), 1);
+    }
+
+    /// SampleEntry::Tx3g の inner_box() テスト
+    ///
+    /// 必須の型付き子ボックス `ftab_box` を 1 個持つため、`children().count()` は 1
+    #[test]
+    fn sample_entry_tx3g_inner_box() {
+        let entry = SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
+            unknown_boxes: vec![],
+        });
+
+        assert_eq!(entry.box_type(), Tx3gBox::TYPE);
         assert!(!entry.is_unknown_box());
         assert_eq!(entry.children().count(), 1);
     }
@@ -709,9 +731,10 @@ mod sample_entry_tests {
     use shiguredo_mp4::{
         BaseBox, BoxSize, BoxType, Decode, Encode, Uint, Utf8String,
         boxes::{
-            Av01Box, Av1cBox, Avc1Box, AvccBox, DopsBox, EsdsBox, FlacBox, FlacMetadataBlock,
-            Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry, StppBox, UnknownBox, Vp08Box,
-            Vp09Box, VpccBox, VttCBox, WvttBox,
+            Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DopsBox, EsdsBox, FlacBox,
+            FlacMetadataBlock, FontRecord, FtabBox, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox,
+            SampleEntry, StppBox, StyleRecord, Tx3gBox, UnknownBox, Vp08Box, Vp09Box, VpccBox,
+            VttCBox, WvttBox,
         },
         descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
     };
@@ -1369,5 +1392,265 @@ mod sample_entry_tests {
             matches!(decoded, SampleEntry::Wvtt(_)),
             "wvtt box_type は SampleEntry::Wvtt として取り出せること"
         );
+    }
+
+    // ===== Tx3g Sample Entry Box のテスト =====
+
+    /// テスト用の Tx3gBox を生成する
+    ///
+    /// 最小構成（ftab は空、本体は全 0）
+    fn create_tx3g_box() -> Tx3gBox {
+        Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
+            unknown_boxes: vec![],
+        }
+    }
+
+    /// SampleEntry::Tx3g のメソッドおよび分類のテスト
+    ///
+    /// 字幕トラックなので audio_*・video_resolution はいずれも None を返し、
+    /// is_unknown_box は false（型付きの Tx3g バリアントとして識別される）
+    #[test]
+    fn sample_entry_tx3g_methods() {
+        let entry = SampleEntry::Tx3g(create_tx3g_box());
+
+        assert_eq!(entry.audio_channel_count(), None);
+        assert_eq!(entry.audio_sample_rate(), None);
+        assert_eq!(entry.audio_sample_size(), None);
+        assert_eq!(entry.video_resolution(), None);
+        assert!(!entry.is_unknown_box());
+        assert_eq!(entry.box_type(), Tx3gBox::TYPE);
+    }
+
+    /// SampleEntry::Tx3g の encode/decode ラウンドトリップ
+    ///
+    /// tx3g サンプルエントリーが型付きで decode されて Tx3g バリアントに復元されることを検証する
+    #[test]
+    fn sample_entry_tx3g_encode_decode_roundtrip() {
+        let entry = SampleEntry::Tx3g(create_tx3g_box());
+
+        let encoded = entry.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) =
+            SampleEntry::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        assert_eq!(size, encoded.len());
+        let SampleEntry::Tx3g(decoded_tx3g) = decoded else {
+            unreachable!();
+        };
+        assert_eq!(decoded_tx3g.display_flags, 0);
+        assert!(decoded_tx3g.ftab_box.entries.is_empty());
+    }
+
+    /// 有効な tx3g box のバイト列を組み立てるヘルパー
+    ///
+    /// SampleEntry ヘッダー（8 バイト）と本体固定 30 バイト、必須子 ftab で構成する。
+    /// エラーテストで一部フィールドを差し替える起点として使う。
+    /// `ftab_entries` は `(font_id, font_name)` のスライス
+    fn build_valid_tx3g_bytes(ftab_entries: &[(u16, &[u8])]) -> Vec<u8> {
+        // ftab 子ボックス: BoxHeader 8 バイト + entry_count u16 + FontRecord 群
+        let mut ftab_body = Vec::new();
+        let entry_count = u16::try_from(ftab_entries.len()).expect("エントリー数は u16 に収まる");
+        ftab_body.extend_from_slice(&entry_count.to_be_bytes());
+        for (font_id, font_name) in ftab_entries {
+            let font_name_length =
+                u8::try_from(font_name.len()).expect("font_name は 255 バイト以下");
+            ftab_body.extend_from_slice(&font_id.to_be_bytes());
+            ftab_body.push(font_name_length);
+            ftab_body.extend_from_slice(font_name);
+        }
+        let ftab_size = 8 + ftab_body.len() as u32;
+        let mut ftab = Vec::with_capacity(ftab_size as usize);
+        ftab.extend_from_slice(&ftab_size.to_be_bytes());
+        ftab.extend_from_slice(b"ftab");
+        ftab.extend_from_slice(&ftab_body);
+
+        // tx3g payload: reserved(6) + data_reference_index(u16) + 本体 30 バイト + ftab
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+        payload.extend_from_slice(&0u32.to_be_bytes()); // display_flags
+        payload.push(0); // horizontal_justification
+        payload.push(0); // vertical_justification
+        payload.extend_from_slice(&[0u8; 4]); // background_color_rgba
+        payload.extend_from_slice(&[0u8; 8]); // BoxRecord (top / left / bottom / right)
+        payload.extend_from_slice(&[0u8; 12]); // StyleRecord
+        payload.extend_from_slice(&ftab);
+
+        // BoxHeader: size (4B) + type (4B, "tx3g")
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"tx3g");
+        bytes.extend(payload);
+        bytes
+    }
+
+    /// ftab 子ボックスが無い tx3g payload では必須子欠落エラーになる
+    #[test]
+    fn tx3g_box_missing_ftab() {
+        // ftab 子ボックスを省略した tx3g payload（本体固定 30 バイトのみ）
+        let mut payload = vec![0u8; 6];
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.push(0);
+        payload.push(0);
+        payload.extend_from_slice(&[0u8; 4]);
+        payload.extend_from_slice(&[0u8; 8]);
+        payload.extend_from_slice(&[0u8; 12]);
+
+        let box_size = 8 + payload.len() as u32;
+        let mut bytes = Vec::with_capacity(box_size as usize);
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"tx3g");
+        bytes.extend(payload);
+
+        let err = Tx3gBox::decode(&bytes).expect_err("ftab 欠落で decode がエラーを返すはず");
+        assert!(
+            err.to_string().contains("ftab"),
+            "エラーメッセージに ftab の欠落が示されること: {err}"
+        );
+    }
+
+    /// Tx3gBox::decode に tx3g 以外の box_type を持つバイト列を渡すとエラーになる
+    #[test]
+    fn tx3g_box_decode_wrong_box_type() {
+        // box_type だけ "wvtt" に書き換えたバイト列
+        let mut bytes = build_valid_tx3g_bytes(&[(1, b"Serif")]);
+        bytes[4..8].copy_from_slice(b"wvtt");
+
+        let result = Tx3gBox::decode(&bytes);
+        assert!(result.is_err(), "tx3g 以外の box_type ではエラーになること");
+    }
+
+    /// FtabBox::decode に ftab 以外の box_type を持つバイト列を渡すとエラーになる
+    #[test]
+    fn ftab_box_decode_wrong_box_type() {
+        // ftab 単体のバイト列を組み立て、box_type を "abcd" に書き換える
+        let mut bytes: Vec<u8> = Vec::new();
+        let box_size = 10u32;
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"abcd");
+        bytes.extend_from_slice(&0u16.to_be_bytes()); // entry_count = 0
+
+        let result = FtabBox::decode(&bytes);
+        assert!(result.is_err(), "ftab 以外の box_type ではエラーになること");
+    }
+
+    /// entry_count = 0 の ftab がラウンドトリップできることを決定的に担保する
+    ///
+    /// `minf_box_subtitle_nmhd_roundtrip` の tx3g typed 化後に依存する invariant
+    /// （`ftab_box: FtabBox { entries: vec![] }` で最小構成が成立する）を明示テストする
+    #[test]
+    fn ftab_box_decode_entry_count_zero_roundtrip() {
+        // BoxHeader (size=10, type=b"ftab") + entry_count=0 (u16 BE) の 10 バイト
+        let mut bytes: Vec<u8> = Vec::new();
+        let box_size = 10u32;
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"ftab");
+        bytes.extend_from_slice(&0u16.to_be_bytes());
+
+        let (decoded, size) = FtabBox::decode(&bytes).expect("空 ftab は decode 可能");
+        assert_eq!(size, bytes.len());
+        assert!(decoded.entries.is_empty());
+
+        // encode すると同じバイト列に戻る
+        let reencoded = decoded.encode_to_vec().expect("空 ftab は encode 可能");
+        assert_eq!(reencoded, bytes);
+    }
+
+    /// FontRecord::encode で font_name が 255 バイトを超える場合にエラーになる
+    #[test]
+    fn font_record_encode_too_long_name() {
+        // 256 バイトの font_name（u8::MAX を超える境界値）
+        let record = FontRecord {
+            font_id: 1,
+            font_name: vec![b'A'; 256],
+        };
+        // 十分な大きさのバッファを用意して encode を試みる
+        let mut buf = vec![0u8; 512];
+        let result = record.encode(&mut buf);
+        let err = result.expect_err("font_name > 255 で encode がエラーを返すはず");
+        assert!(
+            err.to_string().contains("font_name_length"),
+            "エラーメッセージに font_name_length が示されること: {err}"
+        );
+    }
+
+    /// FontRecord::decode で `font_name_length` が残りバイト数を超える場合に境界チェックでエラーになる
+    ///
+    /// 悪意ある入力（`FtabBox::entry_count` を過大に指定して各 FontRecord の残バイトを
+    /// 使い切ろうとするケース等）に対する防御コードの回帰確認
+    #[test]
+    fn font_record_decode_length_exceeds_buffer() {
+        // font_id (2B) + font_name_length = 0xFF (1B) だけを渡す。
+        // font_name として 255 バイトを読み込もうとするが残バイトは 0 なのでエラー
+        let bytes = [0x00, 0x01, 0xff];
+        let err = FontRecord::decode(&bytes)
+            .expect_err("font_name_length が残バイト超過で decode がエラーを返すはず");
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InsufficientBuffer);
+    }
+
+    /// FtabBox::decode で `entry_count = u16::MAX` かつ payload 不足の場合、
+    /// 過大な事前アロケーションを起こさずに早期エラーで抜ける
+    ///
+    /// `Vec::with_capacity(entry_count)` を使わず `Vec::new()` から push で伸ばす
+    /// 防御的実装の回帰確認（リファクタリングで `with_capacity` に戻すと DoS/OOM リスクが発生する）
+    #[test]
+    fn ftab_box_decode_entry_count_overflow_returns_error() {
+        // BoxHeader (size=10, type=b"ftab") + entry_count = u16::MAX (2B) だけを渡す。
+        // FontRecord が 1 個も後続しないため、最初の FontRecord::decode_at で早期エラー
+        let box_size: u32 = 10;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&box_size.to_be_bytes());
+        bytes.extend_from_slice(b"ftab");
+        bytes.extend_from_slice(&u16::MAX.to_be_bytes());
+        let err = FtabBox::decode(&bytes)
+            .expect_err("entry_count = u16::MAX + payload 不足で decode がエラーを返すはず");
+        assert_eq!(err.kind, shiguredo_mp4::ErrorKind::InsufficientBuffer);
+    }
+
+    /// Tx3gBox::decode で SampleEntry base (8B) + 本体固定 30B が満たされない payload は
+    /// `check_buffer_size` で早期エラーになる
+    ///
+    /// SampleEntry ヘッダー 8 バイトと本体 30 バイトの合計 38 バイトが必要だが、
+    /// 途中のバイト境界 (0 / 6 / 16 / 30) で切り詰めた payload はすべて decode に失敗する
+    #[test]
+    fn tx3g_box_decode_truncated_body_returns_error() {
+        for payload_len in [0usize, 6, 16, 30] {
+            // BoxHeader (size = 8 + payload_len, type = b"tx3g") + payload_len バイトの 0
+            let box_size = (8 + payload_len) as u32;
+            let mut bytes = Vec::with_capacity(box_size as usize);
+            bytes.extend_from_slice(&box_size.to_be_bytes());
+            bytes.extend_from_slice(b"tx3g");
+            bytes.extend(std::iter::repeat_n(0u8, payload_len));
+
+            let result = Tx3gBox::decode(&bytes);
+            assert!(
+                result.is_err(),
+                "payload_len = {payload_len} で decode がエラーを返すこと"
+            );
+        }
+    }
+
+    /// SampleEntry::decode で tx3g box_type を持つ入力が Tx3g バリアントとして取り出されることを検証する
+    ///
+    /// 型付き Tx3g バリアント追加前は `SampleEntry::Unknown` にフォールバックしていたため、
+    /// ディスパッチの回帰確認として置く
+    #[test]
+    fn sample_entry_decode_tx3g_dispatches_to_tx3g_variant() {
+        let bytes = build_valid_tx3g_bytes(&[(1, b"Serif")]);
+        let (decoded, _) = SampleEntry::decode(&bytes).expect("有効な tx3g バイト列は decode 可能");
+        let SampleEntry::Tx3g(tx3g) = decoded else {
+            panic!("tx3g box_type は SampleEntry::Tx3g として取り出せること");
+        };
+        assert_eq!(tx3g.ftab_box.entries.len(), 1);
+        assert_eq!(tx3g.ftab_box.entries[0].font_id, 1);
+        assert_eq!(tx3g.ftab_box.entries[0].font_name, b"Serif");
     }
 }

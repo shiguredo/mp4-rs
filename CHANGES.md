@@ -11,6 +11,15 @@
 
 ## develop
 
+- [CHANGE] `Mp4FileMuxer` の内部フィールド構造化に伴う 2 つの挙動変化
+  - `finalize` で生成される MP4 の trak_box 出力順が「Audio → Video の固定順」から「`append_sample` 呼び出し順（先に登場した `TrackKind` が先）」に変わる
+  - `MuxError::MissingSampleEntry` エラー返却時の副作用が消滅する（当該 kind の timescale が記録済みで残る挙動が無くなり、`self` の内部状態は完全に不変になる）
+  - @sile
+- [ADD] `Mp4FileMuxer` で `TrackKind::Subtitle` トラックの受け入れと mux に対応する
+  - Audio + Video + Subtitle の 3 トラック mux が可能になる
+  - `stpp` / `wvtt` / `tx3g` の各 `SampleEntry` を含む Subtitle トラックを `Mp4FileMuxer` → `Mp4FileDemuxer` でラウンドトリップできる
+  - `MuxError::UnsupportedTrackKind` バリアント自体は残す（`Mp4FileMuxer` からは投げなくなる。C API の `MP4_ERROR_UNSUPPORTED` マッピングも維持）
+  - @sile
 - [CHANGE] `SampleEntry` に `Tx3g` バリアントを追加する
   - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
   - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_TX3G` を追加し、`Mp4SampleEntryTx3g` 構造体を新設する

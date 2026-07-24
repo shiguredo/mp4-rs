@@ -81,34 +81,7 @@ impl From<MuxError> for Mp4Error {
             | MuxError::MissingSampleEntry { .. }
             | MuxError::TimescaleMismatch { .. }
             | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
-            // サポート対象外の操作なので INVALID_INPUT ではなく UNSUPPORTED にマッピングする
-            MuxError::UnsupportedTrackKind { .. } => Self::MP4_ERROR_UNSUPPORTED,
             _ => Self::MP4_ERROR_OTHER,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use shiguredo_mp4::TrackKind;
-
-    /// UnsupportedTrackKind が MP4_ERROR_UNSUPPORTED にマッピングされることを検証する
-    ///
-    /// MuxError は #[non_exhaustive] のため、明示的な arm を追加せずに
-    /// 末尾の `_ => Self::MP4_ERROR_OTHER` フォールバックへ落ちても
-    /// コンパイルは通ってしまう。UnsupportedTrackKind には
-    /// 明示的な UNSUPPORTED マッピングを与える方針なので、
-    /// OTHER に落ちていないことをテストで担保する
-    #[test]
-    fn test_unsupported_track_kind_maps_to_mp4_error_unsupported() {
-        let err = MuxError::UnsupportedTrackKind {
-            track_kind: TrackKind::Subtitle,
-        };
-        let mapped: Mp4Error = err.into();
-        assert!(
-            matches!(mapped, Mp4Error::MP4_ERROR_UNSUPPORTED),
-            "UnsupportedTrackKind が MP4_ERROR_UNSUPPORTED にマッピングされていない",
-        );
     }
 }

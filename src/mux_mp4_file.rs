@@ -309,15 +309,6 @@ pub enum MuxError {
         track_kind: TrackKind,
     },
 
-    /// サポートされていないトラック種別が指定された場合のエラーを表す
-    ///
-    /// 両 muxer からは現時点では投げられないが、C API `MP4_ERROR_UNSUPPORTED` マッピングと
-    /// 将来の [`TrackKind`] バリアント追加時の拡張余地としてバリアント自体は保持する
-    UnsupportedTrackKind {
-        /// サポート対象外だったトラック種別
-        track_kind: TrackKind,
-    },
-
     /// マルチプレックス処理中の内部カウンタがオーバーフローした
     Overflow,
 }
@@ -372,9 +363,6 @@ impl core::fmt::Display for MuxError {
                     f,
                     "{track_kind:?} track uses multiple sample entries within one segment"
                 )
-            }
-            MuxError::UnsupportedTrackKind { track_kind } => {
-                write!(f, "Unsupported track kind: {track_kind:?}")
             }
             MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
@@ -1249,22 +1237,6 @@ mod tests {
             Err(MuxError::PositionMismatch { expected, actual })
             if expected == initial_size && actual == initial_size + 100
         ));
-    }
-
-    /// UnsupportedTrackKind の Display 出力にトラック種別名が含まれることを検証する
-    ///
-    /// エラーメッセージにトラック種別が反映されないと、
-    /// 呼び出し側が何を拒否されたのかログから判別できないため確認する
-    #[test]
-    fn test_unsupported_track_kind_display_contains_subtitle() {
-        let err = MuxError::UnsupportedTrackKind {
-            track_kind: TrackKind::Subtitle,
-        };
-        let display = format!("{err}");
-        assert!(
-            display.contains("Subtitle"),
-            "Display 出力に \"Subtitle\" が含まれていない: {display}",
-        );
     }
 
     /// サンプルエントリー不在エラーのテスト

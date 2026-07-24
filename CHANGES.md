@@ -67,7 +67,6 @@
 - [ADD] 字幕トラックの mux / demux 経路を追加する
   - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両 muxer で `TrackKind::Subtitle` を受け入れ、`stpp` / `wvtt` / `tx3g` を含む字幕トラックを mux できる
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
-  - `MuxError::UnsupportedTrackKind` バリアントを追加する（両 muxer からは投げないが、C API `Mp4Error` の `MP4_ERROR_UNSUPPORTED` マッピングと将来の拡張余地として保持）
   - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
   - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった

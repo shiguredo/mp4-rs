@@ -604,7 +604,7 @@ impl Fmp4SegmentMuxer {
                 track_kind: entry.track_kind,
             })?;
         // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
-        let derived = derive_trak_attributes(entry, sample_entry)?;
+        let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
 
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
@@ -942,22 +942,22 @@ type TkhdDimensions = (FixedPointNumber<i16, u16>, FixedPointNumber<i16, u16>);
 /// tkhd の volume / width / height、ハンドラー種別、メディアヘッダーはすべて
 /// トラック種別ごとに決まる。3 箇所で個別に match するのを避け、決定表として
 /// 1 つの構造体に集約する
-struct TrakDerivation {
-    volume: FixedPointNumber<i8, u8>,
-    width: FixedPointNumber<i16, u16>,
-    height: FixedPointNumber<i16, u16>,
-    handler_type: [u8; 4],
-    media_header: MediaHeader,
+pub(crate) struct TrakDerivation {
+    pub(crate) volume: FixedPointNumber<i8, u8>,
+    pub(crate) width: FixedPointNumber<i16, u16>,
+    pub(crate) height: FixedPointNumber<i16, u16>,
+    pub(crate) handler_type: [u8; 4],
+    pub(crate) media_header: MediaHeader,
 }
 
-/// `entry.track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
+/// `track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
 /// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は本体コメントを参照
-fn derive_trak_attributes(
-    entry: &TrackEntry,
+pub(crate) fn derive_trak_attributes(
+    track_kind: TrackKind,
     sample_entry: &SampleEntry,
 ) -> Result<TrakDerivation, MuxError> {
-    match entry.track_kind {
+    match track_kind {
         TrackKind::Video => {
             let (width, height): TkhdDimensions = extract_video_dimensions(sample_entry)?;
             Ok(TrakDerivation {

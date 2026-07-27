@@ -1,6 +1,6 @@
 //! Fragmented MP4 (fMP4) のマルチプレックス機能を提供するモジュール
 //!
-//! このモジュールは、複数のメディアトラック（音声・映像）からのサンプルを
+//! このモジュールは、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 //! 初期化セグメントとメディアセグメントに分けて生成する機能を提供する。
 //!
 //! # fMP4 の構造
@@ -20,8 +20,6 @@
 //! そのため、`Mp4FileMuxer` と同様にサンプルごとに `track_kind` / `timescale` /
 //! `sample_entry` を受け取る設計になっている。
 //! 現時点では同一 [`TrackKind`] のトラックは 1 本までに制限している（音声 / 映像 / 字幕 各 1 本）。
-//! [`Mp4FileMuxer`] は現時点で字幕未対応のため、字幕トラックは
-//! [`Fmp4SegmentMuxer`] 経由でのみ扱える。
 //! 将来、同種複数トラックに対応する場合は file muxer と合わせて拡張する想定である。
 //!
 //! # Examples
@@ -129,7 +127,7 @@ struct ResolvedSegmentSample {
 
 /// fMP4 ファイルを生成するマルチプレックス処理を行うための構造体
 ///
-/// この構造体は、複数のメディアトラック（音声・映像）からのサンプルを
+/// この構造体は、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 ///  fMP4 形式の初期化セグメントとメディアセグメントに変換する。
 ///
 /// [`crate::mux::Mp4FileMuxer`] と同様に、サンプルごとに `track_kind` / `timescale` /
@@ -604,7 +602,7 @@ impl Fmp4SegmentMuxer {
                 track_kind: entry.track_kind,
             })?;
         // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
-        let derived = derive_trak_attributes(entry, sample_entry)?;
+        let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
 
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
@@ -937,27 +935,29 @@ fn ensure_track_entry(
 /// tkhd の `width` / `height` を表す固定小数点数のペア型エイリアス
 type TkhdDimensions = (FixedPointNumber<i16, u16>, FixedPointNumber<i16, u16>);
 
-/// `build_init_trak` 内で `entry.track_kind` から派生する属性群
+/// `track_kind` から派生する `trak` の属性群
 ///
 /// tkhd の volume / width / height、ハンドラー種別、メディアヘッダーはすべて
-/// トラック種別ごとに決まる。3 箇所で個別に match するのを避け、決定表として
-/// 1 つの構造体に集約する
-struct TrakDerivation {
-    volume: FixedPointNumber<i8, u8>,
-    width: FixedPointNumber<i16, u16>,
-    height: FixedPointNumber<i16, u16>,
-    handler_type: [u8; 4],
-    media_header: MediaHeader,
+/// トラック種別ごとに決まる。使用箇所ごとに個別に match するのを避け、
+/// 決定表として 1 つの構造体に集約する。
+/// [`Fmp4SegmentMuxer`] と [`crate::mux::Mp4FileMuxer`] の両方から利用する
+pub(crate) struct TrakDerivation {
+    pub(crate) volume: FixedPointNumber<i8, u8>,
+    pub(crate) width: FixedPointNumber<i16, u16>,
+    pub(crate) height: FixedPointNumber<i16, u16>,
+    pub(crate) handler_type: [u8; 4],
+    pub(crate) media_header: MediaHeader,
 }
 
-/// `entry.track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
+/// `track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
-/// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は本体コメントを参照
-fn derive_trak_attributes(
-    entry: &TrackEntry,
+/// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は
+/// [`subtitle_trak_attributes`] を参照
+pub(crate) fn derive_trak_attributes(
+    track_kind: TrackKind,
     sample_entry: &SampleEntry,
 ) -> Result<TrakDerivation, MuxError> {
-    match entry.track_kind {
+    match track_kind {
         TrackKind::Video => {
             let (width, height): TkhdDimensions = extract_video_dimensions(sample_entry)?;
             Ok(TrakDerivation {
@@ -976,23 +976,9 @@ fn derive_trak_attributes(
             media_header: MediaHeader::Smhd(SmhdBox::default()),
         }),
         // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
-        // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
-        //
-        // (handler_type, media_header) の対応表:
-        //   stpp → subt + sthd (ISO/IEC 14496-30)
-        //   wvtt → text + sthd (ISO/IEC 14496-30)
-        //   tx3g → text + nmhd (3GPP TS 26.245)
+        // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）
         TrackKind::Subtitle => {
-            let (handler_type, media_header) = match sample_entry {
-                SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
-                SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
-                SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
-                // 対応表に載っていないバリアントは防御的に subt + sthd に丸める。
-                // 字幕トラックに映像系・音声系のサンプルエントリーが紐付く運用は無く、
-                // 実際には未知の字幕系サンプルエントリー（`SampleEntry::decode` が
-                // 型付きに落とせずに `SampleEntry::Unknown` に落としたもの）だけがこの arm に到達する
-                _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
-            };
+            let (handler_type, media_header) = subtitle_trak_attributes(sample_entry);
             Ok(TrakDerivation {
                 volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
                 width: FixedPointNumber::default(),
@@ -1001,6 +987,30 @@ fn derive_trak_attributes(
                 media_header,
             })
         }
+    }
+}
+
+/// 字幕サンプルエントリーからハンドラー種別とメディアヘッダーを決める
+///
+/// 対応表:
+///   stpp → subt + sthd (ISO/IEC 14496-30)
+///   wvtt → text + sthd (ISO/IEC 14496-30)
+///   tx3g → text + nmhd (3GPP TS 26.245)
+///
+/// `hdlr` と `minf.media_header` はトラック単位で 1 つしか持てないため、
+/// 1 つのトラック内でこの組が異なるサンプルエントリーが混在すると、
+/// `stsd` には両方が並ぶ一方でトラック側の属性は片方に固定され、規格上整合しなくなる。
+/// 呼び出し側はこの戻り値同士を突き合わせて混在を検出する
+pub(crate) fn subtitle_trak_attributes(sample_entry: &SampleEntry) -> ([u8; 4], MediaHeader) {
+    match sample_entry {
+        SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+        SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
+        SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
+        // 対応表に載っていないバリアントは防御的に subt + sthd に丸める。
+        // 字幕トラックに映像系・音声系のサンプルエントリーが紐付く運用は無く、
+        // 実際には未知の字幕系サンプルエントリー（`SampleEntry::decode` が
+        // 型付きに落とせずに `SampleEntry::Unknown` に落としたもの）だけがこの arm に到達する
+        _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
     }
 }
 

@@ -81,6 +81,10 @@
   - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
   - `entry.track_kind` で外側に分岐する形に刷新し、映像トラックでは常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
   - @sile
+- [FIX] `Mp4FileMuxer` が生成する `tkhd` の `duration` を `mvhd` の `timescale` 単位で書くように修正する
+  - これまでは `mdhd` の `timescale` 単位の値をそのまま書いていた
+  - 音声と映像で `timescale` が異なる場合に、`tkhd` の `duration` を参照するプレイヤーでトラックの尺が誤って解釈され、サンプルが途中で打ち切られることがあった
+  - @sile
 
 ### misc
 

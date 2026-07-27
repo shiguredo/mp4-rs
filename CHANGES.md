@@ -11,6 +11,11 @@
 
 ## develop
 
+- [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする
+  - `hdlr` と `media_header` の組が異なる形式（`stpp` と `tx3g` 等）を 1 本の字幕トラックに混ぜると `MuxError::MixedSampleEntries` を返す
+  - これまでは受け入れていたが、`stsd` とトラック側の属性が食い違う MP4 が生成されていた
+  - 組が同じサンプルエントリー同士（`namespace` 違いの `stpp` 等）の混在と、映像トラックの複数サンプルエントリーは引き続き受け入れる
+  - @sile
 - [CHANGE] `Mp4FileMuxer::finalize()` が生成する `moov` ボックスのトラック順と `mvhd` の値を変える
   - `trak` ボックスの出力順が「音声 → 映像」の固定順から `append_sample()` の呼び出し順（先に登場した `TrackKind` が先）に変わる
   - あわせて `tkhd` の `track_id` の割り当ても変わる（これまでは音声トラックが常に 1 だった）

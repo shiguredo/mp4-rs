@@ -64,7 +64,7 @@ use crate::{
         MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, StblBox, StcoBox, StscBox,
         StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
-    mux_fmp4_segment::{TrakDerivation, derive_trak_attributes},
+    mux_fmp4_segment::{TrakDerivation, derive_trak_attributes, subtitle_trak_attributes},
 };
 
 // ftyp 更新時に必要となる free 予約の最小値は以下:
@@ -305,7 +305,14 @@ pub enum MuxError {
         actual: NonZeroU32,
     },
 
-    /// 同一セグメント内の同一トラックで複数の sample entry が混在している
+    /// 同一トラック内に両立しないサンプルエントリーが混在している
+    ///
+    /// [`crate::mux::Fmp4SegmentMuxer`] では、1 つのセグメント内の同一トラックで
+    /// 複数のサンプルエントリーが使われた場合に返す。
+    ///
+    /// [`Mp4FileMuxer`] では、字幕トラック内でハンドラー種別ないしメディアヘッダーが
+    /// 異なるサンプルエントリー（たとえば `stpp` と `tx3g`）が混在した場合に返す。
+    /// これらはトラック単位で 1 つしか持てないため、混在すると規格上整合しない MP4 になる
     MixedSampleEntries {
         /// 対象トラックの種類
         track_kind: TrackKind,
@@ -361,10 +368,7 @@ impl core::fmt::Display for MuxError {
                 )
             }
             MuxError::MixedSampleEntries { track_kind } => {
-                write!(
-                    f,
-                    "{track_kind:?} track uses multiple sample entries within one segment"
-                )
+                write!(f, "{track_kind:?} track uses incompatible sample entries")
             }
             MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
@@ -551,7 +555,8 @@ impl Mp4FileMuxer {
     ///
     /// - [`MuxError::AlreadyFinalized`] / [`MuxError::PositionMismatch`] /
     ///   [`MuxError::EncodeError`]（`data_size` の `u32::MAX` 超過）/
-    ///   [`MuxError::MissingSampleEntry`] / [`MuxError::TimescaleMismatch`]:
+    ///   [`MuxError::MissingSampleEntry`] / [`MuxError::MixedSampleEntries`] /
+    ///   [`MuxError::TimescaleMismatch`]:
     ///   内部状態は完全に不変となる。呼び出し側は内容を補正したサンプルで再呼び出しできる
     /// - [`MuxError::Overflow`]（次の書き込み位置の加算オーバーフロー）:
     ///   このサンプルの登録は完了した状態で残り、次の書き込み位置だけが未更新となる。
@@ -598,6 +603,25 @@ impl Mp4FileMuxer {
         } else {
             None
         };
+
+        // 字幕トラックの hdlr / media_header は先頭のサンプルエントリーだけで決まるため、
+        // 対応表上の組が異なるサンプルエントリーが混在すると stsd と矛盾した trak になる。
+        // finalize() の時点では「どのサンプルが原因か」を示せないので、投入時点で拒否する。
+        // 映像トラックは複数のサンプルエントリー（解像度違いなど）を前提とした設計なので対象外
+        if sample.track_kind == TrackKind::Subtitle
+            && let Some(new_entry) = &resolved_sample_entry
+            && let Some(first_entry) = self
+                .tracks
+                .iter()
+                .find(|t| t.track_kind == TrackKind::Subtitle)
+                .and_then(|t| t.chunks.first())
+                .map(|c| &c.sample_entry)
+            && subtitle_trak_attributes(first_entry) != subtitle_trak_attributes(new_entry)
+        {
+            return Err(MuxError::MixedSampleEntries {
+                track_kind: TrackKind::Subtitle,
+            });
+        }
 
         // サンプルエントリーの解決を先に済ませてから ensure_track_entry を呼ぶことで
         // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ
@@ -1164,8 +1188,8 @@ mod tests {
     use crate::{
         Uint,
         boxes::{
-            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, StppBox,
-            VisualSampleEntryFields,
+            AudioSampleEntryFields, Avc1Box, AvccBox, BoxRecord, DopsBox, FtabBox, OpusBox,
+            StppBox, StyleRecord, Tx3gBox, VisualSampleEntryFields,
         },
     };
 
@@ -1667,6 +1691,136 @@ mod tests {
         assert_eq!(finalized.moov_box().mvhd_box.next_track_id, 4);
     }
 
+    /// 字幕トラック用の [`Sample`] を組み立てる
+    fn subtitle_sample(sample_entry: SampleEntry, data_offset: u64) -> Sample {
+        Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(sample_entry),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 500,
+            composition_time_offset: None,
+            data_offset,
+            data_size: 128,
+        }
+    }
+
+    /// 字幕トラックにハンドラー種別が異なるサンプルエントリーを混ぜると拒否されることを検証するテスト
+    ///
+    /// stpp は `subt` + `sthd`、tx3g は `text` + `nmhd` に対応する。
+    /// `hdlr` と `media_header` はトラック単位で 1 つしか持てないため、
+    /// 混在を許すと `stsd` と矛盾した `trak` が無警告で生成されてしまう
+    #[test]
+    fn test_mixed_subtitle_sample_entries_error() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        muxer
+            .append_sample(&subtitle_sample(create_stpp_sample_entry(), initial_size))
+            .expect("failed to append stpp sample");
+
+        // tx3g は stpp と対応表上の組が異なるので拒否される
+        let mixed = subtitle_sample(create_tx3g_sample_entry(), initial_size + 128);
+        assert!(matches!(
+            muxer.append_sample(&mixed),
+            Err(MuxError::MixedSampleEntries {
+                track_kind: TrackKind::Subtitle
+            })
+        ));
+
+        // 拒否されても内部状態は不変なので、同じ形式のサンプルなら続けて投入できる
+        muxer
+            .append_sample(&subtitle_sample(
+                create_stpp_sample_entry(),
+                initial_size + 128,
+            ))
+            .expect("failed to append stpp sample after rejection");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        assert_eq!(finalized.moov_box().trak_boxes.len(), 1);
+    }
+
+    /// 同じ対応表の組に属するサンプルエントリー同士は混在させても受け入れられることを検証するテスト
+    ///
+    /// namespace が異なる stpp はどちらも `subt` + `sthd` に対応するため、
+    /// `stsd` に 2 エントリーを並べても `trak` の属性と矛盾しない
+    #[test]
+    fn test_same_group_subtitle_sample_entries_are_accepted() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        muxer
+            .append_sample(&subtitle_sample(create_stpp_sample_entry(), initial_size))
+            .expect("failed to append stpp sample");
+
+        let another_stpp = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml#parameter")
+                .expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        });
+        muxer
+            .append_sample(&subtitle_sample(another_stpp, initial_size + 128))
+            .expect("namespace 違いの stpp は受け入れられるべき");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let trak = &finalized.moov_box().trak_boxes[0];
+        assert_eq!(trak.mdia_box.minf_box.stbl_box.stsd_box.entries.len(), 2);
+        assert_eq!(
+            trak.mdia_box.hdlr_box.handler_type,
+            HdlrBox::HANDLER_TYPE_SUBT
+        );
+    }
+
+    /// 映像トラックは複数のサンプルエントリーを引き続き受け入れることを検証するテスト
+    ///
+    /// 字幕トラック向けの混在拒否が映像トラックの既存挙動（解像度違いの許容）に
+    /// 波及していないことを確認する
+    #[test]
+    fn test_video_track_still_accepts_multiple_sample_entries() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let mut first = create_avc1_sample_entry();
+        let SampleEntry::Avc1(avc1) = &mut first else {
+            panic!("create_avc1_sample_entry must return SampleEntry::Avc1");
+        };
+        avc1.visual.width = 640;
+        avc1.visual.height = 480;
+
+        let mut second = create_avc1_sample_entry();
+        let SampleEntry::Avc1(avc1) = &mut second else {
+            panic!("create_avc1_sample_entry must return SampleEntry::Avc1");
+        };
+        avc1.visual.width = 1920;
+        avc1.visual.height = 1080;
+
+        for (i, entry) in [first, second].into_iter().enumerate() {
+            let sample = Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: Some(entry),
+                keyframe: true,
+                timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+                duration: 1,
+                composition_time_offset: None,
+                data_offset: initial_size + (i as u64 * 1024),
+                data_size: 1024,
+            };
+            muxer
+                .append_sample(&sample)
+                .expect("映像トラックは複数サンプルエントリーを受け入れるべき");
+        }
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let trak = &finalized.moov_box().trak_boxes[0];
+        assert_eq!(trak.mdia_box.minf_box.stbl_box.stsd_box.entries.len(), 2);
+        // tkhd には全サンプルエントリーの最大値が入る既存挙動を維持する
+        assert_eq!(trak.tkhd_box.width, FixedPointNumber::new(1920, 0));
+        assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(1080, 0));
+    }
+
     /// `mvhd` に正規化した尺が最長のトラックの timescale / duration が採用されることを検証するテスト
     ///
     /// 映像は 1/30 秒、音声は 5 秒にして音声を最長にしている。
@@ -1876,6 +2030,20 @@ mod tests {
             namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
             schema_location: Utf8String::EMPTY,
             auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        })
+    }
+
+    fn create_tx3g_sample_entry() -> SampleEntry {
+        SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
             unknown_boxes: vec![],
         })
     }

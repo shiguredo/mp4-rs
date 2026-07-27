@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
+  - @voluntas
 - [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする
   - `hdlr` と `media_header` の組が異なる形式（`stpp` と `tx3g` 等）を 1 本の字幕トラックに混ぜると `MuxError::MixedSampleEntries` を返す
   - これまでは受け入れていたが、`stsd` とトラック側の属性が食い違う MP4 が生成されていた

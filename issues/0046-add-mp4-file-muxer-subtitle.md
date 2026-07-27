@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-21
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-27
 - Model: Opus 4.7
 - Branch: feature/add-mp4-file-muxer-subtitle
 - Polished: 2026-07-24
@@ -327,6 +327,36 @@ Audio / Subtitle kind については `Fmp4SegmentMuxer::derive_trak_attributes`
 `pbt/tests/prop_mux_demux.rs:586` および `pbt/tests/prop_mux_demux.rs:894` の `TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外")` は本 issue でも維持する。既存 PBT の Strategy 側は Audio / Video のみを生成しており、Subtitle は混入しないため `unreachable!` が発火することはない。Subtitle 対応は上述「### PBT / 単体テスト追加」の新規テスト（`mux_demux_subtitle_only_roundtrip` / `mux_demux_video_audio_subtitle_roundtrip`）で担保する。
 
 ## 解決方法
+
+`feature/add-mp4-file-muxer-subtitle` ブランチで対応した。
+
+### 実施内容
+
+- `Mp4FileMuxer` の `audio_chunks` / `video_chunks` / `audio_track_timescale` / `video_track_timescale` を `tracks: Vec<TrackEntry>` に置き換え、`ensure_track_entry` ヘルパを追加した。`append_sample` / `is_new_chunk_needed` / `build_moov_box` / `build_trak_box` / `build_mdia_box` / `calculate_total_duration` / `build_final_ftyp_box` を汎用化し、Audio / Video 専用ビルダー 4 関数を廃止した
+- `derive_trak_attributes` と `TrakDerivation` を `pub(crate)` 化し、`Mp4FileMuxer` から共有利用する形にした
+- `stpp` / `wvtt` / `tx3g` の 3 形式について `Mp4FileMuxer` → `Mp4FileDemuxer` のラウンドトリップと、音声 + 映像 + 字幕の 3 トラック mux のテストを追加した
+
+### 計画から外れた点
+
+**`MuxError::UnsupportedTrackKind` を削除した。** 「### スコープ」の「含まないもの」と「### 拒否経路の除去と `MuxError::UnsupportedTrackKind` の存置」節では存置する方針だったが、両 muxer が字幕を受け入れるようになった時点でどこからも投げられないデッドコードになったため削除した。全リリースタグを確認して未リリースのバリアントであることを確認済みで、後方互換上の影響は無い。C API の `MP4_ERROR_UNSUPPORTED` は demux 経路と `ErrorKind::Unsupported` 経由で引き続き到達可能。これに伴い「## CHANGES.md」節の記載内容（存置を前提とした記述）も変更し、既存の `[ADD]` エントリに統合した。
+
+### レビューを受けて追加で対応した内容
+
+- **字幕トラック内のサンプルエントリー混在を拒否する**ようにした。`hdlr` と `media_header` はトラック単位で 1 つしか持てないため、対応表の組が異なる形式（`stpp` と `tx3g` 等）が混在すると `stsd` と矛盾した `trak` が無警告で生成されていた。`MuxError::MixedSampleEntries` を返す
+- `Mp4FileMuxer` が生成する `moov` の検証をテストに追加した。対応前は wvtt / tx3g のハンドラー種別とメディアヘッダーを音声用に壊しても全テストが通る状態だった
+- 字幕トラックの取り扱いをまとめたドキュメントを追加し、`docs::subtitle` として rustdoc に取り込んだ（本文の Rust コード例が doctest として検証されるようになる）
+- 実態とずれていた doc コメントと `CHANGES.md` の記述を訂正し、テストの `.unwrap()` を `.expect()` に置き換えた
+
+### 積み残し
+
+以下はレビューで検出したが本 issue の範囲外として未対応。別 issue での対応を推奨する。
+
+- `tkhd.duration` が movie timescale 単位ではなく mdhd のタイムスケール単位になっている（既存不具合。タイムスケールが 3 系統になったことで影響範囲が広がった）
+- トラック内の全サンプルが `keyframe = false` のときに、同期サンプルが 1 つも存在しないことを意味する空の `stss` が出力される（既存不具合）
+- 字幕トラックの言語（`mdhd.language`）とトラック名（`hdlr.name`）を設定する手段が公開 API に無い
+- C API の `mp4_estimate_maximum_moov_box_size()` が音声・映像の 2 トラック分しか見積もれない
+
+### 実装前に立てた計画
 
 以下の順で実装する見込み。相互依存で「単独では cargo build / cargo test が通らない」手順は同一コミット単位でまとめる。
 

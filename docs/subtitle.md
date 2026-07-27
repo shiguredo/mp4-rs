@@ -9,8 +9,7 @@ MP4 における字幕トラックは、音声・映像と並ぶ独立したメ�
 音声・映像トラックと比較して以下のような特徴がある。
 
 - サンプル 1 個 = 字幕 1 表示（cue）と考えて扱うことが多い
-- 表示中は次のサンプルが来るまで前のサンプルが表示され続けるプレイヤー実装が一般的
-- キーフレームの概念は無い（全サンプルが独立サンプル）
+- 各サンプルは前後に依存しない独立サンプルとして扱うのが通例
 - コンポジション時間オフセット（B フレーム相当）も通常使わない
 
 ## 対応する 3 形式
@@ -21,8 +20,8 @@ MP4 における字幕トラックは、音声・映像と並ぶ独立したメ�
 
 - 仕様: ISO/IEC 14496-30 `XMLSubtitleSampleEntry`
 - サンプルペイロード: XML ドキュメント（TTML / IMSC 1.x など）
-- 用途: 放送・配信で広く使われる。ARIB や DASH-IF の推奨形式
-- 特徴: 表現力が高い（スタイル・レイアウト・ルビ等）が、パーサやレンダラーが重い
+- 用途: 放送・配信系で広く使われる
+- 特徴: 表現力が高い（スタイル・レイアウト・ルビ等）が、パーサーやレンダラーが重い
 
 TTML（Timed Text Markup Language）は W3C 標準の XML 字幕形式。IMSC（Internet Media Subtitles and Captions）は TTML の相互運用プロファイル。
 
@@ -39,8 +38,8 @@ WebVTT テキスト形式そのものではなく、MP4 コンテナ用に cue �
 
 - 仕様: 3GPP TS 26.245 `TextSampleEntry` (§5.16)
 - サンプルペイロード: `text_length: u16 BE` + テキスト本体 + 任意 modifier boxes
-- 用途: 3G 携帯電話向けの Timed Text として策定。iOS QuickTime プレイヤーが標準対応する字幕形式
-- 特徴: 軽量なテキスト+スタイル指定。フォントテーブル (`ftab`) を持つ
+- 用途: 3G 携帯電話向けの Timed Text として策定された
+- 特徴: 軽量なテキスト + スタイル指定。フォントテーブル（`ftab`）を持つ
 
 modifier box には `styl`（部分スタイル）/ `hlit`（ハイライト）/ `krok`（カラオケ）などがある。
 
@@ -54,11 +53,13 @@ modifier box には `styl`（部分スタイル）/ `hlit`（ハイライト）/
 | `wvtt` | `text` | `sthd` |
 | `tx3g` | `text` | `nmhd` |
 
-本 crate では両 muxer がこの対応表に従って自動的に `hdlr` と `minf.media_header` を組み立てるため、利用側は明示的に指定する必要はない。
+本 crate では両 muxer がこの対応表に従って `hdlr` と `minf.media_header` を自動的に組み立てるため、利用側が明示的に指定する必要はない。
+
+ただし決定に使われるのは **トラック内の最初のサンプルエントリー** だけである。1 本の字幕トラックに複数の形式（たとえば `stpp` と `tx3g`）を混ぜて渡すと、`stsd` には両方が並ぶ一方で `hdlr` と `media_header` は先頭の形式のまま固定され、対応表と食い違う MP4 が生成される。エラーにもならないため、字幕トラック内の形式は 1 つに揃えること。
 
 ## サンプルペイロードの扱い方針
 
-本 crate は 3 形式とも **サンプルペイロードの内部構造をパースしない**。型付きで扱えるのはサンプルエントリー（`stpp` / `wvtt` / `tx3g` の各ボックス本体）までで、サンプルデータ自体（XML 本文・WebVTT cue ボックス列・tx3g のテキスト+modifier）は生バイト列としてのみ扱う。
+本 crate は 3 形式とも **サンプルペイロードの内部構造をパースしない**。型付きで扱えるのはサンプルエントリーとその子ボックス（`wvtt` の `vttC`、`tx3g` の `ftab` など）までで、サンプルデータ自体（XML 本文・WebVTT cue ボックス列・tx3g のテキスト + modifier）は生バイト列としてのみ扱う。
 
 用途を考えると:
 
@@ -69,19 +70,13 @@ XML パーサ / WebVTT パーサ / tx3g modifier パーサはそれぞれ独立�
 
 ## mux / demux の対応状況
 
-| コンポーネント | 字幕対応 |
-| --- | --- |
-| `Mp4FileMuxer` | 対応 |
-| `Fmp4SegmentMuxer` | 対応 |
-| `Mp4FileDemuxer` | 対応 |
-| `Fmp4FileDemuxer` | 対応 |
-| `Fmp4SegmentDemuxer` | 対応 |
+`Mp4FileMuxer` / `Fmp4SegmentMuxer` の両 muxer と、`Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 つの demuxer がいずれも字幕トラックに対応している。C API では `MP4_TRACK_KIND_SUBTITLE`、WASM の JSON API では `"subtitle"` として扱える。
 
 ## 利用側で意識すべきこと
 
 ### 同一 `TrackKind` は 1 本まで
 
-音声 / 映像 / 字幕はそれぞれ 1 トラックまでという制限を両 muxer に設けている。多言語字幕を同時 mux する用途は現時点で未対応。
+音声 / 映像 / 字幕はそれぞれ 1 トラックまでしか扱えない。同じ `TrackKind` のサンプルを別トラックのつもりで渡してもエラーにはならず、すべて 1 本のトラックに合流する。多言語字幕を同時に mux する用途は現時点で未対応。
 
 ### サンプル追加時の推奨値
 
@@ -90,63 +85,65 @@ XML パーサ / WebVTT パーサ / tx3g modifier パーサはそれぞれ独立�
 - `keyframe`: `true`（字幕サンプルは通常すべて独立サンプル）
 - `composition_time_offset`: `None`
 
+`keyframe` に `false` を渡すと `stbl` に同期サンプルの一覧（`stss`）が生成される。トラック内の全サンプルが `false` の場合は「同期サンプルが 1 つも存在しないトラック」を意味する空の `stss` が出力されてしまうため、字幕トラックでは `true` を指定すること。
+
 `timescale` と `duration` の意味は音声・映像トラックと同じで、実時間の尺は `duration / timescale` 秒。
 
 ### 字幕系 `compatible_brands` は自動追加しない
 
-`ftyp` の `compatible_brands` に `msubs` 等の字幕系ブランドを自動追加する処理は入れていない。必要であれば利用側で追加する。
+`ftyp` の `compatible_brands` に字幕向けのブランドを自動追加する処理は入れていない。両 muxer にはブランドを外から指定する API も無いため、追加したい場合は muxer を経由せずに `FtypBox` を直接組み立てる必要がある。
 
 ### 表示挙動はプレイヤー依存
 
-字幕トラックの表示位置・タイミング・スタイル解釈は最終的にプレイヤー側の実装に委ねられる。本 crate は MP4 コンテナ層での正しい配置と読み書きだけを保証する。
+字幕トラックの表示位置・タイミング・スタイル解釈は最終的にプレイヤー側の実装に委ねられる。本 crate が扱うのは MP4 コンテナ層での配置と読み書きまでである。
 
 ## 骨格コード例
 
-以下は `stpp` を例にした mux → demux の最小フロー。`Mp4FileMuxer` を使う場合の骨格を示す。
+以下は `stpp` を例にした `Mp4FileMuxer` での mux の骨格。
 
 ```rust
 use std::num::NonZeroU32;
+
 use shiguredo_mp4::{
     TrackKind, Utf8String,
     boxes::{SampleEntry, StppBox},
-    mux::{Mp4FileMuxer, Sample},
+    mux::{Mp4FileMuxer, MuxError, Sample},
 };
 
-// mux 側
-let mut muxer = Mp4FileMuxer::new()?;
-let mut output: Vec<u8> = muxer.initial_boxes_bytes().to_vec();
-let data_offset = output.len() as u64;
+fn mux_subtitle() -> Result<Vec<u8>, MuxError> {
+    let mut muxer = Mp4FileMuxer::new()?;
+    let mut output: Vec<u8> = muxer.initial_boxes_bytes().to_vec();
+    let data_offset = output.len() as u64;
 
-let payload: &[u8] = b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>";
-output.extend_from_slice(payload);
+    let payload: &[u8] = b"<tt xmlns=\"http://www.w3.org/ns/ttml\"/>";
+    output.extend_from_slice(payload);
 
-let sample = Sample {
-    track_kind: TrackKind::Subtitle,
-    sample_entry: Some(SampleEntry::Stpp(StppBox {
-        data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
-        namespace: Utf8String::new("http://www.w3.org/ns/ttml")?,
-        schema_location: Utf8String::EMPTY,
-        auxiliary_mime_types: Utf8String::EMPTY,
-        unknown_boxes: vec![],
-    })),
-    keyframe: true,
-    timescale: NonZeroU32::new(1000).expect("non-zero"),
-    duration: 1000,
-    composition_time_offset: None,
-    data_offset,
-    data_size: payload.len(),
-};
-muxer.append_sample(&sample)?;
-// 以降 finalize() の結果を書き戻して MP4 を完成させる
+    let sample = Sample {
+        track_kind: TrackKind::Subtitle,
+        sample_entry: Some(SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        })),
+        keyframe: true,
+        timescale: NonZeroU32::new(1000).expect("non-zero"),
+        duration: 1000,
+        composition_time_offset: None,
+        data_offset,
+        data_size: payload.len(),
+    };
+    muxer.append_sample(&sample)?;
 
-// demux 側
-let sample = demuxer.next_sample()?.expect("no sample");
-if let Some(SampleEntry::Stpp(_)) = sample.sample_entry {
-    // sample.data_offset / sample.data_size が XML 本文のバイト範囲
+    // 以降 finalize() の結果を output に書き戻して MP4 を完成させる
+    Ok(output)
 }
 ```
 
-`wvtt` / `tx3g` も基本の流れは同じで、`SampleEntry::Wvtt` / `SampleEntry::Tx3g` を組み立てて渡す。ボックスの詳細フィールドは rustdoc または `src/boxes_sample_entry.rs` を参照する。
+demux 側は `Mp4FileDemuxer::next_sample()` が返すサンプルの `sample_entry` が `SampleEntry::Stpp(_)` かどうかで字幕を判別でき、`data_offset` と `data_size` がサンプルペイロード（この例では XML 本文）のバイト範囲を指す。
+
+`wvtt` / `tx3g` も基本の流れは同じで、`SampleEntry::Wvtt` / `SampleEntry::Tx3g` を組み立てて渡す。ボックスの詳細フィールドは `StppBox` / `WvttBox` / `Tx3gBox` の rustdoc を参照する。
 
 ## 参考仕様
 

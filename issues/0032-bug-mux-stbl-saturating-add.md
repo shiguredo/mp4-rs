@@ -6,6 +6,7 @@
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-mux-stbl-saturating-add
 - Polished: 2026-07-20
+- Updated: 2026-07-27
 
 ## 目的
 
@@ -13,13 +14,13 @@
 
 ## 優先度根拠
 
-現実的に u32::MAX 個のチャンクは発生しないが、暗黙のデータ破壊よりも明示的なエラーが望ましい。CHANGES.md の同種修正（`append_sample` の u32 オーバーフロー、`build_video_trak_box` の i16 オーバーフロー）も同様に「現実的には起きない」が防御的に修正しており、本 issue もその方針と整合する。
+現実的に u32::MAX 個のチャンクは発生しないが、暗黙のデータ破壊よりも明示的なエラーが望ましい。CHANGES.md の同種修正（`append_sample` の u32 オーバーフロー、映像トラック解像度の i16 オーバーフロー）も同様に「現実的には起きない」が防御的に修正しており、本 issue もその方針と整合する。
 
 ## 現状
 
 `src/mux_mp4_file.rs` の `build_stbl_box` 内に 3 箇所:
 
-**1. `sample_description_index`（994 行目）**:
+**1. `sample_description_index`（1035 行目）**:
 
 ```rust
 let sample_description_index = sample_entries
@@ -31,7 +32,7 @@ let sample_description_index = sample_entries
 
 `idx as u32` も `usize` から `u32` への truncation リスクがある。
 
-**2. `first_chunk`（997 行目）**:
+**2. `first_chunk`（1038 行目）**:
 
 ```rust
 first_chunk: NonZeroU32::MIN.saturating_add(i as u32),
@@ -39,7 +40,7 @@ first_chunk: NonZeroU32::MIN.saturating_add(i as u32),
 
 `i as u32` も同様の truncation リスクがある。
 
-**3. `stss_box` の `sample_numbers`（1037 行目）**:
+**3. `stss_box` の `sample_numbers`（1078 行目）**:
 
 ```rust
 s.keyframe
@@ -48,15 +49,23 @@ s.keyframe
 
 ## 設計方針
 
-`saturating_add` を `checked_add` に置き換える。`checked_add` は `Option<NonZeroU32>` を返す（`saturating_add` は `NonZeroU32` を返す）。`None` の場合に `MuxError::Overflow` を返す。同ファイルの既存の `checked_add` オーバーフロー（522, 613, 1129 行目）が `MuxError::Overflow` を使用しているため、これと統一する。
+`saturating_add` を `checked_add` に置き換える。`checked_add` は `Option<NonZeroU32>` を返す（`saturating_add` は `NonZeroU32` を返す）。`None` の場合に `MuxError::Overflow` を返す。同ファイルの既存の `checked_add` オーバーフロー（538, 647, 1171 行目）が `MuxError::Overflow` を使用しているため、これと統一する。
 
-`i as u32` / `idx as u32` は `u32::try_from()` に置き換え、失敗時に `MuxError::EncodeError(Error::invalid_data("..."))` を返す。これは同ファイルの既存の `u32::try_from` 変換失敗（554, 859, 999 行目）と同じパターン。
+`i as u32` / `idx as u32` は `u32::try_from()` に置き換え、失敗時に `MuxError::EncodeError(Error::invalid_data("..."))` を返す。これは同ファイルの既存の `u32::try_from` 変換失敗（579, 1039 行目）や `i16::try_from` 変換失敗（943, 946 行目）と同じパターン。
 
 `stss_box` の `filter_map` はそのまま維持する。クロージャが `Option<Result<NonZeroU32, MuxError>>` を返せば、`filter_map` が `Option` を剥がして非キーフレームを除外し、残った `Result` を `collect::<Result<Vec<_>, _>>()` で集約できる。`map` への変更は不要。
 
+ただし現在の `sample_numbers` は `s.keyframe.then_some(...)`（1077-1078 行目）で eager 評価しているため、クロージャ内で `checked_add` / `u32::try_from` の失敗を扱うには `then(|| ...)` への変更が必要になる。
+
+### 0051 との編集順序
+
+`issues/0051-bug-empty-stss-box.md` は同じ `stss_box` 構築ブロック（`src/mux_mp4_file.rs:1067-1082`）を対象とする。扱う対象は異なる（0051 は `stss` を出力するか否か、本 issue は `sample_numbers` の要素値の計算）ため内容の重複は無いが、同じ範囲を書き換えるため後着側でコンフリクトする。
+
+本 issue が `filter_map` のクロージャを `Option<Result<...>>` に変えると、0051 の「`sample_numbers` が空なら `stss` を出さない」案は `collect::<Result<Vec<_>, _>>()?` の後に `is_empty()` を判定する形へ組み替える必要がある。着手順を先に決めること。
+
 ## 完了条件
 
-- 994・997・1037 行目の `saturating_add` が `checked_add` に置き換えられ、オーバーフロー時に `MuxError::Overflow` が返ること
+- 1035・1038・1078 行目の `saturating_add` が `checked_add` に置き換えられ、オーバーフロー時に `MuxError::Overflow` が返ること
 - `i as u32` / `idx as u32` が `u32::try_from()` に置き換えられ、変換失敗時に `MuxError::EncodeError` が返ること
 - オーバーフロー境界値の新規テストが追加されること（`u32::MAX` 個のチャンク生成は非現実的なため、`NonZeroU32::MIN.checked_add(u32::MAX)` が `None` を返すことの直接検証、または `build_stbl_box` の小さな入力での正常系テストで対応）
 - 既存のテストが通ること

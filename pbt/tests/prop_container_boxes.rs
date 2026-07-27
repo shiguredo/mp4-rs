@@ -1129,10 +1129,6 @@ mod boundary_tests {
     }
 
     /// stpp サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
-    ///
-    /// Fmp4SegmentMuxer 経由のヘルパは Mp4FileMuxer の initial_boxes_bytes /
-    /// append_sample / finalize の流れと異なるため直接再利用できない。
-    /// 統合テストの性質上、他ファイルのヘルパも直接再利用できないためコピーで関数内に展開する
     fn build_stpp_mp4_file_bytes() -> Vec<u8> {
         let sample_entry = SampleEntry::Stpp(StppBox {
             data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,

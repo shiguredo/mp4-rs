@@ -90,7 +90,9 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
     // - stts_box（時間-サンプル）: エントリあたり ~8 バイト
     // - stsc_box（サンプル-チャンク）: チャンクあたり ~12 バイト（通常はサンプルより少ない）
     // - stsz_box（サンプルサイズ）: サンプルあたり ~4 バイト
-    // - stss_box（同期サンプル）: キーフレームあたり ~4 バイト（最悪の場合はすべてキーフレーム）
+    // - stss_box（同期サンプル）: キーフレームあたり ~4 バイト
+    //   （全サンプルがキーフレームの場合は stss_box 自体が省略されるため、
+    //   最悪ケースは 1 サンプルだけが非キーフレームのとき）
     // - stco_box/co64_box（チャンクオフセット）: チャンクあたり ~8 バイト
     const BYTES_PER_SAMPLE: usize = 16;
 
@@ -396,10 +398,11 @@ struct Chunk {
 
 /// トラック種別ごとの [`Chunk`] 群とタイムスケールをまとめた内部エントリ
 ///
-/// `Fmp4SegmentMuxer::TrackEntry` と概念は同じだが、`Mp4FileMuxer` は
-/// フラグメント固有フィールド（`track_id` / `decode_time` /
-/// `current_sample_entry_index` / `sample_entries`）を必要としないため
-/// 別モジュール private の別型として定義する
+/// `mux_fmp4_segment` の同名 private 型と概念は同じだが、`Mp4FileMuxer` は
+/// フラグメント固有のフィールド（`decode_time` / `current_sample_entry_index`）を持たない。
+/// また `track_id` とサンプルエントリー一覧は保持せず、
+/// それぞれ `build_moov_box` と `build_stbl_box` が構築時に `chunks` から導出する。
+/// そのため両者は共通化せず、モジュール private の別型として定義する
 #[derive(Debug, Clone)]
 struct TrackEntry {
     track_kind: TrackKind,
@@ -546,12 +549,14 @@ impl Mp4FileMuxer {
     ///
     /// エラー種別ごとに `self` に残る副作用は以下:
     ///
-    /// - [`MuxError::PositionMismatch`] / [`MuxError::EncodeError`]（`data_size` の `u32::MAX` 超過）/
+    /// - [`MuxError::AlreadyFinalized`] / [`MuxError::PositionMismatch`] /
+    ///   [`MuxError::EncodeError`]（`data_size` の `u32::MAX` 超過）/
     ///   [`MuxError::MissingSampleEntry`] / [`MuxError::TimescaleMismatch`]:
-    ///   `self` の内部状態は完全に不変となる。呼び出し側は内容を補正したサンプルで再呼び出しできる
-    /// - [`MuxError::Overflow`]（`next_position` の加算オーバーフロー）:
-    ///   `self.tracks` への `TrackEntry` / `Chunk` / サンプル metadata の push が完了したまま残る。
-    ///   `next_position` / `last_sample_kind` は未更新となる
+    ///   内部状態は完全に不変となる。呼び出し側は内容を補正したサンプルで再呼び出しできる
+    /// - [`MuxError::Overflow`]（次の書き込み位置の加算オーバーフロー）:
+    ///   このサンプルの登録は完了した状態で残り、次の書き込み位置だけが未更新となる。
+    ///   同じサンプルで再呼び出しすると二重に登録されるため、
+    ///   このエラーを受け取った [`Mp4FileMuxer`] は復旧できないものとして破棄すること
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
@@ -621,9 +626,9 @@ impl Mp4FileMuxer {
         Ok(())
     }
 
-    /// 指定した [`TrackKind`] の [`TrackEntry`] を返す（無ければ新規に push する）
+    /// 指定した [`TrackKind`] の [`TrackEntry`] の位置を返す（無ければ新規に追加する）
     ///
-    /// 既存 entry がある場合は `timescale` の一致を検証し、不一致なら
+    /// 既存の entry がある場合は `timescale` の一致を検証し、不一致なら
     /// [`MuxError::TimescaleMismatch`] を返す
     fn ensure_track_entry(
         &mut self,
@@ -658,8 +663,10 @@ impl Mp4FileMuxer {
             return false;
         };
 
-        // 早期リターンを通過している場合 find は Some になる想定だが、
-        // Rust の型システム上 Option を経由するため防御的に unwrap_or(true) で扱う
+        // 上の早期リターンを通過している時点で該当トラックは必ず存在するが、
+        // 型システム上は Option を経由する。
+        // 仮に存在しなかったとしても「まだチャンクが無い = 新規チャンクが必要」が正しいので、
+        // 既定値には true を使う
         self.tracks
             .iter()
             .find(|t| t.track_kind == sample.track_kind)
@@ -815,8 +822,12 @@ impl Mp4FileMuxer {
     fn build_moov_box(&self) -> Result<MoovBox, MuxError> {
         let mut trak_boxes = Vec::new();
 
-        // 空 chunks の TrackEntry はスキップする（MissingSampleEntry エラー等で
-        // TrackEntry だけ push された状態でも 0 trak の MP4 を生成できるようにする）
+        // 空 chunks の TrackEntry はスキップする
+        //
+        // append_sample() はサンプルエントリーの解決を ensure_track_entry() よりも前に行うため、
+        // chunks が空のままの TrackEntry は現状の実装では生成されない。
+        // ここは将来その不変条件が崩れたときに不正な trak を出力しないための防御であり、
+        // 現時点で実際にスキップされる要素は無い
         for entry in self.tracks.iter().filter(|t| !t.chunks.is_empty()) {
             let track_id = trak_boxes.len() as u32 + 1;
             trak_boxes.push(self.build_trak_box(entry, track_id)?);
@@ -845,9 +856,10 @@ impl Mp4FileMuxer {
 
     /// 指定した [`TrackEntry`] から `trak` ボックスを構築する
     ///
-    /// `entry.chunks` が非空であることを不変条件として要求する。
-    /// 空 chunks で呼ばれた場合は `expect` で panic する。
-    /// 呼び出し側の [`Self::build_moov_box`] が空 chunks の [`TrackEntry`] をスキップしている
+    /// `entry.chunks` が非空であることを不変条件として要求する
+    /// （空の場合は `derive_trak_derivation` 内の `expect` で panic する）。
+    /// 呼び出し側の `build_moov_box` が空 chunks の [`TrackEntry`] をスキップしているため、
+    /// この不変条件は常に満たされる
     fn build_trak_box(&self, entry: &TrackEntry, track_id: u32) -> Result<TrakBox, MuxError> {
         let total_duration = entry
             .chunks
@@ -891,7 +903,7 @@ impl Mp4FileMuxer {
         let first_sample_entry = &entry
             .chunks
             .first()
-            .expect("bug: build_trak_box called with empty chunks")
+            .expect("bug: derive_trak_derivation called with empty chunks")
             .sample_entry;
 
         match entry.track_kind {
@@ -1061,10 +1073,10 @@ impl Mp4FileMuxer {
 
     /// 正規化した尺（実時間）が最長のトラックの `(timescale, duration)` を返す
     ///
-    /// 空 `self.tracks` 時は `(NonZeroU32::MIN, 0)` を返す。
-    /// この関数の返り値は [`Self::build_moov_box`] 内で `mvhd_box.timescale` /
-    /// `mvhd_box.duration` に埋め込まれるが、空 tracks 時は `trak_boxes` も
-    /// 空になるため任意の初期値で足りる
+    /// 正規化した尺が同着の場合は、先に [`Self::append_sample`] されたトラックを採用する。
+    ///
+    /// トラックが 1 つも無い場合は `(NonZeroU32::MIN, 0)` を返す
+    /// （このとき `trak` ボックスも 0 個になるため、`mvhd` に入る値は任意でよい）
     fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
         let mut best: Option<(NonZeroU32, u64, Duration)> = None;
         for track in &self.tracks {
@@ -1264,12 +1276,13 @@ mod tests {
         ));
     }
 
-    /// MissingSampleEntry エラー返却時に self.tracks が完全に不変であることを検証するテスト
+    /// MissingSampleEntry エラーの返却がトラック状態に副作用を残さないことを検証するテスト
     ///
-    /// 汎用構造化前は kind ごとの match arm で timescale だけ先に記録されていたため、
-    /// 次のサンプルで別 timescale を渡すと TimescaleMismatch が返ってしまっていた。
-    /// 汎用構造化後はサンプルエントリーの解決を ensure_track_entry より前に行うため、
-    /// MissingSampleEntry 後でも別 timescale の Sample を投入できる
+    /// append_sample() はサンプルエントリーの解決を ensure_track_entry() よりも前に行うため、
+    /// MissingSampleEntry で失敗したサンプルの timescale は記録されない。
+    /// これを公開 API から観測できる形として、
+    /// 失敗した直後に別の timescale のサンプルを投入しても
+    /// TimescaleMismatch にならずに受理されることを確認する
     #[test]
     fn test_missing_sample_entry_error_leaves_tracks_unchanged() {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");

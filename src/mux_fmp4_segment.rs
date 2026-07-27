@@ -127,7 +127,7 @@ struct ResolvedSegmentSample {
 
 /// fMP4 ファイルを生成するマルチプレックス処理を行うための構造体
 ///
-/// この構造体は、複数のメディアトラック（音声・映像）からのサンプルを
+/// この構造体は、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 ///  fMP4 形式の初期化セグメントとメディアセグメントに変換する。
 ///
 /// [`crate::mux::Mp4FileMuxer`] と同様に、サンプルごとに `track_kind` / `timescale` /
@@ -935,11 +935,12 @@ fn ensure_track_entry(
 /// tkhd の `width` / `height` を表す固定小数点数のペア型エイリアス
 type TkhdDimensions = (FixedPointNumber<i16, u16>, FixedPointNumber<i16, u16>);
 
-/// `build_init_trak` 内で `entry.track_kind` から派生する属性群
+/// `track_kind` から派生する `trak` の属性群
 ///
 /// tkhd の volume / width / height、ハンドラー種別、メディアヘッダーはすべて
-/// トラック種別ごとに決まる。3 箇所で個別に match するのを避け、決定表として
-/// 1 つの構造体に集約する
+/// トラック種別ごとに決まる。使用箇所ごとに個別に match するのを避け、
+/// 決定表として 1 つの構造体に集約する。
+/// [`Fmp4SegmentMuxer`] と [`crate::mux::Mp4FileMuxer`] の両方から利用する
 pub(crate) struct TrakDerivation {
     pub(crate) volume: FixedPointNumber<i8, u8>,
     pub(crate) width: FixedPointNumber<i16, u16>,

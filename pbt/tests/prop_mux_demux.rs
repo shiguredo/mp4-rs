@@ -1001,6 +1001,8 @@ proptest! {
     }
 
     /// advance_position を使用したビデオ + オーディオの Mux → Demux roundtrip
+    ///
+    /// あわせて moov ボックスの `mvhd` / `tkhd` / `mdhd` の尺の整合も検証する
     #[test]
     fn mux_demux_video_audio_with_advance_position_roundtrip(
         width in 16u16..1920,
@@ -1094,25 +1096,24 @@ proptest! {
 
         // moov ボックスの尺に関する不変条件を検証する
         //
-        // このテストは音声と映像の timescale を独立に生成するため、両者が食い違う入力が普通に現れる。
-        // そのとき `tkhd` の duration を `mdhd` の timescale 単位のまま書くと、
-        // `mvhd` の timescale 単位として解釈されて誤った尺になる。
-        // demuxer は尺として `mdhd` しか読まないので、この不整合は
+        // このテストは音声と映像の `timescale` を独立に生成するため、両者が食い違う入力が普通に現れる。
+        // demuxer は尺として `mdhd` しか読まないので、`tkhd` の単位の誤りは
         // mux → demux のラウンドトリップでは検出できない。そのため moov ボックスを直接検証する
         let moov_box = finalized.moov_box();
         let movie_timescale = moov_box.mvhd_box.timescale.get() as u128;
+        // `expected_video` は (keyframe, duration, data_size)、`expected_audio` は (duration, data_size)
         let expected_video_duration = expected_video.iter().map(|s| s.1 as u64).sum::<u64>();
         let expected_audio_duration = expected_audio.iter().map(|s| s.0 as u64).sum::<u64>();
 
         for trak_box in &moov_box.trak_boxes {
-            // トラックの種別はハンドラー種別で判別する
+            // moov を直接見ているため demuxer の `TrackKind` が使えず、ハンドラー種別で判別する
             let (expected_timescale, expected_duration) = match trak_box.mdia_box.hdlr_box.handler_type {
                 HdlrBox::HANDLER_TYPE_VIDE => (video_timescale, expected_video_duration),
                 HdlrBox::HANDLER_TYPE_SOUN => (audio_timescale, expected_audio_duration),
                 _ => unreachable!("音声・映像以外のトラックは本テストの対象外"),
             };
 
-            // `mdhd` の duration はそのトラックの timescale 単位なので、入力した値がそのまま入る
+            // `mdhd` の `duration` はそのトラックの `timescale` 単位なので、入力した値がそのまま入る
             let mdhd_box = &trak_box.mdia_box.mdhd_box;
             prop_assert_eq!(
                 mdhd_box.timescale, expected_timescale,
@@ -1123,7 +1124,7 @@ proptest! {
                 "mdhd の duration が入力サンプルの尺の合計と一致しない"
             );
 
-            // `tkhd` の duration は `mvhd` の timescale 単位なので、`mdhd` の尺を切り上げ換算した値になる
+            // `tkhd` の `duration` は `mvhd` の `timescale` 単位なので、`mdhd` の尺を切り上げ換算した値になる
             let expected_tkhd_duration = u64::try_from(
                 (mdhd_box.duration as u128 * movie_timescale)
                     .div_ceil(mdhd_box.timescale.get() as u128),

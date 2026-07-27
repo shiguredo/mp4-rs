@@ -4,7 +4,7 @@ use core::num::NonZeroU32;
 
 use crate::{
     BoxType, Either,
-    boxes::{CttsBox, SampleEntry, StblBox, StscBox, StscEntry, StszBox},
+    boxes::{CttsBox, SampleEntry, StblBox, StscBox, StscEntry, StszBox, SttsBox},
 };
 
 /// [`StblBox`] をラップして、その中の情報を簡単かつ効率的に取り出せるようにするための構造体
@@ -23,12 +23,25 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
     /// 引数で渡された [`StblBox`] 用の [`SampleTableAccessor`] インスタンスを生成する
     pub fn new(stbl_box: T) -> Result<Self, SampleTableAccessorError> {
         let stbl_box_ref = stbl_box.as_ref();
-        let mut sample_count = 0;
+        let mut sample_count: u32 = 0;
         let mut sample_durations = Vec::new();
         let mut acc_duration = 0;
         for entry in &stbl_box_ref.stts_box.entries {
             sample_durations.push((sample_count, entry.sample_delta, acc_duration));
-            sample_count += entry.sample_count;
+            sample_count = sample_count.checked_add(entry.sample_count).ok_or(
+                SampleTableAccessorError::SampleCountOverflow {
+                    box_type: SttsBox::TYPE,
+                    accumulated_sample_count: sample_count,
+                    entry_sample_count: entry.sample_count,
+                },
+            )?;
+            // acc_duration は checked_add にしない。
+            // 直前の sample_count の加算を checked_add にして overflow で即 Err を返すため、
+            // ここに到達した時点で常に Σ sample_count <= u32::MAX が保証される。
+            // このとき acc_duration <= (2^32 - 1) * (2^32 - 1) = 18446744065119617025 < u64::MAX
+            // となり、原理的に overflow しない。checked_add を入れると到達不能な Err 分岐になる。
+            // この不変条件は sample_count の加算を acc_duration の加算より先に行うことに
+            // 依存しているため、2 つの加算の順序自体が仕様である。
             acc_duration += entry.sample_delta as u64 * entry.sample_count as u64;
         }
 
@@ -44,11 +57,17 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
         }
 
         let sample_composition_offsets = if let Some(ctts_box) = &stbl_box_ref.ctts_box {
-            let mut ctts_sample_count = 0;
+            let mut ctts_sample_count: u32 = 0;
             let mut sample_composition_offsets = Vec::new();
             for entry in &ctts_box.entries {
                 sample_composition_offsets.push((ctts_sample_count, entry.sample_offset));
-                ctts_sample_count += entry.sample_count;
+                ctts_sample_count = ctts_sample_count.checked_add(entry.sample_count).ok_or(
+                    SampleTableAccessorError::SampleCountOverflow {
+                        box_type: CttsBox::TYPE,
+                        accumulated_sample_count: ctts_sample_count,
+                        entry_sample_count: entry.sample_count,
+                    },
+                )?;
             }
             if ctts_sample_count != sample_count {
                 return Err(SampleTableAccessorError::InconsistentSampleCount {
@@ -152,7 +171,13 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             let mut offset = chunk.offset();
             for sample in chunk.samples() {
                 sample_data_offsets.push(offset);
-                offset += sample.data_size() as u64;
+                offset = offset.checked_add(sample.data_size() as u64).ok_or(
+                    SampleTableAccessorError::SampleDataOffsetOverflow {
+                        sample_index: sample.index(),
+                        accumulated_offset: offset,
+                        sample_data_size: sample.data_size(),
+                    },
+                )?;
             }
         }
         this.sample_data_offsets = sample_data_offsets;
@@ -292,6 +317,33 @@ pub enum SampleTableAccessorError {
         /// チャンク数
         chunk_count: u32,
     },
+
+    /// サンプル数の累計が [`u32`] の範囲を超えた
+    SampleCountOverflow {
+        /// overflow が発生したボックスの種別（`stts` ないし `ctts`）
+        box_type: BoxType,
+
+        /// overflow 直前までの累計サンプル数
+        accumulated_sample_count: u32,
+
+        /// 加算しようとしたエントリのサンプル数
+        entry_sample_count: u32,
+    },
+
+    /// サンプルデータのバイト位置の累計が [`u64`] の範囲を超えた
+    SampleDataOffsetOverflow {
+        /// オフセットの累計が overflow した時点で処理していたサンプルのインデックス
+        ///
+        /// このサンプル自身の開始位置は正常に算出できており、overflow するのはその終端位置
+        /// （同じチャンク内に後続サンプルがあれば、その開始位置になる値）の計算である。
+        sample_index: NonZeroU32,
+
+        /// overflow 直前までの累計バイト位置（このサンプルの開始位置）
+        accumulated_offset: u64,
+
+        /// 加算しようとしたサンプルのデータサイズ
+        sample_data_size: u32,
+    },
 }
 
 impl core::fmt::Display for SampleTableAccessorError {
@@ -340,6 +392,26 @@ impl core::fmt::Display for SampleTableAccessorError {
                 write!(
                     f,
                     "Chunks exist ({chunk_count} chunks) but stsc has no entries"
+                )
+            }
+            SampleTableAccessorError::SampleCountOverflow {
+                box_type,
+                accumulated_sample_count,
+                entry_sample_count,
+            } => {
+                write!(
+                    f,
+                    "Total sample count in `{box_type}` box overflows u32 (accumulated {accumulated_sample_count}, adding {entry_sample_count})"
+                )
+            }
+            SampleTableAccessorError::SampleDataOffsetOverflow {
+                sample_index,
+                accumulated_offset,
+                sample_data_size,
+            } => {
+                write!(
+                    f,
+                    "Sample data offset overflows u64 at sample {sample_index} (accumulated {accumulated_offset}, adding {sample_data_size})"
                 )
             }
         }

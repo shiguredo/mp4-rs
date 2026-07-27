@@ -11,8 +11,10 @@
 
 ## develop
 
-- [CHANGE] `Mp4FileMuxer::finalize()` で生成される MP4 の trak_box 出力順を変える
-  - これまでは 音声 → 映像 の固定順だったが、`append_sample` 呼び出し順（先に登場した `TrackKind` が先）に変わる
+- [CHANGE] `Mp4FileMuxer::finalize()` が生成する `moov` ボックスのトラック順と `mvhd` の値を変える
+  - `trak` ボックスの出力順が「音声 → 映像」の固定順から `append_sample()` の呼び出し順（先に登場した `TrackKind` が先）に変わる
+  - あわせて `tkhd` の `track_id` の割り当ても変わる（これまでは音声トラックが常に 1 だった）
+  - 正規化した尺が同着のトラックが複数ある場合に `mvhd` の `timescale` と `duration` へ採用されるトラックが変わる（これまでは常に音声だった）
   - @sile
 - [CHANGE] `SampleEntry` に `Tx3g` バリアントを追加する
   - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
@@ -35,8 +37,6 @@
   - @sile
 - [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
   - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
-  - @sile
-- [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
@@ -64,16 +64,18 @@
   - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)
   - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
   - @sile
-- [ADD] 字幕トラックの mux / demux 経路を追加する
-  - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両 muxer で `TrackKind::Subtitle` を受け入れ、`stpp` / `wvtt` / `tx3g` を含む字幕トラックを mux できる
+- [ADD] 字幕トラックのマルチプレックス / デマルチプレックス経路を追加する
+  - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両方で `TrackKind::Subtitle` を受け入れ、`stpp` / `wvtt` / `tx3g` を含む字幕トラックをマルチプレックスできる
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
+  - @sile
+- [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
   - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった
   - `u32::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - 同様に `build_stbl_box` 内の `sample_per_chunk` でも `c.samples.len()` の `u32` 暗黙キャストを防御する
   - @voluntas
-- [FIX] `Mp4FileMuxer` の `build_video_trak_box()` で映像解像度の幅と高さが `i16::MAX` を超える場合にエラーを返すようにする
+- [FIX] `Mp4FileMuxer` で映像トラックの解像度の幅と高さが `i16::MAX` を超える場合にエラーを返すようにする
   - これまでは `u16` から `i16` への暗黙キャストで符号が反転し、`tkhd` の `width` / `height` が負の値になる可能性があった
   - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - @voluntas

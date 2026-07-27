@@ -310,7 +310,7 @@ proptest! {
 
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let timescale = NonZeroU32::new(timescale).unwrap_or(NonZeroU32::MIN);
+        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
         let mut sample_entry = Some(create_avc1_sample_entry(width, height));
@@ -373,7 +373,7 @@ proptest! {
     ) {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let timescale = NonZeroU32::new(timescale).unwrap_or(NonZeroU32::MIN);
+        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
         let mut sample_entry = Some(create_opus_sample_entry(channel_count));
@@ -434,7 +434,7 @@ proptest! {
     ) {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let timescale = NonZeroU32::new(timescale).unwrap_or(NonZeroU32::MIN);
+        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
         let mut sample_entry = Some(create_stpp_sample_entry());
@@ -613,8 +613,8 @@ proptest! {
 
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let video_timescale = NonZeroU32::new(30).unwrap();
-        let audio_timescale = NonZeroU32::new(48000).unwrap();
+        let video_timescale = NonZeroU32::new(30).expect("30 は非ゼロ");
+        let audio_timescale = NonZeroU32::new(48000).expect("48000 は非ゼロ");
 
         let mut total_data_size = 0usize;
 
@@ -911,7 +911,7 @@ proptest! {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let initial_len = muxer.initial_boxes_bytes().len() as u64;
         let mut data_offset = initial_len;
-        let timescale = NonZeroU32::new(timescale).unwrap_or(NonZeroU32::MIN);
+        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 
         let mut sample_entry = Some(create_avc1_sample_entry(width, height));
         let mut expected_samples = Vec::new();
@@ -1004,8 +1004,10 @@ proptest! {
 
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let video_timescale = NonZeroU32::new(video_timescale).unwrap_or(NonZeroU32::MIN);
-        let audio_timescale = NonZeroU32::new(audio_timescale).unwrap_or(NonZeroU32::MIN);
+        let video_timescale =
+            NonZeroU32::new(video_timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+        let audio_timescale =
+            NonZeroU32::new(audio_timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 
         let mut video_entry = Some(create_avc1_sample_entry(width, height));
         let mut audio_entry = Some(create_opus_sample_entry(channel_count));
@@ -1136,7 +1138,7 @@ mod boundary_tests {
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(640, 480)),
             keyframe: true,
-            timescale: NonZeroU32::new(30).unwrap(),
+            timescale: NonZeroU32::new(30).expect("30 は非ゼロ"),
             duration: 1,
             composition_time_offset: None,
             data_offset,
@@ -1180,7 +1182,7 @@ mod boundary_tests {
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(1920, 1080)),
             keyframe: true,
-            timescale: NonZeroU32::new(30).unwrap(),
+            timescale: NonZeroU32::new(30).expect("30 は非ゼロ"),
             duration: 1,
             composition_time_offset: None,
             data_offset,
@@ -1267,7 +1269,7 @@ mod estimate_moov_size_tests {
                     track_kind: TrackKind::Video,
                     sample_entry: video_entry.take(),
                     keyframe: true,
-                    timescale: NonZeroU32::new(30).unwrap(),
+                    timescale: NonZeroU32::new(30).expect("30 は非ゼロ"),
                     duration: 1,
                     composition_time_offset: None,
                     data_offset,
@@ -1284,7 +1286,7 @@ mod estimate_moov_size_tests {
                     track_kind: TrackKind::Audio,
                     sample_entry: audio_entry.take(),
                     keyframe: false,
-                    timescale: NonZeroU32::new(48000).unwrap(),
+                    timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
                     duration: 960,
                     composition_time_offset: None,
                     data_offset,

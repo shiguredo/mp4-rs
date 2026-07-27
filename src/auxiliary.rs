@@ -28,6 +28,13 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
         let mut acc_duration = 0;
         for entry in &stbl_box_ref.stts_box.entries {
             sample_durations.push((sample_count, entry.sample_delta, acc_duration));
+            // sample_count は checked_add でオーバーフロー時に Err を返し、
+            // acc_duration は通常の += で加算する。
+            // sample_count の checked_add により Σ sample_count <= u32::MAX が保証され、
+            // acc_duration <= (2^32 - 1) * (2^32 - 1) = 18446744065119617025 < u64::MAX
+            // が成り立つため、acc_duration の加算はオーバーフローしない。
+            // この関係は sample_count の加算を acc_duration の加算より先に行うことに
+            // 依存するため、2 つの加算の順序自体が仕様である。
             sample_count = sample_count.checked_add(entry.sample_count).ok_or(
                 SampleTableAccessorError::SampleCountOverflow {
                     box_type: SttsBox::TYPE,
@@ -35,13 +42,6 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                     entry_sample_count: entry.sample_count,
                 },
             )?;
-            // acc_duration は checked_add にしない。
-            // 直前の sample_count の加算を checked_add にして overflow で即 Err を返すため、
-            // ここに到達した時点で常に Σ sample_count <= u32::MAX が保証される。
-            // このとき acc_duration <= (2^32 - 1) * (2^32 - 1) = 18446744065119617025 < u64::MAX
-            // となり、原理的に overflow しない。checked_add を入れると到達不能な Err 分岐になる。
-            // この不変条件は sample_count の加算を acc_duration の加算より先に行うことに
-            // 依存しているため、2 つの加算の順序自体が仕様である。
             acc_duration += entry.sample_delta as u64 * entry.sample_count as u64;
         }
 
@@ -320,10 +320,10 @@ pub enum SampleTableAccessorError {
 
     /// サンプル数の累計が [`u32`] の範囲を超えた
     SampleCountOverflow {
-        /// overflow が発生したボックスの種別（`stts` ないし `ctts`）
+        /// オーバーフローが発生したボックスの種別（`stts` ないし `ctts`）
         box_type: BoxType,
 
-        /// overflow 直前までの累計サンプル数
+        /// オーバーフロー直前までの累計サンプル数
         accumulated_sample_count: u32,
 
         /// 加算しようとしたエントリのサンプル数
@@ -332,13 +332,13 @@ pub enum SampleTableAccessorError {
 
     /// サンプルデータのバイト位置の累計が [`u64`] の範囲を超えた
     SampleDataOffsetOverflow {
-        /// オフセットの累計が overflow した時点で処理していたサンプルのインデックス
+        /// オフセットの累計がオーバーフローした時点で処理していたサンプルのインデックス
         ///
-        /// このサンプル自身の開始位置は正常に算出できており、overflow するのはその終端位置
+        /// このサンプル自身の開始位置は正常に算出できており、オーバーフローするのはその終端位置
         /// （同じチャンク内に後続サンプルがあれば、その開始位置になる値）の計算である。
         sample_index: NonZeroU32,
 
-        /// overflow 直前までの累計バイト位置（このサンプルの開始位置）
+        /// オーバーフロー直前までの累計バイト位置（このサンプルの開始位置）
         accumulated_offset: u64,
 
         /// 加算しようとしたサンプルのデータサイズ

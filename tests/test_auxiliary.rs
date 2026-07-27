@@ -1,4 +1,4 @@
-//! `SampleTableAccessor::new()` の overflow 検出に関する回帰テスト
+//! `SampleTableAccessor::new()` のオーバーフロー検出に関する回帰テスト
 //!
 //! `SampleTableAccessorError` の `SampleCountOverflow` / `SampleDataOffsetOverflow`
 //! バリアントが期待通りの値で返ることを、公開 API のみを使って検証する。
@@ -75,11 +75,11 @@ fn stts_sample_count_overflow_returns_error() {
     assert_eq!(
         box_type,
         SttsBox::TYPE,
-        "overflow したボックス種別が stts であること"
+        "オーバーフローしたボックス種別が stts であること"
     );
     assert_eq!(
         accumulated_sample_count, 0x8000_0000,
-        "overflow 直前の累計サンプル数が 0x8000_0000 であること"
+        "オーバーフロー直前の累計サンプル数が 0x8000_0000 であること"
     );
     assert_eq!(
         entry_sample_count, 0x8000_0000,
@@ -139,11 +139,11 @@ fn ctts_sample_count_overflow_returns_error() {
     assert_eq!(
         box_type,
         CttsBox::TYPE,
-        "overflow したボックス種別が ctts であること"
+        "オーバーフローしたボックス種別が ctts であること"
     );
     assert_eq!(
         accumulated_sample_count, 0x8000_0000,
-        "overflow 直前の累計サンプル数が 0x8000_0000 であること"
+        "オーバーフロー直前の累計サンプル数が 0x8000_0000 であること"
     );
     assert_eq!(
         entry_sample_count, 0x8000_0000,
@@ -154,7 +154,7 @@ fn ctts_sample_count_overflow_returns_error() {
 /// サンプルデータのオフセット累計が u64 を超えるケース（1 チャンク 3 サンプル）
 ///
 /// 3 サンプル目の直前で `chunk_offsets[0] + サイズ 1 + サイズ 1 = u64::MAX` となり、
-/// そこにさらに 1 を足す 2 サンプル目末尾の加算が overflow する。
+/// そこにさらに 1 を足す 2 サンプル目末尾の加算がオーバーフローする。
 /// このとき `sample_index` は 2 で、3 サンプル目に格納されるはずだった値が失われる。
 #[test]
 fn sample_data_offset_overflow_multi_sample_chunk() {
@@ -199,12 +199,12 @@ fn sample_data_offset_overflow_multi_sample_chunk() {
     assert_eq!(
         sample_index,
         NonZeroU32::new(2).expect("bug"),
-        "overflow 時点のサンプルインデックスが 2 であること"
+        "オーバーフロー時点のサンプルインデックスが 2 であること"
     );
     assert_eq!(
         accumulated_offset,
         u64::MAX,
-        "overflow 直前の累計バイト位置が u64::MAX であること"
+        "オーバーフロー直前の累計バイト位置が u64::MAX であること"
     );
     assert_eq!(
         sample_data_size, 1,
@@ -216,7 +216,7 @@ fn sample_data_offset_overflow_multi_sample_chunk() {
 ///
 /// 唯一のサンプルの値はすべて正常に算出され、`sample_data_offsets` に格納される
 /// のは `u64::MAX` の 1 値のみ。その直後、次サンプル用の開始位置を求めるための
-/// 末尾の加算が overflow する。この「格納は正常だが末尾の加算だけ overflow」の
+/// 末尾の加算がオーバーフローする。この「格納は正常だが末尾の加算だけオーバーフロー」の
 /// ケースでも `Err` を返すのが仕様である。
 #[test]
 fn sample_data_offset_overflow_single_sample_chunk_tail() {
@@ -266,7 +266,7 @@ fn sample_data_offset_overflow_single_sample_chunk_tail() {
     assert_eq!(
         accumulated_offset,
         u64::MAX,
-        "overflow 直前の累計バイト位置が u64::MAX であること"
+        "オーバーフロー直前の累計バイト位置が u64::MAX であること"
     );
     assert_eq!(
         sample_data_size, 1,

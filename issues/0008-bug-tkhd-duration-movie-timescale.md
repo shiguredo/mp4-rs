@@ -213,11 +213,15 @@ fn convert_duration_to_movie_timescale(
 
 `## develop` にある既存 `[FIX]` 群の末尾（`### misc` の直前）に記載する（担当者行 `- @ユーザー名` は実装時に補う）。
 
-- [FIX] `Mp4FileMuxer` が生成する `tkhd` の `duration` を `mvhd` の `timescale` 単位で書くように修正する
-  - これまでは `mdhd` の `timescale` 単位の値をそのまま書いていた
-  - 音声と映像で `timescale` が異なる場合に、`tkhd` の `duration` を参照するプレイヤーでトラックの尺が誤って解釈され、サンプルが途中で打ち切られることがあった
+- [FIX] `Mp4FileMuxer` が生成した MP4 で、`timescale` の異なるトラックのサンプルが途中で打ち切られる問題を修正する
+  - `tkhd` の `duration` を `mdhd` の `timescale` 単位のまま書いていたため、`tkhd` の `duration` を参照するプレイヤーがトラックの尺を誤って解釈していた
+  - `mvhd` の `timescale` 単位へ切り上げて換算するように変更した
   - @ユーザー名
 
-`CHANGES.md` には特定のフレームワーク名（AVFoundation 等）を書かない。実測はそこで行ったが、原因は仕様と異なる単位で書いていたことであり、影響は `tkhd.duration` を参照する実装全般に及ぶためである。仕様要素は `mvhd` / `mdhd` / `timescale` のようにボックスとフィールドを名指しし、説明文は日本語で書く。
+エントリの書き方について。
+
+- **タイトルには利用者から見た影響を書く**。「`tkhd` の `duration` を `mvhd` の `timescale` 単位にする」では内部の変更内容しか伝わらず、自分の生成した MP4 が壊れていたのかどうかを読み手が判断できない。何が起きていたか（サンプルが途中で打ち切られる）をタイトルに出し、原因と対処は子項目に回す
+- **特定のフレームワーク名（AVFoundation 等）は書かない**。実測はそこで行ったが、原因は仕様と異なる単位で書いていたことであり、影響は `tkhd.duration` を参照する実装全般に及ぶため
+- **仕様要素は `mvhd` / `mdhd` / `timescale` のようにボックスとフィールドを名指しする**。「movie timescale」のような中途半端な英語や、「ムービーのタイムスケール」のような訳語を使わない。説明文自体は日本語で書く
 
 正当な入力に対して出力バイト列が変わる修正だが、仕様違反の是正なので `[CHANGE]` ではなく `[FIX]` とする（`CHANGES.md` の「Mp4FileMuxer が使用した SampleEntry に応じて ftyp の compatible brands を更新する」と同じ扱い）。

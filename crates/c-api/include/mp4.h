@@ -227,7 +227,7 @@ typedef struct Mp4FileDemuxer Mp4FileDemuxer;
 typedef struct Mp4FileKindDetector Mp4FileKindDetector;
 
 /**
- * メディアトラック（音声・映像）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
+ * メディアトラック（音声・映像・字幕）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
  *
  * # 関連関数
  *
@@ -366,7 +366,7 @@ typedef struct Mp4DemuxTrackInfo {
    */
   uint32_t track_id;
   /**
-   * トラックの種類（音声または映像）
+   * トラックの種類（音声・映像・字幕）
    */
   enum Mp4TrackKind kind;
   /**
@@ -977,7 +977,7 @@ typedef union Mp4SampleEntryData {
 /**
  * MP4 サンプルエントリー
  *
- * MP4 ファイル内で使用されるメディアサンプル（フレーム単位の音声または映像データ）の
+ * MP4 ファイル内で使用されるメディアサンプル（フレーム単位の音声・映像・字幕データ）の
  * 詳細情報を保持する構造体
  *
  * 各サンプルはコーデック種別ごとに異なる詳細情報を持つため、
@@ -1031,7 +1031,7 @@ typedef struct Mp4SampleEntry {
 /**
  * MP4 デマルチプレックス処理によって抽出されたメディアサンプルを表す構造体
  *
- * MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）のメタデータと
+ * MP4 ファイル内の各サンプル（フレーム単位の音声・映像・字幕データ）のメタデータと
  * ファイル内の位置情報を保持する
  *
  * この構造体が参照しているポインタのメモリ管理は各 demuxer が行っており、
@@ -1173,6 +1173,11 @@ typedef struct Fmp4SegmentSample {
 
 /**
  * MP4 ファイルに追加（マルチプレックス）するメディアサンプルを表す構造体
+ *
+ * 字幕トラック（`MP4_TRACK_KIND_SUBTITLE`）の場合、以下の値の指定を推奨する。
+ *
+ * - `keyframe` = `true`（字幕サンプルは通常すべて独立サンプル）
+ * - `has_composition_time_offset` = `false`
  *
  * # 使用例
  *
@@ -1490,7 +1495,7 @@ enum Mp4Error mp4_file_demuxer_handle_input(struct Mp4FileDemuxer *demuxer,
                                             uint32_t input_data_size);
 
 /**
- * MP4 ファイル内に含まれるすべてのメディアトラック（音声および映像）の情報を取得する
+ * MP4 ファイル内に含まれるすべてのメディアトラック（音声・映像・字幕）の情報を取得する
  *
  * # 引数
  *
@@ -2015,6 +2020,19 @@ enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *d
  * # 戻り値
  *
  * moov ボックスに必要な最大バイト数を返す
+ *
+ * # NOTE
+ *
+ * この関数は音声・映像の 2 トラック分しか見積もれない。
+ * 字幕トラックを含める場合や、サンプルエントリーが大きい場合
+ * （`stpp` の名前空間文字列が長い場合など）、
+ * サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合には
+ * 見積もりが不足することがある。
+ * その場合は faststart が無効になり moov ボックスがファイル末尾に配置されるだけで、
+ * 生成される MP4 ファイル自体は正しい。
+ * 見積もりが不足しても呼び出し側にはエラーとして通知されないため、
+ * faststart を確実に有効にしたい場合は余裕を持たせた値を
+ * `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定すること
  *
  * # 使用例
  *

@@ -1,6 +1,6 @@
 //! MP4 ファイルのマルチプレックス実装を提供するモジュール
 //!
-//! このモジュールは、複数のメディアトラック（音声・映像）からのサンプルを
+//! このモジュールは、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 //! 時系列順に統合して、MP4 ファイルを生成するための機能を提供する。
 //!
 //! # Examples
@@ -61,9 +61,10 @@ use crate::{
     Utf8String,
     boxes::{
         Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
-        MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, SmhdBox, StblBox, StcoBox,
-        StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, StblBox, StcoBox, StscBox,
+        StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
+    mux_fmp4_segment::{TrakDerivation, derive_trak_attributes, subtitle_trak_attributes},
 };
 
 // ftyp 更新時に必要となる free 予約の最小値は以下:
@@ -89,7 +90,9 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
     // - stts_box（時間-サンプル）: エントリあたり ~8 バイト
     // - stsc_box（サンプル-チャンク）: チャンクあたり ~12 バイト（通常はサンプルより少ない）
     // - stsz_box（サンプルサイズ）: サンプルあたり ~4 バイト
-    // - stss_box（同期サンプル）: キーフレームあたり ~4 バイト（最悪の場合はすべてキーフレーム）
+    // - stss_box（同期サンプル）: キーフレームあたり ~4 バイト
+    //   （全サンプルがキーフレームの場合は stss_box 自体が省略されるため、
+    //   最悪ケースは 1 サンプルだけが非キーフレームのとき）
     // - stco_box/co64_box（チャンクオフセット）: チャンクあたり ~8 バイト
     const BYTES_PER_SAMPLE: usize = 16;
 
@@ -302,18 +305,16 @@ pub enum MuxError {
         actual: NonZeroU32,
     },
 
-    /// 同一セグメント内の同一トラックで複数の sample entry が混在している
+    /// 同一トラック内に両立しないサンプルエントリーが混在している
+    ///
+    /// [`crate::mux::Fmp4SegmentMuxer`] では、1 つのセグメント内の同一トラックで
+    /// 複数のサンプルエントリーが使われた場合に返す。
+    ///
+    /// [`Mp4FileMuxer`] では、字幕トラック内でハンドラー種別ないしメディアヘッダーが
+    /// 異なるサンプルエントリー（たとえば `stpp` と `tx3g`）が混在した場合に返す。
+    /// これらはトラック単位で 1 つしか持てないため、混在すると規格上整合しない MP4 になる
     MixedSampleEntries {
         /// 対象トラックの種類
-        track_kind: TrackKind,
-    },
-
-    /// サポートされていないトラック種別が指定された
-    ///
-    /// 例えば `Mp4FileMuxer` は現状 [`TrackKind::Subtitle`] を受け付けないため、
-    /// 該当トラックが与えられた場合にこのエラーを返す
-    UnsupportedTrackKind {
-        /// サポート対象外だったトラック種別
         track_kind: TrackKind,
     },
 
@@ -367,13 +368,7 @@ impl core::fmt::Display for MuxError {
                 )
             }
             MuxError::MixedSampleEntries { track_kind } => {
-                write!(
-                    f,
-                    "{track_kind:?} track uses multiple sample entries within one segment"
-                )
-            }
-            MuxError::UnsupportedTrackKind { track_kind } => {
-                write!(f, "Unsupported track kind: {track_kind:?}")
+                write!(f, "{track_kind:?} track uses incompatible sample entries")
             }
             MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
@@ -405,9 +400,23 @@ struct Chunk {
     samples: Vec<SampleMetadata>,
 }
 
+/// トラック種別ごとの [`Chunk`] 群とタイムスケールをまとめた内部エントリ
+///
+/// `mux_fmp4_segment` の同名 private 型と概念は同じだが、`Mp4FileMuxer` は
+/// フラグメント固有のフィールド（`decode_time` / `current_sample_entry_index`）を持たない。
+/// また `track_id` とサンプルエントリー一覧は保持せず、
+/// それぞれ `build_moov_box` と `build_stbl_box` が構築時に `chunks` から導出する。
+/// そのため両者は共通化せず、モジュール private の別型として定義する
+#[derive(Debug, Clone)]
+struct TrackEntry {
+    track_kind: TrackKind,
+    timescale: NonZeroU32,
+    chunks: Vec<Chunk>,
+}
+
 /// MP4 ファイルを生成するマルチプレックス処理を行うための構造体
 ///
-/// この構造体は、複数のメディアトラック（音声・映像）からのサンプルを
+/// この構造体は、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 /// 時系列順に統合して、MP4 ファイルを生成するための主要な処理を行う。
 ///
 /// 基本的な使用フロー：
@@ -431,10 +440,7 @@ pub struct Mp4FileMuxer {
     next_position: u64,
     last_sample_kind: Option<TrackKind>,
     finalized_boxes: Option<FinalizedBoxes>,
-    audio_chunks: Vec<Chunk>,
-    video_chunks: Vec<Chunk>,
-    audio_track_timescale: NonZeroU32,
-    video_track_timescale: NonZeroU32,
+    tracks: Vec<TrackEntry>,
 }
 
 impl Mp4FileMuxer {
@@ -452,13 +458,7 @@ impl Mp4FileMuxer {
             next_position: 0,
             last_sample_kind: None,
             finalized_boxes: None,
-            audio_chunks: Vec::new(),
-            video_chunks: Vec::new(),
-
-            // 以下の値は、トラックの最初のサンプルを処理する際に、
-            // 実際の値で更新されるので、ここでは任意の初期値を指定しておけばいい
-            audio_track_timescale: NonZeroU32::MIN,
-            video_track_timescale: NonZeroU32::MIN,
+            tracks: Vec::new(),
         };
         this.build_initial_boxes()?;
         Ok(this)
@@ -543,32 +543,28 @@ impl Mp4FileMuxer {
         Ok(())
     }
 
-    /// 映像ないし音声サンプルのデータを MP4 ファイルに追記したことを [`Mp4FileMuxer`] に通知する
+    /// 映像・音声・字幕サンプルのデータを MP4 ファイルに追記したことを [`Mp4FileMuxer`] に通知する
     ///
     /// 実際のデータ追記処理自体は利用側の責務であり、
     /// このメソッド目的は、その追記結果などを伝えることで、
     /// [`Mp4FileMuxer`] が適切に、MP4ファイルの再生に必要なメタデータを構築できるようにすることである。
     ///
-    /// エラーを返した場合、内部状態 (`next_position` / `audio_chunks` / `video_chunks` /
-    /// `last_sample_kind`) は変更されないため、呼び出し側は内容を補正したサンプルで再呼び出しできる。
-    /// ただし、対象トラック種別の最初のサンプル投入直後に `MissingSampleEntry` エラーになった場合は、
-    /// そのトラックの `audio_track_timescale` または `video_track_timescale` だけは記録済みとなる。
+    /// # エラー返却時の内部状態
     ///
-    /// [`TrackKind::Subtitle`] のサンプルは受け付けず、常に [`MuxError::UnsupportedTrackKind`] を返す
-    /// （内部フィールドが Audio / Video 専用の 2 系統ハードコードのため受け入れ経路がない）。
-    /// 字幕トラックは [`crate::mux::Fmp4SegmentMuxer`] 経由でのみ扱える。
+    /// エラー種別ごとに `self` に残る副作用は以下:
+    ///
+    /// - [`MuxError::AlreadyFinalized`] / [`MuxError::PositionMismatch`] /
+    ///   [`MuxError::EncodeError`]（`data_size` の `u32::MAX` 超過）/
+    ///   [`MuxError::MissingSampleEntry`] / [`MuxError::MixedSampleEntries`] /
+    ///   [`MuxError::TimescaleMismatch`]:
+    ///   内部状態は完全に不変となる。呼び出し側は内容を補正したサンプルで再呼び出しできる
+    /// - [`MuxError::Overflow`]（次の書き込み位置の加算オーバーフロー）:
+    ///   このサンプルの登録は完了した状態で残り、次の書き込み位置だけが未更新となる。
+    ///   同じサンプルで再呼び出しすると二重に登録されるため、
+    ///   このエラーを受け取った [`Mp4FileMuxer`] は復旧できないものとして破棄すること
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
-        }
-        // 字幕トラックは Mp4FileMuxer では未対応（内部フィールドが Audio / Video 専用の
-        // 2 系統ハードコードのため受け入れ経路がない）。
-        // PositionMismatch や data_size の EncodeError より前に拒否することで
-        // ユーザーが段階的にエラーを潰す手間を避ける
-        if sample.track_kind == TrackKind::Subtitle {
-            return Err(MuxError::UnsupportedTrackKind {
-                track_kind: TrackKind::Subtitle,
-            });
         }
         if self.next_position != sample.data_offset {
             return Err(MuxError::PositionMismatch {
@@ -588,62 +584,63 @@ impl Mp4FileMuxer {
 
         let is_new_chunk_needed = self.is_new_chunk_needed(sample);
 
-        let chunks = match sample.track_kind {
-            TrackKind::Audio => {
-                // 最初のサンプルのタイムスケールをトラックのタイムスケールにする
-                if self.audio_chunks.is_empty() {
-                    self.audio_track_timescale = sample.timescale;
-                } else if self.audio_track_timescale != sample.timescale {
-                    return Err(MuxError::TimescaleMismatch {
-                        track_kind: TrackKind::Audio,
-                        expected: self.audio_track_timescale,
-                        actual: sample.timescale,
-                    });
-                }
-
-                &mut self.audio_chunks
-            }
-            TrackKind::Video => {
-                // 最初のサンプルのタイムスケールをトラックのタイムスケールにする
-                if self.video_chunks.is_empty() {
-                    self.video_track_timescale = sample.timescale;
-                } else if self.video_track_timescale != sample.timescale {
-                    return Err(MuxError::TimescaleMismatch {
-                        track_kind: TrackKind::Video,
-                        expected: self.video_track_timescale,
-                        actual: sample.timescale,
-                    });
-                }
-
-                &mut self.video_chunks
-            }
-            // この分岐は関数冒頭の早期 return により通常到達しない。
-            // 将来 TrackKind にバリアントが追加された際にコンパイルエラーで気付けるよう
-            // `_` を避けて明示し、万一到達した場合の防衛値として同じエラーを返す
-            TrackKind::Subtitle => {
-                return Err(MuxError::UnsupportedTrackKind {
-                    track_kind: TrackKind::Subtitle,
-                });
-            }
-        };
-
-        if is_new_chunk_needed {
-            let sample_entry = sample
+        // 新規チャンクが必要な場合のみサンプルエントリーを解決する
+        // （不要ならスキップして self.tracks への副作用を発生させない）
+        let resolved_sample_entry = if is_new_chunk_needed {
+            let entry = sample
                 .sample_entry
                 .clone()
-                .or_else(|| chunks.last().map(|c| c.sample_entry.clone()))
+                .or_else(|| {
+                    self.tracks
+                        .iter()
+                        .find(|t| t.track_kind == sample.track_kind)
+                        .and_then(|t| t.chunks.last().map(|c| c.sample_entry.clone()))
+                })
                 .ok_or(MuxError::MissingSampleEntry {
                     track_kind: sample.track_kind,
                 })?;
+            Some(entry)
+        } else {
+            None
+        };
 
-            chunks.push(Chunk {
+        // 字幕トラックの hdlr / media_header は先頭のサンプルエントリーだけで決まるため、
+        // 対応表上の組が異なるサンプルエントリーが混在すると stsd と矛盾した trak になる。
+        // finalize() の時点では「どのサンプルが原因か」を示せないので、投入時点で拒否する。
+        // 映像トラックは複数のサンプルエントリー（解像度違いなど）を前提とした設計なので対象外
+        if sample.track_kind == TrackKind::Subtitle
+            && let Some(new_entry) = &resolved_sample_entry
+            && let Some(first_entry) = self
+                .tracks
+                .iter()
+                .find(|t| t.track_kind == TrackKind::Subtitle)
+                .and_then(|t| t.chunks.first())
+                .map(|c| &c.sample_entry)
+            && subtitle_trak_attributes(first_entry) != subtitle_trak_attributes(new_entry)
+        {
+            return Err(MuxError::MixedSampleEntries {
+                track_kind: TrackKind::Subtitle,
+            });
+        }
+
+        // サンプルエントリーの解決を先に済ませてから ensure_track_entry を呼ぶことで
+        // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ
+        let track_index = self.ensure_track_entry(sample.track_kind, sample.timescale)?;
+
+        if let Some(sample_entry) = resolved_sample_entry {
+            self.tracks[track_index].chunks.push(Chunk {
                 offset: sample.data_offset,
                 sample_entry,
                 samples: Vec::new(),
             });
         }
 
-        chunks.last_mut().expect("bug").samples.push(metadata);
+        self.tracks[track_index]
+            .chunks
+            .last_mut()
+            .expect("bug")
+            .samples
+            .push(metadata);
 
         self.next_position = self
             .next_position
@@ -653,29 +650,56 @@ impl Mp4FileMuxer {
         Ok(())
     }
 
+    /// 指定した [`TrackKind`] の [`TrackEntry`] の位置を返す（無ければ新規に追加する）
+    ///
+    /// 既存の entry がある場合は `timescale` の一致を検証し、不一致なら
+    /// [`MuxError::TimescaleMismatch`] を返す
+    fn ensure_track_entry(
+        &mut self,
+        track_kind: TrackKind,
+        timescale: NonZeroU32,
+    ) -> Result<usize, MuxError> {
+        if let Some(index) = self.tracks.iter().position(|t| t.track_kind == track_kind) {
+            let track = &self.tracks[index];
+            if track.timescale != timescale {
+                return Err(MuxError::TimescaleMismatch {
+                    track_kind,
+                    expected: track.timescale,
+                    actual: timescale,
+                });
+            }
+            return Ok(index);
+        }
+        self.tracks.push(TrackEntry {
+            track_kind,
+            timescale,
+            chunks: Vec::new(),
+        });
+        Ok(self.tracks.len() - 1)
+    }
+
     fn is_new_chunk_needed(&self, sample: &Sample) -> bool {
         if self.last_sample_kind != Some(sample.track_kind) {
             return true;
         }
 
-        let chunks = match sample.track_kind {
-            TrackKind::Audio => &self.audio_chunks,
-            TrackKind::Video => &self.video_chunks,
-            // 字幕トラックは append_sample() 内で必ず拒否されるため
-            // last_sample_kind に Subtitle が入ることはない。
-            // したがって上の `last_sample_kind != Some(sample.track_kind)`
-            // 早期リターンで抜けて、ここには到達しない想定。
-            // 万一到達した場合の防衛値として true を返す
-            TrackKind::Subtitle => return true,
-        };
-
         let Some(sample_entry) = &sample.sample_entry else {
             return false;
         };
 
-        chunks
-            .last()
-            .is_none_or(|c| c.sample_entry != *sample_entry)
+        // 上の早期リターンを通過している時点で該当トラックは必ず存在するが、
+        // 型システム上は Option を経由する。
+        // 仮に存在しなかったとしても「まだチャンクが無い = 新規チャンクが必要」が正しいので、
+        // 既定値には true を使う
+        self.tracks
+            .iter()
+            .find(|t| t.track_kind == sample.track_kind)
+            .map(|t| {
+                t.chunks
+                    .last()
+                    .is_none_or(|c| c.sample_entry != *sample_entry)
+            })
+            .unwrap_or(true)
     }
 
     /// すべてのサンプルの追加が完了したことを [`Mp4FileMuxer`] に通知する
@@ -727,13 +751,15 @@ impl Mp4FileMuxer {
         let mut has_hvc1 = false;
         let mut has_av01 = false;
 
-        for chunk in self.audio_chunks.iter().chain(self.video_chunks.iter()) {
-            match chunk.sample_entry {
-                SampleEntry::Avc1(_) => has_avc1 = true,
-                SampleEntry::Hev1(_) => has_hev1 = true,
-                SampleEntry::Hvc1(_) => has_hvc1 = true,
-                SampleEntry::Av01(_) => has_av01 = true,
-                _ => {}
+        for track in &self.tracks {
+            for chunk in &track.chunks {
+                match chunk.sample_entry {
+                    SampleEntry::Avc1(_) => has_avc1 = true,
+                    SampleEntry::Hev1(_) => has_hev1 = true,
+                    SampleEntry::Hvc1(_) => has_hvc1 = true,
+                    SampleEntry::Av01(_) => has_av01 = true,
+                    _ => {}
+                }
             }
         }
 
@@ -820,14 +846,15 @@ impl Mp4FileMuxer {
     fn build_moov_box(&self) -> Result<MoovBox, MuxError> {
         let mut trak_boxes = Vec::new();
 
-        if !self.audio_chunks.is_empty() {
+        // 空 chunks の TrackEntry はスキップする
+        //
+        // append_sample() はサンプルエントリーの解決を ensure_track_entry() よりも前に行うため、
+        // chunks が空のままの TrackEntry は現状の実装では生成されない。
+        // ここは将来その不変条件が崩れたときに不正な trak を出力しないための防御であり、
+        // 現時点で実際にスキップされる要素は無い
+        for entry in self.tracks.iter().filter(|t| !t.chunks.is_empty()) {
             let track_id = trak_boxes.len() as u32 + 1;
-            trak_boxes.push(self.build_audio_trak_box(track_id)?);
-        }
-
-        if !self.video_chunks.is_empty() {
-            let track_id = trak_boxes.len() as u32 + 1;
-            trak_boxes.push(self.build_video_trak_box(track_id)?);
+            trak_boxes.push(self.build_trak_box(entry, track_id)?);
         }
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
@@ -851,12 +878,20 @@ impl Mp4FileMuxer {
         })
     }
 
-    fn build_audio_trak_box(&self, track_id: u32) -> Result<TrakBox, MuxError> {
-        let total_duration = self
-            .audio_chunks
+    /// 指定した [`TrackEntry`] から `trak` ボックスを構築する
+    ///
+    /// `entry.chunks` が非空であることを不変条件として要求する
+    /// （空の場合は `derive_trak_derivation` 内の `expect` で panic する）。
+    /// 呼び出し側の `build_moov_box` が空 chunks の [`TrackEntry`] をスキップしているため、
+    /// この不変条件は常に満たされる
+    fn build_trak_box(&self, entry: &TrackEntry, track_id: u32) -> Result<TrakBox, MuxError> {
+        let total_duration = entry
+            .chunks
             .iter()
             .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
             .sum::<u64>();
+
+        let derived = self.derive_trak_derivation(entry)?;
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let tkhd_box = TkhdBox {
@@ -870,71 +905,69 @@ impl Mp4FileMuxer {
             duration: total_duration,
             layer: TkhdBox::DEFAULT_LAYER,
             alternate_group: TkhdBox::DEFAULT_ALTERNATE_GROUP,
-            volume: TkhdBox::DEFAULT_AUDIO_VOLUME,
+            volume: derived.volume,
             matrix: TkhdBox::DEFAULT_MATRIX,
-            width: FixedPointNumber::default(),
-            height: FixedPointNumber::default(),
+            width: derived.width,
+            height: derived.height,
         };
 
         Ok(TrakBox {
             tkhd_box,
             edts_box: None,
-            mdia_box: self.build_audio_mdia_box()?,
+            mdia_box: self.build_mdia_box(entry, &derived)?,
             unknown_boxes: Vec::new(),
         })
     }
 
-    fn build_video_trak_box(&self, track_id: u32) -> Result<TrakBox, MuxError> {
-        let total_duration = self
-            .video_chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
+    /// トラック種別ごとの派生属性（tkhd / hdlr / media_header 用）を導出する
+    ///
+    /// 映像トラックだけは複数のサンプルエントリーの最大幅・高さを採用する既存挙動を維持するため、
+    /// `derive_trak_attributes` を呼ばず本メソッド内で [`TrakDerivation`] を直接組み立てる
+    fn derive_trak_derivation(&self, entry: &TrackEntry) -> Result<TrakDerivation, MuxError> {
+        let first_sample_entry = &entry
+            .chunks
+            .first()
+            .expect("bug: derive_trak_derivation called with empty chunks")
+            .sample_entry;
 
-        let (max_width, max_height) = self
-            .video_chunks
-            .iter()
-            .filter_map(|c| c.sample_entry.video_resolution())
-            .fold((0u16, 0u16), |(max_w, max_h), (w, h)| {
-                (max_w.max(w), max_h.max(h))
-            });
+        match entry.track_kind {
+            TrackKind::Video => {
+                let (max_width, max_height) = entry
+                    .chunks
+                    .iter()
+                    .filter_map(|c| c.sample_entry.video_resolution())
+                    .fold((0u16, 0u16), |(max_w, max_h), (w, h)| {
+                        (max_w.max(w), max_h.max(h))
+                    });
 
-        let width = i16::try_from(max_width).map_err(|_| {
-            MuxError::EncodeError(Error::invalid_data("video width exceeds i16::MAX"))
-        })?;
-        let height = i16::try_from(max_height).map_err(|_| {
-            MuxError::EncodeError(Error::invalid_data("video height exceeds i16::MAX"))
-        })?;
+                let width = i16::try_from(max_width).map_err(|_| {
+                    MuxError::EncodeError(Error::invalid_data("video width exceeds i16::MAX"))
+                })?;
+                let height = i16::try_from(max_height).map_err(|_| {
+                    MuxError::EncodeError(Error::invalid_data("video height exceeds i16::MAX"))
+                })?;
 
-        let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
-        let tkhd_box = TkhdBox {
-            flag_track_enabled: true,
-            flag_track_in_movie: true,
-            flag_track_in_preview: false,
-            flag_track_size_is_aspect_ratio: false,
-            creation_time,
-            modification_time: creation_time,
-            track_id,
-            duration: total_duration,
-            layer: TkhdBox::DEFAULT_LAYER,
-            alternate_group: TkhdBox::DEFAULT_ALTERNATE_GROUP,
-            volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
-            matrix: TkhdBox::DEFAULT_MATRIX,
-            width: FixedPointNumber::new(width, 0),
-            height: FixedPointNumber::new(height, 0),
-        };
-
-        Ok(TrakBox {
-            tkhd_box,
-            edts_box: None,
-            mdia_box: self.build_video_mdia_box()?,
-            unknown_boxes: Vec::new(),
-        })
+                Ok(TrakDerivation {
+                    volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
+                    width: FixedPointNumber::new(width, 0),
+                    height: FixedPointNumber::new(height, 0),
+                    handler_type: HdlrBox::HANDLER_TYPE_VIDE,
+                    media_header: MediaHeader::Vmhd(VmhdBox::default()),
+                })
+            }
+            TrackKind::Audio | TrackKind::Subtitle => {
+                derive_trak_attributes(entry.track_kind, first_sample_entry)
+            }
+        }
     }
 
-    fn build_audio_mdia_box(&self) -> Result<MdiaBox, MuxError> {
-        let total_duration = self
-            .audio_chunks
+    fn build_mdia_box(
+        &self,
+        entry: &TrackEntry,
+        derived: &TrakDerivation,
+    ) -> Result<MdiaBox, MuxError> {
+        let total_duration = entry
+            .chunks
             .iter()
             .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
             .sum::<u64>();
@@ -943,56 +976,20 @@ impl Mp4FileMuxer {
         let mdhd_box = MdhdBox {
             creation_time,
             modification_time: creation_time,
-            timescale: self.audio_track_timescale,
+            timescale: entry.timescale,
             duration: total_duration,
             language: MdhdBox::LANGUAGE_UNDEFINED,
         };
 
         let hdlr_box = HdlrBox {
-            handler_type: HdlrBox::HANDLER_TYPE_SOUN,
+            handler_type: derived.handler_type,
             name: Utf8String::EMPTY.into_null_terminated_bytes(),
         };
 
         let minf_box = MinfBox {
-            media_header: Some(MediaHeader::Smhd(SmhdBox::default())),
+            media_header: Some(derived.media_header.clone()),
             dinf_box: DinfBox::LOCAL_FILE,
-            stbl_box: self.build_stbl_box(&self.audio_chunks)?,
-            unknown_boxes: Vec::new(),
-        };
-
-        Ok(MdiaBox {
-            mdhd_box,
-            hdlr_box,
-            minf_box,
-            unknown_boxes: Vec::new(),
-        })
-    }
-
-    fn build_video_mdia_box(&self) -> Result<MdiaBox, MuxError> {
-        let total_duration = self
-            .video_chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
-
-        let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
-        let mdhd_box = MdhdBox {
-            creation_time,
-            modification_time: creation_time,
-            timescale: self.video_track_timescale,
-            duration: total_duration,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
-        };
-
-        let hdlr_box = HdlrBox {
-            handler_type: HdlrBox::HANDLER_TYPE_VIDE,
-            name: Utf8String::EMPTY.into_null_terminated_bytes(),
-        };
-
-        let minf_box = MinfBox {
-            media_header: Some(MediaHeader::Vmhd(VmhdBox::default())),
-            dinf_box: DinfBox::LOCAL_FILE,
-            stbl_box: self.build_stbl_box(&self.video_chunks)?,
+            stbl_box: self.build_stbl_box(&entry.chunks)?,
             unknown_boxes: Vec::new(),
         };
 
@@ -1098,28 +1095,29 @@ impl Mp4FileMuxer {
         })
     }
 
+    /// 正規化した尺（実時間）が最長のトラックの `(timescale, duration)` を返す
+    ///
+    /// 正規化した尺が同着の場合は、先に [`Self::append_sample`] されたトラックを採用する。
+    ///
+    /// トラックが 1 つも無い場合は `(NonZeroU32::MIN, 0)` を返す
+    /// （このとき `trak` ボックスも 0 個になるため、`mvhd` に入る値は任意でよい）
     fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
-        let audio_duration = self
-            .audio_chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
-        let video_duration = self
-            .video_chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
+        let mut best: Option<(NonZeroU32, u64, Duration)> = None;
+        for track in &self.tracks {
+            let duration = track
+                .chunks
+                .iter()
+                .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+                .sum::<u64>();
+            let normalized = Duration::from_secs(duration) / track.timescale.get();
 
-        let normalized_audio_duration =
-            Duration::from_secs(audio_duration) / self.audio_track_timescale.get();
-        let normalized_video_duration =
-            Duration::from_secs(video_duration) / self.video_track_timescale.get();
-
-        if normalized_audio_duration < normalized_video_duration {
-            (self.video_track_timescale, video_duration)
-        } else {
-            (self.audio_track_timescale, audio_duration)
+            match best {
+                Some((_, _, best_normalized)) if best_normalized >= normalized => {}
+                _ => best = Some((track.timescale, duration, normalized)),
+            }
         }
+        best.map(|(ts, dur, _)| (ts, dur))
+            .unwrap_or((NonZeroU32::MIN, 0))
     }
 }
 
@@ -1190,7 +1188,8 @@ mod tests {
     use crate::{
         Uint,
         boxes::{
-            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, VisualSampleEntryFields,
+            AudioSampleEntryFields, Avc1Box, AvccBox, BoxRecord, DopsBox, FtabBox, OpusBox,
+            StppBox, StyleRecord, Tx3gBox, VisualSampleEntryFields,
         },
     };
 
@@ -1276,50 +1275,6 @@ mod tests {
         ));
     }
 
-    /// Mp4FileMuxer が字幕トラック（TrackKind::Subtitle）を拒否することを検証する
-    ///
-    /// Mp4FileMuxer は現時点で字幕トラック未対応で、
-    /// UnsupportedTrackKind エラーを返して拒否する
-    #[test]
-    fn test_unsupported_track_kind_error_for_subtitle() {
-        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
-        let initial_size = muxer.initial_boxes_bytes().len() as u64;
-
-        // 字幕トラックの Sample を渡すと拒否される
-        let sample = Sample {
-            track_kind: TrackKind::Subtitle,
-            sample_entry: None,
-            keyframe: true,
-            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
-            duration: 20,
-            composition_time_offset: None,
-            data_offset: initial_size,
-            data_size: 128,
-        };
-        assert!(matches!(
-            muxer.append_sample(&sample),
-            Err(MuxError::UnsupportedTrackKind {
-                track_kind: TrackKind::Subtitle
-            })
-        ));
-    }
-
-    /// UnsupportedTrackKind の Display 出力にトラック種別名が含まれることを検証する
-    ///
-    /// エラーメッセージにトラック種別が反映されないと、
-    /// 呼び出し側が何を拒否されたのかログから判別できないため確認する
-    #[test]
-    fn test_unsupported_track_kind_display_contains_subtitle() {
-        let err = MuxError::UnsupportedTrackKind {
-            track_kind: TrackKind::Subtitle,
-        };
-        let display = format!("{err}");
-        assert!(
-            display.contains("Subtitle"),
-            "Display 出力に \"Subtitle\" が含まれていない: {display}",
-        );
-    }
-
     /// サンプルエントリー不在エラーのテスト
     #[test]
     fn test_missing_sample_entry_error() {
@@ -1343,6 +1298,53 @@ mod tests {
                 track_kind: TrackKind::Audio
             })
         ));
+    }
+
+    /// MissingSampleEntry エラーの返却がトラック状態に副作用を残さないことを検証するテスト
+    ///
+    /// append_sample() はサンプルエントリーの解決を ensure_track_entry() よりも前に行うため、
+    /// MissingSampleEntry で失敗したサンプルの timescale は記録されない。
+    /// これを公開 API から観測できる形として、
+    /// 失敗した直後に別の timescale のサンプルを投入しても
+    /// TimescaleMismatch にならずに受理されることを確認する
+    #[test]
+    fn test_missing_sample_entry_error_leaves_tracks_unchanged() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 新規音声トラックの初回サンプルで sample_entry = None を渡し MissingSampleEntry を発生させる
+        let bad_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: None,
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 20,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 256,
+        };
+        assert!(matches!(
+            muxer.append_sample(&bad_sample),
+            Err(MuxError::MissingSampleEntry {
+                track_kind: TrackKind::Audio
+            })
+        ));
+
+        // ここで別 timescale を持つ Sample を再投入する。
+        // 内部状態が不変であれば TimescaleMismatch は発生せず、新規トラックとして受け入れられる
+        let good_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(48000 - 1),
+            duration: 1024,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&good_sample)
+            .expect("failed to append sample after MissingSampleEntry");
     }
 
     /// ファイナライズ済みエラーのテスト
@@ -1630,6 +1632,296 @@ mod tests {
         assert!(!finalized.moov_box_bytes.is_empty());
     }
 
+    /// 音声・映像・字幕の 3 トラックの mux テスト
+    #[test]
+    fn test_audio_video_subtitle_tracks() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        // 映像サンプルを追加
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("failed to append video sample");
+
+        // 音声サンプルを追加
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 20,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&audio_sample)
+            .expect("failed to append audio sample");
+
+        // 字幕サンプルを追加
+        let subtitle_sample = Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(create_stpp_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 500,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024 + 256,
+            data_size: 128,
+        };
+        muxer
+            .append_sample(&subtitle_sample)
+            .expect("failed to append subtitle sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        assert!(!finalized.moov_box_bytes.is_empty());
+        // 3 トラック分の trak_box が構築されていることを確認
+        assert_eq!(finalized.moov_box().trak_boxes.len(), 3);
+        // next_track_id は最後に振った track_id の次の値になる
+        assert_eq!(finalized.moov_box().mvhd_box.next_track_id, 4);
+    }
+
+    /// 字幕トラック用の [`Sample`] を組み立てる
+    fn subtitle_sample(sample_entry: SampleEntry, data_offset: u64) -> Sample {
+        Sample {
+            track_kind: TrackKind::Subtitle,
+            sample_entry: Some(sample_entry),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 500,
+            composition_time_offset: None,
+            data_offset,
+            data_size: 128,
+        }
+    }
+
+    /// 字幕トラックにハンドラー種別が異なるサンプルエントリーを混ぜると拒否されることを検証するテスト
+    ///
+    /// stpp は `subt` + `sthd`、tx3g は `text` + `nmhd` に対応する。
+    /// `hdlr` と `media_header` はトラック単位で 1 つしか持てないため、
+    /// 混在を許すと `stsd` と矛盾した `trak` が無警告で生成されてしまう
+    #[test]
+    fn test_mixed_subtitle_sample_entries_error() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        muxer
+            .append_sample(&subtitle_sample(create_stpp_sample_entry(), initial_size))
+            .expect("failed to append stpp sample");
+
+        // tx3g は stpp と対応表上の組が異なるので拒否される
+        let mixed = subtitle_sample(create_tx3g_sample_entry(), initial_size + 128);
+        assert!(matches!(
+            muxer.append_sample(&mixed),
+            Err(MuxError::MixedSampleEntries {
+                track_kind: TrackKind::Subtitle
+            })
+        ));
+
+        // 拒否されても内部状態は不変なので、同じ形式のサンプルなら続けて投入できる
+        muxer
+            .append_sample(&subtitle_sample(
+                create_stpp_sample_entry(),
+                initial_size + 128,
+            ))
+            .expect("failed to append stpp sample after rejection");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        assert_eq!(finalized.moov_box().trak_boxes.len(), 1);
+    }
+
+    /// 同じ対応表の組に属するサンプルエントリー同士は混在させても受け入れられることを検証するテスト
+    ///
+    /// namespace が異なる stpp はどちらも `subt` + `sthd` に対応するため、
+    /// `stsd` に 2 エントリーを並べても `trak` の属性と矛盾しない
+    #[test]
+    fn test_same_group_subtitle_sample_entries_are_accepted() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        muxer
+            .append_sample(&subtitle_sample(create_stpp_sample_entry(), initial_size))
+            .expect("failed to append stpp sample");
+
+        let another_stpp = SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml#parameter")
+                .expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        });
+        muxer
+            .append_sample(&subtitle_sample(another_stpp, initial_size + 128))
+            .expect("namespace 違いの stpp は受け入れられるべき");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let trak = &finalized.moov_box().trak_boxes[0];
+        assert_eq!(trak.mdia_box.minf_box.stbl_box.stsd_box.entries.len(), 2);
+        assert_eq!(
+            trak.mdia_box.hdlr_box.handler_type,
+            HdlrBox::HANDLER_TYPE_SUBT
+        );
+    }
+
+    /// 映像トラックは複数のサンプルエントリーを引き続き受け入れることを検証するテスト
+    ///
+    /// 字幕トラック向けの混在拒否が映像トラックの既存挙動（解像度違いの許容）に
+    /// 波及していないことを確認する
+    #[test]
+    fn test_video_track_still_accepts_multiple_sample_entries() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let mut first = create_avc1_sample_entry();
+        let SampleEntry::Avc1(avc1) = &mut first else {
+            panic!("create_avc1_sample_entry must return SampleEntry::Avc1");
+        };
+        avc1.visual.width = 640;
+        avc1.visual.height = 480;
+
+        let mut second = create_avc1_sample_entry();
+        let SampleEntry::Avc1(avc1) = &mut second else {
+            panic!("create_avc1_sample_entry must return SampleEntry::Avc1");
+        };
+        avc1.visual.width = 1920;
+        avc1.visual.height = 1080;
+
+        for (i, entry) in [first, second].into_iter().enumerate() {
+            let sample = Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: Some(entry),
+                keyframe: true,
+                timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+                duration: 1,
+                composition_time_offset: None,
+                data_offset: initial_size + (i as u64 * 1024),
+                data_size: 1024,
+            };
+            muxer
+                .append_sample(&sample)
+                .expect("映像トラックは複数サンプルエントリーを受け入れるべき");
+        }
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let trak = &finalized.moov_box().trak_boxes[0];
+        assert_eq!(trak.mdia_box.minf_box.stbl_box.stsd_box.entries.len(), 2);
+        // tkhd には全サンプルエントリーの最大値が入る既存挙動を維持する
+        assert_eq!(trak.tkhd_box.width, FixedPointNumber::new(1920, 0));
+        assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(1080, 0));
+    }
+
+    /// `mvhd` に正規化した尺が最長のトラックの timescale / duration が採用されることを検証するテスト
+    ///
+    /// 映像は 1/30 秒、音声は 5 秒にして音声を最長にしている。
+    /// タイムスケール単位の生の値では映像 1 < 音声 5000 だが、
+    /// 比較はタイムスケールで正規化した実時間で行われる必要がある
+    #[test]
+    fn test_mvhd_uses_longest_track() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("failed to append video sample");
+
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 5000,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&audio_sample)
+            .expect("failed to append audio sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let mvhd_box = &finalized.moov_box().mvhd_box;
+        assert_eq!(
+            mvhd_box.timescale.get(),
+            1000,
+            "最長トラック（音声）の timescale が採用されていない"
+        );
+        assert_eq!(
+            mvhd_box.duration, 5000,
+            "最長トラック（音声）の尺が採用されていない"
+        );
+    }
+
+    /// 正規化した尺が同着の場合に先に追加したトラックが `mvhd` に採用されることを検証するテスト
+    ///
+    /// 映像 30/30 と音声 1000/1000 でどちらもちょうど 1 秒にして同着にする。
+    /// 映像を先に追加しているので映像側の値が採用される
+    #[test]
+    fn test_mvhd_tie_breaks_by_append_order() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 30,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("failed to append video sample");
+
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 1000,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&audio_sample)
+            .expect("failed to append audio sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let mvhd_box = &finalized.moov_box().mvhd_box;
+        assert_eq!(
+            mvhd_box.timescale.get(),
+            30,
+            "同着時は先に追加した映像トラックの timescale が採用されるべき"
+        );
+        assert_eq!(
+            mvhd_box.duration, 30,
+            "同着時は先に追加した映像トラックの尺が採用されるべき"
+        );
+    }
+
     /// faststart 機能の有効化テスト
     #[test]
     fn test_faststart_enabled() {
@@ -1728,6 +2020,30 @@ mod tests {
                 input_sample_rate: 48000,
                 output_gain: 0,
             },
+            unknown_boxes: vec![],
+        })
+    }
+
+    fn create_stpp_sample_entry() -> SampleEntry {
+        SampleEntry::Stpp(StppBox {
+            data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+            schema_location: Utf8String::EMPTY,
+            auxiliary_mime_types: Utf8String::EMPTY,
+            unknown_boxes: vec![],
+        })
+    }
+
+    fn create_tx3g_sample_entry() -> SampleEntry {
+        SampleEntry::Tx3g(Tx3gBox {
+            data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: 0,
+            horizontal_justification: 0,
+            vertical_justification: 0,
+            background_color_rgba: [0, 0, 0, 0],
+            default_text_box: BoxRecord::default(),
+            default_style: StyleRecord::default(),
+            ftab_box: FtabBox::default(),
             unknown_boxes: vec![],
         })
     }

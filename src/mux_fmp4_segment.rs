@@ -951,7 +951,8 @@ pub(crate) struct TrakDerivation {
 
 /// `track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
 ///
-/// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は本体コメントを参照
+/// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は
+/// [`subtitle_trak_attributes`] を参照
 pub(crate) fn derive_trak_attributes(
     track_kind: TrackKind,
     sample_entry: &SampleEntry,
@@ -975,23 +976,9 @@ pub(crate) fn derive_trak_attributes(
             media_header: MediaHeader::Smhd(SmhdBox::default()),
         }),
         // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
-        // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）。
-        //
-        // (handler_type, media_header) の対応表:
-        //   stpp → subt + sthd (ISO/IEC 14496-30)
-        //   wvtt → text + sthd (ISO/IEC 14496-30)
-        //   tx3g → text + nmhd (3GPP TS 26.245)
+        // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）
         TrackKind::Subtitle => {
-            let (handler_type, media_header) = match sample_entry {
-                SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
-                SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
-                SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
-                // 対応表に載っていないバリアントは防御的に subt + sthd に丸める。
-                // 字幕トラックに映像系・音声系のサンプルエントリーが紐付く運用は無く、
-                // 実際には未知の字幕系サンプルエントリー（`SampleEntry::decode` が
-                // 型付きに落とせずに `SampleEntry::Unknown` に落としたもの）だけがこの arm に到達する
-                _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
-            };
+            let (handler_type, media_header) = subtitle_trak_attributes(sample_entry);
             Ok(TrakDerivation {
                 volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
                 width: FixedPointNumber::default(),
@@ -1000,6 +987,30 @@ pub(crate) fn derive_trak_attributes(
                 media_header,
             })
         }
+    }
+}
+
+/// 字幕サンプルエントリーからハンドラー種別とメディアヘッダーを決める
+///
+/// 対応表:
+///   stpp → subt + sthd (ISO/IEC 14496-30)
+///   wvtt → text + sthd (ISO/IEC 14496-30)
+///   tx3g → text + nmhd (3GPP TS 26.245)
+///
+/// `hdlr` と `minf.media_header` はトラック単位で 1 つしか持てないため、
+/// 1 つのトラック内でこの組が異なるサンプルエントリーが混在すると、
+/// `stsd` には両方が並ぶ一方でトラック側の属性は片方に固定され、規格上整合しなくなる。
+/// 呼び出し側はこの戻り値同士を突き合わせて混在を検出する
+pub(crate) fn subtitle_trak_attributes(sample_entry: &SampleEntry) -> ([u8; 4], MediaHeader) {
+    match sample_entry {
+        SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+        SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
+        SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
+        // 対応表に載っていないバリアントは防御的に subt + sthd に丸める。
+        // 字幕トラックに映像系・音声系のサンプルエントリーが紐付く運用は無く、
+        // 実際には未知の字幕系サンプルエントリー（`SampleEntry::decode` が
+        // 型付きに落とせずに `SampleEntry::Unknown` に落としたもの）だけがこの arm に到達する
+        _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
     }
 }
 

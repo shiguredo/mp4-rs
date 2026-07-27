@@ -474,17 +474,19 @@ proptest! {
         let tracks = demuxer.tracks().expect("failed to get tracks");
         prop_assert_eq!(tracks.len(), 1);
         prop_assert!(matches!(tracks[0].kind, TrackKind::Subtitle));
+        // 投入した timescale が mdhd 経由でそのまま復元される
+        prop_assert_eq!(tracks[0].timescale, timescale);
 
         // サンプル数と属性を確認
         let mut actual_samples = Vec::new();
         while let Some(sample) = demuxer.next_sample().expect("failed to read sample") {
-            match sample.track.kind {
-                TrackKind::Subtitle => actual_samples.push((sample.duration, sample.data_size)),
-                // このテストは字幕のみを扱う。音声・映像が現れたらテスト条件外
-                TrackKind::Audio | TrackKind::Video => {
-                    unreachable!("音声・映像トラックは本テストの対象外")
-                }
-            }
+            prop_assert!(
+                matches!(sample.track.kind, TrackKind::Subtitle),
+                "字幕以外のトラックは本テストの対象外"
+            );
+            // 字幕サンプルはすべて keyframe = true で投入しているので stss は生成されない
+            prop_assert!(sample.keyframe, "字幕サンプルが同期サンプルとして復元されていない");
+            actual_samples.push((sample.duration, sample.data_size));
         }
         prop_assert_eq!(actual_samples.len(), expected_samples.len());
         for (i, (expected, actual)) in expected_samples.iter().zip(actual_samples.iter()).enumerate() {
@@ -778,6 +780,20 @@ proptest! {
 
         let tracks = demuxer.tracks().expect("failed to get tracks");
         prop_assert_eq!(tracks.len(), 3);
+
+        // trak は append_sample() の呼び出し順（映像 → 音声 → 字幕）で並び、
+        // track_id もその順に 1 から振られる
+        prop_assert!(matches!(tracks[0].kind, TrackKind::Video));
+        prop_assert!(matches!(tracks[1].kind, TrackKind::Audio));
+        prop_assert!(matches!(tracks[2].kind, TrackKind::Subtitle));
+        prop_assert_eq!(tracks[0].track_id, 1);
+        prop_assert_eq!(tracks[1].track_id, 2);
+        prop_assert_eq!(tracks[2].track_id, 3);
+
+        // トラックごとに別々の timescale が取り違えられずに復元される
+        prop_assert_eq!(tracks[0].timescale, video_timescale);
+        prop_assert_eq!(tracks[1].timescale, audio_timescale);
+        prop_assert_eq!(tracks[2].timescale, subtitle_timescale);
 
         // サンプル数を確認
         let mut video_count = 0;

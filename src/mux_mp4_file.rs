@@ -1687,6 +1687,109 @@ mod tests {
         assert!(!finalized.moov_box_bytes.is_empty());
         // 3 トラック分の trak_box が構築されていることを確認
         assert_eq!(finalized.moov_box().trak_boxes.len(), 3);
+        // next_track_id は最後に振った track_id の次の値になる
+        assert_eq!(finalized.moov_box().mvhd_box.next_track_id, 4);
+    }
+
+    /// `mvhd` に正規化した尺が最長のトラックの timescale / duration が採用されることを検証するテスト
+    ///
+    /// 映像は 1/30 秒、音声は 5 秒にして音声を最長にしている。
+    /// タイムスケール単位の生の値では映像 1 < 音声 5000 だが、
+    /// 比較はタイムスケールで正規化した実時間で行われる必要がある
+    #[test]
+    fn test_mvhd_uses_longest_track() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("failed to append video sample");
+
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 5000,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&audio_sample)
+            .expect("failed to append audio sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let mvhd_box = &finalized.moov_box().mvhd_box;
+        assert_eq!(
+            mvhd_box.timescale.get(),
+            1000,
+            "最長トラック（音声）の timescale が採用されていない"
+        );
+        assert_eq!(
+            mvhd_box.duration, 5000,
+            "最長トラック（音声）の尺が採用されていない"
+        );
+    }
+
+    /// 正規化した尺が同着の場合に先に追加したトラックが `mvhd` に採用されることを検証するテスト
+    ///
+    /// 映像 30/30 と音声 1000/1000 でどちらもちょうど 1 秒にして同着にする。
+    /// 映像を先に追加しているので映像側の値が採用される
+    #[test]
+    fn test_mvhd_tie_breaks_by_append_order() {
+        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 30,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: 1024,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("failed to append video sample");
+
+        let audio_sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry()),
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
+            duration: 1000,
+            composition_time_offset: None,
+            data_offset: initial_size + 1024,
+            data_size: 256,
+        };
+        muxer
+            .append_sample(&audio_sample)
+            .expect("failed to append audio sample");
+
+        let finalized = muxer.finalize().expect("failed to finalize");
+        let mvhd_box = &finalized.moov_box().mvhd_box;
+        assert_eq!(
+            mvhd_box.timescale.get(),
+            30,
+            "同着時は先に追加した映像トラックの timescale が採用されるべき"
+        );
+        assert_eq!(
+            mvhd_box.duration, 30,
+            "同着時は先に追加した映像トラックの尺が採用されるべき"
+        );
     }
 
     /// faststart 機能の有効化テスト

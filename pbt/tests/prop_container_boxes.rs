@@ -1087,11 +1087,43 @@ mod boundary_tests {
         );
     }
 
-    /// 字幕トラック用 Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す共通ヘルパー
+    /// 字幕トラックの `trak` が持つべき共通属性を検証する
+    ///
+    /// `handler_type` と `media_header` はサンプルエントリー種別ごとに異なるため引数で受け取る。
+    /// tkhd の volume / width / height は 3 形式とも 0 で共通
+    fn assert_subtitle_trak(
+        moov: &MoovBox,
+        expected_handler_type: [u8; 4],
+        expected_media_header: MediaHeader,
+    ) {
+        assert_eq!(moov.trak_boxes.len(), 1, "字幕トラックが 1 本だけ存在する");
+        let trak = &moov.trak_boxes[0];
+
+        assert_eq!(
+            trak.mdia_box.hdlr_box.handler_type, expected_handler_type,
+            "ハンドラー種別が対応表どおりであること"
+        );
+        assert_eq!(
+            trak.mdia_box.minf_box.media_header,
+            Some(expected_media_header),
+            "メディアヘッダーが対応表どおりであること"
+        );
+
+        // 字幕トラックの tkhd は volume / width / height がいずれも 0
+        assert_eq!(trak.tkhd_box.volume, TkhdBox::DEFAULT_VIDEO_VOLUME);
+        assert_eq!(trak.tkhd_box.width, FixedPointNumber::new(0, 0));
+        assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
+    }
+
+    /// 字幕トラック用 Sample を Mp4FileMuxer で 1 本マルチプレックスして
+    /// MP4 バイト列と生成された moov を返す共通ヘルパー
     ///
     /// Mp4FileMuxer の initial_boxes_bytes / append_sample / finalize の流れ全体を
     /// この 1 関数にまとめる。stpp / wvtt / tx3g それぞれの構築ヘルパーから呼び出される
-    fn build_subtitle_mp4_file_bytes(sample_entry: SampleEntry, payload: &[u8]) -> Vec<u8> {
+    fn build_subtitle_mp4_file_bytes(
+        sample_entry: SampleEntry,
+        payload: &[u8],
+    ) -> (Vec<u8>, MoovBox) {
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut output: Vec<u8> = muxer.initial_boxes_bytes().to_vec();
         let data_offset = output.len() as u64;
@@ -1111,6 +1143,7 @@ mod boundary_tests {
             .append_sample(&sample)
             .expect("failed to append sample");
         let finalized = muxer.finalize().expect("failed to finalize");
+        let moov_box = finalized.moov_box().clone();
 
         // moov などの書き戻し範囲を先に計算して output を事前拡張する
         let max_end = finalized
@@ -1125,11 +1158,11 @@ mod boundary_tests {
             let start = offset as usize;
             output[start..start + bytes.len()].copy_from_slice(bytes);
         }
-        output
+        (output, moov_box)
     }
 
-    /// stpp サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
-    fn build_stpp_mp4_file_bytes() -> Vec<u8> {
+    /// stpp サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスする
+    fn build_stpp_mp4_file_bytes() -> (Vec<u8>, MoovBox) {
         let sample_entry = SampleEntry::Stpp(StppBox {
             data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
             namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
@@ -1141,16 +1174,33 @@ mod boundary_tests {
         build_subtitle_mp4_file_bytes(sample_entry, payload)
     }
 
-    /// Mp4FileDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
+    /// Mp4FileMuxer が stpp 用の trak を組み立て、Mp4FileDemuxer で型付きに取り出せる
+    ///
+    /// サンプルエントリーのバリアントだけを見ると、`hdlr` / `minf.media_header` が
+    /// 壊れていても Mp4FileDemuxer は `subt` / `text` を区別せず字幕として復元してしまうため、
+    /// muxer が生成した moov 側の属性も検証する
     #[test]
     fn stpp_sample_entry_via_mp4_file_demuxer() {
-        let mp4_bytes = build_stpp_mp4_file_bytes();
+        let (mp4_bytes, moov_box) = build_stpp_mp4_file_bytes();
+
+        assert_subtitle_trak(
+            &moov_box,
+            HdlrBox::HANDLER_TYPE_SUBT,
+            MediaHeader::Sthd(SthdBox),
+        );
 
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(Input {
             position: 0,
             data: &mp4_bytes,
         });
+
+        let tracks = demuxer.tracks().expect("failed to get tracks");
+        assert_eq!(tracks.len(), 1);
+        assert!(
+            matches!(tracks[0].kind, TrackKind::Subtitle),
+            "字幕トラックとして復元されること"
+        );
 
         let sample = demuxer
             .next_sample()
@@ -1306,8 +1356,8 @@ mod boundary_tests {
         );
     }
 
-    /// wvtt サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
-    fn build_wvtt_mp4_file_bytes() -> Vec<u8> {
+    /// wvtt サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスする
+    fn build_wvtt_mp4_file_bytes() -> (Vec<u8>, MoovBox) {
         let sample_entry = SampleEntry::Wvtt(WvttBox {
             data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
             vttc_box: VttCBox {
@@ -1319,16 +1369,32 @@ mod boundary_tests {
         build_subtitle_mp4_file_bytes(sample_entry, payload)
     }
 
-    /// Mp4FileDemuxer 経由で wvtt サンプルエントリーが `SampleEntry::Wvtt(_)` として取り出せる
+    /// Mp4FileMuxer が wvtt 用の trak を組み立て、Mp4FileDemuxer で型付きに取り出せる
+    ///
+    /// wvtt は stpp と違ってハンドラー種別が `text` になる。
+    /// Mp4FileDemuxer は `subt` と `text` を区別しないため、moov 側の属性も検証する
     #[test]
     fn wvtt_sample_entry_via_mp4_file_demuxer() {
-        let mp4_bytes = build_wvtt_mp4_file_bytes();
+        let (mp4_bytes, moov_box) = build_wvtt_mp4_file_bytes();
+
+        assert_subtitle_trak(
+            &moov_box,
+            HdlrBox::HANDLER_TYPE_TEXT,
+            MediaHeader::Sthd(SthdBox),
+        );
 
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(Input {
             position: 0,
             data: &mp4_bytes,
         });
+
+        let tracks = demuxer.tracks().expect("failed to get tracks");
+        assert_eq!(tracks.len(), 1);
+        assert!(
+            matches!(tracks[0].kind, TrackKind::Subtitle),
+            "字幕トラックとして復元されること"
+        );
 
         let sample = demuxer
             .next_sample()
@@ -1494,8 +1560,8 @@ mod boundary_tests {
         );
     }
 
-    /// tx3g サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスして MP4 バイト列を返す
-    fn build_tx3g_mp4_file_bytes() -> Vec<u8> {
+    /// tx3g サンプルエントリーを持つ Sample を Mp4FileMuxer で 1 本マルチプレックスする
+    fn build_tx3g_mp4_file_bytes() -> (Vec<u8>, MoovBox) {
         let sample_entry = SampleEntry::Tx3g(Tx3gBox {
             data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
             display_flags: 0,
@@ -1511,16 +1577,32 @@ mod boundary_tests {
         build_subtitle_mp4_file_bytes(sample_entry, payload)
     }
 
-    /// Mp4FileDemuxer 経由で tx3g サンプルエントリーが `SampleEntry::Tx3g(_)` として取り出せる
+    /// Mp4FileMuxer が tx3g 用の trak を組み立て、Mp4FileDemuxer で型付きに取り出せる
+    ///
+    /// tx3g だけはメディアヘッダーが `sthd` ではなく `nmhd` になる。
+    /// この違いは demux 経路では観測できないため、moov 側の属性で検証する
     #[test]
     fn tx3g_sample_entry_via_mp4_file_demuxer() {
-        let mp4_bytes = build_tx3g_mp4_file_bytes();
+        let (mp4_bytes, moov_box) = build_tx3g_mp4_file_bytes();
+
+        assert_subtitle_trak(
+            &moov_box,
+            HdlrBox::HANDLER_TYPE_TEXT,
+            MediaHeader::Nmhd(NmhdBox),
+        );
 
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(Input {
             position: 0,
             data: &mp4_bytes,
         });
+
+        let tracks = demuxer.tracks().expect("failed to get tracks");
+        assert_eq!(tracks.len(), 1);
+        assert!(
+            matches!(tracks[0].kind, TrackKind::Subtitle),
+            "字幕トラックとして復元されること"
+        );
 
         let sample = demuxer
             .next_sample()

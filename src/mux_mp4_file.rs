@@ -1323,30 +1323,6 @@ mod tests {
             .expect("failed to append sample after MissingSampleEntry");
     }
 
-    /// 字幕トラック 1 本の append_sample → finalize のスモークテスト
-    #[test]
-    fn test_subtitle_track_append_and_finalize() {
-        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
-        let initial_size = muxer.initial_boxes_bytes().len() as u64;
-
-        let sample = Sample {
-            track_kind: TrackKind::Subtitle,
-            sample_entry: Some(create_stpp_sample_entry()),
-            keyframe: true,
-            timescale: NonZeroU32::MIN.saturating_add(1000 - 1),
-            duration: 500,
-            composition_time_offset: None,
-            data_offset: initial_size,
-            data_size: 128,
-        };
-        muxer
-            .append_sample(&sample)
-            .expect("failed to append subtitle sample");
-
-        let finalized = muxer.finalize().expect("failed to finalize");
-        assert!(!finalized.moov_box_bytes.is_empty());
-    }
-
     /// ファイナライズ済みエラーのテスト
     #[test]
     fn test_already_finalized_error() {

@@ -704,9 +704,9 @@ proptest! {
 
         let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let video_timescale = NonZeroU32::new(30).unwrap();
-        let audio_timescale = NonZeroU32::new(48000).unwrap();
-        let subtitle_timescale = NonZeroU32::new(1000).unwrap();
+        let video_timescale = NonZeroU32::new(30).expect("30 は非ゼロ");
+        let audio_timescale = NonZeroU32::new(48000).expect("48000 は非ゼロ");
+        let subtitle_timescale = NonZeroU32::new(1000).expect("1000 は非ゼロ");
 
         let mut total_data_size = 0usize;
 

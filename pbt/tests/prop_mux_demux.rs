@@ -1095,8 +1095,8 @@ proptest! {
         // moov ボックスの尺に関する不変条件を検証する
         //
         // このテストは音声と映像の timescale を独立に生成するため、両者が食い違う入力が普通に現れる。
-        // そのとき `tkhd` の duration をメディアのタイムスケール単位のまま書くと、
-        // ムービーのタイムスケール単位として解釈されて誤った尺になる。
+        // そのとき `tkhd` の duration を `mdhd` の timescale 単位のまま書くと、
+        // `mvhd` の timescale 単位として解釈されて誤った尺になる。
         // demuxer は尺として `mdhd` しか読まないので、この不整合は
         // mux → demux のラウンドトリップでは検出できない。そのため moov ボックスを直接検証する
         let moov_box = finalized.moov_box();
@@ -1112,7 +1112,7 @@ proptest! {
                 _ => unreachable!("音声・映像以外のトラックは本テストの対象外"),
             };
 
-            // `mdhd` はメディアのタイムスケール単位なので、入力した値がそのまま入る
+            // `mdhd` の duration はそのトラックの timescale 単位なので、入力した値がそのまま入る
             let mdhd_box = &trak_box.mdia_box.mdhd_box;
             prop_assert_eq!(
                 mdhd_box.timescale, expected_timescale,
@@ -1123,7 +1123,7 @@ proptest! {
                 "mdhd の duration が入力サンプルの尺の合計と一致しない"
             );
 
-            // `tkhd` はムービーのタイムスケール単位なので、`mdhd` の尺を切り上げ換算した値になる
+            // `tkhd` の duration は `mvhd` の timescale 単位なので、`mdhd` の尺を切り上げ換算した値になる
             let expected_tkhd_duration = u64::try_from(
                 (mdhd_box.duration as u128 * movie_timescale)
                     .div_ceil(mdhd_box.timescale.get() as u128),
@@ -1131,7 +1131,7 @@ proptest! {
             .expect("この生成範囲では換算結果は必ず u64 に収まる");
             prop_assert_eq!(
                 trak_box.tkhd_box.duration, expected_tkhd_duration,
-                "tkhd の duration がムービーのタイムスケール単位になっていない"
+                "tkhd の duration が mvhd の timescale 単位になっていない"
             );
         }
 

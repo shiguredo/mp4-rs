@@ -844,8 +844,8 @@ impl Mp4FileMuxer {
     }
 
     fn build_moov_box(&self) -> Result<MoovBox, MuxError> {
-        // 各トラックの `tkhd` の `duration` はムービーのタイムスケール単位で書く必要があるため、
-        // trak ボックスの構築よりも先にムービーのタイムスケールを確定させる
+        // 各トラックの `tkhd` の `duration` は `mvhd` の `timescale` 単位で書く必要があるため、
+        // trak ボックスの構築よりも先に `mvhd` に入れる `timescale` を確定させる
         // （`calculate_total_duration()` は `trak_boxes` に依存しないので、この順序変更に副作用はない）
         let (timescale, duration) = self.calculate_total_duration();
 
@@ -1132,12 +1132,12 @@ impl Mp4FileMuxer {
     }
 }
 
-/// メディアのタイムスケール単位の尺を、ムービーのタイムスケール単位に換算する
+/// `mdhd` の `timescale` 単位の尺を、`mvhd` の `timescale` 単位に換算する
 ///
 /// [ISO/IEC 14496-12] TrackHeaderBox class では、`tkhd` ボックスの `duration` は
-/// ムービーのタイムスケール（`mvhd` ボックスの `timescale`）単位で表すと定められている。
-/// 一方で `mdhd` ボックスの `duration` はメディアのタイムスケール単位なので、
-/// トラックのタイムスケールがムービーのタイムスケールと異なる場合には、この換算が必要になる。
+/// ファイル全体の時間軸を定める `mvhd` ボックスの `timescale` 単位で表すと定められている。
+/// 一方 `mdhd` ボックスの `duration` は、そのトラック固有の `timescale` 単位である。
+/// トラックの `timescale` が `mvhd` のものと異なる場合には、この換算が必要になる。
 ///
 /// 端数は切り上げる。切り捨てを使うと、換算結果が 1 未満になるトラックで `duration` が 0 に潰れ、
 /// 尺が 0 のトラックとみなしてサンプルを読み出さないプレイヤーが存在するためである。

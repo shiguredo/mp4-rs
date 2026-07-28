@@ -735,6 +735,14 @@ impl Mp4SampleEntry {
 ///
 /// 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
 ///
+/// # ポインタフィールドの null 契約
+///
+/// - `sps_data` / `pps_data` は `sps_count` / `pps_count` の値によらず常に非 null でなければならない
+///   （既存 C API の後方互換性を維持するための挙動。`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` とは非対称）
+/// - `sps_sizes` は `sps_count > 0` のとき、`pps_sizes` は `pps_count > 0` のとき非 null が必要
+/// - 配列要素 `sps_data[i]` / `pps_data[i]` も個別に非 null が必要
+/// - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
+///
 /// # 使用例
 ///
 /// SPS / PPS リストへのアクセス例:
@@ -786,6 +794,8 @@ impl Mp4SampleEntryAvc1 {
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
         // SPS / PPS リストをメモリから読み込む
         let mut sps_list = Vec::new();
+        // sps_count == 0 でも sps_data の非 null を要求する既存挙動を据え置く
+        // （詳細は Mp4SampleEntryAvc1 の null 契約セクションを参照）
         if self.sps_data.is_null() {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
@@ -806,6 +816,7 @@ impl Mp4SampleEntryAvc1 {
         }
 
         let mut pps_list = Vec::new();
+        // pps_count == 0 でも pps_data の非 null を要求する既存挙動を据え置く（SPS 側と同旨）
         if self.pps_data.is_null() {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
@@ -865,6 +876,17 @@ impl Mp4SampleEntryAvc1 {
 /// 解像度、プロファイル、レベル、NALU パラメータセットなどの情報が含まれる
 ///
 /// 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+///
+/// # ポインタフィールドの null 契約
+///
+/// - `nalu_array_count == 0` のとき、`nalu_types` / `nalu_counts` /
+///   `nalu_data` / `nalu_sizes` はいずれも null でも許容される
+/// - `nalu_array_count > 0` のとき、`nalu_types` / `nalu_counts` は非 null が必要
+/// - 少なくとも 1 つの `nalu_counts[i] > 0` があるとき、`nalu_data` / `nalu_sizes` も非 null が必要
+///   （全 `nalu_counts[i] == 0` のとき、`nalu_data` / `nalu_sizes` は null でも許容される。
+///   空 NALU 配列のみの `hvcC` を過剰に弾かないための挙動）
+/// - 配列要素 `nalu_data[k]` も個別に非 null が必要
+/// - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
 ///
 /// # 使用例
 ///
@@ -1016,6 +1038,18 @@ impl Mp4SampleEntryHev1 {
 /// 解像度、プロファイル、レベル、NALU パラメータセットなどの情報が含まれる
 ///
 /// 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+///
+/// # ポインタフィールドの null 契約
+///
+/// `Mp4SampleEntryHev1` と同じ規約に従う（ポインタフィールドの構成が同型）。
+///
+/// - `nalu_array_count == 0` のとき、`nalu_types` / `nalu_counts` /
+///   `nalu_data` / `nalu_sizes` はいずれも null でも許容される
+/// - `nalu_array_count > 0` のとき、`nalu_types` / `nalu_counts` は非 null が必要
+/// - 少なくとも 1 つの `nalu_counts[i] > 0` があるとき、`nalu_data` / `nalu_sizes` も非 null が必要
+///   （全 `nalu_counts[i] == 0` のとき、`nalu_data` / `nalu_sizes` は null でも許容される）
+/// - 配列要素 `nalu_data[k]` も個別に非 null が必要
+/// - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
 ///
 /// # 使用例
 ///

@@ -110,11 +110,11 @@
   - sidx を先頭に付加した際に、当該セグメントの tfra エントリと `media_bytes_written` に sidx サイズが加算されていなかった
   - 当該セグメント自身と後続セグメントの両方で `tfra.moof_offset` が sidx 分ずれ、シーク・ランダムアクセスで moof の位置を外していた
   - @sile
-- [FIX] `FullBoxFlags::from_flags` / `FullBoxFlags::is_set` にビット位置 32 以上を渡すとシフト演算でパニック（debug ビルド）や wrap（release ビルド）していたのを修正する
+- [FIX] `FullBoxFlags::from_flags` / `FullBoxFlags::is_set` にビット位置 32 以上を渡すとシフト演算でパニック（debug ビルド）やラップ（release ビルド）していたのを修正する
   - `is_set` は 32 以上のビット位置に対して常に `false` を返す
   - `from_flags` は 32 以上のビット位置を 0 として無視する
   - @sile
-- [FIX] `FullBoxFlags::from_flags` に同一ビット位置を複数回渡すと u32 加算オーバーフローで panic していたのを修正する
+- [FIX] `FullBoxFlags::from_flags` に同一ビット位置を複数回渡すと u32 加算オーバーフローでパニックしていたのを修正する
   - 内部の畳み込みを `.sum()` から OR (`.fold`) に変更し、重複を冪等に扱う
   - @sile
 

@@ -122,7 +122,7 @@ proptest! {
     //
     // 同じビット位置が複数回渡された場合でも、結果は
     // 「有効なビット位置 (i < 32 かつ bool が true) の集合を OR で合成した値」と等価になること。
-    // （素朴に sum() で畳み込むと u32 加算オーバーフローで panic するため）
+    // （素朴に sum() で畳み込むと u32 加算オーバーフローでパニックするため）
     // 入力に `bool` も混ぜて生成し、`filter(x.1)` の false 分岐もカバーする。
     #[test]
     fn full_box_flags_from_flags_duplicate_positions_or_folded(

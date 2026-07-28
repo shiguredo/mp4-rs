@@ -7,6 +7,7 @@ use shiguredo_mp4::{
 
 /// 発生する可能性のあるエラーの種類を表現する列挙型
 #[repr(C)]
+#[derive(Debug, PartialEq, Eq)]
 #[expect(non_camel_case_types)]
 pub enum Mp4Error {
     /// エラーが発生しなかったことを示す

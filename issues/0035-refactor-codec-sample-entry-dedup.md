@@ -1,4 +1,4 @@
-# boxes_sample_entry.rs の Hev1Box/Hvc1Box と Vp08Box/Vp09Box が完全に同一の構造・ロジックで重複している
+# boxes_sample_entry.rs の Hev1Box と Hvc1Box が完全に同一の構造・ロジックで重複している
 
 - Priority: Medium
 - Created: 2026-07-20
@@ -9,41 +9,64 @@
 
 ## 目的
 
-`Hev1Box` と `Hvc1Box`、`Vp08Box` と `Vp09Box` は、フィールド構成・`Encode`・`Decode`・`BaseBox` の実装がボックス種別定数（`b"hev1"` vs `b"hvc1"`、`b"vp08"` vs `b"vp09"`）を除いて完全に同一である。HEVC 対で約 150 行、VP 対で約 150 行のコピペ重複があり、将来的に HEVC / VP 関連のボックスに修正が必要になった場合、両方を同時に修正する必要があり修正漏れのリスクがある。
+`Hev1Box` と `Hvc1Box` は、フィールド構成・`Encode`・`Decode`・`BaseBox` の実装がボックス種別定数（`b"hev1"` vs `b"hvc1"`）と `check_mandatory_box` に渡すエラーメッセージ用の文字列を除いて完全に同一である。HEVC 対で約 150 行のコピペ重複があり、将来的に HEVC 関連のボックスに修正が必要になった場合、両方を同時に修正する必要があり修正漏れのリスクがある。
+
+`hev1` と `hvc1` は ISO/IEC 14496-15 上、パラメータセット（VPS / SPS / PPS）が in-band に現れるか out-of-band (`hvcC`) に現れるかの違いだけで、内部構造は仕様上完全に同一である。この「仕様レベルで semantically same」という事実がコードに反映されていない。
 
 C API 層（`crates/c-api/src/boxes.rs`）にも `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複が伝播している。
 
+### 対象外: Vp08Box / Vp09Box
+
+`Vp08Box` と `Vp09Box` も MP4 コンテナ内の box 形状は同一だが、VP8 と VP9 は独立したコーデック仕様であり、共通の box 形状は「両方とも `vpcC` を使う」という偶然の一致に過ぎない。共通化すると、将来 VP9 に新フィールドが追加されたり VP8 側の挙動だけ変えたくなった場合に**偽の結合**として邪魔になる。よって Vp08/Vp09 および C API 側の `Mp4SampleEntryVp08` / `Mp4SampleEntryVp09` は本 issue の対象外とし、独立実装のまま維持する。
+
 ## 優先度根拠
 
-直ちにバグを引き起こすわけではないが、修正漏れリスクと可読性の観点から解消すべき技術的負債。
+直ちにバグを引き起こすわけではないが、修正漏れリスクと可読性の観点から解消すべき技術的負債。`hev1` / `hvc1` は仕様上 semantically same であるため、共通化に仕様的な根拠がある（対して VP8/VP9 は共通化が正当化できないため対象外とした）。
 
 ## 現状
 
-- `src/boxes_sample_entry.rs:508-583`（Hev1Box）と `585-660`（Hvc1Box）: `visual: VisualSampleEntryFields` + `hvcc_box: HvccBox` + `unknown_boxes: Vec<UnknownBox>` で同一
-- `src/boxes_sample_entry.rs:870-946`（Vp08Box）と `948-1020`（Vp09Box）: `visual` + `vpcc_box: VpccBox` + `unknown_boxes` で同一
-- `crates/c-api/src/boxes.rs`: `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` と NALU 配列構築ロジックが重複。`Mp4SampleEntryVp08` / `Mp4SampleEntryVp09` も VpccBox 構築ロジックが類似するが、struct フィールドが異なる（Vp09 には `profile`/`level` がある）ため本 issue の対象外
+- `src/boxes_sample_entry.rs:583-665`（Hev1Box）と `667-749`（Hvc1Box）: `visual: VisualSampleEntryFields` + `hvcc_box: HvccBox` + `unknown_boxes: Vec<UnknownBox>` で同一。差分は `TYPE` 定数と `check_mandatory_box` に渡す親ボックス名の文字列（`"hev1"` / `"hvc1"`）のみ
+- `crates/c-api/src/boxes.rs:918-1033`（Mp4SampleEntryHev1）と `1081-1190`（Mp4SampleEntryHvc1）: struct フィールドは完全一致、`to_sample_entry()` は最後に返す enum variant (`SampleEntry::Hev1` / `SampleEntry::Hvc1`) 以外は同一、`nalu_data_index()` は完全一致
 
 ## 設計方針
 
-共通の内部構造体（`HevcSampleEntryInner` / `VpSampleEntryInner`）を抽出し、`Hev1Box` / `Hvc1Box` は `TYPE` 定数と内部構造体の薄いラッパーにする。マクロは使用しない（AGENTS.md / shiguredo-rust スキルの「マクロを作らないこと」規約に従う）。
+`Hev1Box` / `Hvc1Box` の struct 定義・`TYPE` 定数・trait impl の外枠は不変のまま、Encode / Decode の重複ロジックを **共通ヘルパー関数** に抽出する。マクロは使用しない（AGENTS.md / shiguredo-rust スキルの「マクロを作らないこと」規約に従う）。
 
-C API 層も共通のヘルパー関数に抽出する。
+「共通の内部構造体を抽出して薄いラッパーにする」という代替案は、公開 struct の `pub` フィールドが変わり後方互換性を壊すため採用しない。
+
+### コアライブラリ側の抽出候補
+
+- `encode_hevc_sample_entry_body(buf, box_type, visual, hvcc_box, unknown_boxes) -> Result<usize>`
+- `decode_hevc_sample_entry_body(buf, expected_type) -> Result<(VisualSampleEntryFields, HvccBox, Vec<UnknownBox>, usize)>`
+  - `check_mandatory_box` に渡す親ボックス名は `expected_type` から導出する
+- `BaseBox::children()` の実装は 5 行程度で共通化の効果が薄いためインラインのまま残す
+
+`Hev1Box` / `Hvc1Box` の `Encode::encode` / `Decode::decode` はそれぞれヘルパー関数への薄い委譲になる。
+
+### C API 層の抽出候補
+
+- `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の struct 定義は `#[repr(C)]` の ABI であり不変
+- NALU 配列構築ロジックを free 関数に抽出（`nalu_data_index` は完全に同一なのでこれも free 関数化）
+- `HvccBox` 構築ロジックを共通ヘルパーに抽出
+- `to_sample_entry()` は最後の `SampleEntry` variant 生成だけを各 impl に残す
 
 ### 後方互換性への影響
 
-公開 API（`Hev1Box` / `Hvc1Box` / `Vp08Box` / `Vp09Box` の struct フィールド、`Encode` / `Decode` / `BaseBox` の trait impl）は不変。内部構造体の抽出は private な実装詳細であり、外部からの型参照・フィールドアクセスに影響しない。
+公開 API（`Hev1Box` / `Hvc1Box` の struct フィールド、`Encode` / `Decode` / `BaseBox` の trait impl）は不変。C API 側の `#[repr(C)]` struct とその公開関数シグネチャも不変。ヘルパー関数の抽出は private な実装詳細であり、外部からの型参照・フィールドアクセスに影響しない。
 
 ## 完了条件
 
-- 重複コードが解消されること
-- 公開 API の後方互換性が保たれること
+- `Hev1Box` / `Hvc1Box` の Encode / Decode の重複コードが解消されること
+- C API 側の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` および `nalu_data_index()` の重複コードが解消されること
+- Vp08Box / Vp09Box および C API 側の `Mp4SampleEntryVp08` / `Mp4SampleEntryVp09` は変更しないこと
+- 公開 API（Rust struct フィールド、trait impl、C ABI）の後方互換性が保たれること
 - 既存のテストが通ること
 - 既存の PBT（ラウンドトリップテスト）が通ること
 - `cargo clippy` が通ること
 
 ## 解決方法
 
-コアライブラリで共通内部構造体を抽出し、C API 層で共通ヘルパー関数に抽出する。
+コアライブラリで HEVC サンプルエントリー共通の Encode / Decode ヘルパー関数を抽出し、`Hev1Box` / `Hvc1Box` の実装を薄い委譲にする。C API 層でも NALU 配列構築と HvccBox 構築の共通ヘルパー関数を抽出する。
 
 ## CHANGES.md
 

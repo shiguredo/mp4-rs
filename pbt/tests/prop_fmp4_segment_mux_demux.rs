@@ -667,6 +667,114 @@ proptest! {
         prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
     }
 
+    /// 映像 + 音声のマルチトラックで sidx あり／なし混在時にも tfra.moof_offset が実 moof 位置を指すことを確認する
+    ///
+    /// 各セグメントで音声サンプルを 0 個以上（映像は必ず 1 個以上）に振り分けることで、以下の分岐をカバーする:
+    /// - 両トラックが同じセグメントに含まれる（両方の tfra エントリに sidx 加算が入ることの検証）
+    /// - 音声トラックが 2 セグメント目以降に初めて登場する（`pre_tfra_lens.get(track_index) = None → unwrap_or(0)` に落ちる経路）
+    /// - 既存トラックで今回サンプルが無い（`entries.len() == pre_len` で加算スキップされる経路）
+    #[test]
+    fn mfra_bytes_roundtrip_with_sidx_mix_multi_track(
+        segments in prop::collection::vec(
+            (
+                prop::collection::vec(arb_video_sample(0), 1..3),
+                prop::collection::vec(arb_audio_sample(1), 0..3),
+                any::<bool>(),
+            ),
+            1..5,
+        ),
+    ) {
+        let video_entry = create_avc1_sample_entry(320, 240);
+        let audio_entry = create_opus_sample_entry();
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+
+        // 各セグメントについて (実 moof 位置 = セグメント先頭 + sidx サイズ, has_audio) を記録する
+        let mut segment_moof_positions: Vec<(u64, bool)> = Vec::new();
+        let mut cumulative_bytes = 0u64;
+
+        for (video_samples, audio_samples, with_sidx) in &segments {
+            let has_audio = !audio_samples.is_empty();
+
+            // 映像を先に並べることで video が track_id=1、audio が track_id=2 になるよう固定する
+            let mut fmp4_samples: Vec<Sample> = Vec::new();
+            let mut payloads: Vec<&[u8]> = Vec::new();
+            for sample in video_samples {
+                fmp4_samples.push(video_segment_sample(&video_entry, sample, None));
+                payloads.push(sample.data.as_slice());
+            }
+            for sample in audio_samples {
+                fmp4_samples.push(audio_segment_sample(&audio_entry, sample));
+                payloads.push(sample.data.as_slice());
+            }
+
+            let segment = if *with_sidx {
+                build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads)
+            } else {
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads)
+            };
+
+            let sidx_size = if *with_sidx {
+                let (_sidx_box, decoded) =
+                    SidxBox::decode(&segment).expect("failed to decode sidx from segment");
+                decoded as u64
+            } else {
+                0
+            };
+
+            segment_moof_positions.push((cumulative_bytes + sidx_size, has_audio));
+            cumulative_bytes += segment.len() as u64;
+        }
+
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let mfra = muxer.mfra_bytes().expect("failed to build mfra");
+
+        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("failed to decode mfra");
+        prop_assert_eq!(decoded_size, mfra.len());
+
+        // 映像トラックは全セグメントで必ずサンプルを持つ。音声はサンプルがあるセグメントだけ tfra エントリを持つ
+        let has_audio_any = segment_moof_positions.iter().any(|(_, a)| *a);
+        let expected_track_count = 1 + usize::from(has_audio_any);
+        prop_assert_eq!(mfra_box.tfra_boxes.len(), expected_track_count);
+
+        let init_size = init_bytes.len() as u64;
+
+        // 映像トラック（track_id=1）は全セグメントの moof を指すこと
+        let video_tfra = mfra_box
+            .tfra_boxes
+            .iter()
+            .find(|t| t.track_id == 1)
+            .expect("video tfra_box must exist for track_id=1");
+        prop_assert_eq!(video_tfra.entries.len(), segment_moof_positions.len());
+        for (entry, (moof_pos, _)) in video_tfra
+            .entries
+            .iter()
+            .zip(segment_moof_positions.iter().copied())
+        {
+            prop_assert_eq!(entry.moof_offset, init_size + moof_pos);
+        }
+
+        // 音声トラック（track_id=2）は音声サンプルがあったセグメントの moof のみを指すこと
+        if has_audio_any {
+            let audio_tfra = mfra_box
+                .tfra_boxes
+                .iter()
+                .find(|t| t.track_id == 2)
+                .expect("audio tfra_box must exist for track_id=2");
+            let expected_audio_offsets: Vec<u64> = segment_moof_positions
+                .iter()
+                .filter(|(_, a)| *a)
+                .map(|(p, _)| init_size + *p)
+                .collect();
+            prop_assert_eq!(audio_tfra.entries.len(), expected_audio_offsets.len());
+            for (entry, expected) in audio_tfra.entries.iter().zip(expected_audio_offsets.iter()) {
+                prop_assert_eq!(entry.moof_offset, *expected);
+            }
+        }
+
+        // mfro.size が mfra 全体のサイズと一致すること
+        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+    }
+
     /// sidx 付きセグメントが正しく demux できることを確認する
     #[test]
     fn sidx_roundtrip(

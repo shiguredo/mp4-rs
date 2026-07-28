@@ -106,6 +106,10 @@
 - [FIX] 破損した `stts` / `ctts` / `co64` を含む入力で、サンプル数やデータ位置の累計がオーバーフローしたときにパニックせずエラーを返すようにする
   - release ビルドではラップして誤ったサンプル数のアクセサが返っていた
   - @sile
+- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` で `mfra` の `tfra.moof_offset` が実 moof 位置より sidx 分前を指す問題を修正する
+  - sidx を先頭に付加した際に、当該セグメントの tfra エントリと `media_bytes_written` に sidx サイズが加算されていなかった
+  - 当該セグメント自身と後続セグメントの両方で `tfra.moof_offset` が sidx 分ずれ、シーク・ランダムアクセスで moof の位置を外していた
+  - @sile
 
 ### misc
 

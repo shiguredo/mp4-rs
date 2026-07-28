@@ -337,13 +337,15 @@ unsafe fn write_media_segment_impl(
 
     let fmp4_samples = match unsafe { convert_samples(samples_slice) } {
         Ok(samples) => samples,
-        Err(message) => {
+        Err(e) => {
             unsafe {
                 *out_data = std::ptr::null_mut();
                 *out_size = 0;
             }
-            muxer.set_last_error(&format!("[write_media_segment_impl] {message}"));
-            return Mp4Error::MP4_ERROR_INVALID_INPUT;
+            muxer.set_last_error(&format!(
+                "[write_media_segment_impl] convert_samples failed: {e:?}"
+            ));
+            return e;
         }
     };
 
@@ -410,21 +412,20 @@ unsafe fn write_bytes_result(
 }
 
 /// `Fmp4SegmentSample` のスライスを [`Sample`] の `Vec` に変換するヘルパー
-unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, &'static str> {
+///
+/// エラー時は `Mp4Error` をそのまま返し、C 呼び出し側が
+/// null ポインタか不正な入力かを判別できるようにする
+unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, Mp4Error> {
     samples
         .iter()
         .map(|s| {
             let Some(timescale) = NonZeroU32::new(s.timescale) else {
-                return Err("timescale must be non-zero");
+                return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
             };
             let sample_entry = if s.sample_entry.is_null() {
                 None
             } else {
-                Some(unsafe {
-                    (&*s.sample_entry)
-                        .to_sample_entry()
-                        .map_err(|_| "sample_entry is invalid")?
-                })
+                Some(unsafe { (&*s.sample_entry).to_sample_entry()? })
             };
             Ok(Sample {
                 track_kind: s.track_kind.into(),

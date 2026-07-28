@@ -200,26 +200,43 @@ pub fn parse_json_mp4_sample_entry_hvc1(
 ///
 /// `parse_json_mp4_sample_entry_hvc1()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_hvc1_free(entry: &mut Mp4SampleEntryHvc1) {
+    // `nalu_data` / `nalu_sizes` は `allocate_and_copy_array_list` が全 NALU 総数分を
+    // 確保するため、free 側にも同じ総数を渡す必要がある。総数は `nalu_counts` の解放より
+    // 前に算出しなければ use-after-free になる
+    let mut total_nalu_count: u32 = 0;
+
     if !entry.nalu_types.is_null() {
         unsafe {
-            crate::mp4_free(entry.nalu_types.cast_mut(), 0);
+            // `nalu_types` は `allocate_and_copy_bytes` で `nalu_array_count` バイト確保される
+            crate::mp4_free(entry.nalu_types.cast_mut(), entry.nalu_array_count);
         }
         entry.nalu_types = std::ptr::null();
     }
 
     if !entry.nalu_counts.is_null() {
         unsafe {
-            crate::mp4_free(entry.nalu_counts.cast_mut().cast(), 0);
+            // `free_array_list` に渡す全 NALU 総数を、解放前に算出する
+            let counts =
+                std::slice::from_raw_parts(entry.nalu_counts, entry.nalu_array_count as usize);
+            for count in counts {
+                total_nalu_count = total_nalu_count.saturating_add(*count);
+            }
+
+            // `nalu_counts` は `nalu_array_count * size_of::<u32>()` バイト確保される
+            let bytes = (entry.nalu_array_count as usize * std::mem::size_of::<u32>()) as u32;
+            crate::mp4_free(entry.nalu_counts.cast_mut().cast(), bytes);
         }
         entry.nalu_counts = std::ptr::null();
     }
 
     if !entry.nalu_data.is_null() {
         unsafe {
+            // `allocate_and_copy_array_list` が確保した count は「NALU 配列の個数」ではなく
+            // 「全 NALU の総数」なので、free にも総数を渡す
             crate::boxes::free_array_list(
                 entry.nalu_data as *mut *mut u8,
                 entry.nalu_sizes as *mut u32,
-                entry.nalu_array_count,
+                total_nalu_count,
             );
             entry.nalu_data = std::ptr::null();
             entry.nalu_sizes = std::ptr::null();
@@ -348,5 +365,100 @@ mod tests {
         assert_eq!(sample_entry.nalu_array_count, 0);
         assert!(sample_entry.nalu_types.is_null());
         assert!(sample_entry.nalu_counts.is_null());
+    }
+
+    /// 1 配列に 2 個の NALU を持つ入力（総数 2 > 配列数 1）の parse → free 回帰テスト
+    ///
+    /// 修正前は `free_array_list` に配列数（1）を渡していたため、確保時の総数（2）と
+    /// 食い違い、余剰バッファのリークと layout 不一致の `dealloc` を引き起こしていた
+    #[test]
+    fn test_json_to_hvc1_free_more_nalus_than_arrays() {
+        let json_str = r#"{
+            "kind": "hvc1",
+            "width": 1920,
+            "height": 1080,
+            "generalProfileSpace": 0,
+            "generalTierFlag": 0,
+            "generalProfileIdc": 2,
+            "generalProfileCompatibilityFlags": 1610612736,
+            "generalConstraintIndicatorFlags": 12682136550675546112,
+            "generalLevelIdc": 120,
+            "chromaFormatIdc": 1,
+            "bitDepthLumaMinus8": 0,
+            "bitDepthChromaMinus8": 0,
+            "minSpatialSegmentationIdc": 0,
+            "parallelismType": 0,
+            "avgFrameRate": 0,
+            "constantFrameRate": 0,
+            "numTemporalLayers": 1,
+            "temporalIdNested": 0,
+            "lengthSizeMinusOne": 3,
+            "naluArrays": [
+                {"naluType": 32, "units": [[1, 2], [3, 4]]}
+            ]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+
+        // 「配列数」は 1、平坦化した「NALU 総数」は 2 になっている
+        assert_eq!(sample_entry.nalu_array_count, 1);
+
+        // 解放が確保サイズと合った count で行われることを検証する（内部で UB があれば
+        // アロケータ / miri / ASAN が検出する）
+        mp4_sample_entry_hvc1_free(&mut sample_entry);
+        assert_eq!(sample_entry.nalu_array_count, 0);
+        assert!(sample_entry.nalu_types.is_null());
+        assert!(sample_entry.nalu_counts.is_null());
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
+    }
+
+    /// 空配列を含む入力（総数 1 < 配列数 2）の parse → free 回帰テスト
+    ///
+    /// 修正前は `free_array_list` に配列数（2）を渡していたため、確保時の総数（1）と
+    /// 食い違い、確保外の領域を読み出して不正なポインタを `mp4_free` に渡していた
+    #[test]
+    fn test_json_to_hvc1_free_fewer_nalus_than_arrays() {
+        let json_str = r#"{
+            "kind": "hvc1",
+            "width": 1920,
+            "height": 1080,
+            "generalProfileSpace": 0,
+            "generalTierFlag": 0,
+            "generalProfileIdc": 2,
+            "generalProfileCompatibilityFlags": 1610612736,
+            "generalConstraintIndicatorFlags": 12682136550675546112,
+            "generalLevelIdc": 120,
+            "chromaFormatIdc": 1,
+            "bitDepthLumaMinus8": 0,
+            "bitDepthChromaMinus8": 0,
+            "minSpatialSegmentationIdc": 0,
+            "parallelismType": 0,
+            "avgFrameRate": 0,
+            "constantFrameRate": 0,
+            "numTemporalLayers": 1,
+            "temporalIdNested": 0,
+            "lengthSizeMinusOne": 3,
+            "naluArrays": [
+                {"naluType": 32, "units": [[1, 2]]},
+                {"naluType": 33, "units": []}
+            ]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+
+        // 「配列数」は 2、平坦化した「NALU 総数」は 1 になっている
+        assert_eq!(sample_entry.nalu_array_count, 2);
+
+        mp4_sample_entry_hvc1_free(&mut sample_entry);
+        assert_eq!(sample_entry.nalu_array_count, 0);
+        assert!(sample_entry.nalu_types.is_null());
+        assert!(sample_entry.nalu_counts.is_null());
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
     }
 }

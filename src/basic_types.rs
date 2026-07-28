@@ -308,11 +308,18 @@ impl FullBoxFlags {
     }
 
     /// `(ビット位置、フラグがセットされているかどうか)` のイテレーターを受け取って、対応するビットフラグを作成する
+    ///
+    /// ビット位置が `u32` の型幅（32 bit）以上の場合、そのビットは 0 として無視する。
+    /// 同じビット位置が複数回渡された場合は OR で合成される（冪等）。
     pub fn from_flags<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (usize, bool)>,
     {
-        let flags = iter.into_iter().filter(|x| x.1).map(|x| 1 << x.0).sum();
+        let flags: u32 = iter
+            .into_iter()
+            .filter(|x| x.1 && x.0 < u32::BITS as usize)
+            .map(|x| 1u32 << x.0)
+            .fold(0u32, |acc, bit| acc | bit);
         Self(flags)
     }
 
@@ -322,8 +329,13 @@ impl FullBoxFlags {
     }
 
     /// 指定されたビット位置のフラグがセットされているかどうかを判定する
+    ///
+    /// ビット位置が `u32` の型幅（32 bit）以上の場合は常に `false` を返す。
     pub const fn is_set(self, i: usize) -> bool {
-        (self.0 & (1 << i)) != 0
+        if i >= u32::BITS as usize {
+            return false;
+        }
+        (self.0 & (1u32 << i)) != 0
     }
 }
 

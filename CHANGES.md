@@ -80,6 +80,14 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] c-api の `Mp4SampleEntryAvc1` / `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` で配列ベースポインタが null の場合に未定義動作ではなくエラーを返すようにする
+  - `avc1` では `sps_count > 0` で `sps_sizes` が null、`pps_count > 0` で `pps_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
+  - `hev1` / `hvc1` では `nalu_array_count > 0` で `nalu_types` / `nalu_counts` が null のとき、および `nalu_counts[i] > 0` となる各 i について `nalu_data` / `nalu_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
+  - @sile
+- [FIX] c-api の `fmp4_segment_muxer_write_media_segment*` でサンプル変換エラーの種別が失われていたのを修正する
+  - `convert_samples` の戻り値を `&'static str` から `Mp4Error` に変え、`to_sample_entry()` が返したエラー種別をそのまま伝播する
+  - これまでは `to_sample_entry()` が返した `MP4_ERROR_NULL_POINTER` 等の種別が呼び出し側で観測できず、一律 `MP4_ERROR_INVALID_INPUT` として観測されていた
+  - @sile
 - [FIX] wasm の `mp4_sample_entry_hev1_free()` / `mp4_sample_entry_hvc1_free()` のメモリ解放の不一致を修正する
   - `mp4_free` に確保時のバイト数を渡すようにする（これまでは `size = 0` を渡していたため、`naluArrays` が非空のときにヒープ領域が解放されずリークしていた）
   - `free_array_list` に `nalu_counts` の総和を渡すようにする（これまでは NALU 配列の個数を渡していたため、確保時の要素数と食い違いヒープを破壊していた）

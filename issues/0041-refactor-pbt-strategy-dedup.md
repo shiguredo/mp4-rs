@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: qwen3.8-max-preview
 - Branch: feature/refactor-pbt-strategy-dedup
 - Polished: 2026-07-20
@@ -34,7 +34,12 @@
 
 ## 解決方法
 
-1. `pbt/tests/common/mod.rs` を作成し、共通 Strategy 関数を配置する
-2. `prop_additional_boxes.rs` と `prop_codec_boxes.rs` から共通関数を import する
-3. `prop_additional_boxes.rs` 側の簡略版は、完全版に `.prop_map()` で固定値を上書きする形に変換する
-4. `arb_dops_box` は両ファイルでほぼ同一のため、簡略版を削除して共通版を参照する
+非対応として closed する。
+
+### 非対応の理由
+
+- 削減できる重複は約 130 行、共通化後もファイル総量 2004 行に対して差し引き 50〜80 行程度の圧縮にとどまり、効果が小さい
+- 「Strategy 修正時の修正漏れリスク」は、フィールド追加や型変更ならコンパイラが両方の Strategy でエラーを検出するため、実質的には値域変更程度に限られる
+- 完全版に `.prop_map()` で固定値を上書きする方式は、直接構造体を構築している現状より、なぜその値が固定なのか（狭い探索空間で速く回す等の意図）が読み取りにくくなる懸念がある
+- Rust の integration test はファイルごとに別クレートとしてコンパイルされるため、`arb_dops_box` だけ移すような部分対応でも `pbt/tests/common/mod.rs` の新設と `mod common;` の追加という同じセットアップコストがかかり、部分対応の費用対効果も悪い
+- 以上より、Priority Low のまま放置するより明示的に non-対応で closed する方が管理コストが低いと判断した

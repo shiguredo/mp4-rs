@@ -333,8 +333,9 @@ proptest! {
     /// AvccBox (Baseline profile) の encode/decode roundtrip
     #[test]
     fn avcc_box_baseline_roundtrip(avcc in arb_avcc_box_baseline()) {
-        let encoded = avcc.encode_to_vec().unwrap();
-        let (decoded, size) = AvccBox::decode(&encoded).unwrap();
+        let encoded = avcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = AvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な AvccBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.avc_profile_indication, avcc.avc_profile_indication);
@@ -349,8 +350,9 @@ proptest! {
     /// AvccBox (High profile) の encode/decode roundtrip
     #[test]
     fn avcc_box_high_roundtrip(avcc in arb_avcc_box_high()) {
-        let encoded = avcc.encode_to_vec().unwrap();
-        let (decoded, size) = AvccBox::decode(&encoded).unwrap();
+        let encoded = avcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = AvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な AvccBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.avc_profile_indication, avcc.avc_profile_indication);
@@ -365,8 +367,9 @@ proptest! {
     /// HvccBox の encode/decode roundtrip
     #[test]
     fn hvcc_box_roundtrip(hvcc in arb_hvcc_box()) {
-        let encoded = hvcc.encode_to_vec().unwrap();
-        let (decoded, size) = HvccBox::decode(&encoded).unwrap();
+        let encoded = hvcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = HvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な HvccBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.general_profile_space.get(), hvcc.general_profile_space.get());
@@ -384,8 +387,9 @@ proptest! {
     /// VpccBox の encode/decode roundtrip
     #[test]
     fn vpcc_box_roundtrip(vpcc in arb_vpcc_box()) {
-        let encoded = vpcc.encode_to_vec().unwrap();
-        let (decoded, size) = VpccBox::decode(&encoded).unwrap();
+        let encoded = vpcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = VpccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な VpccBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.profile, vpcc.profile);
@@ -404,8 +408,9 @@ proptest! {
     /// Av1cBox の encode/decode roundtrip
     #[test]
     fn av1c_box_roundtrip(av1c in arb_av1c_box()) {
-        let encoded = av1c.encode_to_vec().unwrap();
-        let (decoded, size) = Av1cBox::decode(&encoded).unwrap();
+        let encoded = av1c.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Av1cBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Av1cBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.seq_profile.get(), av1c.seq_profile.get());
@@ -429,8 +434,9 @@ proptest! {
     /// DopsBox の encode/decode roundtrip
     #[test]
     fn dops_box_roundtrip(dops in arb_dops_box()) {
-        let encoded = dops.encode_to_vec().unwrap();
-        let (decoded, size) = DopsBox::decode(&encoded).unwrap();
+        let encoded = dops.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = DopsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DopsBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.output_channel_count, dops.output_channel_count);
@@ -444,8 +450,9 @@ proptest! {
     /// EsdsBox の encode/decode roundtrip
     #[test]
     fn esds_box_roundtrip(esds in arb_esds_box()) {
-        let encoded = esds.encode_to_vec().unwrap();
-        let (decoded, size) = EsdsBox::decode(&encoded).unwrap();
+        let encoded = esds.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = EsdsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な EsdsBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.es.es_id, esds.es.es_id);
@@ -476,8 +483,9 @@ mod boundary_tests {
             bit_depth_chroma_minus8: None,
             sps_ext_list: vec![],
         };
-        let encoded = avcc.encode_to_vec().unwrap();
-        let (decoded, _) = AvccBox::decode(&encoded).unwrap();
+        let encoded = avcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = AvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な AvccBox は必ずデコードできる");
         assert!(decoded.sps_list.is_empty());
         assert!(decoded.pps_list.is_empty());
     }
@@ -504,8 +512,9 @@ mod boundary_tests {
             length_size_minus_one: Uint::new(3),
             nalu_arrays: vec![],
         };
-        let encoded = hvcc.encode_to_vec().unwrap();
-        let (decoded, _) = HvccBox::decode(&encoded).unwrap();
+        let encoded = hvcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = HvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な HvccBox は必ずデコードできる");
         assert!(decoded.nalu_arrays.is_empty());
     }
 
@@ -523,8 +532,9 @@ mod boundary_tests {
             matrix_coefficients: 1,
             codec_initialization_data: vec![],
         };
-        let encoded = vpcc.encode_to_vec().unwrap();
-        let (decoded, _) = VpccBox::decode(&encoded).unwrap();
+        let encoded = vpcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = VpccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な VpccBox は必ずデコードできる");
         assert!(decoded.codec_initialization_data.is_empty());
     }
 
@@ -544,8 +554,9 @@ mod boundary_tests {
             initial_presentation_delay_minus_one: None,
             config_obus: vec![],
         };
-        let encoded = av1c.encode_to_vec().unwrap();
-        let (decoded, _) = Av1cBox::decode(&encoded).unwrap();
+        let encoded = av1c.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Av1cBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Av1cBox は必ずデコードできる");
         assert!(decoded.initial_presentation_delay_minus_one.is_none());
     }
 
@@ -565,8 +576,9 @@ mod boundary_tests {
             initial_presentation_delay_minus_one: Some(Uint::new(4)),
             config_obus: vec![],
         };
-        let encoded = av1c.encode_to_vec().unwrap();
-        let (decoded, _) = Av1cBox::decode(&encoded).unwrap();
+        let encoded = av1c.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Av1cBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Av1cBox は必ずデコードできる");
         assert_eq!(
             decoded
                 .initial_presentation_delay_minus_one
@@ -584,8 +596,9 @@ mod boundary_tests {
             input_sample_rate: 48000,
             output_gain: 0,
         };
-        let encoded = dops.encode_to_vec().unwrap();
-        let (decoded, _) = DopsBox::decode(&encoded).unwrap();
+        let encoded = dops.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DopsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DopsBox は必ずデコードできる");
         assert_eq!(decoded.output_channel_count, 1);
         assert_eq!(decoded.pre_skip, 312);
         assert_eq!(decoded.input_sample_rate, 48000);
@@ -600,8 +613,9 @@ mod boundary_tests {
             input_sample_rate: 48000,
             output_gain: -256,
         };
-        let encoded = dops.encode_to_vec().unwrap();
-        let (decoded, _) = DopsBox::decode(&encoded).unwrap();
+        let encoded = dops.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DopsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DopsBox は必ずデコードできる");
         assert_eq!(decoded.output_channel_count, 2);
         assert_eq!(decoded.output_gain, -256);
     }
@@ -630,8 +644,9 @@ mod boundary_tests {
                 sl_config_descr: SlConfigDescriptor,
             },
         };
-        let encoded = esds.encode_to_vec().unwrap();
-        let (decoded, _) = EsdsBox::decode(&encoded).unwrap();
+        let encoded = esds.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = EsdsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な EsdsBox は必ずデコードできる");
         assert_eq!(decoded.es.dec_config_descr.object_type_indication, 0x40);
         assert_eq!(decoded.es.dec_config_descr.max_bitrate, 128000);
     }

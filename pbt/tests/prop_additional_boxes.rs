@@ -29,7 +29,8 @@ fn arb_audio_sample_entry() -> impl Strategy<Value = AudioSampleEntryFields> {
     )
         .prop_map(
             |(dri, channelcount, samplesize, sr_int, sr_frac)| AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(dri).unwrap(),
+                data_reference_index: NonZeroU16::new(dri)
+                    .expect("Strategy の値域が 1 以上なので非ゼロ"),
                 channelcount,
                 samplesize,
                 samplerate: FixedPointNumber::new(sr_int, sr_frac),
@@ -65,7 +66,8 @@ fn arb_visual_sample_entry() -> impl Strategy<Value = VisualSampleEntryFields> {
                 depth,
             )| {
                 VisualSampleEntryFields {
-                    data_reference_index: NonZeroU16::new(dri).unwrap(),
+                    data_reference_index: NonZeroU16::new(dri)
+                        .expect("Strategy の値域が 1 以上なので非ゼロ"),
                     width,
                     height,
                     horizresolution: FixedPointNumber::new(hr_int, hr_frac),
@@ -274,7 +276,8 @@ fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
         prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
     )
         .prop_map(|(dri, ns, sl, am, unknown_boxes)| StppBox {
-            data_reference_index: NonZeroU16::new(dri).unwrap(),
+            data_reference_index: NonZeroU16::new(dri)
+                .expect("Strategy の値域が 1 以上なので非ゼロ"),
             namespace: Utf8String::new(&ns).expect("null 文字を含まない"),
             schema_location: Utf8String::new(&sl).expect("null 文字を含まない"),
             auxiliary_mime_types: Utf8String::new(&am).expect("null 文字を含まない"),
@@ -431,8 +434,9 @@ proptest! {
             box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
             payload: payload.clone(),
         };
-        let encoded = unknown.encode_to_vec().unwrap();
-        let (decoded, size) = UnknownBox::decode(&encoded).unwrap();
+        let encoded = unknown.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = UnknownBox::decode(&encoded)
+            .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.payload, payload);
@@ -442,8 +446,9 @@ proptest! {
     #[test]
     fn free_box_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
         let free = FreeBox { payload: payload.clone() };
-        let encoded = free.encode_to_vec().unwrap();
-        let (decoded, size) = FreeBox::decode(&encoded).unwrap();
+        let encoded = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = FreeBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FreeBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.payload, payload);
@@ -453,8 +458,9 @@ proptest! {
     #[test]
     fn mdat_box_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
         let mdat = MdatBox { payload: payload.clone() };
-        let encoded = mdat.encode_to_vec().unwrap();
-        let (decoded, size) = MdatBox::decode(&encoded).unwrap();
+        let encoded = mdat.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MdatBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdatBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.payload, payload);
@@ -473,8 +479,9 @@ proptest! {
             dops_box: dops,
             unknown_boxes: vec![],
         };
-        let encoded = opus.encode_to_vec().unwrap();
-        let (decoded, size) = OpusBox::decode(&encoded).unwrap();
+        let encoded = opus.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = OpusBox::decode(&encoded)
+            .expect("直前にエンコードした有効な OpusBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.audio.channelcount, opus.audio.channelcount);
@@ -492,8 +499,9 @@ proptest! {
             esds_box: esds,
             unknown_boxes: vec![],
         };
-        let encoded = mp4a.encode_to_vec().unwrap();
-        let (decoded, size) = Mp4aBox::decode(&encoded).unwrap();
+        let encoded = mp4a.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Mp4aBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Mp4aBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.audio.channelcount, mp4a.audio.channelcount);
@@ -511,8 +519,9 @@ proptest! {
             dfla_box: dfla,
             unknown_boxes: vec![],
         };
-        let encoded = flac.encode_to_vec().unwrap();
-        let (decoded, size) = FlacBox::decode(&encoded).unwrap();
+        let encoded = flac.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = FlacBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FlacBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.audio.channelcount, flac.audio.channelcount);
@@ -522,8 +531,9 @@ proptest! {
     /// DflaBox の encode/decode roundtrip
     #[test]
     fn dfla_box_roundtrip(dfla in arb_dfla_box()) {
-        let encoded = dfla.encode_to_vec().unwrap();
-        let (decoded, size) = DflaBox::decode(&encoded).unwrap();
+        let encoded = dfla.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = DflaBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DflaBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.metadata_blocks.len(), dfla.metadata_blocks.len());
@@ -543,8 +553,9 @@ proptest! {
             avcc_box: avcc,
             unknown_boxes: vec![],
         };
-        let encoded = avc1.encode_to_vec().unwrap();
-        let (decoded, size) = Avc1Box::decode(&encoded).unwrap();
+        let encoded = avc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Avc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Avc1Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, avc1.visual.width);
@@ -563,8 +574,9 @@ proptest! {
             hvcc_box: hvcc,
             unknown_boxes: vec![],
         };
-        let encoded = hev1.encode_to_vec().unwrap();
-        let (decoded, size) = Hev1Box::decode(&encoded).unwrap();
+        let encoded = hev1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Hev1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Hev1Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, hev1.visual.width);
@@ -582,8 +594,9 @@ proptest! {
             hvcc_box: hvcc,
             unknown_boxes: vec![],
         };
-        let encoded = hvc1.encode_to_vec().unwrap();
-        let (decoded, size) = Hvc1Box::decode(&encoded).unwrap();
+        let encoded = hvc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Hvc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Hvc1Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, hvc1.visual.width);
@@ -601,8 +614,9 @@ proptest! {
             vpcc_box: vpcc,
             unknown_boxes: vec![],
         };
-        let encoded = vp08.encode_to_vec().unwrap();
-        let (decoded, size) = Vp08Box::decode(&encoded).unwrap();
+        let encoded = vp08.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Vp08Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Vp08Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, vp08.visual.width);
@@ -620,8 +634,9 @@ proptest! {
             vpcc_box: vpcc,
             unknown_boxes: vec![],
         };
-        let encoded = vp09.encode_to_vec().unwrap();
-        let (decoded, size) = Vp09Box::decode(&encoded).unwrap();
+        let encoded = vp09.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Vp09Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Vp09Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, vp09.visual.width);
@@ -639,8 +654,9 @@ proptest! {
             av1c_box: av1c,
             unknown_boxes: vec![],
         };
-        let encoded = av01.encode_to_vec().unwrap();
-        let (decoded, size) = Av01Box::decode(&encoded).unwrap();
+        let encoded = av01.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Av01Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Av01Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, av01.visual.width);
@@ -655,8 +671,9 @@ proptest! {
     /// 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
     #[test]
     fn stpp_box_roundtrip(stpp in arb_stpp_box()) {
-        let encoded = stpp.encode_to_vec().unwrap();
-        let (decoded, size) = StppBox::decode(&encoded).unwrap();
+        let encoded = stpp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = StppBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StppBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.data_reference_index, stpp.data_reference_index);
@@ -763,8 +780,11 @@ mod boundary_tests {
             box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 0),
             payload: vec![],
         };
-        let encoded = unknown.encode_to_vec().unwrap();
-        let (decoded, _) = UnknownBox::decode(&encoded).unwrap();
+        let encoded = unknown
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = UnknownBox::decode(&encoded)
+            .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -772,8 +792,9 @@ mod boundary_tests {
     #[test]
     fn free_box_empty_payload() {
         let free = FreeBox { payload: vec![] };
-        let encoded = free.encode_to_vec().unwrap();
-        let (decoded, _) = FreeBox::decode(&encoded).unwrap();
+        let encoded = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = FreeBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FreeBox は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -781,8 +802,9 @@ mod boundary_tests {
     #[test]
     fn mdat_box_empty_payload() {
         let mdat = MdatBox { payload: vec![] };
-        let encoded = mdat.encode_to_vec().unwrap();
-        let (decoded, _) = MdatBox::decode(&encoded).unwrap();
+        let encoded = mdat.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MdatBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdatBox は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -791,7 +813,7 @@ mod boundary_tests {
     fn opus_box_minimal() {
         let opus = OpusBox {
             audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1).unwrap(),
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
                 channelcount: 2,
                 samplesize: 16,
                 samplerate: FixedPointNumber::new(48000, 0),
@@ -804,8 +826,9 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = opus.encode_to_vec().unwrap();
-        let (decoded, _) = OpusBox::decode(&encoded).unwrap();
+        let encoded = opus.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = OpusBox::decode(&encoded)
+            .expect("直前にエンコードした有効な OpusBox は必ずデコードできる");
         assert_eq!(decoded.audio.channelcount, 2);
         assert_eq!(decoded.dops_box.output_channel_count, 2);
     }
@@ -815,7 +838,7 @@ mod boundary_tests {
     fn mp4a_box_aac_lc() {
         let mp4a = Mp4aBox {
             audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1).unwrap(),
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
                 channelcount: 2,
                 samplesize: 16,
                 samplerate: FixedPointNumber::new(48000, 0),
@@ -843,8 +866,9 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = mp4a.encode_to_vec().unwrap();
-        let (decoded, _) = Mp4aBox::decode(&encoded).unwrap();
+        let encoded = mp4a.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Mp4aBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Mp4aBox は必ずデコードできる");
         assert_eq!(
             decoded.esds_box.es.dec_config_descr.object_type_indication,
             0x40
@@ -856,7 +880,7 @@ mod boundary_tests {
     fn avc1_box_1080p() {
         let avc1 = Avc1Box {
             visual: VisualSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1).unwrap(),
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
                 width: 1920,
                 height: 1080,
                 horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
@@ -879,8 +903,9 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = avc1.encode_to_vec().unwrap();
-        let (decoded, _) = Avc1Box::decode(&encoded).unwrap();
+        let encoded = avc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Avc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Avc1Box は必ずデコードできる");
         assert_eq!(decoded.visual.width, 1920);
         assert_eq!(decoded.visual.height, 1080);
     }
@@ -902,8 +927,9 @@ mod root_box_tests {
         };
         let root = RootBox::Free(free);
 
-        let encoded = root.encode_to_vec().unwrap();
-        let (decoded, size) = RootBox::decode(&encoded).unwrap();
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, RootBox::Free(_)));
@@ -922,8 +948,9 @@ mod root_box_tests {
         };
         let root = RootBox::Mdat(mdat);
 
-        let encoded = root.encode_to_vec().unwrap();
-        let (decoded, size) = RootBox::decode(&encoded).unwrap();
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, RootBox::Mdat(_)));
@@ -941,8 +968,9 @@ mod root_box_tests {
         };
         let root = RootBox::Unknown(unknown);
 
-        let encoded = root.encode_to_vec().unwrap();
-        let (decoded, size) = RootBox::decode(&encoded).unwrap();
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, RootBox::Unknown(_)));
@@ -992,8 +1020,9 @@ mod root_box_tests {
     #[test]
     fn brand_roundtrip() {
         let brand = Brand::new(*b"test");
-        let encoded = brand.encode_to_vec().unwrap();
-        let (decoded, size) = Brand::decode(&encoded).unwrap();
+        let encoded = brand.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) =
+            Brand::decode(&encoded).expect("直前にエンコードした有効な Brand は必ずデコードできる");
 
         assert_eq!(size, 4);
         assert_eq!(decoded.get(), *b"test");

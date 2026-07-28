@@ -1027,8 +1027,9 @@ mod sample_entry_tests {
             unknown_boxes: vec![],
         });
 
-        let encoded = entry.encode_to_vec().unwrap();
-        let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
+        let encoded = entry.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SampleEntry::decode(&encoded)
+            .expect("直前にエンコードした有効な SampleEntry は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, SampleEntry::Opus(_)));
@@ -1077,8 +1078,9 @@ mod sample_entry_tests {
     fn sample_entry_stpp_encode_decode_roundtrip() {
         let entry = SampleEntry::Stpp(create_stpp_box());
 
-        let encoded = entry.encode_to_vec().unwrap();
-        let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
+        let encoded = entry.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SampleEntry::decode(&encoded)
+            .expect("直前にエンコードした有効な SampleEntry は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         // 3 フィールドが正しく復元されていることを確認する
@@ -1122,7 +1124,8 @@ mod sample_entry_tests {
     #[test]
     fn stpp_box_decode_valid_bytes() {
         let bytes = build_valid_stpp_bytes(b"http://www.w3.org/ns/ttml", b"", b"");
-        let (decoded, _) = StppBox::decode(&bytes).unwrap();
+        let (decoded, _) = StppBox::decode(&bytes)
+            .expect("ヘルパーが組み立てる有効な stpp バイト列はデコードできる");
         assert_eq!(decoded.namespace.get(), "http://www.w3.org/ns/ttml");
     }
 
@@ -1237,7 +1240,8 @@ mod sample_entry_tests {
     #[test]
     fn sample_entry_decode_stpp_dispatches_to_stpp_variant() {
         let bytes = build_valid_stpp_bytes(b"http://www.w3.org/ns/ttml", b"", b"");
-        let (decoded, _) = SampleEntry::decode(&bytes).unwrap();
+        let (decoded, _) = SampleEntry::decode(&bytes)
+            .expect("ヘルパーが組み立てる有効な stpp バイト列はデコードできる");
         assert!(
             matches!(decoded, SampleEntry::Stpp(_)),
             "stpp box_type は SampleEntry::Stpp として取り出せること"

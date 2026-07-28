@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-27
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: Opus 5
 - Branch: feature/refactor-pbt-unwrap-to-expect
 - Polished: 2026-07-28
@@ -64,3 +64,10 @@ let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以�
 - `grep -r "\.unwrap()" pbt/tests src/descriptors.rs` が 0 件になること
 - 置き換えたメッセージがすべて日本語で、パニックしない根拠を説明していること
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --all-targets -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` が通ること
+
+## 解決方法
+
+1. 対象 350 箇所の `.unwrap()` をすべて `.expect("MESSAGE")` へ置き換えた。メッセージは設計方針に従い日本語で、パニックしない根拠（`Strategy` の値域保証、直前エンコード結果のデコード保証、null 未含有、`prop_assert!` / `is_some` 検証済みの取り出しなど）を明示した
+2. 対象ファイル: `src/descriptors.rs` / `pbt/tests/prop_auxiliary.rs` / `pbt/tests/prop_basic_types.rs` / `pbt/tests/prop_boxes_sample_entry.rs` / `pbt/tests/prop_descriptors.rs` / `pbt/tests/prop_codec_boxes.rs` / `pbt/tests/prop_container_boxes.rs` / `pbt/tests/prop_additional_boxes.rs` / `pbt/tests/prop_fmp4_boxes.rs` / `pbt/tests/prop_boxes.rs`
+3. `grep -r "\.unwrap()" pbt/tests src/descriptors.rs` が 0 件になること、および `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --all-targets -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm`（全 610 テスト）がすべて通ることを確認した
+4. `unwrap_or()` の見直しは本 issue のスコープ外として実施していない（設計方針および完了条件どおり）。既存の英語 `.expect()` メッセージの日本語化も 0037 のスコープとして手を付けていない

@@ -394,9 +394,11 @@ mod tests {
     #[test]
     fn tag_and_size() {
         let mut buf = [0; 32];
-        let encoded_size = encode_tag_and_size(&mut buf, 12, 123456).unwrap();
+        let encoded_size = encode_tag_and_size(&mut buf, 12, 123456)
+            .expect("32 バイトのバッファは 5 バイト以内のエンコード結果を必ず収められる");
 
-        let (tag, size, consumed) = decode_tag_and_size(&buf).unwrap();
+        let (tag, size, consumed) = decode_tag_and_size(&buf)
+            .expect("直前にエンコードした有効なタグとサイズが必ずデコードできる");
         assert_eq!(tag, 12);
         assert_eq!(size, 123456);
         assert_eq!(consumed, encoded_size);

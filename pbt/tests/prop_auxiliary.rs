@@ -1097,7 +1097,7 @@ proptest! {
         let sample = accessor.get_sample_by_timestamp(timestamp);
         prop_assert!(sample.is_some(), "sample should be found for timestamp {}", timestamp);
 
-        let sample = sample.unwrap();
+        let sample = sample.expect("直前の prop_assert! で Some であることを確認済み");
         let sample_start = sample.timestamp();
         let sample_end = sample_start + sample.duration() as u64;
         prop_assert!(

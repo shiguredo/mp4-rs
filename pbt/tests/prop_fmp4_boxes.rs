@@ -264,11 +264,8 @@ fn arb_sidx_box() -> impl Strategy<Value = SidxBox> {
 
 /// TfraEntry を生成する Strategy
 ///
-/// 各フィールドの上限は呼び出し側から与える。
-/// `traf_number` / `trun_number` / `sample_number` は対応する `length_size` に応じた
-/// `byte_count` バイトに収める必要があり（`encode_variable_uint` の 1〜3 バイトアームが
-/// 上位バイトを silently 捨てる仕様のためラウンドトリップが崩れる）、
-/// `time` / `moof_offset` は version に応じて `u32` 範囲まで／`u64` 全域とする。
+/// 各フィールドの上限は呼び出し側から与える
+/// （上限を絞る理由は `arb_tfra_box` の doc を参照）。
 fn arb_tfra_entry(
     max_traf: u32,
     max_trun: u32,
@@ -539,11 +536,6 @@ proptest! {
     // ===== TfraBox のテスト =====
 
     /// TfraBox の encode/decode roundtrip
-    ///
-    /// `TfraBox` は `PartialEq` を derive しているため、
-    /// 個別フィールドを比較せずに全体一致で検証する。
-    /// これにより `version` / `track_id` / 各 `length_size_*` / `entries`
-    /// （`TfraEntry` の 5 フィールドすべてを含む）が一括で照合される。
     #[test]
     fn tfra_box_roundtrip(tfra in arb_tfra_box()) {
         let encoded = tfra.encode_to_vec().unwrap();

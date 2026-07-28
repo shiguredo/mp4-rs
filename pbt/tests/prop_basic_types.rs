@@ -82,6 +82,31 @@ proptest! {
         }
     }
 
+    // FullBoxFlags::is_set の任意ビット位置に対する挙動を検証する
+    //
+    // 公開 API の型 (`usize`) が受け付け得る任意入力に対して、
+    // `i < 32` なら `(flags >> i) & 1 == 1` と等価、`i >= 32` なら常に `false` となること。
+    #[test]
+    fn full_box_flags_is_set_any_bit_position(flags in any::<u32>(), i in any::<usize>()) {
+        let fbf = FullBoxFlags::new(flags);
+        let expected = if i < 32 {
+            (flags >> i) & 1 == 1
+        } else {
+            false
+        };
+        prop_assert_eq!(fbf.is_set(i), expected, "flags={:#x} i={}", flags, i);
+    }
+
+    // FullBoxFlags::from_flags の任意ビット位置に対する挙動を検証する
+    //
+    // `i < 32` なら `1u32 << i` が立った値、`i >= 32` なら 0 となること。
+    #[test]
+    fn full_box_flags_from_flags_any_bit_position(i in any::<usize>()) {
+        let fbf = FullBoxFlags::from_flags([(i, true)]);
+        let expected = if i < 32 { 1u32 << i } else { 0 };
+        prop_assert_eq!(fbf.get(), expected, "i={}", i);
+    }
+
     // FullBoxHeader の Roundtrip
     #[test]
     fn full_box_header_roundtrip(version in any::<u8>(), flags_value in arb_full_box_flags()) {

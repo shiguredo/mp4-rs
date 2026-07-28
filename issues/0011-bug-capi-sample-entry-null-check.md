@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-capi-sample-entry-null-check
 - Polished: 2026-07-28
@@ -84,6 +84,23 @@ if self.sps_count > 0 {
 
 ## 解決方法
 
-1. `crates/c-api/src/boxes.rs` の `Mp4SampleEntryHev1::to_sample_entry`（`:916-995`）と `Mp4SampleEntryHvc1::to_sample_entry`（`:1057-1136`）で、`nalu_array_count > 0` ブロック直後に `nalu_types` / `nalu_counts` の null 検査を追加し、内側ループに入る直前（`nalu_count > 0` を確認後）に `nalu_data` / `nalu_sizes` の null 検査を追加する。
-2. 同ファイルの `Mp4SampleEntryAvc1::to_sample_entry`（`:785-854`）で、`sps_count > 0` ブロック内の `sps_sizes`、`pps_count > 0` ブロック内の `pps_sizes` の null 検査を追加する。`sps_data.is_null()` / `pps_data.is_null()` の位置と条件は変更しない。
-3. `crates/c-api/tests/test_boxes.rs` を新設し、`Mp4SampleEntry`（公開 API）経由で `to_sample_entry` を呼ぶ統合テストを追加する。null 渡しで `Mp4Error::MP4_ERROR_NULL_POINTER` が返ることを AVC1 / HEV1 / HVC1 の各対象ポインタで検証する。テスト関数名は英語、テスト内のメッセージは日本語で書く（`AGENTS.md` および `shiguredo-rust` の規約）。
+### 本体の null 検査追加
+
+1. `crates/c-api/src/boxes.rs` の `Mp4SampleEntryHev1::to_sample_entry` と `Mp4SampleEntryHvc1::to_sample_entry` で、`nalu_array_count > 0` ブロック直後に `nalu_types` / `nalu_counts` の null 検査を追加し、`nalu_count > 0` を確認した内側ループ直前で `nalu_data` / `nalu_sizes` の null 検査を追加した。内側検査は `nalu_count > 0 && (nalu_data.is_null() || nalu_sizes.is_null())` の結合形にして clippy::collapsible_if にも整合させた。
+2. 同ファイルの `Mp4SampleEntryAvc1::to_sample_entry` で、`sps_count > 0` ブロック内に `sps_sizes` の null 検査を、`pps_count > 0` ブロック内に `pps_sizes` の null 検査を追加した。`sps_data.is_null()` / `pps_data.is_null()` の位置と条件は既存挙動維持のため据え置き、そのコメントも 1 行残した。
+3. `crates/c-api/tests/test_boxes.rs` を新設し、null 経路 9 件、非退行 4 件、正常系 3 件（`nalu_counts = [2, 1, 3]` の非自明な累積で `nalu_data_index` のプレフィックス和を間接検証）、個別要素 null 3 件、早期スキップ 2 件、後続イテレーション境界 2 件、逆パターン 2 件、AVC1 pps 側非退行 1 件など、計 26 テストを追加した。
+
+### レビュー指摘への対応
+
+4. `Mp4Error` に `Debug` / `PartialEq` / `Eq` を derive し、テストを `assert_eq!` 化して失敗時に実測エラー種別を出力できるようにした。
+5. `Mp4SampleEntryAvc1` / `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の型 doc に「ポインタフィールドの null 契約」セクションを追加した。AVC1 と HEV1 / HVC1 の非対称な契約（AVC1 の `sps_data` / `pps_data` は `count == 0` でも非 null 必須、HEV1 / HVC1 の `nalu_data` / `nalu_sizes` は全 `nalu_counts[i] == 0` なら null 許容）を明記した。cbindgen 経由で C ヘッダ `crates/c-api/include/mp4.h` にも自動反映される。
+6. `crates/c-api/src/fmp4_segment_mux.rs` の `convert_samples` の戻り値型を `Result<_, &'static str>` から `Result<_, Mp4Error>` に変更した。これまで `.map_err(|_| "sample_entry is invalid")?` で捨てていた `Mp4Error` を `?` で伝播するように直し、`fmp4_segment_muxer_write_media_segment*` 経路でも `MP4_ERROR_NULL_POINTER` 等の種別が呼び出し側で観測できるようにした（従来は一律 `MP4_ERROR_INVALID_INPUT` に丸められていた）。
+7. `mp4_file_muxer_append_sample` の `set_last_error` に `{e:?}` を追記し、6 種の新規 null 経路のどれで落ちたかを last_error 文字列から判別できるようにした。
+8. HVC1 側の null 検査コメントは HEV1 と一字一句同一だったため、HVC1 の impl 冒頭に「HEV1 を参照」の 1 行コメントを置いて残余は削除した。AVC1 の SPS / PPS null 検査の冗長コメントも情報量が無いため削除した。
+9. CHANGES.md のサブ箇条書きの表記を既存慣行に合わせて `` `avc1` `` / `` `hev1` `` / `` `hvc1` `` の小文字バッククォート形に統一した。
+
+### 変更履歴
+
+`CHANGES.md` に 2 つの `[FIX]` エントリを追加した。
+- `to_sample_entry` の配列ベースポインタ null 検査追加
+- `fmp4_segment_muxer_write_media_segment*` のサンプル変換エラー種別の保持

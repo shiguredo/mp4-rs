@@ -153,7 +153,7 @@ AVFoundation が報告するトラックの `timeRange.duration` も `tkhd.durat
 
 換算は `u128` で行う。`u64 * u32` は最大でも 2 の 96 乗であり `u128` に収まるため、中間結果の overflow は原理的に起きない。切り上げには `u128::div_ceil` を使う。
 
-最終結果が `u64` を超えるには採用側トラックの `Sample::duration`（`u32`）の総和が `u64::MAX` 近傍である必要があり、現実には到達しない。防御として `u64` へ収まらない場合は `MuxError::EncodeError(Error::invalid_data("track duration exceeds u64::MAX"))` を返す。`MuxError::Overflow` ではなく `EncodeError` を選ぶのは、`issues/closed/0001-bug-mux-mp4-file-data-size-truncation.md` が fMP4 側との一貫性を理由に `EncodeError` を採用した先例に従うためである。この経路のテストは書けないため完了条件には含めない。
+最終結果が `u64` を超えるには採用側トラックの `Sample::duration`（`u32`）の総和が `u64::MAX` 近傍である必要があり、現実には到達しない。防御として `u64` へ収まらない場合は `MuxError::EncodeError(Error::invalid_data("converted track duration exceeds u64::MAX"))` を返す。`MuxError::Overflow` ではなく `EncodeError` を選ぶのは、`issues/closed/0001-bug-mux-mp4-file-data-size-truncation.md` が fMP4 側との一貫性を理由に `EncodeError` を採用した先例に従うためである。この経路のテストは書けないため完了条件には含めない。
 
 ### その他
 

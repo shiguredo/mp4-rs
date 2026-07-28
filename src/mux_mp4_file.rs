@@ -847,7 +847,7 @@ impl Mp4FileMuxer {
         // 各トラックの `tkhd` の `duration` は `mvhd` の `timescale` 単位で書く必要があるため、
         // trak ボックスの構築よりも先に `mvhd` に入れる `timescale` を確定させる
         // （`calculate_total_duration()` は `self.tracks` しか参照しないので、ここで先に呼んでよい）
-        let (timescale, duration) = self.calculate_total_duration();
+        let (movie_timescale, movie_duration) = self.calculate_total_duration();
 
         let mut trak_boxes = Vec::new();
 
@@ -859,15 +859,15 @@ impl Mp4FileMuxer {
         // 現時点で実際にスキップされる要素は無い
         for entry in self.tracks.iter().filter(|t| !t.chunks.is_empty()) {
             let track_id = trak_boxes.len() as u32 + 1;
-            trak_boxes.push(self.build_trak_box(entry, track_id, timescale)?);
+            trak_boxes.push(self.build_trak_box(entry, track_id, movie_timescale)?);
         }
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let mvhd_box = MvhdBox {
             creation_time,
             modification_time: creation_time,
-            timescale,
-            duration,
+            timescale: movie_timescale,
+            duration: movie_duration,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
@@ -1163,14 +1163,17 @@ fn convert_duration_to_movie_timescale(
     movie_timescale: NonZeroU32,
 ) -> Result<u64, MuxError> {
     // `u64` と `u32` の積は高々 2 の 96 乗なので、`u128` で計算すれば中間結果はオーバーフローしない
-    let scaled = media_duration as u128 * movie_timescale.get() as u128;
-    let converted = scaled.div_ceil(media_timescale.get() as u128);
+    let converted = (media_duration as u128 * movie_timescale.get() as u128)
+        .div_ceil(media_timescale.get() as u128);
 
     // 呼び出し側が最長トラックの `timescale` を渡すため、換算結果は `mvhd` の `duration` を
     // 数 tick 上回る程度にしかならない。`u64` を超えるには採用トラックの尺の合計が
     // `u64::MAX` 近傍である必要があり、現実の入力では到達しない防御的な分岐である
-    u64::try_from(converted)
-        .map_err(|_| MuxError::EncodeError(Error::invalid_data("track duration exceeds u64::MAX")))
+    u64::try_from(converted).map_err(|_| {
+        MuxError::EncodeError(Error::invalid_data(
+            "converted track duration exceeds u64::MAX",
+        ))
+    })
 }
 
 fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {

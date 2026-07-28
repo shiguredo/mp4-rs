@@ -75,17 +75,6 @@ proptest! {
         prop_assert_eq!(decoded.get(), flags.get());
     }
 
-    // FullBoxFlags のビット操作
-    #[test]
-    fn full_box_flags_bit_operations(value in arb_full_box_flags()) {
-        let flags = FullBoxFlags::new(value);
-
-        for i in 0..24 {
-            let expected = (value & (1 << i)) != 0;
-            prop_assert_eq!(flags.is_set(i), expected, "bit {} mismatch", i);
-        }
-    }
-
     // FullBoxFlags::from_flags の検証 (各ビット位置は一度だけ)
     #[test]
     fn full_box_flags_from_flags(bit_mask in any::<u32>()) {
@@ -119,31 +108,35 @@ proptest! {
     //
     // `i < 32` なら `1u32 << i` が立った値、`i >= 32` なら 0 となること。
     // ビット位置の Strategy は境界値 (0/31/32/33/usize::MAX) を確実に踏む構成にしている。
+    // 併せて `is_set(i)` が `i < 32` と一致することも検証し、
+    // `from_flags` と `is_set` の 32 境界の対称性を 1 本でクロス検証する。
     #[test]
     fn full_box_flags_from_flags_any_bit_position(i in arb_bit_position()) {
         let fbf = FullBoxFlags::from_flags([(i, true)]);
         let expected = if i < 32 { 1u32 << i } else { 0 };
         prop_assert_eq!(fbf.get(), expected, "i={}", i);
+        prop_assert_eq!(fbf.is_set(i), i < 32, "is_set mismatch i={}", i);
     }
 
     // FullBoxFlags::from_flags の重複ビット位置に対する冪等性を検証する
     //
     // 同じビット位置が複数回渡された場合でも、結果は
-    // 「有効なビット位置 (i < 32) の集合を OR で合成した値」と等価になること。
+    // 「有効なビット位置 (i < 32 かつ bool が true) の集合を OR で合成した値」と等価になること。
     // （素朴に sum() で畳み込むと u32 加算オーバーフローで panic するため）
+    // 入力に `bool` も混ぜて生成し、`filter(x.1)` の false 分岐もカバーする。
     #[test]
     fn full_box_flags_from_flags_duplicate_positions_or_folded(
-        positions in proptest::collection::vec(any::<usize>(), 0..64),
+        items in proptest::collection::vec((any::<usize>(), any::<bool>()), 0..64),
     ) {
-        let items: Vec<(usize, bool)> = positions.iter().map(|&i| (i, true)).collect();
-        let actual = FullBoxFlags::from_flags(items).get();
+        let actual = FullBoxFlags::from_flags(items.clone()).get();
 
-        let expected: u32 = positions
+        let expected: u32 = items
             .iter()
-            .filter(|&&i| i < 32)
-            .fold(0u32, |acc, &i| acc | (1u32 << i));
+            .filter(|(_, b)| *b)
+            .filter(|(i, _)| *i < 32)
+            .fold(0u32, |acc, (i, _)| acc | (1u32 << *i));
 
-        prop_assert_eq!(actual, expected, "positions={:?}", positions);
+        prop_assert_eq!(actual, expected, "items={:?}", items);
     }
 
     // FullBoxHeader の Roundtrip

@@ -13,20 +13,47 @@ use crate::{
 
 /// [`StsdBox`][crate::boxes::StsdBox] に含まれるエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub enum SampleEntry {
+    /// H.264 (AVC) 用サンプルエントリー（`avc1`）
     Avc1(Avc1Box),
+
+    /// H.265 (HEVC) 用サンプルエントリー（`hev1`。パラメータセットが in-band 前提）
     Hev1(Hev1Box),
+
+    /// H.265 (HEVC) 用サンプルエントリー（`hvc1`。パラメータセットが out-of-band 前提）
     Hvc1(Hvc1Box),
+
+    /// VP8 用サンプルエントリー（`vp08`）
     Vp08(Vp08Box),
+
+    /// VP9 用サンプルエントリー（`vp09`）
     Vp09(Vp09Box),
+
+    /// AV1 用サンプルエントリー（`av01`）
     Av01(Av01Box),
+
+    /// Opus 音声用サンプルエントリー（`Opus`）
     Opus(OpusBox),
+
+    /// MPEG-4 音声（主に AAC）用サンプルエントリー（`mp4a`）
     Mp4a(Mp4aBox),
+
+    /// FLAC 音声用サンプルエントリー（`fLaC`）
     Flac(FlacBox),
+
+    /// XML 字幕（TTML / IMSC 等）用サンプルエントリー（`stpp`）
     Stpp(StppBox),
+
+    /// WebVTT 字幕用サンプルエントリー（`wvtt`）
     Wvtt(WvttBox),
+
+    /// 3GPP タイムドテキスト用サンプルエントリー（`tx3g`）
     Tx3g(Tx3gBox),
+
+    /// 上記のいずれにも該当しない box_type だった場合の受け皿
+    ///
+    /// demux 時に未知の box_type が出現した場合の保持先、および
+    /// mux 時に任意の未知サンプルエントリーを組み込む場合に使う
     Unknown(UnknownBox),
 }
 
@@ -167,15 +194,29 @@ impl BaseBox for SampleEntry {
 
 /// 映像系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct VisualSampleEntryFields {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
     pub data_reference_index: NonZeroU16,
+
+    /// 映像フレームの幅（ピクセル）
     pub width: u16,
+
+    /// 映像フレームの高さ（ピクセル）
     pub height: u16,
+
+    /// 水平解像度（dpi）
     pub horizresolution: FixedPointNumber<u16, u16>,
+
+    /// 垂直解像度（dpi）
     pub vertresolution: FixedPointNumber<u16, u16>,
+
+    /// 1 サンプルに含まれるフレーム数（通常は 1）
     pub frame_count: u16,
+
+    /// コンプレッサー名（先頭 1 バイトが長さで残りが ASCII 文字列という Pascal 文字列形式）
     pub compressorname: [u8; 32],
+
+    /// 色深度（ビット数。24 は透明無しのカラー画像を意味する）
     pub depth: u16,
 }
 
@@ -251,10 +292,14 @@ impl Decode for VisualSampleEntryFields {
 
 /// [ISO/IEC 14496-15] AVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Avc1Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// H.264 デコーダー設定を保持する `avcC` ボックス
     pub avcc_box: AvccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -329,17 +374,36 @@ impl BaseBox for Avc1Box {
 
 /// [ISO/IEC 14496-15] AVCConfigurationBox class (親: [`Avc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct AvccBox {
+    /// H.264 プロファイル識別子（`profile_idc`）
     pub avc_profile_indication: u8,
+
+    /// プロファイル互換性フラグ（`constraint_set*_flag` のビット列）
     pub profile_compatibility: u8,
+
+    /// H.264 レベル識別子（`level_idc`）
     pub avc_level_indication: u8,
+
+    /// NAL ユニット長のバイト数から 1 を引いた値（0..=3。値 3 は 4 バイト長を表す）
     pub length_size_minus_one: Uint<u8, 2>,
+
+    /// SPS (Sequence Parameter Set) NAL ユニットのバイト列（最大 31 個）
     pub sps_list: Vec<Vec<u8>>,
+
+    /// PPS (Picture Parameter Set) NAL ユニットのバイト列（最大 255 個）
     pub pps_list: Vec<Vec<u8>>,
+
+    /// クロマフォーマット (0..=3)。`avc_profile_indication` が
+    /// 66 / 77 / 88 以外の場合のみ ISO/IEC 14496-15 仕様上は必須
     pub chroma_format: Option<Uint<u8, 2>>,
+
+    /// 輝度のビット深度から 8 を引いた値。`chroma_format` と同じ条件で存在する
     pub bit_depth_luma_minus8: Option<Uint<u8, 3>>,
+
+    /// 色差のビット深度から 8 を引いた値。`chroma_format` と同じ条件で存在する
     pub bit_depth_chroma_minus8: Option<Uint<u8, 3>>,
+
+    /// SPS 拡張 NAL ユニットのバイト列（`chroma_format` と同じ条件で存在しうる）
     pub sps_ext_list: Vec<Vec<u8>>,
 }
 
@@ -517,11 +581,17 @@ impl BaseBox for AvccBox {
 }
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// `hev1` はパラメータセット（VPS / SPS / PPS）がサンプル中に in-band で現れうる場合に使う
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Hev1Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// H.265 デコーダー設定を保持する `hvcC` ボックス
     pub hvcc_box: HvccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -595,11 +665,17 @@ impl BaseBox for Hev1Box {
 }
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// `hvc1` はパラメータセット（VPS / SPS / PPS）が全て `hvcC` の out-of-band に格納される場合に使う
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Hvc1Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// H.265 デコーダー設定を保持する `hvcC` ボックス
     pub hvcc_box: HvccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -674,33 +750,69 @@ impl BaseBox for Hvc1Box {
 
 /// [`HvccBox`] 内の NAL ユニット配列を保持する構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct HvccNalUintArray {
+    /// この配列が該当種別の NAL ユニットを網羅しているかを示すフラグ（1 ビット）
     pub array_completeness: Uint<u8, 1, 7>,
+
+    /// この配列に含まれる NAL ユニットの `nal_unit_type`（6 ビット）
     pub nal_unit_type: Uint<u8, 6, 0>,
+
+    /// NAL ユニット本体のバイト列
     pub nalus: Vec<Vec<u8>>,
 }
 
 /// [ISO/IEC 14496-15] HVCConfigurationBox class (親: [`Hev1Box`], [`Hvc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct HvccBox {
+    /// `general_profile_space`（2 ビット）
     pub general_profile_space: Uint<u8, 2, 6>,
+
+    /// `general_tier_flag`（1 ビット）
     pub general_tier_flag: Uint<u8, 1, 5>,
+
+    /// `general_profile_idc`（5 ビット）
     pub general_profile_idc: Uint<u8, 5, 0>,
+
+    /// `general_profile_compatibility_flags`（32 ビット）
     pub general_profile_compatibility_flags: u32,
+
+    /// `general_constraint_indicator_flags`（48 ビット）
     pub general_constraint_indicator_flags: Uint<u64, 48>,
+
+    /// `general_level_idc`
     pub general_level_idc: u8,
+
+    /// `min_spatial_segmentation_idc`（12 ビット）
     pub min_spatial_segmentation_idc: Uint<u16, 12>,
+
+    /// `parallelism_type`（2 ビット）
     pub parallelism_type: Uint<u8, 2>,
+
+    /// `chroma_format_idc`（2 ビット）
     pub chroma_format_idc: Uint<u8, 2>,
+
+    /// 輝度のビット深度から 8 を引いた値（3 ビット）
     pub bit_depth_luma_minus8: Uint<u8, 3>,
+
+    /// 色差のビット深度から 8 を引いた値（3 ビット）
     pub bit_depth_chroma_minus8: Uint<u8, 3>,
+
+    /// 平均フレームレート（256 倍された値）
     pub avg_frame_rate: u16,
+
+    /// フレームレートが定数か（2 ビット。1 なら CBR、0 なら VBR、2 は temporal sublayer 単位で CBR）
     pub constant_frame_rate: Uint<u8, 2, 6>,
+
+    /// 一時レイヤー数（3 ビット）
     pub num_temporal_layers: Uint<u8, 3, 3>,
+
+    /// `temporal_id_nested` フラグ（1 ビット）
     pub temporal_id_nested: Uint<u8, 1, 2>,
+
+    /// NAL ユニット長のバイト数から 1 を引いた値（2 ビット。値 3 は 4 バイト長を表す）
     pub length_size_minus_one: Uint<u8, 2, 0>,
+
+    /// NAL ユニット種別ごとの配列（VPS / SPS / PPS など）
     pub nalu_arrays: Vec<HvccNalUintArray>,
 }
 
@@ -878,10 +990,14 @@ impl BaseBox for HvccBox {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP8SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Vp08Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// VP コーデック設定を保持する `vpcC` ボックス
     pub vpcc_box: VpccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -956,10 +1072,14 @@ impl BaseBox for Vp08Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP9SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Vp09Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// VP コーデック設定を保持する `vpcC` ボックス
     pub vpcc_box: VpccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1034,16 +1154,32 @@ impl BaseBox for Vp09Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VPCodecConfigurationBox class (親: [`Vp08Box`], [`Vp09Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct VpccBox {
+    /// VP コーデックのプロファイル
     pub profile: u8,
+
+    /// VP コーデックのレベル
     pub level: u8,
+
+    /// ビット深度（4 ビット。8 / 10 / 12 のいずれか）
     pub bit_depth: Uint<u8, 4, 4>,
+
+    /// クロマサブサンプリング（3 ビット）
     pub chroma_subsampling: Uint<u8, 3, 1>,
+
+    /// 映像レンジフラグ（1 ビット。1 なら full-range、0 なら limited-range）
     pub video_full_range_flag: Uint<u8, 1>,
+
+    /// 色域（ISO/IEC 23001-8 の `ColourPrimaries`）
     pub colour_primaries: u8,
+
+    /// 伝達特性（ISO/IEC 23001-8 の `TransferCharacteristics`）
     pub transfer_characteristics: u8,
+
+    /// マトリックス係数（ISO/IEC 23001-8 の `MatrixCoefficients`）
     pub matrix_coefficients: u8,
+
+    /// コーデック初期化データ（VP8 / VP9 は仕様上は常に空バイト列）
     pub codec_initialization_data: Vec<u8>,
 }
 
@@ -1146,10 +1282,14 @@ impl FullBox for VpccBox {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Av01Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// AV1 コーデック設定を保持する `av1C` ボックス
     pub av1c_box: Av1cBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1224,18 +1364,38 @@ impl BaseBox for Av01Box {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1CodecConfigurationBox class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Av1cBox {
+    /// AV1 の `seq_profile`（3 ビット）
     pub seq_profile: Uint<u8, 3, 5>,
+
+    /// AV1 の `seq_level_idx[0]`（5 ビット）
     pub seq_level_idx_0: Uint<u8, 5, 0>,
+
+    /// AV1 の `seq_tier[0]`（1 ビット）
     pub seq_tier_0: Uint<u8, 1, 7>,
+
+    /// AV1 の `high_bitdepth`（1 ビット）
     pub high_bitdepth: Uint<u8, 1, 6>,
+
+    /// AV1 の `twelve_bit`（1 ビット）
     pub twelve_bit: Uint<u8, 1, 5>,
+
+    /// AV1 の `monochrome`（1 ビット）
     pub monochrome: Uint<u8, 1, 4>,
+
+    /// AV1 の `subsampling_x`（1 ビット）
     pub chroma_subsampling_x: Uint<u8, 1, 3>,
+
+    /// AV1 の `subsampling_y`（1 ビット）
     pub chroma_subsampling_y: Uint<u8, 1, 2>,
+
+    /// AV1 の `chroma_sample_position`（2 ビット）
     pub chroma_sample_position: Uint<u8, 2, 0>,
+
+    /// AV1 の `initial_presentation_delay_minus_one`（4 ビット。存在する場合のみ有効）
     pub initial_presentation_delay_minus_one: Option<Uint<u8, 4, 0>>,
+
+    /// AV1 の設定 OBU 列（`Sequence Header OBU` などを raw で保持する）
     pub config_obus: Vec<u8>,
 }
 
@@ -1348,10 +1508,14 @@ impl BaseBox for Av1cBox {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct OpusBox {
+    /// 音声系サンプルエントリー共通フィールド
     pub audio: AudioSampleEntryFields,
+
+    /// Opus のデコーダー設定を保持する `dOps` ボックス
     pub dops_box: DopsBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1426,10 +1590,14 @@ impl BaseBox for OpusBox {
 
 /// [ISO/IEC 14496-14] MP4AudioSampleEntry class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Mp4aBox {
+    /// 音声系サンプルエントリー共通フィールド
     pub audio: AudioSampleEntryFields,
+
+    /// MPEG-4 コーデック設定（ES 記述子）を保持する `esds` ボックス
     pub esds_box: EsdsBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1506,10 +1674,14 @@ impl BaseBox for Mp4aBox {
 ///
 /// <https://github.com/xiph/flac/blob/master/doc/isoflac.txt>
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct FlacBox {
+    /// 音声系サンプルエントリー共通フィールド
     pub audio: AudioSampleEntryFields,
+
+    /// FLAC のデコーダー設定を保持する `dfLa` ボックス
     pub dfla_box: DflaBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1784,11 +1956,18 @@ impl Decode for FlacMetadataBlock {
 
 /// 音声系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct AudioSampleEntryFields {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
     pub data_reference_index: NonZeroU16,
+
+    /// チャンネル数（1 = モノラル、2 = ステレオ など）
     pub channelcount: u16,
+
+    /// 1 サンプルあたりのビット数（例: 16）
     pub samplesize: u16,
+
+    /// サンプリングレート（Hz）。整数部が u16 に収まらないコーデックでは
+    /// コーデック固有のフィールド（例: `dOps` の `input_sample_rate`）を優先する
     pub samplerate: FixedPointNumber<u16, u16>,
 }
 
@@ -1840,11 +2019,17 @@ impl Decode for AudioSampleEntryFields {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSpecificBox class (親: [`OpusBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct DopsBox {
+    /// Opus のデコード後チャンネル数
     pub output_channel_count: u8,
+
+    /// 出力先頭で捨てるサンプル数（48 kHz 基準のサンプル数）
     pub pre_skip: u16,
+
+    /// エンコード前のオリジナルのサンプリングレート（Hz。参考値であり再生には影響しない）
     pub input_sample_rate: u32,
+
+    /// 出力ゲイン（Q7.8 固定小数点の dB。復号後に線形スケールで適用する）
     pub output_gain: i16,
 }
 

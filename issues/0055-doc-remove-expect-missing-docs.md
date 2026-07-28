@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-28
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: Opus 5
 - Branch: feature/update-remove-expect-missing-docs
 - Polished: 2026-07-28

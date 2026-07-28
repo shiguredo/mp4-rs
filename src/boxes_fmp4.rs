@@ -15,10 +15,14 @@ use crate::{
 /// ムービーフラグメントのコンテナボックス。
 /// fMP4 のメディアセグメントはこのボックスと mdat ボックスで構成される。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MoofBox {
+    /// このムービーフラグメントの `mfhd` ボックス（シーケンス番号を保持する）
     pub mfhd_box: MfhdBox,
+
+    /// このムービーフラグメント配下のトラックフラグメント群（トラックごとに 1 個の `traf`）
     pub traf_boxes: Vec<TrafBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -101,8 +105,8 @@ impl BaseBox for MoofBox {
 /// フラグメントのシーケンス番号を格納する。
 /// シーケンス番号は 1 から始まり、フラグメントごとに 1 ずつ増加する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MfhdBox {
+    /// このムービーフラグメントの通番（1 始まり）
     pub sequence_number: u32,
 }
 
@@ -165,11 +169,17 @@ impl FullBox for MfhdBox {
 ///
 /// トラックフラグメントのコンテナボックス。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TrafBox {
+    /// このトラックフラグメントの `tfhd` ボックス（デフォルト値やトラック識別を保持する）
     pub tfhd_box: TfhdBox,
+
+    /// このトラックフラグメントの `tfdt` ボックス（先頭サンプルのベース DTS）
     pub tfdt_box: Option<TfdtBox>,
+
+    /// このトラックフラグメントに属する `trun` ボックス群
     pub trun_boxes: Vec<TrunBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -261,15 +271,30 @@ impl BaseBox for TrafBox {
 /// トラックフラグメントのヘッダー情報を格納する。
 /// フラグによって存在するフィールドが異なる。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TfhdBox {
+    /// このトラックフラグメントが対応する [`crate::boxes::TkhdBox::track_id`]
     pub track_id: u32,
+
+    /// サンプルデータの基準オフセット（ファイル先頭からの絶対バイト位置）。
+    /// 省略時は [`TfhdBox::default_base_is_moof`] のセマンティクスに従う
     pub base_data_offset: Option<u64>,
+
+    /// このフラグメントのサンプルが参照する `stsd` エントリーのインデックス（1 始まり）
     pub sample_description_index: Option<u32>,
+
+    /// このフラグメント内サンプルの既定の尺（media timescale 単位）
     pub default_sample_duration: Option<u32>,
+
+    /// このフラグメント内サンプルの既定のサイズ（バイト数）
     pub default_sample_size: Option<u32>,
+
+    /// このフラグメント内サンプルの既定のフラグ
     pub default_sample_flags: Option<SampleFlags>,
+
+    /// 継続時間が空（サンプル 0 個相当）であることを示す
     pub duration_is_empty: bool,
+
+    /// `base_data_offset` の既定値を moof の先頭にする
     pub default_base_is_moof: bool,
 }
 
@@ -437,7 +462,6 @@ impl FullBox for TfhdBox {
 ///
 /// トラックフラグメントのベースデコード時間を格納する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TfdtBox {
     /// FullBox バージョン (0 または 1)
     ///
@@ -445,6 +469,9 @@ pub struct TfdtBox {
     /// version=0 の場合は 32-bit でエンコードされる。
     /// ラウンドトリップ時に元のバージョンを保持するために使用される。
     pub version: u8,
+
+    /// このトラックフラグメントの最初のサンプルの DTS
+    /// （そのトラックの media timescale 単位）
     pub base_media_decode_time: u64,
 }
 
@@ -529,10 +556,15 @@ impl FullBox for TfdtBox {
 ///
 /// サンプルのリストを格納する。フラグによって存在するフィールドが異なる。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TrunBox {
+    /// この run 内サンプルの基準オフセット（[`TfhdBox`] で決まる基準位置からの相対バイト数）
     pub data_offset: Option<i32>,
+
+    /// 最初のサンプルにだけ適用する [`SampleFlags`]（残りは [`TrunSample::flags`] または
+    /// [`TfhdBox::default_sample_flags`] を使う）
     pub first_sample_flags: Option<SampleFlags>,
+
+    /// この run に含まれるサンプル情報の列
     pub samples: Vec<TrunSample>,
 }
 
@@ -782,11 +814,19 @@ impl FullBox for TrunBox {
 
 /// [`TrunBox`] のサンプル情報
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TrunSample {
+    /// このサンプルの尺（media timescale 単位）。省略時は
+    /// [`TfhdBox::default_sample_duration`] または [`crate::boxes::TrexBox::default_sample_duration`] を使う
     pub duration: Option<u32>,
+
+    /// このサンプルのサイズ（バイト数）。省略時は
+    /// [`TfhdBox::default_sample_size`] または [`crate::boxes::TrexBox::default_sample_size`] を使う
     pub size: Option<u32>,
+
+    /// このサンプルの [`SampleFlags`]。省略時は既定値（[`TfhdBox::default_sample_flags`] 等）を使う
     pub flags: Option<SampleFlags>,
+
+    /// このサンプルの CTS - DTS（media timescale 単位）。負値は `trun` version 1 のみで許容
     pub composition_time_offset: Option<i32>,
 }
 
@@ -795,12 +835,24 @@ pub struct TrunSample {
 /// セグメントインデックスボックス。DASH などで使用される。
 /// メディアセグメントへの参照情報を格納する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct SidxBox {
+    /// 参照対象のストリーム識別子（通常は対応する `tkhd` の `track_id`）
     pub reference_id: u32,
+
+    /// その sidx が定める独立したタイムスケール定義（1 秒あたりの時間単位数）。
+    ///
+    /// [`SidxBox::earliest_presentation_time`] や [`SidxReference::subsegment_duration`] は
+    /// この単位で表す。movie 全体の [`crate::boxes::MvhdBox::timescale`] や
+    /// トラック固有の [`crate::boxes::MdhdBox::timescale`] とは別系統である
     pub timescale: u32,
+
+    /// この sidx が指し示す最初のサブセグメントの CTS 相当（[`SidxBox::timescale`] 単位）
     pub earliest_presentation_time: u64,
+
+    /// この sidx 直後から最初のサブセグメント先頭までのバイト数
     pub first_offset: u64,
+
+    /// この sidx が保持するサブセグメント参照列
     pub references: Vec<SidxReference>,
 }
 
@@ -967,13 +1019,13 @@ pub struct SidxReference {
     pub reference_type: bool,
     /// 参照先のサイズ（バイト）
     pub referenced_size: u32,
-    /// サブセグメントの継続時間
+    /// サブセグメントの継続時間（[`SidxBox::timescale`] 単位）
     pub subsegment_duration: u32,
     /// SAP で始まるかどうか
     pub starts_with_sap: bool,
     /// SAP の種類 (0-7)
     pub sap_type: u8,
-    /// SAP までのデルタ時間
+    /// SAP までのデルタ時間（[`SidxBox::timescale`] 単位）
     pub sap_delta_time: u32,
 }
 
@@ -982,9 +1034,11 @@ pub struct SidxReference {
 /// ムービーフラグメントのランダムアクセス情報を格納するボックス。
 /// ファイルの末尾に配置される。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MfraBox {
+    /// トラックごとに 1 個の `tfra` ボックス（ランダムアクセスエントリー列）
     pub tfra_boxes: Vec<TfraBox>,
+
+    /// 末尾に配置される必須の `mfro` ボックス（この `mfra` のサイズを保持する）
     pub mfro_box: MfroBox,
 }
 
@@ -1072,7 +1126,6 @@ impl BaseBox for MfraBox {
 ///
 /// トラックフラグメントのランダムアクセス情報を格納するボックス。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TfraBox {
     /// FullBox バージョン (0 または 1)
     ///
@@ -1080,13 +1133,18 @@ pub struct TfraBox {
     /// version=0 の場合は 32-bit でエンコードされる。
     /// ラウンドトリップ時に元のバージョンを保持するために使用される。
     pub version: u8,
+
+    /// このエントリーが対応する [`crate::boxes::TkhdBox::track_id`]
     pub track_id: u32,
+
     /// traf_number のバイト数 - 1 (0-3)
     pub length_size_of_traf_num: u8,
     /// trun_number のバイト数 - 1 (0-3)
     pub length_size_of_trun_num: u8,
     /// sample_number のバイト数 - 1 (0-3)
     pub length_size_of_sample_num: u8,
+
+    /// ランダムアクセスエントリー列（各エントリーが 1 個の同期サンプルの位置を指す）
     pub entries: Vec<TfraEntry>,
 }
 
@@ -1266,12 +1324,21 @@ impl FullBox for TfraBox {
 
 /// [`TfraBox`] のエントリ
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TfraEntry {
+    /// このエントリーが指すサンプルの presentation time
+    /// （そのトラックの media timescale 単位）
     pub time: u64,
+
+    /// 該当サンプルを含む `moof` ボックスのファイル先頭からの絶対バイトオフセット
     pub moof_offset: u64,
+
+    /// 該当 `moof` 配下で数えたときの `traf` の番号（1 始まり）
     pub traf_number: u32,
+
+    /// 該当 `traf` 配下で数えたときの `trun` の番号（1 始まり）
     pub trun_number: u32,
+
+    /// 該当 `trun` 配下で数えたときのサンプル番号（1 始まり）
     pub sample_number: u32,
 }
 

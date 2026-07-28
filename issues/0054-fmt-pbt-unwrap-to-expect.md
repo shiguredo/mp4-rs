@@ -1,11 +1,11 @@
-# pbt/tests に `.unwrap()` が 350 箇所残っており `.expect("MESSAGE")` の規約に違反している
+# `pbt/tests` と `src/descriptors.rs` のテストコードに `.unwrap()` が 350 箇所残っており `.expect("MESSAGE")` の規約に違反している
 
 - Priority: Low
 - Created: 2026-07-27
 - Completed: YYYY-MM-DD
 - Model: Opus 5
-- Branch: feature/fmt-pbt-unwrap-to-expect
-- Polished: YYYY-MM-DD
+- Branch: feature/refactor-pbt-unwrap-to-expect
+- Polished: 2026-07-28
 
 ## 目的
 
@@ -39,7 +39,7 @@ Low。規約違反ではあるがテストコードに閉じており、動作�
 | `pbt/tests/prop_auxiliary.rs` | 1 |
 | `src/descriptors.rs`（`#[cfg(test)] mod tests` 内） | 2 |
 
-`pbt/tests/prop_mux_demux.rs` は対象外。同ファイルの 12 箇所は 0046 の対応時に置き換え済みで、本 issue の先行事例になる。
+`pbt/tests/prop_mux_demux.rs` は対象外。同ファイルの `.unwrap()` 9 箇所（および `.unwrap_or(NonZeroU32::MIN)` 6 箇所）は 0046 の対応時に置き換え済みで、本 issue の先行事例になる。
 
 ```rust
 // 置き換え後の例（pbt/tests/prop_mux_demux.rs）
@@ -47,14 +47,16 @@ let video_timescale = NonZeroU32::new(30).expect("30 は非ゼロ");
 let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 ```
 
-`unwrap_or()` で既定値を与えている箇所も同時に見直した。値域が保証されていて `None` にならない場合、既定値で握り潰すと将来 Strategy の値域を広げたときに黙って別の値でテストが走るため、`.expect()` にして根拠をメッセージに書いてある。
+`unwrap_or()` で既定値を与えている箇所も同時に見直した。値域が保証されていて `None` にならない場合、既定値で握り潰すと将来 Strategy の値域を広げたときに黙って別の値でテストが走るため、`.expect()` にして根拠をメッセージに書いてある。この見直しは本 issue の必須スコープには含めない（下記「設計方針」「完了条件」参照）。
+
+対象ファイルには既に英語で書かれた `.expect()` メッセージが多数存在する（実測: `prop_container_boxes.rs` 71 件、`prop_auxiliary.rs` 51 件、`prop_boxes_sample_entry.rs` 19 件など）。先行事例の `prop_mux_demux.rs` も `.expect("failed to create muxer")` 等の英語メッセージが多く残っており、0046 は `.unwrap()` からの新規置換分のうち「発生しない根拠を説明する型」だけを日本語で書き、既存の英語 `.expect()` には手を付けない方針で完了している。これら既存の英語 `.expect()` の日本語化は 0037（PBT テストと C API テストの expect / assert メッセージ日本語化）のスコープであり、本 issue のスコープ外。本 issue は `.unwrap()` からの新規置換分のみを対象とし、新規分は設計方針に従って日本語で書く（結果として 0037 完了後に全メッセージが日本語で揃う）。
 
 ## 設計方針
 
 - メッセージは AGENTS.md の「テストのログメッセージは全て日本語にすること」に従い日本語で書く
 - 「なぜパニックしないと言えるのか」を書く。単に `.expect("failed")` のような情報量の無いメッセージにしない
 - `Strategy` が保証する値域に依存する箇所は、その値域を根拠として書く
-- `unwrap_or()` で `None` を握り潰している箇所があれば、値域が保証されているかを確認し、保証されているなら `.expect()` に変える
+- `unwrap_or()` は本 issue の必須スコープには含めない。ただし置換作業中に値域保証があり実質的に握り潰しになっている `unwrap_or()` を見つけた場合は、先行事例 `pbt/tests/prop_mux_demux.rs`（0046 で対応済み）と同じ扱いで `.expect()` に置き換えてよい。完了条件は `.unwrap()` の grep 結果のみで判定するため、`unwrap_or()` の残置は完了判定に影響しない
 - ファイル数が多いため、ファイル単位でコミットを分けることを検討する
 
 ## 完了条件

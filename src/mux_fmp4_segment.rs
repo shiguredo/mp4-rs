@@ -101,7 +101,7 @@ struct TrackEntry {
 struct TfraSegmentEntry {
     /// このセグメントの先頭サンプルのデコード時間
     time: u64,
-    /// media segment 列の先頭を 0 としたときの moof ボックスの相対オフセット
+    /// メディアセグメント列の先頭を 0 としたときの moof ボックスの相対オフセット
     moof_relative_offset: u64,
     /// moof 内でのこのトラックの traf の 1 ベースインデックス
     traf_number: u32,
@@ -145,7 +145,7 @@ pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
     options: SegmentMuxerOptions,
     sequence_number: u32,
-    /// `create_media_segment_metadata*()` で表現した media segment のバイト数累計
+    /// `create_media_segment_metadata*()` で表現したメディアセグメントのバイト数累計
     media_bytes_written: u64,
     /// トラックごとの tfra エントリ（tracks と同じインデックス）
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
@@ -264,7 +264,7 @@ impl Fmp4SegmentMuxer {
         // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリ数を記録しておく。
         // sidx エンコード後にこの記録と比較すれば、今回の呼び出しで新規追加された
         // tfra エントリ（各トラックにつき末尾 1 件）を特定できる。
-        // sidx は当該 media segment の直前に付加されるため、当該セグメント自身の
+        // sidx は当該メディアセグメントの直前に付加されるため、当該セグメント自身の
         // moof_relative_offset も sidx サイズ分だけ後ろへずらす必要がある。
         let pre_tfra_lens: Vec<usize> = self
             .tfra_entries

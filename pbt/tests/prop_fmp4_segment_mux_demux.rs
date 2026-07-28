@@ -298,7 +298,7 @@ fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// 単一映像トラックの init + media segment roundtrip
+    /// 単一映像トラックの init + メディアセグメント roundtrip
     #[test]
     fn video_only_roundtrip(
         width in 64u16..1921,
@@ -598,7 +598,7 @@ proptest! {
 
     /// sidx あり／なしを混在させたときにも tfra.moof_offset が実 moof 位置を指すことを確認する
     ///
-    /// sidx 付きセグメントは media segment の直前に sidx を置くため、
+    /// sidx 付きセグメントはメディアセグメントの直前に sidx を置くため、
     /// tfra.moof_offset は init + それまでのセグメント合計 + 自セグメントの sidx サイズ を指す必要がある。
     /// 当該セグメント自身の tfra エントリと media_bytes_written の両方に sidx サイズが反映されるかを検証する。
     #[test]
@@ -1184,7 +1184,7 @@ proptest! {
         prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);
     }
 
-    /// `mdat size=0` の media segment を含む fMP4 ファイルでも
+    /// `mdat size=0` のメディアセグメントを含む fMP4 ファイルでも
     /// `Fmp4FileDemuxer` が末尾までの `mdat` として処理できることを確認する
     #[test]
     fn fmp4_file_demuxer_accepts_mdat_size_zero(

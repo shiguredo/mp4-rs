@@ -785,7 +785,9 @@ pub unsafe extern "C" fn mp4_file_muxer_append_sample(
             match (&*sample.sample_entry).to_sample_entry() {
                 Ok(entry) => Some(entry),
                 Err(e) => {
-                    muxer.set_last_error("[mp4_file_muxer_append_sample] Invalid sample entry");
+                    muxer.set_last_error(&format!(
+                        "[mp4_file_muxer_append_sample] Invalid sample entry: {e:?}"
+                    ));
                     return e;
                 }
             }

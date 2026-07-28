@@ -471,4 +471,53 @@ mod tests {
         assert!(sample_entry.nalu_data.is_null());
         assert!(sample_entry.nalu_sizes.is_null());
     }
+
+    /// 空 `naluArrays`（`nalu_array_count == 0`）の parse → free 境界値テスト
+    ///
+    /// 3 つの `allocate_and_copy_bytes` / `allocate_and_copy_array_list` がすべて
+    /// `(null, 0)` を返し、free 側の 3 ブロックが `is_null()` で素通りする経路を検証する
+    #[test]
+    fn test_json_to_hvc1_free_empty_nalu_arrays() {
+        let json_str = r#"{
+            "kind": "hvc1",
+            "width": 1920,
+            "height": 1080,
+            "generalProfileSpace": 0,
+            "generalTierFlag": 0,
+            "generalProfileIdc": 2,
+            "generalProfileCompatibilityFlags": 1610612736,
+            "generalConstraintIndicatorFlags": 12682136550675546112,
+            "generalLevelIdc": 120,
+            "chromaFormatIdc": 1,
+            "bitDepthLumaMinus8": 0,
+            "bitDepthChromaMinus8": 0,
+            "minSpatialSegmentationIdc": 0,
+            "parallelismType": 0,
+            "avgFrameRate": 0,
+            "constantFrameRate": 0,
+            "numTemporalLayers": 1,
+            "temporalIdNested": 0,
+            "lengthSizeMinusOne": 3,
+            "naluArrays": []
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+
+        // parse 直後: 配列個数 0、各ポインタは null
+        assert_eq!(sample_entry.nalu_array_count, 0);
+        assert!(sample_entry.nalu_types.is_null());
+        assert!(sample_entry.nalu_counts.is_null());
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
+
+        // free: 3 ブロックとも `is_null()` で素通りするだけ
+        mp4_sample_entry_hvc1_free(&mut sample_entry);
+        assert_eq!(sample_entry.nalu_array_count, 0);
+        assert!(sample_entry.nalu_types.is_null());
+        assert!(sample_entry.nalu_counts.is_null());
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
+    }
 }

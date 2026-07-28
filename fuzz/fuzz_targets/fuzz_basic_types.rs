@@ -39,5 +39,17 @@ fuzz_target!(|data: &[u8]| {
         let fbf = FullBoxFlags::new(flags);
         let _ = fbf.is_set(i);
         let _ = FullBoxFlags::from_flags([(i, true)]).get();
+
+        // 9 バイト目以降を 4 バイト単位で `(ビット位置, true)` のリストとして
+        // `from_flags` に流し、同一ビット位置の重複を含む任意入力に対する
+        // パニック安全性（OR 畳み込みが加算オーバーフローを起こさないこと）を検証する。
+        let items: Vec<(usize, bool)> = data[8..]
+            .chunks_exact(4)
+            .map(|c| {
+                let pos = u32::from_be_bytes([c[0], c[1], c[2], c[3]]) as usize;
+                (pos, true)
+            })
+            .collect();
+        let _ = FullBoxFlags::from_flags(items).get();
     }
 });

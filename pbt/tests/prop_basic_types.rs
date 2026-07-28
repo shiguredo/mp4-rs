@@ -107,6 +107,26 @@ proptest! {
         prop_assert_eq!(fbf.get(), expected, "i={}", i);
     }
 
+    // FullBoxFlags::from_flags の重複ビット位置に対する冪等性を検証する
+    //
+    // 同じビット位置が複数回渡された場合でも、結果は
+    // 「有効なビット位置 (i < 32) の集合を OR で合成した値」と等価になること。
+    // （素朴に sum() で畳み込むと u32 加算オーバーフローで panic するため）
+    #[test]
+    fn full_box_flags_from_flags_duplicate_positions_or_folded(
+        positions in proptest::collection::vec(any::<usize>(), 0..64),
+    ) {
+        let items: Vec<(usize, bool)> = positions.iter().map(|&i| (i, true)).collect();
+        let actual = FullBoxFlags::from_flags(items).get();
+
+        let expected: u32 = positions
+            .iter()
+            .filter(|&&i| i < 32)
+            .fold(0u32, |acc, &i| acc | (1u32 << i));
+
+        prop_assert_eq!(actual, expected, "positions={:?}", positions);
+    }
+
     // FullBoxHeader の Roundtrip
     #[test]
     fn full_box_header_roundtrip(version in any::<u8>(), flags_value in arb_full_box_flags()) {

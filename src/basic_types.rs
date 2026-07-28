@@ -311,6 +311,9 @@ impl FullBoxFlags {
     ///
     /// ビット位置が `u32` の型幅（32 bit）以上の場合、そのビットは 0 として無視する。
     /// この扱いによって、素朴に `1 << x.0` と書いた場合に起きる debug ビルドでのシフトオーバーフロー panic と release ビルドでの wrap を回避する。
+    ///
+    /// 同じビット位置が複数回渡された場合は OR で合成される（冪等）。
+    /// 素朴に加算で畳み込むと u32 加算オーバーフローで panic する可能性があるため、内部では OR 畳み込みを行う。
     pub fn from_flags<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (usize, bool)>,
@@ -319,7 +322,7 @@ impl FullBoxFlags {
             .into_iter()
             .filter(|x| x.1)
             .map(|x| if x.0 < 32 { 1u32 << x.0 } else { 0 })
-            .sum();
+            .fold(0u32, |acc, bit| acc | bit);
         Self(flags)
     }
 

@@ -114,6 +114,9 @@
   - `is_set` は 32 以上のビット位置に対して常に `false` を返す
   - `from_flags` は 32 以上のビット位置を 0 として無視する
   - @sile
+- [FIX] `FullBoxFlags::from_flags` に同一ビット位置を複数回渡すと u32 加算オーバーフローで panic していたのを修正する
+  - 内部の畳み込みを `.sum()` から OR (`.fold`) に変更し、重複を冪等に扱う
+  - @sile
 
 ### misc
 

@@ -80,6 +80,11 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] c-api の `Mp4SampleEntryAvc1` / `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` で配列ベースポインタが null の場合に未定義動作ではなくエラーを返すようにする
+  - AVC1 では `sps_count > 0` で `sps_sizes` が null、`pps_count > 0` で `pps_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
+  - HEV1 / HVC1 では `nalu_array_count > 0` で `nalu_types` / `nalu_counts` が null のとき、および `nalu_counts[i] > 0` の内側ループに入る直前で `nalu_data` / `nalu_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
+  - これまでは C 呼び出し側が上記条件で null を渡すと即座に未定義動作になっていた
+  - @sile
 - [FIX] wasm の `mp4_sample_entry_hev1_free()` / `mp4_sample_entry_hvc1_free()` のメモリ解放の不一致を修正する
   - `mp4_free` に確保時のバイト数を渡すようにする（これまでは `size = 0` を渡していたため、`naluArrays` が非空のときにヒープ領域が解放されずリークしていた）
   - `free_array_list` に `nalu_counts` の総和を渡すようにする（これまでは NALU 配列の個数を渡していたため、確保時の要素数と食い違いヒープを破壊していた）

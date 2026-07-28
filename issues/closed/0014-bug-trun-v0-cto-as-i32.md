@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-trun-v0-cto-as-i32
 - Polished: 2026-07-28
@@ -80,3 +80,30 @@ version 0 で `u32 as i32` は `0x8000_0000 ..= 0xFFFF_FFFF` を負の i32 に�
    - `arb_trun_box` の `cto_strategy`（現行 158-162 行付近）を `any::<i64>()` ベースに広げ、version 0 の `(i32::MAX, u32::MAX]` と version 1 の `[i32::MIN, -1]` の両範囲を PBT で探索できるようにする
    - 境界値（`0`、`i32::MAX`、`i32::MAX as i64 + 1`、`u32::MAX`、`-1`、`i32::MIN`）の roundtrip 単体テストを追加する
    - encode 側の範囲エラー（`< i32::MIN`、`> u32::MAX`、負値と `> i32::MAX` の混在）を検証する単体テストを追加する
+
+## 解決方法
+
+### 本体の型変更と範囲検証
+
+1. `src/boxes_fmp4.rs` の `TrunSample.composition_time_offset` を `Option<i32>` から `Option<i64>` に変更した。`TrunBox::decode` で version 0 は `i64::from(u32::decode_at(...))`、version 1 は `i64::from(i32::decode_at(...))` に変えて、version 0 で `> i32::MAX` の値が負値に化けていた既存バグを解消した。
+2. `TrunBox::encode` で `unwrap_or(0)` した `cto: i64` を、version 1 では `i32::try_from`、version 0 では `u32::try_from` で厳密に検証し、範囲外は `Error::invalid_input` を返すようにした。`uses_version_1()` は「いずれかのサンプルが負値なら version 1」に整理し、負値と `> i32::MAX` の混在は encode 時にエラーとして扱う設計にした。
+3. `src/mux_fmp4_segment.rs` の `ResolvedSegmentSample.composition_time_offset` を `Option<i64>` に広げ、`resolve_segment_tracks` にあった `i32::try_from` の境界検証を撤廃した。範囲検証は `TrunBox::encode` 側に一本化した。`create_media_segment_metadata` の doc も新しい許容範囲に書き換えた。
+4. `src/demux_fmp4_segment.rs` の `trun_sample.composition_time_offset.map(i64::from)` は型変更で不要になったため単純代入に置き換えた。
+
+### C API doc の追従
+
+5. `crates/c-api/src/fmp4_segment_mux.rs` と `crates/c-api/src/mux.rs` の `composition_time_offset` の doc を新仕様（version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX`、混在は不可）に更新し、cbindgen 経由で `crates/c-api/include/mp4.h` を再生成した。
+
+### テスト
+
+6. `pbt/tests/prop_fmp4_boxes.rs` の `arb_trun_box` の `cto_strategy` を `i64` ベースに広げ、TrunBox 単位で「符号あり側 (`i32::MIN..=i32::MAX`)」か「符号なし側 (`0..=u32::MAX`)」のどちらか一方を選ぶ構造にした（混在は encode でエラーになるため）。
+7. 境界値（`0`、`i32::MAX`、`i32::MAX + 1`、`u32::MAX`、`-1`、`i32::MIN`）の roundtrip 単体テスト、および範囲外エラー（`> u32::MAX`、`< i32::MIN`、負値と `> i32::MAX` の混在）の単体テストを追加した。
+
+### レビュー指摘への対応
+
+8. コメント整理: `mux_fmp4_segment.rs` に浮いていた「範囲外の composition_time_offset は…」コメント、`ResolvedSegmentSample` フィールドの重複した 2 行目、`create_media_segment_metadata` doc の冗長な最終文、テストの doc と重複していた行内コメントを削除した。
+9. 境界値テスト内の `.expect("cto={cto} …")` は書式展開されなかったため `.unwrap_or_else(|e| panic!("… cto={cto} …: {e:?}"))` に置き換え、失敗時にどの `cto` で落ちたかとエラー内容を追えるようにした。
+
+### 変更履歴
+
+`CHANGES.md` に `[CHANGE]` エントリを 1 件追加した。型変更・decode バグ修正・`Fmp4SegmentMuxer` / C API 経由で `> i32::MAX` を受け付けるようになる動作変更・混在時のエラー挙動を記載した。

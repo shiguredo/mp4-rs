@@ -131,6 +131,7 @@ fn arb_trun_box() -> impl Strategy<Value = TrunBox> {
             any::<bool>(), // has_size
             any::<bool>(), // has_flags
             any::<bool>(), // has_composition_time_offset
+            any::<bool>(), // cto の符号側: true = signed (version 1)、false = unsigned (version 0)
             0usize..10,    // sample_count
         ),
     )
@@ -138,7 +139,7 @@ fn arb_trun_box() -> impl Strategy<Value = TrunBox> {
             |(
                 data_offset,
                 first_sample_flags,
-                (has_duration, has_size, has_flags, has_cto, count),
+                (has_duration, has_size, has_flags, has_cto, signed_side, count),
             )| {
                 let duration_strategy: BoxedStrategy<Option<u32>> = if has_duration {
                     any::<u32>().prop_map(Some).boxed()
@@ -155,8 +156,21 @@ fn arb_trun_box() -> impl Strategy<Value = TrunBox> {
                 } else {
                     Just(None).boxed()
                 };
-                let cto_strategy: BoxedStrategy<Option<i32>> = if has_cto {
-                    any::<i32>().prop_map(Some).boxed()
+                // ISO/IEC 14496-12 8.8.8: composition_time_offset は version 0 で
+                // `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲を許容する。
+                // 負値と `> i32::MAX` は同一 TrunBox 内に混在させると encode 時に
+                // どちらの版でも表現できず invalid_input になるため、TrunBox 単位で
+                // 「符号あり側」か「符号なし側」のどちらか一方に統一して探索する。
+                let cto_strategy: BoxedStrategy<Option<i64>> = if has_cto {
+                    if signed_side {
+                        // version 1 の許容範囲
+                        ((i32::MIN as i64)..=(i32::MAX as i64))
+                            .prop_map(Some)
+                            .boxed()
+                    } else {
+                        // version 0 の許容範囲
+                        (0i64..=(u32::MAX as i64)).prop_map(Some).boxed()
+                    }
                 } else {
                     Just(None).boxed()
                 };
@@ -624,6 +638,123 @@ mod boundary_tests {
         let encoded = trun.encode_to_vec().unwrap();
         let (decoded, _) = TrunBox::decode(&encoded).unwrap();
         assert_eq!(decoded.samples[0].composition_time_offset, Some(-100));
+    }
+
+    /// 指定した composition_time_offset を持つ TrunBox を組み立てるヘルパー
+    fn trun_with_cto(cto: i64) -> TrunBox {
+        TrunBox {
+            data_offset: None,
+            first_sample_flags: None,
+            samples: vec![TrunSample {
+                duration: Some(1024),
+                size: Some(512),
+                flags: None,
+                composition_time_offset: Some(cto),
+            }],
+        }
+    }
+
+    /// TrunBox: version 0 の composition_time_offset 境界値 roundtrip
+    ///
+    /// ISO/IEC 14496-12 8.8.8 では version 0 は unsigned 32-bit 全域を許容する。
+    /// 特に `> i32::MAX` の値が符号反転せずに保持されることを確認する。
+    #[test]
+    fn trun_box_cto_version0_boundaries() {
+        for cto in [0i64, i32::MAX as i64, i32::MAX as i64 + 1, u32::MAX as i64] {
+            let trun = trun_with_cto(cto);
+            assert_eq!(
+                trun.full_box_version(),
+                0,
+                "cto={cto} は version 0 で表現できる"
+            );
+
+            let encoded = trun
+                .encode_to_vec()
+                .unwrap_or_else(|e| panic!("cto={cto} の encode は成功する: {e:?}"));
+            let (decoded, _) = TrunBox::decode(&encoded)
+                .unwrap_or_else(|e| panic!("cto={cto} の decode は成功する: {e:?}"));
+            assert_eq!(
+                decoded.samples[0].composition_time_offset,
+                Some(cto),
+                "cto={cto} の roundtrip 値が一致する"
+            );
+        }
+    }
+
+    /// TrunBox: version 1 の負値 composition_time_offset 境界値 roundtrip
+    #[test]
+    fn trun_box_cto_version1_negative_boundaries() {
+        for cto in [-1i64, i32::MIN as i64] {
+            let trun = trun_with_cto(cto);
+            assert_eq!(trun.full_box_version(), 1, "cto={cto} は version 1 が必要");
+
+            let encoded = trun
+                .encode_to_vec()
+                .unwrap_or_else(|e| panic!("cto={cto} の encode は成功する: {e:?}"));
+            let (decoded, _) = TrunBox::decode(&encoded)
+                .unwrap_or_else(|e| panic!("cto={cto} の decode は成功する: {e:?}"));
+            assert_eq!(
+                decoded.samples[0].composition_time_offset,
+                Some(cto),
+                "cto={cto} の roundtrip 値が一致する"
+            );
+        }
+    }
+
+    /// TrunBox: `u32::MAX` を超える composition_time_offset は encode 時にエラーとなる
+    #[test]
+    fn trun_box_cto_above_u32_max_is_encode_error() {
+        // 正値だが u32::MAX を超えるため version 0 でも書けない。
+        // 負値でもないので version 1 も選ばれず、結果として version 0 が選ばれて範囲エラーになる。
+        let trun = trun_with_cto(u32::MAX as i64 + 1);
+        assert_eq!(trun.full_box_version(), 0);
+        assert!(
+            trun.encode_to_vec().is_err(),
+            "cto > u32::MAX は encode 時にエラーとなる"
+        );
+    }
+
+    /// TrunBox: `i32::MIN` を下回る composition_time_offset は encode 時にエラーとなる
+    #[test]
+    fn trun_box_cto_below_i32_min_is_encode_error() {
+        // 負値なので version 1 が選ばれるが、i32::MIN 未満は i32 に収まらないためエラー。
+        let trun = trun_with_cto(i32::MIN as i64 - 1);
+        assert_eq!(trun.full_box_version(), 1);
+        assert!(
+            trun.encode_to_vec().is_err(),
+            "cto < i32::MIN は encode 時にエラーとなる"
+        );
+    }
+
+    /// TrunBox: 負値と `> i32::MAX` の値が混在する場合は encode 時にエラーとなる
+    ///
+    /// 負値があるため version 1 が選ばれるが、`> i32::MAX` の値は version 1 の
+    /// signed 32-bit に収まらないため、encode 時に invalid_input として弾かれる。
+    #[test]
+    fn trun_box_cto_mixed_negative_and_above_i32_max_is_encode_error() {
+        let trun = TrunBox {
+            data_offset: None,
+            first_sample_flags: None,
+            samples: vec![
+                TrunSample {
+                    duration: Some(1024),
+                    size: Some(512),
+                    flags: None,
+                    composition_time_offset: Some(-1),
+                },
+                TrunSample {
+                    duration: Some(1024),
+                    size: Some(512),
+                    flags: None,
+                    composition_time_offset: Some(i32::MAX as i64 + 1),
+                },
+            ],
+        };
+        assert_eq!(trun.full_box_version(), 1);
+        assert!(
+            trun.encode_to_vec().is_err(),
+            "負値と > i32::MAX の混在は version 1 でも書けないため encode 時にエラーとなる"
+        );
     }
 
     /// SidxBox: version 0 (32-bit values)

@@ -111,7 +111,9 @@ pub struct Mp4MuxSample {
     /// demux API と往復しやすいように `i64` で公開しているが、
     /// 実際に mux 時に受理される範囲は次の通り:
     /// - file mux: `i32::MIN ..= u32::MAX`
-    /// - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+    /// - fMP4 segment mux: `i32::MIN ..= u32::MAX`
+    ///   （ただし ISO/IEC 14496-12 8.8.8 の制約により、
+    ///   ひとつの `trun` に負値と `> i32::MAX` の値を混在させることはできない）
     ///
     /// 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
     pub composition_time_offset: i64,

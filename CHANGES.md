@@ -48,6 +48,12 @@
 - [CHANGE] `SampleTableAccessorError` に `SampleCountOverflow` と `SampleDataOffsetOverflow` を追加する
   - `SampleTableAccessor::new()` がオーバーフローを検出したときに返すエラーバリアント
   - @sile
+- [CHANGE] `TrunSample.composition_time_offset` の型を `Option<i32>` から `Option<i64>` に変更する
+  - これまで `trun` version 0 の unsigned 32-bit 値を `as i32` で格納しており、`> i32::MAX` の値が負値に化けていた
+  - version 0 は `0..=u32::MAX`、version 1 は `i32::MIN..=i32::MAX` を保持できるようになる（`CttsEntry.sample_offset` と表現力を揃える）
+  - あわせて `Fmp4SegmentMuxer` および C API `fmp4_segment_muxer_write_media_segment_metadata()` で、これまでエラーだった `> i32::MAX` の `composition_time_offset` を受け付けるようになる
+  - ただし同一 `trun` 内に負値と `> i32::MAX` の値が混在する場合は encode 時に `invalid_input` エラーとなる
+  - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
   - `FtabBox` はフォントテーブル（`FontRecord` の可変長配列、各エントリーは `font_id` と Pascal-string `font_name`）を保持する

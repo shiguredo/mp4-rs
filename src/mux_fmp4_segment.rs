@@ -121,7 +121,8 @@ struct ResolvedSegmentTrack {
 struct ResolvedSegmentSample {
     duration: u32,
     keyframe: bool,
-    composition_time_offset: Option<i32>,
+    // `TrunSample::composition_time_offset` に転写するため公開 API と同じ i64 で保持する
+    composition_time_offset: Option<i64>,
     data_size: usize,
 }
 
@@ -207,8 +208,10 @@ impl Fmp4SegmentMuxer {
     /// 「今回のセグメントに属する `mdat` payload 領域の先頭からの相対位置」である。
     ///
     /// `samples[*].composition_time_offset` は公開 API では demuxer と揃えて `i64` だが、
-    /// この muxer が `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲に限られる。
-    /// 範囲外の値を指定した場合はエラーになる。
+    /// `trun` に書けるのは ISO/IEC 14496-12 8.8.8 の制約により
+    /// version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲に限られる。
+    /// また、負値と `> i32::MAX` の値がひとつの `trun` に混在する場合は
+    /// どちらの版でも表現できないためエラーになる。
     ///
     /// 現実装は `1 track = 1 traf = 1 trun` を前提としている。
     /// そのため、ひとつのトラックに属する payload を複数の離れた範囲へ分割して
@@ -895,16 +898,7 @@ fn resolve_segment_tracks(
             resolved_samples.push(ResolvedSegmentSample {
                 duration: sample.duration,
                 keyframe: sample.keyframe,
-                composition_time_offset: sample
-                    .composition_time_offset
-                    .map(|offset| {
-                        i32::try_from(offset).map_err(|_| {
-                            MuxError::EncodeError(Error::invalid_input(
-                                "composition_time_offset for fMP4 must be within i32 range",
-                            ))
-                        })
-                    })
-                    .transpose()?,
+                composition_time_offset: sample.composition_time_offset,
                 data_size: sample.data_size,
             });
         }

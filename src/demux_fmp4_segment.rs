@@ -399,9 +399,7 @@ impl Fmp4SegmentDemuxer {
                             keyframe,
                             data_offset: sample_data_offset as u64,
                             data_size: size,
-                            composition_time_offset: trun_sample
-                                .composition_time_offset
-                                .map(i64::from),
+                            composition_time_offset: trun_sample.composition_time_offset,
                         });
                         track_runtime.current_sample_description_index =
                             Some(sample_description_index);

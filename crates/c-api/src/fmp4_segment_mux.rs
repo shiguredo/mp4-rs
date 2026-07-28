@@ -42,8 +42,11 @@ pub struct Fmp4SegmentSample {
     /// コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
     ///
     /// demux API と合わせて `i64` で公開している。
-    /// ただし fMP4 の `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲だけであり、
-    /// 範囲外の値を指定すると mux 関数はエラーを返す。
+    /// ただし fMP4 の `trun` に書けるのは ISO/IEC 14496-12 8.8.8 の制約により
+    /// version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲に限られる。
+    /// また、負値と `> i32::MAX` の値がひとつの `trun` に混在する場合は
+    /// どちらの版でも表現できないためエラーになる。
+    /// これらの制約を満たさない値を指定すると mux 関数はエラーを返す。
     pub composition_time_offset: i64,
 
     /// セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット

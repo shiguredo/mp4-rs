@@ -44,8 +44,7 @@
   - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
   - @sile
 - [CHANGE] `SampleTableAccessorError` に `SampleCountOverflow` と `SampleDataOffsetOverflow` を追加する
-  - 破損した `stts` / `ctts` / `co64` を含む入力で、サンプル数やデータ位置の累計がオーバーフローしたときに panic せずエラーを返すようにする
-  - release ビルドでは wrap して誤ったサンプル数のアクセサが返っていた
+  - `SampleTableAccessor::new()` がオーバーフローを検出したときに返すエラーバリアント
   - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
@@ -92,6 +91,9 @@
   - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
   - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
   - `entry.track_kind` で外側に分岐する形に刷新し、映像トラックでは常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
+  - @sile
+- [FIX] 破損した `stts` / `ctts` / `co64` を含む入力で、サンプル数やデータ位置の累計がオーバーフローしたときにパニックせずエラーを返すようにする
+  - release ビルドではラップして誤ったサンプル数のアクセサが返っていた
   - @sile
 
 ### misc

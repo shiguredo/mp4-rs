@@ -113,7 +113,7 @@
 
 ### misc
 
-- [UPDATE] `src/` 配下の `#[expect(missing_docs)]` を全撤廃して、公開型の pub フィールドと pub enum variant に日本語 doc コメントを付ける
+- [UPDATE] `#[expect(missing_docs)]` を全撤廃して公開アイテムにドキュメントを付与する
   - `MvhdBox::timescale` / `MdhdBox::timescale` / `SidxBox::timescale` の doc に、それぞれのタイムスケールが何を定義するかを明記する
   - `MvhdBox::duration` / `MdhdBox::duration` / `TkhdBox::duration` / `ElstEntry::edit_duration` / `ElstEntry::media_time` の doc に、値がどの timescale 単位で表されるかを明記する（過去に `tkhd` の duration の単位を取り違える不具合を出しているための再発防止）
   - あわせて `CttsBox` / `CslgBox` / `MdhdBox::language` の既存英語 doc を日本語化し、`SidxReference::subsegment_duration` などに単位表記を追記する

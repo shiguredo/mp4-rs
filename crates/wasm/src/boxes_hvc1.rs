@@ -222,16 +222,24 @@ pub fn mp4_sample_entry_hvc1_free(entry: &mut Mp4SampleEntryHvc1) {
             let counts =
                 std::slice::from_raw_parts(entry.nalu_counts, entry.nalu_array_count as usize);
             for count in counts {
-                total_nalu_count = total_nalu_count.saturating_add(*count);
+                total_nalu_count = total_nalu_count
+                    .checked_add(*count)
+                    .expect("invariant broken: total nalu count exceeds u32::MAX");
             }
 
-            let bytes = (entry.nalu_array_count as usize * std::mem::size_of::<u32>()) as u32;
-            crate::mp4_free(entry.nalu_counts.cast_mut().cast(), bytes);
+            let bytes = entry
+                .nalu_array_count
+                .checked_mul(std::mem::size_of::<u32>() as u32)
+                .expect("invariant broken: nalu_counts byte size exceeds u32::MAX");
+            crate::mp4_free(entry.nalu_counts.cast_mut() as *mut u8, bytes);
         }
         entry.nalu_counts = std::ptr::null();
     }
 
     if !entry.nalu_data.is_null() {
+        // `nalu_counts == null && nalu_data != null` は `allocate_and_copy_array_list` の
+        // 部分的な `mp4_alloc` 失敗でのみ発生する非常態。この場合 `total_nalu_count == 0`
+        // のまま `free_array_list` が早期 return し、`nalu_data` / `nalu_sizes` が leak する
         unsafe {
             crate::boxes::free_array_list(
                 entry.nalu_data as *mut *mut u8,
@@ -365,6 +373,8 @@ mod tests {
         assert_eq!(sample_entry.nalu_array_count, 0);
         assert!(sample_entry.nalu_types.is_null());
         assert!(sample_entry.nalu_counts.is_null());
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
     }
 
     /// 1 配列に 2 個の NALU を持つ入力（総数 2 > 配列数 1）の parse → free 回帰テスト

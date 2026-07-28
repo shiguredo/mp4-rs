@@ -200,14 +200,18 @@ pub fn parse_json_mp4_sample_entry_hev1(
 ///
 /// `parse_json_mp4_sample_entry_hev1()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_hev1_free(entry: &mut Mp4SampleEntryHev1) {
-    // `nalu_data` / `nalu_sizes` は `allocate_and_copy_array_list` が全 NALU 総数分を
-    // 確保するため、free 側にも同じ総数を渡す必要がある。総数は `nalu_counts` の解放より
-    // 前に算出しなければ use-after-free になる
+    // 全 NALU 総数を関数先頭のローカルに持たせておく理由は、後段の `free_array_list` の
+    // count 引数に使うため。総数の算出は `nalu_counts` の解放より前に済ませないと
+    // use-after-free になる。
+    //
+    // 各フィールドの確保サイズは要素型と `nalu_array_count` から求まる:
+    // - `nalu_types`: 要素 `u8` × `nalu_array_count`
+    // - `nalu_counts`: 要素 `u32` × `nalu_array_count`
+    // - `nalu_data` / `nalu_sizes`: 要素数は「NALU 配列の個数」ではなく「全 NALU の総数」
     let mut total_nalu_count: u32 = 0;
 
     if !entry.nalu_types.is_null() {
         unsafe {
-            // `nalu_types` は `allocate_and_copy_bytes` で `nalu_array_count` バイト確保される
             crate::mp4_free(entry.nalu_types.cast_mut(), entry.nalu_array_count);
         }
         entry.nalu_types = std::ptr::null();
@@ -215,14 +219,12 @@ pub fn mp4_sample_entry_hev1_free(entry: &mut Mp4SampleEntryHev1) {
 
     if !entry.nalu_counts.is_null() {
         unsafe {
-            // `free_array_list` に渡す全 NALU 総数を、解放前に算出する
             let counts =
                 std::slice::from_raw_parts(entry.nalu_counts, entry.nalu_array_count as usize);
             for count in counts {
                 total_nalu_count = total_nalu_count.saturating_add(*count);
             }
 
-            // `nalu_counts` は `nalu_array_count * size_of::<u32>()` バイト確保される
             let bytes = (entry.nalu_array_count as usize * std::mem::size_of::<u32>()) as u32;
             crate::mp4_free(entry.nalu_counts.cast_mut() as *mut u8, bytes);
         }
@@ -231,8 +233,6 @@ pub fn mp4_sample_entry_hev1_free(entry: &mut Mp4SampleEntryHev1) {
 
     if !entry.nalu_data.is_null() {
         unsafe {
-            // `allocate_and_copy_array_list` が確保した count は「NALU 配列の個数」ではなく
-            // 「全 NALU の総数」なので、free にも総数を渡す
             crate::boxes::free_array_list(
                 entry.nalu_data as *mut *mut u8,
                 entry.nalu_sizes as *mut u32,
@@ -390,8 +390,8 @@ mod tests {
         // 「配列数」は 1、平坦化した「NALU 総数」は 2 になっている
         assert_eq!(sample_entry.nalu_array_count, 1);
 
-        // 解放が確保サイズと合った count で行われることを検証する（内部で UB があれば
-        // アロケータ / miri / ASAN が検出する）
+        // 回帰の網として parse → free を通す。UB の直接観測は保証しない
+        // （wasm クレートは fuzz 対象外で、miri もアラインメント UB により実行できない）
         mp4_sample_entry_hev1_free(&mut sample_entry);
         assert_eq!(sample_entry.nalu_array_count, 0);
         assert!(sample_entry.nalu_types.is_null());

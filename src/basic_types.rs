@@ -310,7 +310,7 @@ impl FullBoxFlags {
     /// `(ビット位置、フラグがセットされているかどうか)` のイテレーターを受け取って、対応するビットフラグを作成する
     ///
     /// ビット位置が `u32` の型幅（32 bit）以上の場合、そのビットは 0 として無視する。
-    /// これによりシフト演算のオーバーフローによるパニック（debug ビルド）や wrap（release ビルド）を防ぐ。
+    /// この扱いによって、素朴に `1 << x.0` と書いた場合に起きる debug ビルドでのシフトオーバーフロー panic と release ビルドでの wrap を回避する。
     pub fn from_flags<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (usize, bool)>,
@@ -331,7 +331,7 @@ impl FullBoxFlags {
     /// 指定されたビット位置のフラグがセットされているかどうかを判定する
     ///
     /// ビット位置が `u32` の型幅（32 bit）以上の場合は常に `false` を返す。
-    /// これによりシフト演算のオーバーフローによるパニック（debug ビルド）を防ぐ。
+    /// この扱いによって、素朴に `1 << i` と書いた場合に起きる debug ビルドでのシフトオーバーフロー panic と release ビルドでの wrap による誤判定を回避する。
     pub const fn is_set(self, i: usize) -> bool {
         if i >= 32 {
             return false;
@@ -841,7 +841,6 @@ mod tests {
     fn from_flags_ignores_bit_positions_at_or_above_32_without_panic() {
         // ビット 31（有効）、32・usize::MAX（無視）を混ぜて渡す
         let flags = FullBoxFlags::from_flags([(31, true), (32, true), (usize::MAX, true)]);
-        // ビット 31 のみが立った値になっていること
         assert_eq!(flags.get(), 1u32 << 31);
     }
 }

@@ -83,8 +83,6 @@ fn base_hev1(
 }
 
 /// Hvc1 の共通フィールドを埋めた雛形を生成するヘルパー
-///
-/// Hev1 と同型だが型が別のため、テスト用に別ヘルパーを用意する
 fn base_hvc1(
     nalu_array_count: u32,
     nalu_types: *const u8,
@@ -305,8 +303,8 @@ fn hev1_null_nalu_data_with_all_counts_zero_succeeds() {
         2,
         nalu_types_arr.as_ptr(),
         nalu_counts_arr.as_ptr(),
-        std::ptr::null(), // 内側ループが走らないので null でも UB にならず、
-        std::ptr::null(), // 弾かれるべきでもない
+        std::ptr::null(),
+        std::ptr::null(),
     );
     let entry = Mp4SampleEntry {
         kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HEV1,

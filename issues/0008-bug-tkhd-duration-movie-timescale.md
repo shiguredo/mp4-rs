@@ -15,7 +15,7 @@
 
 `Mp4FileMuxer` の実出力で、AVFoundation がトラックのサンプルを読み出せなくなることを実測した（詳細は「実測による影響確認」）。
 
-被害は timescale の組み合わせで決まり、最悪ケースはトラックの実質的な全消失である。映像 30 fps（timescale 30）と音声 48 kHz を約 10 秒ずつ mux した MP4 では、**映像 300 サンプルのうち 1 サンプルしか読めない**。映像 30 / 音声 48000 は `Sample::timescale` の doc（`src/mux_mp4_file.rs:203-204`）が並べて例示している組み合わせで、録画系で普通に現れる。
+被害は timescale の組み合わせで決まり、最悪ケースはトラックの実質的な全消失である。映像 30 fps（timescale 30）と音声 48 kHz を約 10 秒ずつ mux した MP4 では、**映像 300 サンプルのうち 1 サンプルしか読めない**。映像 30 / 音声 48000 は `Sample::timescale` の doc（`src/mux_mp4_file.rs:206-207`）が並べて例示している組み合わせで、録画系で普通に現れる。
 
 深刻なのは欠落がサイレントである点である。ffprobe / MediaInfo / mp4box はいずれも正しい尺を報告するため、生成側でファイルを検証しても異常を検出できない。Apple 系プラットフォームで再生して初めて発覚する。
 
@@ -153,7 +153,7 @@ AVFoundation が報告するトラックの `timeRange.duration` も `tkhd.durat
 
 換算は `u128` で行う。`u64 * u32` は最大でも 2 の 96 乗であり `u128` に収まるため、中間結果の overflow は原理的に起きない。切り上げには `u128::div_ceil` を使う。
 
-最終結果が `u64` を超えるには採用側トラックの `Sample::duration`（`u32`）の総和が `u64::MAX` 近傍である必要があり、現実には到達しない。防御として `u64` へ収まらない場合は `MuxError::EncodeError(Error::invalid_data("converted track duration exceeds u64::MAX"))` を返す。`MuxError::Overflow` ではなく `EncodeError` を選ぶのは、`issues/closed/0001-bug-mux-mp4-file-data-size-truncation.md` が fMP4 側との一貫性を理由に `EncodeError` を採用した先例に従うためである。この経路のテストは書けないため完了条件には含めない。
+最終結果が `u64` を超えるには採用側トラックの `Sample::duration`（`u32`）の総和が `u64::MAX` 近傍である必要があり、現実には到達しない。防御として `u64` へ収まらない場合は `MuxError::EncodeError(Error::invalid_data("converted track duration exceeds u64::MAX"))` を返す。`MuxError::Overflow` ではなく `EncodeError` を選ぶのは、`issues/closed/0001-bug-mux-mp4-file-data-size-truncation.md` が fMP4 側との一貫性を理由に `EncodeError` を採用した先例に従うためである。この経路は公開 API 経由では到達できないため完了条件には含めない。`convert_duration_to_movie_timescale` は private な自由関数なので `#[cfg(test)] mod tests` から直接呼べばエラー自体は確認できるが、同ファイルの `build_stbl_box` にある `samples per chunk exceeds u32::MAX` も同種の到達不能な防御分岐で無テストなので、そちらに揃える。
 
 ### その他
 

@@ -596,6 +596,78 @@ proptest! {
         prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
     }
 
+    /// sidx あり／なしを混在させたときにも tfra.moof_offset が実 moof 位置を指すことを確認する
+    ///
+    /// sidx 付きセグメントは media segment の直前に sidx を置くため、
+    /// tfra.moof_offset は init + それまでのセグメント合計 + 自セグメントの sidx サイズ を指す必要がある。
+    /// 当該セグメント自身の tfra エントリと media_bytes_written の両方に sidx サイズが反映されるかを検証する。
+    #[test]
+    fn mfra_bytes_roundtrip_with_sidx_mix(
+        segments in prop::collection::vec(
+            (prop::collection::vec(arb_video_sample(0), 1..5), any::<bool>()),
+            1..5,
+        ),
+    ) {
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+
+        // 各セグメントについて (sidx サイズ, セグメント全体のバイト数) を記録する。
+        // sidx なしの場合は sidx サイズを 0 とする。
+        let mut segment_layouts: Vec<(u64, u64)> = Vec::new();
+
+        for (segment_samples, with_sidx) in &segments {
+            let fmp4_samples: Vec<Sample> = segment_samples
+                .iter()
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
+                .collect();
+            let payloads: Vec<&[u8]> = segment_samples
+                .iter()
+                .map(|sample| sample.data.as_slice())
+                .collect();
+            let segment = if *with_sidx {
+                build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads)
+            } else {
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads)
+            };
+
+            // sidx サイズはセグメント先頭から SidxBox をデコードして得る（サイズ算出を実装側と分離するため）
+            let sidx_size = if *with_sidx {
+                let (_sidx_box, decoded) =
+                    SidxBox::decode(&segment).expect("failed to decode sidx from segment");
+                decoded as u64
+            } else {
+                0
+            };
+            segment_layouts.push((sidx_size, segment.len() as u64));
+        }
+
+        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let mfra = muxer.mfra_bytes().expect("failed to build mfra");
+
+        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("failed to decode mfra");
+        prop_assert_eq!(decoded_size, mfra.len());
+
+        // 単一映像トラックのみのため tfra_box は 1 つ、エントリ数はセグメント数と一致する
+        prop_assert_eq!(mfra_box.tfra_boxes.len(), 1);
+        prop_assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
+
+        // 実 moof 位置 = セグメント先頭 + sidx サイズ（sidx なしなら 0）を各エントリで検証する
+        let init_size = init_bytes.len() as u64;
+        let mut media_head = init_size;
+        for (entry, (sidx_size, segment_size)) in mfra_box.tfra_boxes[0]
+            .entries
+            .iter()
+            .zip(segment_layouts.iter().copied())
+        {
+            let expected_moof_offset = media_head + sidx_size;
+            prop_assert_eq!(entry.moof_offset, expected_moof_offset);
+            media_head += segment_size;
+        }
+
+        // mfro.size が mfra 全体のサイズと一致すること
+        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+    }
+
     /// sidx 付きセグメントが正しく demux できることを確認する
     #[test]
     fn sidx_roundtrip(

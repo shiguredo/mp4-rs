@@ -5,12 +5,8 @@
 //! 短いバッファで `TfraBox::encode` を呼ぶとインデックス範囲外パニックに至っていた。
 //! 本テストは、修正後に `ErrorKind::InsufficientBuffer` エラーが正しく返ることを、
 //! 3 呼び出し位置（`traf_number` / `trun_number` / `sample_number`）× `byte_count`
-//! 1〜3 の全 9 通りと、`byte_count = 4` の 1 ケース（`Encode for u32` 側の
-//! 既存境界検査経路のサニティ）で検証する。
+//! 1〜3 の全 9 通りと、`byte_count = 4` を 1 ケース加えた計 10 ケースで検証する。
 //!
-//! テスト配置は shiguredo-rust の
-//! 「単体テストのファイル名は `tests/test_<module>.rs` とし、
-//! `src/<module>.rs` に対応させること」に従い `src/boxes_fmp4.rs` に対応させている。
 //! 境界値のエラーパス検証は PBT では狙った境界（残バイト = `byte_count - 1`）を
 //! 安定して当てにくく、目的（エラーパスの検証）とも合わないため単体テストとして置く。
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_boxes.rs` の
@@ -66,7 +62,7 @@ fn assert_insufficient_buffer_err(tfra: &TfraBox, buf_len: usize, ctx: &str) {
     assert_eq!(
         err.kind,
         ErrorKind::InsufficientBuffer,
-        "エラー種別が InsufficientBuffer ではない: {ctx} (実際は {:?})",
+        "エラー種別が `InsufficientBuffer` ではない: {ctx} (実際は {:?})",
         err.kind,
     );
 }
@@ -133,11 +129,13 @@ fn sample_number_insufficient_buffer() {
     }
 }
 
-/// `byte_count = 4`（`Encode for u32` 側で既に境界検査が走る経路）のサニティチェック
+/// `byte_count = 4` のサニティチェック
 ///
-/// 本 issue の修正対象は `byte_count` 1〜3 の 3 アームだが、
-/// `encode_variable_uint` 全体の外形的な回帰として `byte_count = 4` 経由でも
+/// 境界検査追加の対象は `byte_count` 1〜3 の 3 アームだが、
+/// `encode_variable_uint` 全体の外形的な回帰として `byte_count = 4` でも
 /// `InsufficientBuffer` が返ることを同じテストファイル内で押さえておく
+/// （`byte_count = 4` の書き込みは `value.encode(buf)` に委譲され、
+/// そこでも `check_buffer_size` が走るが、修正後は関数冒頭の検査が先に発火する）
 #[test]
 fn byte_count_four_sanity_insufficient_buffer() {
     let length_size_traf: u8 = 3; // byte_count = 4

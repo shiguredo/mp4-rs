@@ -323,6 +323,9 @@ impl Fmp4SegmentMuxer {
         // build_media_segment_bytes は各 track_kind につき最大 1 件だけ push するため、
         // pre_tfra_lens よりも長くなったトラックは末尾 1 件が今回の新規エントリである。
         for (track_index, entries) in self.tfra_entries.iter_mut().enumerate() {
+            // build_media_segment_bytes が新規トラックを追加した場合、self.tfra_entries は
+            // pre_tfra_lens より長くなり、末尾の新規トラックについては pre_tfra_lens に対応する
+            // 要素が存在しない。この場合の pre_len は「以前は存在しなかった = 0 件」を表す。
             let pre_len = pre_tfra_lens.get(track_index).copied().unwrap_or(0);
             if entries.len() > pre_len {
                 let last = entries

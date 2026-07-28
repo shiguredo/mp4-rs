@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
+  - @voluntas
 - [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする
   - `hdlr` と `media_header` の組が異なる形式（`stpp` と `tx3g` 等）を 1 本の字幕トラックに混ぜると `MuxError::MixedSampleEntries` を返す
   - これまでは受け入れていたが、`stsd` とトラック側の属性が食い違う MP4 が生成されていた
@@ -91,6 +93,11 @@
   - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
   - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
   - `entry.track_kind` で外側に分岐する形に刷新し、映像トラックでは常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
+  - @sile
+- [FIX] `Mp4FileMuxer` が生成した MP4 で、`timescale` の異なるトラックの尺が誤って解釈される問題を修正する
+  - `tkhd` の `duration` を `mdhd` の `timescale` 単位のまま書いていた
+  - `tkhd` の `duration` を参照するプレイヤーで、トラックの尺が実際より短く解釈されてサンプルが途中で打ち切られたり、逆に実際の数百倍の尺として報告されたりしていた
+  - `mvhd` の `timescale` 単位へ切り上げて換算するように変更した
   - @sile
 - [FIX] 破損した `stts` / `ctts` / `co64` を含む入力で、サンプル数やデータ位置の累計がオーバーフローしたときにパニックせずエラーを返すようにする
   - release ビルドではラップして誤ったサンプル数のアクセサが返っていた

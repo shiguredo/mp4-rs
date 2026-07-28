@@ -2,7 +2,7 @@
 name = "shiguredo_mp4"
 version = "2026.3.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.93"
 description = "MP4 library"
 readme = "README.md"
 homepage = "https://github.com/shiguredo/mp4-rs"

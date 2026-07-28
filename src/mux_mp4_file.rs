@@ -844,6 +844,11 @@ impl Mp4FileMuxer {
     }
 
     fn build_moov_box(&self) -> Result<MoovBox, MuxError> {
+        // 各トラックの `tkhd` の `duration` は `mvhd` の `timescale` 単位で書く必要があるため、
+        // trak ボックスの構築よりも先に `mvhd` に入れる `timescale` を確定させる
+        // （`calculate_total_duration()` は `self.tracks` しか参照しないので、ここで先に呼んでよい）
+        let (movie_timescale, movie_duration) = self.calculate_total_duration();
+
         let mut trak_boxes = Vec::new();
 
         // 空 chunks の TrackEntry はスキップする
@@ -854,16 +859,15 @@ impl Mp4FileMuxer {
         // 現時点で実際にスキップされる要素は無い
         for entry in self.tracks.iter().filter(|t| !t.chunks.is_empty()) {
             let track_id = trak_boxes.len() as u32 + 1;
-            trak_boxes.push(self.build_trak_box(entry, track_id)?);
+            trak_boxes.push(self.build_trak_box(entry, track_id, movie_timescale)?);
         }
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
-        let (timescale, duration) = self.calculate_total_duration();
         let mvhd_box = MvhdBox {
             creation_time,
             modification_time: creation_time,
-            timescale,
-            duration,
+            timescale: movie_timescale,
+            duration: movie_duration,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
@@ -880,16 +884,23 @@ impl Mp4FileMuxer {
 
     /// 指定した [`TrackEntry`] から `trak` ボックスを構築する
     ///
+    /// `movie_timescale` には `mvhd` ボックスに書くのと同じ値を渡すこと。
+    /// `tkhd` の `duration` の単位はこの値で決まるため、異なる値を渡すと
+    /// 仕様違反の尺を持つ MP4 がエラーもなく出力される
+    ///
     /// `entry.chunks` が非空であることを不変条件として要求する
     /// （空の場合は `derive_trak_derivation` 内の `expect` で panic する）。
     /// 呼び出し側の `build_moov_box` が空 chunks の [`TrackEntry`] をスキップしているため、
     /// この不変条件は常に満たされる
-    fn build_trak_box(&self, entry: &TrackEntry, track_id: u32) -> Result<TrakBox, MuxError> {
-        let total_duration = entry
-            .chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
+    fn build_trak_box(
+        &self,
+        entry: &TrackEntry,
+        track_id: u32,
+        movie_timescale: NonZeroU32,
+    ) -> Result<TrakBox, MuxError> {
+        let total_duration = total_sample_duration(entry);
+        let tkhd_duration =
+            convert_duration_to_movie_timescale(total_duration, entry.timescale, movie_timescale)?;
 
         let derived = self.derive_trak_derivation(entry)?;
 
@@ -902,7 +913,7 @@ impl Mp4FileMuxer {
             creation_time,
             modification_time: creation_time,
             track_id,
-            duration: total_duration,
+            duration: tkhd_duration,
             layer: TkhdBox::DEFAULT_LAYER,
             alternate_group: TkhdBox::DEFAULT_ALTERNATE_GROUP,
             volume: derived.volume,
@@ -966,11 +977,7 @@ impl Mp4FileMuxer {
         entry: &TrackEntry,
         derived: &TrakDerivation,
     ) -> Result<MdiaBox, MuxError> {
-        let total_duration = entry
-            .chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
+        let total_duration = total_sample_duration(entry);
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let mdhd_box = MdhdBox {
@@ -1099,16 +1106,16 @@ impl Mp4FileMuxer {
     ///
     /// 正規化した尺が同着の場合は、先に [`Self::append_sample`] されたトラックを採用する。
     ///
+    /// `chunks` が空のトラックは `build_moov_box` では `trak` の生成対象から外れるが、
+    /// ここでは除外していない。尺の合計が 0 になるため、尺を持つトラックが他にあれば選ばれず、
+    /// すべてのトラックの尺が 0 ならどれが選ばれても換算結果は 0 になるためである
+    ///
     /// トラックが 1 つも無い場合は `(NonZeroU32::MIN, 0)` を返す
     /// （このとき `trak` ボックスも 0 個になるため、`mvhd` に入る値は任意でよい）
     fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
         let mut best: Option<(NonZeroU32, u64, Duration)> = None;
         for track in &self.tracks {
-            let duration = track
-                .chunks
-                .iter()
-                .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-                .sum::<u64>();
+            let duration = total_sample_duration(track);
             let normalized = Duration::from_secs(duration) / track.timescale.get();
 
             match best {
@@ -1119,6 +1126,55 @@ impl Mp4FileMuxer {
         best.map(|(ts, dur, _)| (ts, dur))
             .unwrap_or((NonZeroU32::MIN, 0))
     }
+}
+
+/// [`TrackEntry`] が持つ全サンプルの尺の合計を返す（そのトラックの `timescale` 単位）
+///
+/// `tkhd` / `mdhd` / `mvhd` に入る尺はいずれもこの値から導出される。
+/// `tkhd` の `duration` は `mdhd` の `duration` を換算した値でなければならないため、
+/// 数え方が箇所ごとに食い違うと静かに不整合な MP4 が出力される。それを避けるため 1 箇所に集約する
+fn total_sample_duration(entry: &TrackEntry) -> u64 {
+    entry
+        .chunks
+        .iter()
+        .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+        .sum()
+}
+
+/// `mdhd` の `timescale` 単位の尺を、`mvhd` の `timescale` 単位に換算する
+///
+/// [ISO/IEC 14496-12] TrackHeaderBox class では、`tkhd` ボックスの `duration` は
+/// ファイル全体の時間軸を定める `mvhd` ボックスの `timescale` 単位で表すと定められている。
+/// 一方 `mdhd` ボックスの `duration` はトラック固有の `timescale` 単位なので、換算が必要になる。
+///
+/// 端数は切り上げる。切り捨てを使うと、換算結果が 1 未満になるトラックで `duration` が 0 に潰れ、
+/// 尺が 0 のトラックとみなしてサンプルを読み出さないプレイヤーが存在するためである。
+/// 代償として尺は最大 `1 / movie_timescale` 秒だけ過大になるが、
+/// 過大側では読み出せるサンプルが減らないため、打ち切りより害が小さいと判断している。
+/// なお尺の合計が 0 のトラックは、切り上げても `duration` が 0 のままになる。
+///
+/// 換算結果が `mvhd` ボックスの `duration` を数 tick 上回ることがある。
+/// 採用トラックの選択が正規化した尺のナノ秒粒度の比較で行われるため、
+/// わずかに長いトラックが同着と判定されて採用されないことがあるためである。
+///
+/// なお、ここでの扱いは上記規格の現行版に基づくものであり、将来の改訂で変わる可能性がある。
+fn convert_duration_to_movie_timescale(
+    media_duration: u64,
+    media_timescale: NonZeroU32,
+    movie_timescale: NonZeroU32,
+) -> Result<u64, MuxError> {
+    // `u64` と `u32` の積は高々 2 の 96 乗なので、`u128` で計算すれば中間結果はオーバーフローしない
+    let converted = (media_duration as u128 * movie_timescale.get() as u128)
+        .div_ceil(media_timescale.get() as u128);
+
+    // 呼び出し側が最長トラックの `timescale` を渡すため、換算結果は `mvhd` の `duration` を
+    // 数 tick 上回る程度にしかならない。`u64` を超えるには採用トラックの尺の合計が
+    // `u64::MAX` 近傍である必要があり、現実の入力では到達しない防御的な分岐である
+    u64::try_from(converted).map_err(|_| {
+        MuxError::EncodeError(Error::invalid_data(
+            "converted track duration exceeds u64::MAX",
+        ))
+    })
 }
 
 fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {
@@ -1870,6 +1926,19 @@ mod tests {
             mvhd_box.duration, 5000,
             "最長トラック（音声）の尺が採用されていない"
         );
+
+        // trak は append_sample() の呼び出し順（映像 → 音声）で並ぶ。
+        // 映像は media timescale 30 で尺 1 なので、movie timescale 1000 では
+        // ceil(1 * 1000 / 30) = 34 になる（換算前の生値 1 のままなら 34 倍短い尺になる）
+        let trak_boxes = &finalized.moov_box().trak_boxes;
+        assert_eq!(
+            trak_boxes[0].tkhd_box.duration, 34,
+            "映像の tkhd の duration が mvhd の timescale 単位に換算されていない"
+        );
+        assert_eq!(
+            trak_boxes[1].tkhd_box.duration, 5000,
+            "mvhd に採用された音声の tkhd の duration は換算しても変わらない"
+        );
     }
 
     /// 正規化した尺が同着の場合に先に追加したトラックが `mvhd` に採用されることを検証するテスト
@@ -1919,6 +1988,18 @@ mod tests {
         assert_eq!(
             mvhd_box.duration, 30,
             "同着時は先に追加した映像トラックの尺が採用されるべき"
+        );
+
+        // 音声は media timescale 1000 で尺 1000 なので、movie timescale 30 では
+        // ceil(1000 * 30 / 1000) = 30 になる（換算前の生値 1000 のままなら 33 倍長い尺になる）
+        let trak_boxes = &finalized.moov_box().trak_boxes;
+        assert_eq!(
+            trak_boxes[0].tkhd_box.duration, 30,
+            "mvhd に採用された映像の tkhd の duration は換算しても変わらない"
+        );
+        assert_eq!(
+            trak_boxes[1].tkhd_box.duration, 30,
+            "音声の tkhd の duration が mvhd の timescale 単位に換算されていない"
         );
     }
 

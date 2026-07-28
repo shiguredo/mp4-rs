@@ -75,9 +75,9 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
-- [FIX] WASM の `mp4_sample_entry_hev1_free()` / `mp4_sample_entry_hvc1_free()` のメモリ解放の不一致を修正する
-  - `mp4_free` に確保時のバイト数を渡すようにする（これまでは `size = 0` を渡していたため常に no-op となりリークしていた）
-  - `free_array_list` に `nalu_counts` の総和を渡すようにする（これまでは NALU 配列の個数を渡していたため、確保時の要素数と食い違いヒープ破壊 UB になっていた）
+- [FIX] wasm の `mp4_sample_entry_hev1_free()` / `mp4_sample_entry_hvc1_free()` のメモリ解放の不一致を修正する
+  - `mp4_free` に確保時のバイト数を渡すようにする（これまでは `size = 0` を渡していたため、`naluArrays` が非空のときにヒープ領域が解放されずリークしていた）
+  - `free_array_list` に `nalu_counts` の総和を渡すようにする（これまでは NALU 配列の個数を渡していたため、確保時の要素数と食い違いヒープを破壊していた）
   - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
   - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった

@@ -45,6 +45,9 @@
 - [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
   - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
   - @sile
+- [CHANGE] `SampleTableAccessorError` に `SampleCountOverflow` と `SampleDataOffsetOverflow` を追加する
+  - `SampleTableAccessor::new()` がオーバーフローを検出したときに返すエラーバリアント
+  - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
   - `FtabBox` はフォントテーブル（`FontRecord` の可変長配列、各エントリーは `font_id` と Pascal-string `font_name`）を保持する
@@ -95,6 +98,9 @@
   - `tkhd` の `duration` を `mdhd` の `timescale` 単位のまま書いていた
   - `tkhd` の `duration` を参照するプレイヤーで、トラックの尺が実際より短く解釈されてサンプルが途中で打ち切られたり、逆に実際の数百倍の尺として報告されたりしていた
   - `mvhd` の `timescale` 単位へ切り上げて換算するように変更した
+  - @sile
+- [FIX] 破損した `stts` / `ctts` / `co64` を含む入力で、サンプル数やデータ位置の累計がオーバーフローしたときにパニックせずエラーを返すようにする
+  - release ビルドではラップして誤ったサンプル数のアクセサが返っていた
   - @sile
 
 ### misc

@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-sample-table-accessor-overflow
 - Polished: 2026-07-27
@@ -253,40 +253,27 @@ fn stsd_box() -> StsdBox {
 
 ## 解決方法
 
-以下の行番号はすべて変更前のものである。手順を順に適用すると後続の行番号はずれるので、置き換え対象は併記した元コードで照合すること。
+`feature/fix-sample-table-accessor-overflow` ブランチで対応した。
 
-1. `src/auxiliary.rs:26` の `let mut sample_count = 0;` を `let mut sample_count: u32 = 0;` に、`:47` の `let mut ctts_sample_count = 0;` を `let mut ctts_sample_count: u32 = 0;` に変更する。現状これらは `+=` の右辺から型が推論されているだけで、`checked_add` に置き換えると `error[E0689]: can't call method 'checked_add' on ambiguous numeric type '{integer}'` になる（rustc は `i32` を提案してくるので従ってはならない）
-2. `src/auxiliary.rs:5-8` の `use` に `SttsBox` を追加する（`BoxType` / `NonZeroU32` / `CttsBox` は import 済み）
-3. `src/auxiliary.rs:31` の `sample_count += entry.sample_count;` を次に置き換える
+### 実施内容
 
-   ```rust
-   sample_count = sample_count.checked_add(entry.sample_count).ok_or(
-       SampleTableAccessorError::SampleCountOverflow {
-           box_type: SttsBox::TYPE,
-           accumulated_sample_count: sample_count,
-           entry_sample_count: entry.sample_count,
-       },
-   )?;
-   ```
+- `src/auxiliary.rs` の 3 箇所の `+=` を `checked_add` + `ok_or` に置き換え、overflow 時に `Err` を返すようにした（`sample_count` の加算 2 箇所と `offset` の加算 1 箇所）
+- `sample_count` / `ctts_sample_count` の型注釈を `u32` に明示した
+- `SampleTableAccessorError` に `SampleCountOverflow` と `SampleDataOffsetOverflow` の 2 バリアントを末尾に追加し、`Display` にもアームを追加した
+- `acc_duration` は `+=` のまま残し、直前の `sample_count` の `checked_add` により Σ ≤ u32::MAX が保証されるため overflow しない旨のコメントを添えた
+- `tests/test_auxiliary.rs` を新設し、完了条件で列挙されたケース（stts / ctts overflow、データオフセット 2 種、境界 `u32::MAX`、Display 出力）を検証する 6 テストを追加した
+- `CHANGES.md` にエントリを追記した
 
-4. `src/auxiliary.rs:51` の `ctts_sample_count += entry.sample_count;` を同様に置き換える（`box_type: CttsBox::TYPE`）
-5. `src/auxiliary.rs:155` の `offset += sample.data_size() as u64;` を次に置き換える
+### 計画から外れた点
 
-   ```rust
-   offset = offset.checked_add(sample.data_size() as u64).ok_or(
-       SampleTableAccessorError::SampleDataOffsetOverflow {
-           sample_index: sample.index(),
-           accumulated_offset: offset,
-           sample_data_size: sample.data_size(),
-       },
-   )?;
-   ```
+- **`CHANGES.md` を `[CHANGE]` と `[FIX]` の 2 エントリに分割した。** 元の計画では `[CHANGE]` 単独でまとめる方針だったが、実装中のユーザ判断で「オーバーフロー時にパニックせずエラーを返す」修正の主眼を `[FIX]` のタイトルに引き上げる形に変更した。`shiguredo-changelog` の判断規則からは `[CHANGE]` 単独が正しいが、ユーザ承認のもと分割形式で採用した
+- **`acc_duration` の解説コメントの位置と表現を変更した。** 計画では `acc_duration +=` の直前に「acc_duration は checked_add にしない」から始まる長文コメントを置くことになっていたが、経緯コメント調が強かったため `sample_count` の `checked_add` の直前に移動し、両加算をまとめて説明する形に整理した
 
-6. `sample_count` の加算の直後にある `acc_duration` の `+=` はそのまま残し、「### acc_duration は checked_add にしない」のコメントを添える
-7. `SampleTableAccessorError` の末尾に 2 バリアントを、`Display` の末尾にアームを追加する
-8. `tests/test_auxiliary.rs` を新規作成し、完了条件のテストを追加する。`pbt/tests/prop_auxiliary.rs` にも `src/auxiliary.rs:518-653` の `#[cfg(test)] mod tests` にも追加しない
-9. `CHANGES.md` にエントリを追記する
-10. `make fmt` を実行する
+### レビューを受けて追加で対応した内容
+
+- `SampleDataOffsetOverflow` の doc コメントに、`Co64Box` 由来のチャンクオフセットと `StszBox` 由来のサンプルサイズの累計で発生する旨、および `StcoBox` 単独では原理的にオーバーフローしないことを追記した
+- `tests/test_auxiliary.rs` の冒頭 doc に、`pbt/tests/prop_auxiliary.rs` ではなく `tests/test_<module>.rs` 規約に従って配置している理由を追記した
+- 日本語文中の `overflow` を「オーバーフロー」に、`panic` / `wrap` を「パニック」/「ラップ」にカタカナ表記で統一した
 
 ## 波及範囲
 

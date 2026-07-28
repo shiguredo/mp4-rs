@@ -1,7 +1,7 @@
 //! Fragmented MP4 (fMP4) 関連のボックス定義
 //!
 //! このモジュールは内部的なもので、構造体などの外部への提供は boxes モジュールを通して行う
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, format, vec::Vec};
 
 use crate::{
     BaseBox, BoxHeader, BoxType, Decode, Encode, Error, FullBox, FullBoxFlags, FullBoxHeader,
@@ -615,14 +615,17 @@ impl TrunBox {
         flags
     }
 
+    /// version 1 が必要かどうかを判定する
+    ///
+    /// version 0 の `composition_time_offset` は `0..=u32::MAX`、
+    /// version 1 は `i32::MIN..=i32::MAX` を許容する（ISO/IEC 14496-12 8.8.8）。
+    /// いずれかのサンプルが負値を含む場合は version 1 が必須。
+    /// 負値と `> i32::MAX` の値が同一 `TrunBox` に混在した場合は
+    /// どちらのバージョンでも表現できないため、encode 時にエラーとして扱う。
     fn uses_version_1(&self) -> bool {
-        self.samples.iter().any(|s| {
-            if let Some(offset) = s.composition_time_offset {
-                offset < 0
-            } else {
-                false
-            }
-        })
+        self.samples
+            .iter()
+            .any(|s| s.composition_time_offset.is_some_and(|offset| offset < 0))
     }
 }
 
@@ -662,14 +665,24 @@ impl Encode for TrunBox {
                     .encode(&mut buf[offset..])?;
             }
             if flags & Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT != 0 {
+                // ISO/IEC 14496-12 8.8.8: version 0 は unsigned 32-bit、version 1 は signed 32-bit で
+                // sample_composition_time_offset を書き出す。範囲外は「そもそも trun に書けない値」なので
+                // Encode 時点で invalid_input として弾き、境界検証を trun encode に一本化する。
+                let cto = sample.composition_time_offset.unwrap_or(0);
                 if version == 1 {
-                    offset += sample
-                        .composition_time_offset
-                        .unwrap_or(0)
-                        .encode(&mut buf[offset..])?;
+                    let cto = i32::try_from(cto).map_err(|_| {
+                        Error::invalid_input(format!(
+                            "trun version 1 requires composition_time_offset to be in i32 range, got {cto}"
+                        ))
+                    })?;
+                    offset += cto.encode(&mut buf[offset..])?;
                 } else {
-                    offset += (sample.composition_time_offset.unwrap_or(0) as u32)
-                        .encode(&mut buf[offset..])?;
+                    let cto = u32::try_from(cto).map_err(|_| {
+                        Error::invalid_input(format!(
+                            "trun version 0 requires composition_time_offset to be in u32 range, got {cto}"
+                        ))
+                    })?;
+                    offset += cto.encode(&mut buf[offset..])?;
                 }
             }
         }
@@ -761,12 +774,15 @@ impl Decode for TrunBox {
                     None
                 };
 
+                // ISO/IEC 14496-12 8.8.8 では version 0 の sample_composition_time_offset は
+                // unsigned 32-bit（`0..=u32::MAX`）、version 1 は signed 32-bit（`i32::MIN..=i32::MAX`）。
+                // どちらの版も同じ Rust 型で表現できるよう、内部保持は i64 とする。
                 let composition_time_offset =
                     if flags & Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT != 0 {
                         if version == 1 {
-                            Some(i32::decode_at(payload, &mut offset)?)
+                            Some(i64::from(i32::decode_at(payload, &mut offset)?))
                         } else {
-                            Some(u32::decode_at(payload, &mut offset)? as i32)
+                            Some(i64::from(u32::decode_at(payload, &mut offset)?))
                         }
                     } else {
                         None
@@ -826,8 +842,12 @@ pub struct TrunSample {
     /// このサンプルの [`SampleFlags`]。省略時は既定値（[`TfhdBox::default_sample_flags`] 等）を使う
     pub flags: Option<SampleFlags>,
 
-    /// このサンプルの CTS - DTS（media timescale 単位）。負値は `trun` version 1 のみで許容
-    pub composition_time_offset: Option<i32>,
+    /// このサンプルの CTS - DTS（media timescale 単位）
+    ///
+    /// `trun` version 0 は `0..=u32::MAX`（非負）、version 1 は `i32::MIN..=i32::MAX`（符号あり）を仕様上許容する。
+    /// 表現力を [`crate::boxes::CttsEntry::sample_offset`] と揃えるため `i64` で保持する。
+    /// encode 時に版を自動選択し、両版いずれでも表現できない値が含まれる場合はエラーになる。
+    pub composition_time_offset: Option<i64>,
 }
 
 /// [ISO/IEC 14496-12] SegmentIndexBox class

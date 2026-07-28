@@ -320,8 +320,8 @@ impl FullBoxFlags {
     {
         let flags: u32 = iter
             .into_iter()
-            .filter(|x| x.1)
-            .map(|x| if x.0 < 32 { 1u32 << x.0 } else { 0 })
+            .filter(|x| x.1 && x.0 < u32::BITS as usize)
+            .map(|x| 1u32 << x.0)
             .fold(0u32, |acc, bit| acc | bit);
         Self(flags)
     }
@@ -336,10 +336,10 @@ impl FullBoxFlags {
     /// ビット位置が `u32` の型幅（32 bit）以上の場合は常に `false` を返す。
     /// この扱いによって、素朴に `1 << i` と書いた場合に起きる debug ビルドでのシフトオーバーフロー panic と release ビルドでの wrap による誤判定を回避する。
     pub const fn is_set(self, i: usize) -> bool {
-        if i >= 32 {
+        if i >= u32::BITS as usize {
             return false;
         }
-        (self.0 & (1 << i)) != 0
+        (self.0 & (1u32 << i)) != 0
     }
 }
 

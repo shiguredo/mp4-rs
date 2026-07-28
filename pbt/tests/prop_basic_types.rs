@@ -11,6 +11,23 @@ fn arb_full_box_flags() -> impl Strategy<Value = u32> {
     0u32..=0x00FF_FFFF
 }
 
+/// FullBoxFlags のビット位置を生成する Strategy
+///
+/// `u32` の型幅 (32) 前後の境界値を `Just` で確実にサンプリングしつつ、
+/// 任意の `usize` 値も混ぜて広く探索する。
+/// 32 境界のガード条件（`is_set` / `from_flags` の 32 以上を無視する挙動）を
+/// shrink 結果に依存せず毎回踏むための構成。
+fn arb_bit_position() -> impl Strategy<Value = usize> {
+    prop_oneof![
+        Just(0usize),
+        Just(31usize),
+        Just(32usize),
+        Just(33usize),
+        Just(usize::MAX),
+        any::<usize>(),
+    ]
+}
+
 /// BoxType::Normal 用の 4 バイト値を生成する Strategy
 fn arb_box_type_normal() -> impl Strategy<Value = [u8; 4]> {
     any::<[u8; 4]>()
@@ -86,8 +103,9 @@ proptest! {
     //
     // 公開 API の型 (`usize`) が受け付け得る任意入力に対して、
     // `i < 32` なら `(flags >> i) & 1 == 1` と等価、`i >= 32` なら常に `false` となること。
+    // ビット位置の Strategy は境界値 (0/31/32/33/usize::MAX) を確実に踏む構成にしている。
     #[test]
-    fn full_box_flags_is_set_any_bit_position(flags in any::<u32>(), i in any::<usize>()) {
+    fn full_box_flags_is_set_any_bit_position(flags in any::<u32>(), i in arb_bit_position()) {
         let fbf = FullBoxFlags::new(flags);
         let expected = if i < 32 {
             (flags >> i) & 1 == 1
@@ -100,8 +118,9 @@ proptest! {
     // FullBoxFlags::from_flags の任意ビット位置に対する挙動を検証する
     //
     // `i < 32` なら `1u32 << i` が立った値、`i >= 32` なら 0 となること。
+    // ビット位置の Strategy は境界値 (0/31/32/33/usize::MAX) を確実に踏む構成にしている。
     #[test]
-    fn full_box_flags_from_flags_any_bit_position(i in any::<usize>()) {
+    fn full_box_flags_from_flags_any_bit_position(i in arb_bit_position()) {
         let fbf = FullBoxFlags::from_flags([(i, true)]);
         let expected = if i < 32 { 1u32 << i } else { 0 };
         prop_assert_eq!(fbf.get(), expected, "i={}", i);

@@ -790,7 +790,6 @@ impl Mp4SampleEntryAvc1 {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
         if self.sps_count > 0 {
-            // count > 0 のときに参照する配列サイズポインタを実際にデリファレンスする前に検査する
             if self.sps_sizes.is_null() {
                 return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
             }
@@ -811,7 +810,6 @@ impl Mp4SampleEntryAvc1 {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
         if self.pps_count > 0 {
-            // count > 0 のときに参照する配列サイズポインタを実際にデリファレンスする前に検査する
             if self.pps_sizes.is_null() {
                 return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
             }
@@ -937,14 +935,10 @@ impl Mp4SampleEntryHev1 {
                     let nalu_count = *self.nalu_counts.add(i);
 
                     let mut nalus = Vec::new();
-                    if nalu_count > 0 {
-                        // 内側ループで参照する配列ベースポインタを、
-                        // 実際にデリファレンスする直前で検査する
-                        // (全 nalu_counts[i] == 0 の入力を過剰に弾かないため
-                        //  外側ではなくここで検査する)
-                        if self.nalu_data.is_null() || self.nalu_sizes.is_null() {
-                            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                        }
+                    // 内側ループが実際に回るときだけ検査する
+                    // （全 nalu_counts[i] == 0 の入力を過剰に弾かないため）
+                    if nalu_count > 0 && (self.nalu_data.is_null() || self.nalu_sizes.is_null()) {
+                        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
                     }
                     for j in 0..nalu_count as usize {
                         let nalu_index = self.nalu_data_index(i, j);
@@ -1078,11 +1072,9 @@ pub struct Mp4SampleEntryHvc1 {
 
 impl Mp4SampleEntryHvc1 {
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // NALU 配列を構築
+        // NALU 配列を構築（null 検査の意図は Mp4SampleEntryHev1::to_sample_entry を参照）
         let mut nalu_arrays = Vec::new();
         if self.nalu_array_count > 0 {
-            // 外側ループで必ず参照される配列ベースポインタを検査する
-            // `nalu_data_index` 内の `nalu_counts.add(i)` もこの検査で保護される
             if self.nalu_types.is_null() || self.nalu_counts.is_null() {
                 return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
             }
@@ -1092,14 +1084,8 @@ impl Mp4SampleEntryHvc1 {
                     let nalu_count = *self.nalu_counts.add(i);
 
                     let mut nalus = Vec::new();
-                    if nalu_count > 0 {
-                        // 内側ループで参照する配列ベースポインタを、
-                        // 実際にデリファレンスする直前で検査する
-                        // (全 nalu_counts[i] == 0 の入力を過剰に弾かないため
-                        //  外側ではなくここで検査する)
-                        if self.nalu_data.is_null() || self.nalu_sizes.is_null() {
-                            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                        }
+                    if nalu_count > 0 && (self.nalu_data.is_null() || self.nalu_sizes.is_null()) {
+                        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
                     }
                     for j in 0..nalu_count as usize {
                         let nalu_index = self.nalu_data_index(i, j);

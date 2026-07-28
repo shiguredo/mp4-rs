@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-wasm-hev1-hvc1-free
 - Polished: 2026-07-27
@@ -136,3 +136,17 @@ crate::boxes::free_array_list(
 `nalu_counts` が null の場合は手順 3 のブロックに入らないため、総数は 0 のままとなり、手順 4 の `free_array_list` は即座に return する。
 
 テストは既存の `test_json_to_hev1` / `test_json_to_hvc1` と同じ `#[cfg(test)] mod tests` に、現状セクションで挙げた「総数 > 配列数」「総数 < 配列数」の入力例を使って追加する。
+
+実装後のレビューで次の防御的な改善を追加した:
+
+- 総和とバイト数の計算を `checked_add(...).expect(...)` / `checked_mul(...).expect(...)` にし、想定外の overflow を即検出できるようにする
+- hvc1 側の `nalu_counts` のキャストを hev1 側 (`.cast_mut() as *mut u8`) に揃える
+- 既存 `test_json_to_hev1` / `test_json_to_hvc1` に `nalu_data` / `nalu_sizes` の null 検査を追加して新規テストと対称化する
+- 空 `naluArrays`（`nalu_array_count == 0`）の境界値テストを HEV1 / HVC1 に追加する
+
+後日別 issue として起票する検討事項:
+
+- hev1 / hvc1 の free 関数とテスト JSON の重複共通化（refactor）
+- issue 0048 の scope 拡張: `nalu_counts` の align 4 化（本 PR で align 1 → `u32` 読みの UB が 1 箇所増えるため）
+- `allocate_and_copy_array_list` の部分割当失敗時に `nalu_data` / `nalu_sizes` が非対称 null になる既存構造
+- `parse_json_mp4_sample_entry_hev1` / `_hvc1` の中途エラーで確保済み領域が leak する既存構造

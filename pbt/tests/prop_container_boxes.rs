@@ -896,7 +896,7 @@ mod boundary_tests {
         }
     }
 
-    /// Fmp4SegmentMuxer 経由で字幕トラックの init/media segment を生成し tkhd 属性を確認する
+    /// Fmp4SegmentMuxer 経由で字幕トラックの init/メディアセグメントを生成し tkhd 属性を確認する
     ///
     /// Fmp4SegmentMuxer に TrackKind::Subtitle の Sample を渡して init segment を生成し、
     /// 生成された moov 内 trak の tkhd を検証する:
@@ -926,14 +926,14 @@ mod boundary_tests {
         };
 
         let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
-        // media segment を生成して muxer にトラック情報を蓄積させる
+        // メディアセグメントを生成して muxer にトラック情報を蓄積させる
         // （`init_segment_bytes` は tracks が空だと `EmptyTracks` エラーになるため）
         let media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
             .expect("failed to create media segment");
         assert!(
             !media_segment.is_empty(),
-            "media segment のバイト列が空になっている"
+            "メディアセグメントのバイト列が空になっている"
         );
         // sample_payload は本テストの tkhd 検証には不要のため付加しない
 
@@ -968,7 +968,7 @@ mod boundary_tests {
     // ===== Stpp 正常経路担保テスト =====
 
     /// 字幕トラック用の Sample を Fmp4SegmentMuxer 経由で組み立てて
-    /// init segment と media segment のバイト列を返す共通ヘルパー
+    /// init segment とメディアセグメントのバイト列を返す共通ヘルパー
     ///
     /// 既存 `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `build_complete_media_segment`
     /// と同じ形の組み立て（integration test の性質上、直接再利用できないためコピー）
@@ -988,7 +988,7 @@ mod boundary_tests {
         };
 
         let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
-        // media segment metadata を生成した後、サンプル payload を連結する
+        // メディアセグメントのメタデータを生成した後、サンプル payload を連結する
         let mut media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
             .expect("failed to create media segment metadata");
@@ -1001,7 +1001,7 @@ mod boundary_tests {
         (init_bytes, media_segment)
     }
 
-    /// stpp サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    /// stpp サンプルエントリーを持つ Sample の init/メディアセグメントを組み立てる
     fn build_stpp_fmp4_segments() -> (Vec<u8>, Vec<u8>) {
         let stpp_sample_entry = SampleEntry::Stpp(StppBox {
             data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
@@ -1020,7 +1020,7 @@ mod boundary_tests {
     /// Fmp4FileDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
     ///
     /// `TrackInfo` に `sample_entries` フィールドが無いため、`Sample.sample_entry` 経由で検証する。
-    /// init segment + media segment + サンプルデータの合成バイト列を組み立てて
+    /// init segment + メディアセグメント + サンプルデータの合成バイト列を組み立てて
     /// `Fmp4FileDemuxer::next_sample()` から取り出したサンプルの `sample_entry` を検証する
     #[test]
     fn stpp_sample_entry_via_fmp4_file_demuxer() {
@@ -1061,7 +1061,7 @@ mod boundary_tests {
 
     /// Fmp4SegmentDemuxer 経由で stpp サンプルエントリーが `SampleEntry::Stpp(_)` として取り出せる
     ///
-    /// init segment を `handle_init_segment` に渡し、続いて media segment を
+    /// init segment を `handle_init_segment` に渡し、続いてメディアセグメントを
     /// `handle_media_segment` に渡す。戻り値の各 `Sample.sample_entry` を検証する
     #[test]
     fn stpp_sample_entry_via_fmp4_segment_demuxer() {
@@ -1076,7 +1076,7 @@ mod boundary_tests {
             .expect("failed to handle media segment");
         assert!(
             !samples.is_empty(),
-            "media segment から少なくとも 1 サンプル取り出せる"
+            "メディアセグメントから少なくとも 1 サンプル取り出せる"
         );
         let entry = samples[0]
             .sample_entry
@@ -1217,7 +1217,7 @@ mod boundary_tests {
 
     // ===== Wvtt 正常経路担保テスト =====
 
-    /// Fmp4SegmentMuxer 経由で wvtt トラックの init/media segment を生成し tkhd 属性を確認する
+    /// Fmp4SegmentMuxer 経由で wvtt トラックの init/メディアセグメントを生成し tkhd 属性を確認する
     ///
     /// wvtt は ISO/IEC 14496-30 の対応表で handler_type = `text`（stpp の `subt` と異なる）と規定されるため、
     /// `derive_trak_attributes` の Wvtt arm が正しく動作するかの回帰テストとしても機能する。
@@ -1244,13 +1244,13 @@ mod boundary_tests {
         };
 
         let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
-        // media segment を生成して muxer にトラック情報を蓄積させる
+        // メディアセグメントを生成して muxer にトラック情報を蓄積させる
         let media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
             .expect("failed to create media segment");
         assert!(
             !media_segment.is_empty(),
-            "media segment のバイト列が空になっている"
+            "メディアセグメントのバイト列が空になっている"
         );
 
         let init_bytes = muxer
@@ -1280,7 +1280,7 @@ mod boundary_tests {
         assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
     }
 
-    /// wvtt サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    /// wvtt サンプルエントリーを持つ Sample の init/メディアセグメントを組み立てる
     ///
     /// sample payload は任意のバイト列で、Fmp4SegmentMuxer は payload 内部構造を検証しない
     /// （既存 stpp テストも TTML 断片を任意バイト列扱い）
@@ -1345,7 +1345,7 @@ mod boundary_tests {
             .expect("failed to handle media segment");
         assert!(
             !samples.is_empty(),
-            "media segment から少なくとも 1 サンプル取り出せる"
+            "メディアセグメントから少なくとも 1 サンプル取り出せる"
         );
         let entry = samples[0]
             .sample_entry
@@ -1411,7 +1411,7 @@ mod boundary_tests {
 
     // ===== Tx3g 正常経路担保テスト =====
 
-    /// Fmp4SegmentMuxer 経由で tx3g トラックの init/media segment を生成し tkhd 属性を確認する
+    /// Fmp4SegmentMuxer 経由で tx3g トラックの init/メディアセグメントを生成し tkhd 属性を確認する
     ///
     /// tx3g は 3GPP TS 26.245 の対応表で handler_type = `text` + Media Header = `nmhd`
     /// と規定される。stpp / wvtt は `sthd` のため、tx3g のみ `nmhd` に切り替わる点が本テストの
@@ -1450,7 +1450,7 @@ mod boundary_tests {
             .expect("failed to create media segment");
         assert!(
             !media_segment.is_empty(),
-            "media segment のバイト列が空になっている"
+            "メディアセグメントのバイト列が空になっている"
         );
 
         let init_bytes = muxer
@@ -1480,7 +1480,7 @@ mod boundary_tests {
         assert_eq!(trak.tkhd_box.height, FixedPointNumber::new(0, 0));
     }
 
-    /// tx3g サンプルエントリーを持つ Sample の init/media segment を組み立てる
+    /// tx3g サンプルエントリーを持つ Sample の init/メディアセグメントを組み立てる
     ///
     /// sample payload は text_length(u16 BE) + テキスト の最小構成で、
     /// Fmp4SegmentMuxer は payload 内部構造を検証しない
@@ -1549,7 +1549,7 @@ mod boundary_tests {
             .expect("failed to handle media segment");
         assert!(
             !samples.is_empty(),
-            "media segment から少なくとも 1 サンプル取り出せる"
+            "メディアセグメントから少なくとも 1 サンプル取り出せる"
         );
         let entry = samples[0]
             .sample_entry

@@ -101,7 +101,7 @@ struct TrackEntry {
 struct TfraSegmentEntry {
     /// このセグメントの先頭サンプルのデコード時間
     time: u64,
-    /// media segment 列の先頭を 0 としたときの moof ボックスの相対オフセット
+    /// メディアセグメント列の先頭を 0 としたときの moof ボックスの相対オフセット
     moof_relative_offset: u64,
     /// moof 内でのこのトラックの traf の 1 ベースインデックス
     traf_number: u32,
@@ -145,7 +145,7 @@ pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
     options: SegmentMuxerOptions,
     sequence_number: u32,
-    /// `create_media_segment_metadata*()` で表現した media segment のバイト数累計
+    /// `create_media_segment_metadata*()` で表現したメディアセグメントのバイト数累計
     media_bytes_written: u64,
     /// トラックごとの tfra エントリ（tracks と同じインデックス）
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
@@ -233,6 +233,9 @@ impl Fmp4SegmentMuxer {
     ///
     /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
+    ///
+    /// このメソッドで生成した sidx 付きセグメントを初期化セグメントの後ろに並べたファイル配置において、
+    /// [`mfra_bytes()`](Self::mfra_bytes) が返す `tfra.moof_offset` は sidx を含む実際の `moof` 位置と整合する。
     pub fn create_media_segment_metadata_with_sidx(
         &mut self,
         samples: &[Sample],
@@ -257,6 +260,16 @@ impl Fmp4SegmentMuxer {
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
+
+        // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリ数を記録しておく。
+        // sidx エンコード後にこの記録と比較すれば、今回の呼び出しで新規追加された
+        // tfra エントリ（各トラックにつき末尾 1 件）を特定できる。
+        let pre_tfra_lens: Vec<usize> = self
+            .tfra_entries
+            .iter()
+            .map(|entries| entries.len())
+            .collect();
+
         let (media_segment, mdat_payload_size) = self.build_media_segment_bytes(samples)?;
         let media_segment_size = media_segment
             .len()
@@ -295,6 +308,40 @@ impl Fmp4SegmentMuxer {
         };
 
         let sidx_bytes = sidx_box.encode_to_vec()?;
+        let sidx_size = sidx_bytes.len() as u64;
+
+        // 後続セグメントが moof_relative_offset の起点とする media_bytes_written に対して、
+        // 先にオーバーフロー検査を済ませる。ここで検査が通れば、当該セグメントの
+        // tfra エントリ（moof_relative_offset は加算前の media_bytes_written 以下）への
+        // 加算はオーバーフローしない。
+        let new_media_bytes_written = self
+            .media_bytes_written
+            .checked_add(sidx_size)
+            .ok_or(MuxError::Overflow)?;
+
+        // 当該セグメントで新規追加された tfra エントリの moof_relative_offset に sidx サイズを加算する。
+        // build_media_segment_bytes は各 track_kind につき最大 1 件だけ push するため、
+        // pre_tfra_lens よりも長くなったトラックは末尾 1 件が今回の新規エントリである。
+        for (track_index, entries) in self.tfra_entries.iter_mut().enumerate() {
+            // build_media_segment_bytes が新規トラックを追加した場合、self.tfra_entries は
+            // pre_tfra_lens より長くなり、末尾の新規トラックについては pre_tfra_lens に対応する
+            // 要素が存在しない。この場合の pre_len は「以前は存在しなかった = 0 件」を表す。
+            let pre_len = pre_tfra_lens.get(track_index).copied().unwrap_or(0);
+            if entries.len() > pre_len {
+                let last = entries
+                    .last_mut()
+                    .expect("bug: tfra entries grew but the vec is empty");
+                last.moof_relative_offset = last
+                    .moof_relative_offset
+                    .checked_add(sidx_size)
+                    .expect(
+                        "bug: moof_relative_offset <= media_bytes_written, so sidx_size fits after the media_bytes_written check",
+                    );
+            }
+        }
+
+        self.media_bytes_written = new_media_bytes_written;
+
         let mut result = sidx_bytes;
         result.extend_from_slice(&media_segment);
         Ok(result)

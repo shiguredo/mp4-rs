@@ -2,7 +2,7 @@
 
 - Priority: High
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-28
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-sidx-mfra-moof-offset
 - Polished: 2026-07-28
@@ -86,7 +86,29 @@ sidx サイズを、当該セグメントの tfra エントリと `media_bytes_w
 
 ## 解決方法
 
-1. `create_media_segment_metadata_with_sidx` で sidx エンコード後、当該セグメントで `build_media_segment_bytes` が新規追加した tfra エントリの `moof_relative_offset` に sidx バイト数を `checked_add` する
-   - 対象は「各トラックの `self.tfra_entries[track_index]` の末尾 1 件」。`build_media_segment_bytes` 呼び出し前後で `self.tfra_entries[track_index].len()` を比較して差分を特定するか、`samples` に含まれる `track_kind` からトラックインデックスを求めて末尾を対象とする
-2. あわせて `self.media_bytes_written` にも sidx バイト数を `checked_add` する
-3. `mfra_bytes_roundtrip` に sidx 付きセグメントを混ぜたテストケースを追加し、当該セグメント自身の `moof_offset` が実位置と一致することも検証する
+`feature/fix-sidx-mfra-moof-offset` ブランチで対応した。
+
+### 実施内容
+
+- `src/mux_fmp4_segment.rs` の `create_media_segment_metadata_with_sidx` に、sidx エンコード後の事後補正を追加した
+  - `build_media_segment_bytes` 呼び出し前にトラックごとの `self.tfra_entries[track_index].len()` をスナップショットする
+  - sidx エンコード後、`self.media_bytes_written.checked_add(sidx_size)` を先に評価してオーバーフロー検査する
+  - スナップショットより長くなったトラックの末尾 1 件の `moof_relative_offset` に sidx サイズを加算する（`media_bytes_written` の検査後は必ずオーバーフローしない不変条件を `.expect(...)` で明示している）
+  - 最後に `self.media_bytes_written` を更新する
+- `pbt/tests/prop_fmp4_segment_mux_demux.rs` に PBT を 2 本追加した
+  - `mfra_bytes_roundtrip_with_sidx_mix`: 単一映像トラックで sidx あり／なし混在時の `tfra.moof_offset` が実 moof 位置を指すことを検証する
+  - `mfra_bytes_roundtrip_with_sidx_mix_multi_track`: 映像 + 音声のマルチトラックで、両トラック同時セグメント / 音声後発 / 既存トラックで今回サンプル無しの各分岐をカバーする
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した
+
+### 計画から外れた点
+
+- **PBT を 2 本に分けた。** 元の計画では `mfra_bytes_roundtrip` に sidx 付きケースを追加する 1 本の想定だったが、実装後のコードレビューでマルチトラック分岐（`pre_tfra_lens.get(track_index) = None → unwrap_or(0)`）が単一トラック PBT では踏まれないことが判明したため、マルチトラック専用 PBT を別途新設した
+
+### レビューを受けて追加で対応した内容
+
+- 日本語コメント中の "media segment" 表記を "メディアセグメント" に統一した（本 issue の追加コードだけでなく、既存の他ファイルも含めて統一）
+- `create_media_segment_metadata_with_sidx` の doc / 内部コメントを整理した
+  - doc から private フィールド（`tfra_entries` / `media_bytes_written`）への言及を外し、観測可能な保証（`mfra_bytes()` の返す `tfra.moof_offset` が実 `moof` 位置と整合する）だけの記述に絞った
+  - `pre_tfra_lens` 前後の三重掲載になっていたシフト理由コメント 2 行を削減した
+  - `moof_relative_offset` の `checked_add` の `.expect` メッセージに、`moof_relative_offset <= media_bytes_written` の不変条件を明記した
+- 補正ループの `pre_tfra_lens.get(track_index).copied().unwrap_or(0)` について、`build_media_segment_bytes` が新規トラックを追加した場合に `pre_tfra_lens` に対応要素が無く「以前は存在しなかった = 0 件」を意味することをコメントで明示した

@@ -121,8 +121,7 @@ struct ResolvedSegmentTrack {
 struct ResolvedSegmentSample {
     duration: u32,
     keyframe: bool,
-    // `TrunSample::composition_time_offset` に転写するため公開 API と同じ i64 で保持する。
-    // 実際に encode 可能かどうか（version 0/1 の範囲チェック）は `TrunBox::encode` 側に一任する。
+    // `TrunSample::composition_time_offset` に転写するため公開 API と同じ i64 で保持する
     composition_time_offset: Option<i64>,
     data_size: usize,
 }
@@ -213,7 +212,6 @@ impl Fmp4SegmentMuxer {
     /// version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲に限られる。
     /// また、負値と `> i32::MAX` の値がひとつの `trun` に混在する場合は
     /// どちらの版でも表現できないためエラーになる。
-    /// これ以外の範囲外の値を指定した場合もエラーになる。
     ///
     /// 現実装は `1 track = 1 traf = 1 trun` を前提としている。
     /// そのため、ひとつのトラックに属する payload を複数の離れた範囲へ分割して
@@ -766,8 +764,6 @@ impl Fmp4SegmentMuxer {
                             None
                         },
                     })
-                    // 範囲外の composition_time_offset は TrunBox::encode 内の
-                    // i32::try_from / u32::try_from 検証で invalid_input として弾かれる。
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 

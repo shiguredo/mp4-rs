@@ -748,7 +748,6 @@ mod boundary_tests {
                 },
             ],
         };
-        // 負値があるので version 1 が選ばれる
         assert_eq!(trun.full_box_version(), 1);
         assert!(
             trun.encode_to_vec().is_err(),

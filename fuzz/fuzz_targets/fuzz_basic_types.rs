@@ -31,19 +31,22 @@ fuzz_target!(|data: &[u8]| {
     //
     // 上記の既存 fuzz 本体は Decode / Encode を通すだけで `from_flags` / `is_set` を
     // 呼ばないため、この 2 関数の任意ビット位置に対するパニック安全性はそのままでは
-    // 担保されない。本追加パスでは先頭 8 バイトのうち前半 4 バイトを `u32` の flags 値、
-    // 後半 4 バイトをビット位置 `i` (usize) として、両関数を直接叩く。
-    if data.len() >= 8 {
+    // 担保されない。本追加パスでは先頭 12 バイトを取り、前半 4 バイトを `u32` の flags 値、
+    // 続く 8 バイトを `usize` のビット位置 `i` として、両関数を直接叩く
+    // (64 bit プラットフォームで `usize::MAX` まで到達できるように 8 バイトを消費する)。
+    if data.len() >= 12 {
         let flags = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        let i = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let i = u64::from_be_bytes([
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
+        ]) as usize;
         let fbf = FullBoxFlags::new(flags);
         let _ = fbf.is_set(i);
         let _ = FullBoxFlags::from_flags([(i, true)]).get();
 
-        // 9 バイト目以降を 4 バイト単位で `(ビット位置, true)` のリストとして
+        // 13 バイト目以降を 4 バイト単位で `(ビット位置, true)` のリストとして
         // `from_flags` に流し、同一ビット位置の重複を含む任意入力に対する
         // パニック安全性（OR 畳み込みが加算オーバーフローを起こさないこと）を検証する。
-        let items: Vec<(usize, bool)> = data[8..]
+        let items: Vec<(usize, bool)> = data[12..]
             .chunks_exact(4)
             .map(|c| {
                 let pos = u32::from_be_bytes([c[0], c[1], c[2], c[3]]) as usize;

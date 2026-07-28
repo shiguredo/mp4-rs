@@ -600,7 +600,6 @@ proptest! {
     ///
     /// sidx 付きセグメントはメディアセグメントの直前に sidx を置くため、
     /// tfra.moof_offset は init + それまでのセグメント合計 + 自セグメントの sidx サイズ を指す必要がある。
-    /// 当該セグメント自身の tfra エントリと media_bytes_written の両方に sidx サイズが反映されるかを検証する。
     #[test]
     fn mfra_bytes_roundtrip_with_sidx_mix(
         segments in prop::collection::vec(

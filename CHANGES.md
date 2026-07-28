@@ -125,6 +125,10 @@
 - [FIX] `FullBoxFlags::from_flags` に同一ビット位置を複数回渡すと u32 加算オーバーフローでパニックしていたのを修正する
   - 内部の畳み込みを `.sum()` から OR (`.fold`) に変更し、重複を冪等に扱う
   - @sile
+- [FIX] `TfraBox` のエンコードで短いバッファを渡すとパニックしていたのを修正する
+  - 内部の `encode_variable_uint` の 1〜3 バイトのアームが `buf.len()` を検査せず `buf[i]` へ直接代入していたため、バッファが不足するとインデックス範囲外で `Encode` トレイト契約に反してパニックしていた
+  - `match` の直前で `Error::check_buffer_size` を呼び、バッファ不足時は `InsufficientBuffer` を返すようにする
+  - @sile
 
 ### misc
 

@@ -346,10 +346,17 @@ impl Decode for FullBoxFlags {
 ///
 /// ボックスのサイズは原則として、ヘッダー部分とペイロード部分のサイズを足した値となる。
 /// ただし、MP4 ファイルの末尾にあるボックスについてはサイズを 0 とすることで、ペイロードが可変長（追記可能）なボックスとして扱うことが可能となっている。
+///
+/// 仕様上、ボックスヘッダーの `size` フィールドが 1 のときは 32-bit サイズを 64-bit の
+/// `largesize` フィールドで拡張表現する（`aligned(8) class Box { unsigned int(32) size;
+/// if (size==1) { unsigned int(64) largesize; } ... }`）。
+/// Rust 側ではこの符号化上の分岐を variant で区別する
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[expect(missing_docs)]
 pub enum BoxSize {
+    /// 32-bit の `size` フィールドで表される場合
     U32(u32),
+
+    /// `size==1` として 64-bit の `largesize` フィールドが後続する場合
     U64(u64),
 }
 
@@ -582,10 +589,15 @@ impl Decode for Utf8String {
 }
 
 /// `A` か `B` のどちらかの値を保持する列挙型
+///
+/// 各 variant は保持する型引数以外に意味を持たない汎用ラッパーで、
+/// 具体的な用途は利用側の型定義（例: [`crate::boxes::StblBox::stco_or_co64_box`]）が決める
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[expect(missing_docs)]
 pub enum Either<A, B> {
+    /// 型引数 `A` に対応する variant
     A(A),
+
+    /// 型引数 `B` に対応する variant
     B(B),
 }
 

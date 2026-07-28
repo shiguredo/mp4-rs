@@ -14,11 +14,17 @@ use crate::{
 
 /// [ISO/IEC 14496-12] MovieBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MoovBox {
+    /// movie 全体のメタデータを保持する `mvhd` ボックス
     pub mvhd_box: MvhdBox,
+
+    /// このムービーが持つトラック群（各トラック 1 個の `trak` ボックス）
     pub trak_boxes: Vec<TrakBox>,
+
+    /// fMP4 の場合に存在する `mvex` ボックス（フラグメントのデフォルト値を保持する）
     pub mvex_box: Option<MvexBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -107,15 +113,32 @@ impl BaseBox for MoovBox {
 
 /// [ISO/IEC 14496-12] MovieHeaderBox class (親: [`MoovBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MvhdBox {
+    /// このムービーが作成された時刻
     pub creation_time: Mp4FileTime,
+
+    /// このムービーが最後に修正された時刻
     pub modification_time: Mp4FileTime,
+
+    /// movie 全体のタイムスケール定義（1 秒あたりの時間単位数）
+    ///
+    /// [`MvhdBox::duration`] や [`TkhdBox::duration`] はこの単位で表される。
+    /// トラック固有の [`MdhdBox::timescale`] とは別物である
     pub timescale: NonZeroU32,
+
+    /// [`MvhdBox::timescale`] 単位で表した movie 全体の尺
     pub duration: u64,
+
+    /// 推奨再生レート（1.0 が通常速度）
     pub rate: FixedPointNumber<i16, u16>,
+
+    /// 推奨音量（1.0 が最大）
     pub volume: FixedPointNumber<i8, u8>,
+
+    /// 映像変換行列（3x3 の固定小数点行列を row-major で並べたもの）
     pub matrix: [i32; 9],
+
+    /// 次のトラックに割り当てるべきトラック ID の候補値
     pub next_track_id: u32,
 }
 
@@ -240,11 +263,17 @@ impl FullBox for MvhdBox {
 
 /// [ISO/IEC 14496-12] TrackBox class (親: [`MoovBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TrakBox {
+    /// このトラックの `tkhd` ボックス
     pub tkhd_box: TkhdBox,
+
+    /// 編集リストを保持する `edts` ボックス（省略可）
     pub edts_box: Option<EdtsBox>,
+
+    /// このトラックの `mdia` ボックス（メディア情報を保持する）
     pub mdia_box: MdiaBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -331,22 +360,54 @@ impl BaseBox for TrakBox {
 
 /// [ISO/IEC 14496-12] TrackHeaderBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TkhdBox {
+    /// このトラックが有効かどうか（`flags` の bit 0 に対応）
     pub flag_track_enabled: bool,
+
+    /// このトラックが movie の一部として扱われるか（`flags` の bit 1 に対応）
     pub flag_track_in_movie: bool,
+
+    /// このトラックがプレビューで使われるか（`flags` の bit 2 に対応）
     pub flag_track_in_preview: bool,
+
+    /// [`TkhdBox::width`] / [`TkhdBox::height`] がアスペクト比を表すか（`flags` の bit 3 に対応）
     pub flag_track_size_is_aspect_ratio: bool,
 
+    /// このトラックが作成された時刻
     pub creation_time: Mp4FileTime,
+
+    /// このトラックが最後に修正された時刻
     pub modification_time: Mp4FileTime,
+
+    /// このトラックの識別子（同一ムービー内で一意）
     pub track_id: u32,
+
+    /// [`MvhdBox::timescale`] 単位で表したこのトラックの尺
+    ///
+    /// トラック固有の [`MdhdBox::timescale`] 単位ではないことに注意。
+    /// この不整合が原因で `tkhd` を参照するプレイヤーでサンプルが打ち切られる不具合が過去に発生している
     pub duration: u64,
+
+    /// 同一時刻に重ねて描画するときの前後関係（値が小さいほど手前）
     pub layer: i16,
+
+    /// 代替グループ（同じグループ内の別トラックと相互排他で切り替えることを示す）
     pub alternate_group: i16,
+
+    /// 音声トラックの再生音量（1.0 が最大）。映像トラックでは 0
     pub volume: FixedPointNumber<i8, u8>,
+
+    /// 映像変換行列（3x3 の固定小数点行列を row-major で並べたもの）
     pub matrix: [i32; 9],
+
+    /// トラックの表示幅
+    ///
+    /// [`TkhdBox::flag_track_size_is_aspect_ratio`] が `true` のときはアスペクト比を表す
     pub width: FixedPointNumber<i16, u16>,
+
+    /// トラックの表示高さ
+    ///
+    /// [`TkhdBox::flag_track_size_is_aspect_ratio`] が `true` のときはアスペクト比を表す
     pub height: FixedPointNumber<i16, u16>,
 }
 
@@ -501,9 +562,11 @@ impl FullBox for TkhdBox {
 
 /// [ISO/IEC 14496-12] EditBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct EdtsBox {
+    /// 編集リストを保持する `elst` ボックス（省略可）
     pub elst_box: Option<ElstBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -575,18 +638,27 @@ impl BaseBox for EdtsBox {
 }
 
 /// [`ElstBox`] に含まれるエントリー
+///
+/// 同一 struct 内で [`ElstEntry::edit_duration`] は movie timescale 単位、
+/// [`ElstEntry::media_time`] は media timescale 単位という二重 timescale になっている。
+/// 取り違えると再生範囲がずれるため注意する
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct ElstEntry {
+    /// このエントリーの継続時間（[`MvhdBox::timescale`] 単位、すなわち movie timescale 単位で表す）
     pub edit_duration: u64,
+
+    /// このエントリーに対応するメディア側の開始時刻（そのトラックの [`MdhdBox::timescale`] 単位、
+    /// すなわち media timescale 単位で表す。負値は「メディア無し（空白）」を意味する）
     pub media_time: i64,
+
+    /// このエントリーの再生レート（1.0 が通常速度）
     pub media_rate: FixedPointNumber<i16, i16>,
 }
 
 /// [ISO/IEC 14496-12] EditListBox class (親: [`EdtsBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct ElstBox {
+    /// 編集リストのエントリー列
     pub entries: Vec<ElstEntry>,
 }
 
@@ -677,11 +749,17 @@ impl FullBox for ElstBox {
 
 /// [ISO/IEC 14496-12] MediaBox class (親: [`TrakBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MdiaBox {
+    /// メディア固有のヘッダー情報を保持する `mdhd` ボックス
     pub mdhd_box: MdhdBox,
+
+    /// メディアハンドラー種別を保持する `hdlr` ボックス
     pub hdlr_box: HdlrBox,
+
+    /// メディア情報を保持する `minf` ボックス
     pub minf_box: MinfBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -766,14 +844,23 @@ impl BaseBox for MdiaBox {
 
 /// [ISO/IEC 14496-12] MediaHeaderBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MdhdBox {
+    /// このメディアが作成された時刻
     pub creation_time: Mp4FileTime,
+
+    /// このメディアが最後に修正された時刻
     pub modification_time: Mp4FileTime,
+
+    /// そのトラック固有のタイムスケール定義（1 秒あたりの時間単位数）
+    ///
+    /// [`MdhdBox::duration`] や `stts` / `ctts` などのトラック内メディア時間はこの単位で表される。
+    /// movie 全体の [`MvhdBox::timescale`] とは別物である
     pub timescale: NonZeroU32,
+
+    /// [`MdhdBox::timescale`] 単位で表したこのトラック（メディア）の尺
     pub duration: u64,
 
-    /// ISO-639-2/T language code
+    /// ISO-639-2/T 言語コード（3 文字の小文字 ASCII 相当を 3 バイト配列で保持する）
     pub language: [u8; 3],
 }
 
@@ -898,8 +985,8 @@ impl FullBox for MdhdBox {
 
 /// [ISO/IEC 14496-12] HandlerBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct HdlrBox {
+    /// ハンドラー種別（`soun` / `vide` / `subt` / `text` などの 4 バイトコード）
     pub handler_type: [u8; 4],
 
     /// ハンドラ名
@@ -986,15 +1073,20 @@ impl FullBox for HdlrBox {
 
 /// [ISO/IEC 14496-12] MediaInformationBox class (親: [`MdiaBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MinfBox {
     /// [`MediaHeader`] を保持する
     ///
     /// 仕様上 `minf` 直下にメディアヘッダーは 1 種類しか出ないため [`Option`] でラップする。
     /// メディアトラック以外を含む MP4 で `minf` を持てるよう [`None`] も許容する
     pub media_header: Option<MediaHeader>,
+
+    /// メディアデータの所在情報を保持する `dinf` ボックス
     pub dinf_box: DinfBox,
+
+    /// サンプルテーブルを保持する `stbl` ボックス
     pub stbl_box: StblBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1151,8 +1243,8 @@ impl BaseBox for MediaHeader {
 
 /// [ISO/IEC 14496-12] SoundMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct SmhdBox {
+    /// ステレオ音声の左右バランス（0.0 が中央、-1.0 が全左、+1.0 が全右）
     pub balance: FixedPointNumber<u8, u8>,
 }
 
@@ -1214,9 +1306,11 @@ impl FullBox for SmhdBox {
 
 /// [ISO/IEC 14496-12] VideoMediaHeaderBox class (親: [`MinfBox`]）
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct VmhdBox {
+    /// 映像合成モード（0: コピー。ほとんどのファイルは 0 を用いる）
     pub graphicsmode: u16,
+
+    /// [`VmhdBox::graphicsmode`] の合成で使う RGB 色（0..=65535 の 16 ビット値 × 3）
     pub opcolor: [u16; 3],
 }
 
@@ -1405,9 +1499,11 @@ impl FullBox for NmhdBox {
 
 /// [ISO/IEC 14496-12] DataInformationBox class (親: [`MinfBox`]）
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct DinfBox {
+    /// データ参照を保持する `dref` ボックス
     pub dref_box: DrefBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1484,9 +1580,11 @@ impl BaseBox for DinfBox {
 
 /// [ISO/IEC 14496-12] DataReferenceBox class (親: [`DinfBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct DrefBox {
+    /// URL 形式のデータ参照を保持する `url ` ボックス（省略可）
     pub url_box: Option<UrlBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1581,8 +1679,11 @@ impl FullBox for DrefBox {
 
 /// [ISO/IEC 14496-12] DataEntryUrlBox class (親: [`DrefBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct UrlBox {
+    /// メディアデータの所在を表す URL 文字列
+    ///
+    /// [`None`] の場合はメディアデータがこのファイル内に格納されていること
+    /// （FullBox の flags の `self-contained` ビットが立っている状態）を表す
     pub location: Option<Utf8String>,
 }
 
@@ -1648,17 +1749,37 @@ impl FullBox for UrlBox {
 
 /// [ISO/IEC 14496-12] SampleTableBox class (親: [`MinfBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StblBox {
+    /// サンプルエントリー（コーデック情報等）を保持する `stsd` ボックス
     pub stsd_box: StsdBox,
+
+    /// サンプル毎の尺（DTS 差分）を保持する `stts` ボックス
     pub stts_box: SttsBox,
+
+    /// composition time offset（CTS - DTS）を保持する `ctts` ボックス（省略可）
     pub ctts_box: Option<CttsBox>,
+
+    /// composition と decode の時刻関係を要約した `cslg` ボックス（省略可）
     pub cslg_box: Option<CslgBox>,
+
+    /// サンプルからチャンクへのマッピングを保持する `stsc` ボックス
     pub stsc_box: StscBox,
+
+    /// サンプルサイズを保持する `stsz` ボックス
     pub stsz_box: StszBox,
+
+    /// チャンクの絶対オフセットを保持する `stco`（32-bit）または `co64`（64-bit）ボックス
+    ///
+    /// どちらの表現を使うかは実装が選ぶ（値域が 32-bit に収まるか否かで自然に決まる）
     pub stco_or_co64_box: Either<StcoBox, Co64Box>,
+
+    /// 同期サンプル（キーフレーム）のサンプル番号列を保持する `stss` ボックス（省略可）
     pub stss_box: Option<StssBox>,
+
+    /// サンプル間の依存関係を保持する `sdtp` ボックス（省略可）
     pub sdtp_box: Option<SdtpBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1810,8 +1931,8 @@ impl AsRef<StblBox> for StblBox {
 
 /// [ISO/IEC 14496-12] SampleDescriptionBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StsdBox {
+    /// サンプルエントリー列（コーデックごとの記述）
     pub entries: Vec<SampleEntry>,
 }
 
@@ -1877,16 +1998,18 @@ impl FullBox for StsdBox {
 
 /// [`SttsBox`] が保持するエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct SttsEntry {
+    /// 同じ [`SttsEntry::sample_delta`] を持つ連続サンプル数
     pub sample_count: u32,
+
+    /// 各サンプルの尺（[`MdhdBox::timescale`] 単位、すなわち media timescale 単位）
     pub sample_delta: u32,
 }
 
 /// [ISO/IEC 14496-12] TimeToSampleBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct SttsBox {
+    /// (同尺サンプル数, サンプル尺) の連続を run-length で保持したエントリー列
     pub entries: Vec<SttsEntry>,
 }
 
@@ -1980,7 +2103,7 @@ pub struct CttsEntry {
     /// このエントリーが適用されるサンプル数
     pub sample_count: u32,
 
-    /// 合成時刻オフセット
+    /// 合成時刻オフセット（[`MdhdBox::timescale`] 単位、すなわち media timescale 単位）
     ///
     /// version 0 では非負値、version 1 では負値も許容される。
     pub sample_offset: i64,
@@ -1989,7 +2112,10 @@ pub struct CttsEntry {
 /// [ISO/IEC 14496-12] CompositionOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CttsBox {
-    /// full box version
+    /// FullBox バージョン（0 または 1）
+    ///
+    /// version 1 では [`CttsEntry::sample_offset`] に負値が使える。
+    /// ラウンドトリップ時に元のバージョンを保持するため独立フィールドとして持つ
     pub version: u8,
 
     /// エントリー列
@@ -2101,24 +2227,31 @@ impl FullBox for CttsBox {
 }
 
 /// [ISO/IEC 14496-12] CompositionToDecodeBox class (親: [`StblBox`])
+///
+/// このボックスの全時刻フィールドは media timescale 単位（[`MdhdBox::timescale`]）で表される
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CslgBox {
-    /// full box version
+    /// FullBox バージョン（0 または 1）
+    ///
+    /// version 1 では各フィールドが 64-bit、version 0 では 32-bit で符号化される。
+    /// ラウンドトリップ時に元のバージョンを保持するため独立フィールドとして持つ
     pub version: u8,
 
-    /// composition to decode time shift
+    /// composition から decode への時刻シフト量（media timescale 単位）
+    ///
+    /// 加算すると decode 時刻列が全て非負になるようなオフセット
     pub composition_to_dts_shift: i64,
 
-    /// decode から display への最小差分
+    /// decode から display への最小差分（media timescale 単位）
     pub least_decode_to_display_delta: i64,
 
-    /// decode から display への最大差分
+    /// decode から display への最大差分（media timescale 単位）
     pub greatest_decode_to_display_delta: i64,
 
-    /// composition start time
+    /// このトラックの composition（表示）開始時刻（media timescale 単位）
     pub composition_start_time: i64,
 
-    /// composition end time
+    /// このトラックの composition（表示）終了時刻（media timescale 単位）
     pub composition_end_time: i64,
 }
 
@@ -2402,17 +2535,22 @@ impl FullBox for SdtpBox {
 
 /// [`StscBox`] が保持するエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StscEntry {
+    /// この設定が始まる最初のチャンク番号（1 始まり）
     pub first_chunk: NonZeroU32,
+
+    /// 該当区間の 1 チャンク当たりのサンプル数
     pub sample_per_chunk: u32,
+
+    /// 該当区間のサンプルが参照する [`StsdBox::entries`] のインデックス（1 始まり）
     pub sample_description_index: NonZeroU32,
 }
 
 /// [ISO/IEC 14496-12] SampleToChunkBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StscBox {
+    /// (開始チャンク, チャンク当たりサンプル数, サンプル記述子インデックス) の
+    /// run-length 表現によるエントリー列
     pub entries: Vec<StscEntry>,
 }
 
@@ -2482,14 +2620,25 @@ impl FullBox for StscBox {
 }
 
 /// [ISO/IEC 14496-12] SampleSizeBox class (親: [`StblBox`])
+///
+/// 仕様上は 1 つの box だが、wire-format の `sample_size` フィールドが非零なら全サンプルが
+/// 同一サイズ、0 なら per-sample の `entry_size` 配列が後続する、という 2 通りの符号化に分岐する。
+/// Rust 側ではこの分岐を variant で区別する
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub enum StszBox {
+    /// 全サンプルが同一サイズの場合（wire-format の `sample_size` が非零）
     Fixed {
+        /// 全サンプル共通のサンプルサイズ（バイト数）
         sample_size: NonZeroU32,
+
+        /// このトラックの総サンプル数
         sample_count: u32,
     },
+
+    /// サンプルごとにサイズが異なる場合（wire-format の `sample_size` が 0 で、
+    /// per-sample の `entry_size` 配列が後続する）
     Variable {
+        /// 各サンプルのサイズ（バイト数）を並べた配列
         entry_sizes: Vec<u32>,
     },
 }
@@ -2576,8 +2725,8 @@ impl FullBox for StszBox {
 
 /// [ISO/IEC 14496-12] ChunkOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StcoBox {
+    /// 各チャンクのファイル先頭からの絶対バイトオフセット（32-bit）
     pub chunk_offsets: Vec<u32>,
 }
 
@@ -2645,8 +2794,8 @@ impl FullBox for StcoBox {
 
 /// [ISO/IEC 14496-12] ChunkLargeOffsetBox class (親: [`StblBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct Co64Box {
+    /// 各チャンクのファイル先頭からの絶対バイトオフセット（64-bit）
     pub chunk_offsets: Vec<u64>,
 }
 
@@ -2714,8 +2863,8 @@ impl FullBox for Co64Box {
 
 /// [ISO/IEC 14496-12] SyncSampleBox class (親: [`StssBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct StssBox {
+    /// 同期サンプル（キーフレーム）のサンプル番号列（1 始まり）
     pub sample_numbers: Vec<NonZeroU32>,
 }
 
@@ -2783,8 +2932,8 @@ impl FullBox for StssBox {
 
 /// [ISO/IEC 14496-14] ESDBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct EsdsBox {
+    /// このエントリー配下の ElementaryStream 記述子
     pub es: EsDescriptor,
 }
 
@@ -2844,10 +2993,14 @@ impl FullBox for EsdsBox {
 /// Fragmented MP4 で使用するムービー拡張ボックス。
 /// このボックスが存在する場合、ファイルは fMP4 フォーマットであることを示す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MvexBox {
+    /// フラグメント化されたムービー全体の尺を保持する `mehd` ボックス（省略可）
     pub mehd_box: Option<MehdBox>,
+
+    /// 各トラックのフラグメント既定値を保持する `trex` ボックス群（トラックごとに 1 個）
     pub trex_boxes: Vec<TrexBox>,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -2932,8 +3085,9 @@ impl BaseBox for MvexBox {
 /// フラグメント化されたムービー全体の継続時間を格納する。
 /// このボックスはオプションであり、存在しない場合は継続時間が不明であることを意味する。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct MehdBox {
+    /// 全フラグメントを結合した後のムービー全体の尺（[`MvhdBox::timescale`] 単位、
+    /// すなわち movie timescale 単位）
     pub fragment_duration: u64,
 }
 
@@ -3009,12 +3163,21 @@ impl FullBox for MehdBox {
 /// トラックフラグメントのデフォルト値を定義する。
 /// 各トラックに対して 1 つの TrexBox が必要。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[expect(missing_docs)]
 pub struct TrexBox {
+    /// このデフォルト値が適用される [`TkhdBox::track_id`]
     pub track_id: u32,
+
+    /// トラックフラグメント内サンプルが参照する既定のサンプル記述子インデックス（1 始まり）
     pub default_sample_description_index: u32,
+
+    /// トラックフラグメント内サンプルの既定の尺（[`MdhdBox::timescale`] 単位、
+    /// すなわち media timescale 単位）
     pub default_sample_duration: u32,
+
+    /// トラックフラグメント内サンプルの既定のサンプルサイズ（バイト数）
     pub default_sample_size: u32,
+
+    /// トラックフラグメント内サンプルの既定の [`SampleFlags`]
     pub default_sample_flags: SampleFlags,
 }
 

@@ -1922,6 +1922,19 @@ mod tests {
             mvhd_box.duration, 5000,
             "最長トラック（音声）の尺が採用されていない"
         );
+
+        // trak は append_sample() の呼び出し順（映像 → 音声）で並ぶ。
+        // 映像は media timescale 30 で尺 1 なので、movie timescale 1000 では
+        // ceil(1 * 1000 / 30) = 34 になる（換算前の生値 1 のままなら 34 倍短い尺になる）
+        let trak_boxes = &finalized.moov_box().trak_boxes;
+        assert_eq!(
+            trak_boxes[0].tkhd_box.duration, 34,
+            "映像の tkhd の duration が mvhd の timescale 単位に換算されていない"
+        );
+        assert_eq!(
+            trak_boxes[1].tkhd_box.duration, 5000,
+            "mvhd に採用された音声の tkhd の duration は換算しても変わらない"
+        );
     }
 
     /// 正規化した尺が同着の場合に先に追加したトラックが `mvhd` に採用されることを検証するテスト
@@ -1971,6 +1984,18 @@ mod tests {
         assert_eq!(
             mvhd_box.duration, 30,
             "同着時は先に追加した映像トラックの尺が採用されるべき"
+        );
+
+        // 音声は media timescale 1000 で尺 1000 なので、movie timescale 30 では
+        // ceil(1000 * 30 / 1000) = 30 になる（換算前の生値 1000 のままなら 33 倍長い尺になる）
+        let trak_boxes = &finalized.moov_box().trak_boxes;
+        assert_eq!(
+            trak_boxes[0].tkhd_box.duration, 30,
+            "mvhd に採用された映像の tkhd の duration は換算しても変わらない"
+        );
+        assert_eq!(
+            trak_boxes[1].tkhd_box.duration, 30,
+            "音声の tkhd の duration が mvhd の timescale 単位に換算されていない"
         );
     }
 

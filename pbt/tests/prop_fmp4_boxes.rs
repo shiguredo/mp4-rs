@@ -670,8 +670,9 @@ mod boundary_tests {
 
             let encoded = trun
                 .encode_to_vec()
-                .expect("cto={cto} の encode は成功する");
-            let (decoded, _) = TrunBox::decode(&encoded).expect("cto={cto} の decode は成功する");
+                .unwrap_or_else(|e| panic!("cto={cto} の encode は成功する: {e:?}"));
+            let (decoded, _) = TrunBox::decode(&encoded)
+                .unwrap_or_else(|e| panic!("cto={cto} の decode は成功する: {e:?}"));
             assert_eq!(
                 decoded.samples[0].composition_time_offset,
                 Some(cto),
@@ -689,8 +690,9 @@ mod boundary_tests {
 
             let encoded = trun
                 .encode_to_vec()
-                .expect("cto={cto} の encode は成功する");
-            let (decoded, _) = TrunBox::decode(&encoded).expect("cto={cto} の decode は成功する");
+                .unwrap_or_else(|e| panic!("cto={cto} の encode は成功する: {e:?}"));
+            let (decoded, _) = TrunBox::decode(&encoded)
+                .unwrap_or_else(|e| panic!("cto={cto} の decode は成功する: {e:?}"));
             assert_eq!(
                 decoded.samples[0].composition_time_offset,
                 Some(cto),

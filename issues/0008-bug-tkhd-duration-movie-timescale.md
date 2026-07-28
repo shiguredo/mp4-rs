@@ -157,7 +157,7 @@ AVFoundation が報告するトラックの `timeRange.duration` も `tkhd.durat
 
 ### その他
 
-`build_trak_box` / `build_mdia_box` / `calculate_total_duration` が同じサンプル duration 総和をそれぞれ独立に計算する構造は、本 issue の範囲外とする。
+`build_trak_box` / `build_mdia_box` / `calculate_total_duration` が同じサンプル duration 総和をそれぞれ独立に計算する構造は、本 issue で 1 つの自由関数に集約する。本修正によって `tkhd.duration` が `mdhd.duration` の換算値でなければならなくなり、両辺が別々の計算から作られていると片方だけ変更しても気付けないためである。
 
 ## 依存関係
 

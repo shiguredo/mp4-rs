@@ -898,11 +898,7 @@ impl Mp4FileMuxer {
         track_id: u32,
         movie_timescale: NonZeroU32,
     ) -> Result<TrakBox, MuxError> {
-        let total_duration = entry
-            .chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
+        let total_duration = total_sample_duration(entry);
         let tkhd_duration =
             convert_duration_to_movie_timescale(total_duration, entry.timescale, movie_timescale)?;
 
@@ -981,11 +977,7 @@ impl Mp4FileMuxer {
         entry: &TrackEntry,
         derived: &TrakDerivation,
     ) -> Result<MdiaBox, MuxError> {
-        let total_duration = entry
-            .chunks
-            .iter()
-            .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-            .sum::<u64>();
+        let total_duration = total_sample_duration(entry);
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let mdhd_box = MdhdBox {
@@ -1123,11 +1115,7 @@ impl Mp4FileMuxer {
     fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
         let mut best: Option<(NonZeroU32, u64, Duration)> = None;
         for track in &self.tracks {
-            let duration = track
-                .chunks
-                .iter()
-                .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
-                .sum::<u64>();
+            let duration = total_sample_duration(track);
             let normalized = Duration::from_secs(duration) / track.timescale.get();
 
             match best {
@@ -1138,6 +1126,19 @@ impl Mp4FileMuxer {
         best.map(|(ts, dur, _)| (ts, dur))
             .unwrap_or((NonZeroU32::MIN, 0))
     }
+}
+
+/// [`TrackEntry`] が持つ全サンプルの尺の合計を返す（そのトラックの `timescale` 単位）
+///
+/// `tkhd` / `mdhd` / `mvhd` に入る尺はいずれもこの値から導出される。
+/// `tkhd` の `duration` は `mdhd` の `duration` を換算した値でなければならないため、
+/// 数え方が箇所ごとに食い違うと静かに不整合な MP4 が出力される。それを避けるため 1 箇所に集約する
+fn total_sample_duration(entry: &TrackEntry) -> u64 {
+    entry
+        .chunks
+        .iter()
+        .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+        .sum()
 }
 
 /// `mdhd` の `timescale` 単位の尺を、`mvhd` の `timescale` 単位に換算する

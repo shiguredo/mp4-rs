@@ -1,0 +1,243 @@
+# mux_mp4_file.rs の tkhd.duration が movie timescale 単位ではなく media timescale 単位で書かれている
+
+- Priority: High
+- Created: 2026-07-15
+- Completed: 2026-07-28
+- Model: opencode-go glm-5.2
+- Branch: feature/fix-tkhd-duration-movie-timescale
+- Polished: 2026-07-27
+
+## 目的
+
+`Mp4FileMuxer` が生成する MP4 の `tkhd.duration` が ISO/IEC 14496-12 の仕様に違反しており、音声と映像で timescale が異なる場合に、AVFoundation ベースの環境でトラックのサンプルが打ち切られて読めなくなる問題を修正する。
+
+## 優先度根拠
+
+`Mp4FileMuxer` の実出力で、AVFoundation がトラックのサンプルを読み出せなくなることを実測した（詳細は「実測による影響確認」）。
+
+被害は timescale の組み合わせで決まり、最悪ケースはトラックの実質的な全消失である。映像 30 fps（timescale 30）と音声 48 kHz を約 10 秒ずつ mux した MP4 では、**映像 300 サンプルのうち 1 サンプルしか読めない**。映像 30 / 音声 48000 は `Sample::timescale` の doc（`src/mux_mp4_file.rs:206-207`）が並べて例示している組み合わせで、録画系で普通に現れる。
+
+深刻なのは欠落がサイレントである点である。ffprobe / MediaInfo / mp4box はいずれも正しい尺を報告するため、生成側でファイルを検証しても異常を検出できない。Apple 系プラットフォームで再生して初めて発覚する。
+
+検証は macOS の AVFoundation で行った。iOS / Safari / QuickTime Player は同一フレームワーク上にあるため同様と考えられるが、直接は確認していない。
+
+## 現状
+
+### コードの現状
+
+`build_trak_box` は `tkhd.duration` に各トラックの media timescale 単位の合計をそのまま書き込んでいる。
+
+```rust
+// src/mux_mp4_file.rs:887-905 (build_trak_box)
+fn build_trak_box(&self, entry: &TrackEntry, track_id: u32) -> Result<TrakBox, MuxError> {
+    let total_duration = entry
+        .chunks
+        .iter()
+        .flat_map(|c| c.samples.iter().map(|s| s.duration as u64))
+        .sum::<u64>();
+    // ...
+        duration: total_duration,
+```
+
+`build_mdia_box`（`src/mux_mp4_file.rs:964-980`）も同じ合計を `mdhd.duration` に書くが、こちらは media timescale 単位が正しいので問題ない。
+
+一方 `calculate_total_duration` は全トラックの尺を比較して 1 本の timescale と duration を `mvhd` に採用する。
+
+```rust
+// src/mux_mp4_file.rs:1104-1121
+fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
+    let mut best: Option<(NonZeroU32, u64, Duration)> = None;
+    for track in &self.tracks {
+        // ...
+        let normalized = Duration::from_secs(duration) / track.timescale.get();
+
+        match best {
+            Some((_, _, best_normalized)) if best_normalized >= normalized => {}
+            _ => best = Some((track.timescale, duration, normalized)),
+        }
+    }
+    best.map(|(ts, dur, _)| (ts, dur))
+        .unwrap_or((NonZeroU32::MIN, 0))
+}
+```
+
+採用されなかったトラックでは、`tkhd.duration` の単位と movie timescale が食い違う。
+
+`calculate_total_duration` の挙動のうち、以下を前提とする。
+
+- `Duration::from_secs(d) / timescale` は厳密に `floor(d * 10^9 / timescale)` ナノ秒になる。同じナノ秒バケットに落ちる複数トラックは同値と判定されるため、真の尺の大小と判定結果が食い違うことがある
+- 採用されるのは正規化値が最大のトラックであり、同着のときは先に `append_sample` されたトラックである（`>=` 比較で先着を維持する）
+
+### 仕様
+
+ISO/IEC 14496-12 8.3.2.3 (TrackHeaderBox semantics) では `duration` は Movie Header Box (`mvhd`) の timescale 単位で表すと定められており、edit list がない場合はサンプル duration の合計を movie timescale に換算した値になる。`mdhd.duration` は 8.4.2.3 で media timescale 単位と定められているため、現状の `mdhd` 側は正しい。
+
+`Mp4FileMuxer` は `edts_box: None` 固定で出力する（`src/mux_mp4_file.rs:916`）ため、edit list による補正も入らない。
+
+本リポジトリに `refs/` は存在せず、上記の節番号と文面は一次資料で照合していない。実装時に原典で確認すること。
+
+### 発生条件
+
+トラック間で timescale が異なると、採用されなかったトラックの `tkhd.duration` には media timescale 単位の値がそのまま書かれる。換算値と偶然一致する場合（duration 総和が 0 のとき、および切り上げ換算の結果が生値と同じになるとき）を除き、仕様違反の値になる。ずれの向きで被害が変わる。
+
+- 非採用トラックの timescale が movie timescale より **小さい**: `tkhd.duration` が過小に解釈され、実尺の `media_timescale / movie_timescale` の割合まで打ち切られる。この割合が小さいほど被害が大きい
+- 非採用トラックの timescale が movie timescale より **大きい**: `tkhd.duration` が過大に解釈される。サンプルの欠落は起きないが、AVFoundation が報告するトラックの尺は実尺より長くなる。過大量は timescale 比に等しく、2 倍程度とは限らない
+
+`Mp4FileMuxer` は音声・映像に加えて字幕トラックも受け入れるため（0046 で対応済み）、3 種類のトラックすべてが本バグの影響を受ける。字幕トラックの timescale は音声・映像と揃わないことが多く、影響を受けやすい。
+
+`Fmp4SegmentMuxer` は `tkhd.duration = 0` 固定だが、fMP4 では尺がフラグメントの `trun` 側で決まるため初期化セグメントとしてこれが慣行であり、本 issue の変更対象外である。
+
+### 実測による影響確認
+
+`Mp4FileMuxer` の実出力で確認した。ffmpeg で素材を生成し、`Mp4FileDemuxer` で読んで `Mp4FileMuxer` で re-mux したものを対象とする。素材は H.264 映像と AAC-LC 音声である。
+
+**ケース A: 映像 timescale 30 / 10 秒、音声 timescale 48000 / 10.021 秒**（最悪ケース）
+
+`finalized.moov_box()` の内容は次のとおりで、音声側が movie timescale に採用され、映像の `tkhd.duration = 300` が movie timescale 48000 では 0.006 秒（実尺 10 秒の 0.06 パーセント）と解釈される。
+
+```
+mvhd.timescale = 48000, mvhd.duration = 481024
+  trak id=1 handler=soun tkhd.duration=481024 mdhd.timescale=48000 mdhd.duration=481024
+  trak id=2 handler=vide tkhd.duration=300    mdhd.timescale=30    mdhd.duration=300
+```
+
+**ケース B: 映像 timescale 90000 / 11 秒、音声 timescale 48000 / 10.021 秒**
+
+映像側が採用され、音声の `tkhd.duration = 481024` が movie timescale 90000 では 5.345 秒（実尺 10.021 秒の 53 パーセント）と解釈される。
+
+いずれも、壊れているトラックの `tkhd.duration` だけを正しい換算値に書き換えたもの（修正後相当）と比較した。`AVAssetReader` で最後まで読んだ結果は次のとおりである。
+
+| ケース | 壊れているトラック | バグ版 | 修正後相当 |
+| --- | --- | --- | --- |
+| A | 映像（全 300 サンプル） | **1 サンプル** | 300 サンプル |
+| B | 音声（全 470 サンプル） | 253 サンプル | 470 サンプル |
+
+ケース A では映像トラックが事実上失われる。ケース B では音声 217 サンプルが読めない。いずれも表示上の誤りではなく、実データが取得できない。
+
+AVFoundation が報告するトラックの `timeRange.duration` も `tkhd.duration` に追従する（ケース B の音声で、バグ版 5.301 秒に対し修正後相当は 9.977 秒。tkhd 由来の値より 0.044 秒短いのは AAC のエンコーダディレイ 2112 サンプル分である）。一方 ffprobe / MediaInfo / mp4box はいずれも両者で同じ正しい尺を報告し、差が出ない。
+
+丸め方針の判断材料として、ケース A の構成で次の 2 つも測定した。
+
+- 映像の `tkhd.duration` を 0 にした場合: 読めた映像サンプルは 0 個で、トラックが丸ごと失われる
+- 映像の `tkhd.duration` を実尺の 2 倍に改変した場合: 全 300 サンプルが読め、最後のサンプルの終端も変化しない
+
+### 既存テストで検出できない理由
+
+本リポジトリの demuxer がトラックの尺として読むのは `mdia_box.mdhd_box.duration` であり `tkhd.duration` ではない（`src/demux_mp4_file.rs:523`）。そのため mux と demux を往復させる形のテストでは原理的に検出できない。ライブラリ内で `tkhd_box.duration` を読むコードは存在しない。
+
+`pbt/tests/prop_mux_demux.rs:1005` の `mux_demux_video_audio_with_advance_position_roundtrip` は音声・映像の timescale を独立にランダム生成しているが、検証が demuxer 経由のサンプル比較に限られ `moov_box()` を見ていないため検出できていない。
+
+`src/mux_mp4_file.rs:1597` の `test_audio_and_video_tracks` はアサーションが `!finalized.moov_box_bytes.is_empty()` だけなので素通りしている（本 issue では変更しない）。
+
+0046 が追加した `moov` の検証テスト（trak の順序・`track_id`・トラックごとの `mdhd.timescale`・`mvhd` の最長トラック選択）も `tkhd.duration` は見ていないため、本バグには反応しない。
+
+## 設計方針
+
+`calculate_total_duration` が決めた movie timescale に合わせて、各トラックの `tkhd.duration` を `media_duration * movie_timescale / media_timescale` で換算する。`mvhd` 側と `mdhd` 側は変更しない。ずれの向きにかかわらず全トラックを同じ換算で扱う。
+
+### 丸めは切り上げとする
+
+切り捨ては採用しない。換算値が 1 未満になると 0 に潰れ、実測のとおり AVFoundation がトラックを丸ごと破棄するためである。`test_audio_and_video_tracks` の入力（映像 timescale 30 / duration 1、音声 timescale 1000 / duration 20）では movie timescale が 30 になり、音声は `20 * 30 / 1000 = 0.6` で切り捨てると 0 になる。
+
+切り上げなら換算値は必ず真の尺以上になるため打ち切りが起きない。過大側にずれても実データが失われないことは上記の実測で確認済みである。
+
+なお duration 総和が 0 のトラックは切り上げても `tkhd.duration = 0` のままになる。`Sample::duration` は 0 を受け付けるため公開 API から到達可能だが、修正前後で挙動が変わらないため本 issue の範囲外とする。
+
+### mvhd との関係
+
+換算値が `mvhd.duration` を超えることがある。`calculate_total_duration` がナノ秒粒度で比較するため、真の尺がわずかに長いトラックが同値と判定されて非採用になる場合があるためである。超過量の上限は `movie_timescale / 10^9 + 1` tick（整数除算。`u32::MAX` でも高々 5 tick）で、切り上げ固有の現象ではなく切り捨てでも起きる。
+
+これは許容する。過大側のずれで実データが失われないことは実測済みであり、`mvhd` 側を変更するのは本 issue の範囲を超えるためである。
+
+### overflow の扱い
+
+換算は `u128` で行う。`u64 * u32` は最大でも 2 の 96 乗であり `u128` に収まるため、中間結果の overflow は原理的に起きない。切り上げには `u128::div_ceil` を使う。
+
+最終結果が `u64` を超えるには採用側トラックの `Sample::duration`（`u32`）の総和が `u64::MAX` 近傍である必要があり、現実には到達しない。防御として `u64` へ収まらない場合は `MuxError::EncodeError(Error::invalid_data("converted track duration exceeds u64::MAX"))` を返す。`MuxError::Overflow` ではなく `EncodeError` を選ぶのは、`issues/closed/0001-bug-mux-mp4-file-data-size-truncation.md` が fMP4 側との一貫性を理由に `EncodeError` を採用した先例に従うためである。この経路は公開 API 経由では到達できないため完了条件には含めない。`convert_duration_to_movie_timescale` は private な自由関数なので `#[cfg(test)] mod tests` から直接呼べばエラー自体は確認できるが、同ファイルの `build_stbl_box` にある `samples per chunk exceeds u32::MAX` も同種の到達不能な防御分岐で無テストなので、そちらに揃える。
+
+### その他
+
+`build_trak_box` / `build_mdia_box` / `calculate_total_duration` が同じサンプル duration 総和をそれぞれ独立に計算する構造は、本 issue で 1 つの自由関数に集約する。本修正によって `tkhd.duration` が `mdhd.duration` の換算値でなければならなくなり、両辺が別々の計算から作られていると片方だけ変更しても気付けないためである。
+
+## 依存関係
+
+`issues/closed/0046-add-mp4-file-muxer-subtitle.md` は closed 済みで、develop にマージされている。本 issue は 0046 適用後の構造を前提とする。
+
+当初は本 issue（High）を 0046（Low）より先に実装する想定だったが、実際には 0046 が先に入った。0046 が持ち込んだ構造変更のうち、本 issue に関係するのは次の 3 点である。
+
+- `build_audio_trak_box` / `build_video_trak_box` / `build_audio_mdia_box` / `build_video_mdia_box` が `build_trak_box` / `build_mdia_box` へ集約された
+- `audio_track_timescale` / `video_track_timescale` フィールドが削除され、`calculate_total_duration` が `self.tracks` 走査になった
+- trak の出力順が「音声固定先頭」から `append_sample` 呼び出し順に変わった
+
+この集約により、本 issue の修正箇所は音声・映像の 2 箇所から `build_trak_box` の 1 箇所に減り、字幕トラックにも同じ換算が自動的に適用される。
+
+## 完了条件
+
+`Mp4FileMuxer` の出力について、次を満たすこと。
+
+- 全トラックで `tkhd.duration == ceil(mdhd.duration * mvhd.timescale / mdhd.timescale)` が成り立つこと
+- `mdhd.duration` が入力サンプルの duration 総和と一致し、`mdhd.timescale` が入力 timescale と一致すること
+- 上記 2 点を `pbt/tests/prop_mux_demux.rs` の `mux_demux_video_audio_with_advance_position_roundtrip` に不変条件として追加すること
+- `mvhd_box` の各フィールドに入る値が修正前から変わらないこと（レビューで確認する）
+- `CHANGES.md` にエントリを追加すること
+- `cargo fmt --all --check` / `cargo test --workspace --exclude c-api` / `cargo test -p c-api --lib` / `cargo clippy --workspace --all-targets -- -D warnings` / `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm` が通ること（テストのコマンドは `Makefile` の `test` ターゲットと同形。CI と同じ `cargo test --workspace --exclude dump_wasm ...` は `libmp4.a` の事前ビルドを要求するため単体では失敗する）
+
+## 解決方法
+
+`feature/fix-tkhd-duration-movie-timescale` ブランチで対応した。
+
+### 実施内容
+
+- `mdhd` の `timescale` 単位の尺を `mvhd` の `timescale` 単位へ切り上げ換算する自由関数 `convert_duration_to_movie_timescale` を追加した。`u128` で計算するので中間結果はオーバーフローせず、`u64` に収まらない場合は `MuxError::EncodeError` を返す
+- `build_moov_box` で `calculate_total_duration` を trak 構築ループより先に呼び、得られた `timescale` を `build_trak_box` に渡すようにした。`mvhd_box` の構築位置は動かしていないので `next_track_id` は従来どおりループ後の `trak_boxes.len()` を反映する
+- `build_trak_box` で `tkhd.duration` に換算結果を入れるようにした。換算元は `entry.timescale`（`build_mdia_box` が `mdhd.timescale` に書くのと同じ値）
+- `pbt/tests/prop_mux_demux.rs` に `assert_moov_duration_invariants` ヘルパーを追加し、`mux_demux_video_audio_with_advance_position_roundtrip` と `mux_demux_video_audio_subtitle_roundtrip` の両方から呼ぶようにした。`mdhd` が入力どおりであること、`tkhd` がその切り上げ換算であること、trak の本数が想定どおりであることを検証する
+- `test_mvhd_uses_longest_track` / `test_mvhd_tie_breaks_by_append_order` に `tkhd.duration` のアサーションを追加した
+
+### 計画から外れた点
+
+**0046 が先に develop へ入った。** 「## 依存関係」では Priority の差から本 issue を先に実装する想定だったが、実際には逆になったため、0046 適用後の構造（`build_trak_box` 1 関数）に対して実装した。結果として修正箇所が音声・映像の 2 箇所から 1 箇所に減り、字幕トラックにも同じ換算が自動的に適用されるようになった。
+
+**「### その他」で範囲外としていたサンプル尺の総和の 3 重計算を集約した。** 本修正によって `tkhd.duration` が `mdhd.duration` の換算値でなければならなくなり、両辺が別々の計算から作られていると片方だけ変更しても気付けないため、`total_sample_duration` 自由関数にまとめた。
+
+### レビューを受けて追加で対応した内容
+
+- **字幕トラックを含む 3 トラック PBT にも不変条件を適用した。** 対応前は字幕の `tkhd.duration` を検証するテストが 1 つも無く、換算を外しても字幕テストは全て通る状態だった。あわせて、切り上げを選んだ唯一の根拠である「換算値が 1 未満のときに 0 へ潰れるのを防ぐ」ケースを踏む確率が、1 実行あたり約 22 パーセントから実質 100 パーセントになった（音声の `timescale` 48000 は正規化した尺が映像の 30 に届かず `mvhd` に採用されないため）
+- **既存の `mvhd` 単体テスト 2 本に `tkhd.duration` のアサーションを追加した。** PBT の不変条件は換算式のミラーで `calculate_total_duration` の選択自体を検証しないため、固定値による独立検証を足した
+- **オーバーフロー防御コメントの根拠を訂正した。** 「サンプルの尺の合計が `u64::MAX` 近傍になる場合だけ」は関数単体では偽で、正しくは呼び出し側が最長トラックの `timescale` を渡すことによる
+- **`CHANGES.md` のタイトルが被害の片方しか書いていなかったのを直した。** 打ち切りだけを挙げると、尺が過大に報告される側（映像がわずかに長い録画など、ごく普通の構成で起きる）の利用者が影響なしと誤判定する
+- movie 側と media 側の `timescale` を命名で区別し、エラーメッセージを `converted track duration exceeds u64::MAX` にした
+
+### 積み残し
+
+以下はレビューで検出したが本 issue の範囲外として未対応。
+
+- `#[expect(missing_docs)]` により `TkhdBox::duration` などの公開型に単位の doc が無い。ボックス構造体全体の方針に関わるため別 issue とする
+- 本 PR の行シフトにより `issues/0009-bug-sample-table-accessor-overflow.md` と `issues/0018-bug-stts-from-sample-deltas-overflow.md` が参照する `mux_mp4_file.rs:1129` が `build_ctts_box` を指さなくなった（現在の該当行は 1167）
+- issue の行番号参照は壊れやすい。シンボル名での参照に切り替える運用を検討する余地がある
+- マージコミットに git の `# Conflicts:` コメントが残っている
+
+## 後方互換
+
+- 生成される MP4 のバイト列が変わる。timescale が揃っていない複数トラック（音声・映像・字幕）を mux している利用者の `tkhd.duration` が変化する。変化の倍率は timescale 比に等しく、映像 30 / 音声 48000 の構成では 1600 倍（300 が 480000）になる
+- 公開 API のシグネチャは変わらない。`crates/c-api` / `crates/wasm` も `Mp4FileMuxer` を経由するだけなので、公開ヘッダに変更はなく出力バイト列の変化だけを受ける
+- `tkhd` の box version は `creation_time` / `modification_time` / `duration` のいずれかが `u32::MAX` を超えると 1 になる（`src/boxes_moov_tree.rs:481-490`）。換算で version が変わると trak あたり 12 バイト増減するが、`reserved_moov_box_size` には ftyp 更新用の予備が上乗せされ、finalize 時のブランド追加（最大 16 バイト）を差し引いても 56 バイト以上の余白が残るため faststart には影響しない
+
+## CHANGES.md
+
+`## develop` にある既存 `[FIX]` 群の末尾（`### misc` の直前）に記載する（担当者行 `- @ユーザー名` は実装時に補う）。
+
+- [FIX] `Mp4FileMuxer` が生成した MP4 で、`timescale` の異なるトラックの尺が誤って解釈される問題を修正する
+  - `tkhd` の `duration` を `mdhd` の `timescale` 単位のまま書いていた
+  - `tkhd` の `duration` を参照するプレイヤーで、トラックの尺が実際より短く解釈されてサンプルが途中で打ち切られたり、逆に実際の数百倍の尺として報告されたりしていた
+  - `mvhd` の `timescale` 単位へ切り上げて換算するように変更した
+  - @ユーザー名
+
+エントリの書き方について。
+
+- **タイトルには利用者から見た影響を書く**。「`tkhd` の `duration` を `mvhd` の `timescale` 単位にする」では内部の変更内容しか伝わらず、自分の生成した MP4 が壊れていたのかどうかを読み手が判断できない。何が起きていたかをタイトルに出し、原因と対処は子項目に回す
+- **被害が複数方向あるなら、タイトルを片方に寄せない**。本 issue の被害は「打ち切り」と「尺の過大報告」の 2 方向あり（「### 発生条件」参照）、どちらも普通の構成で起きる。タイトルを打ち切りだけにすると、過大報告側の利用者が「心当たりがない」として影響なしと誤判定する
+- **特定のフレームワーク名（AVFoundation 等）は書かない**。実測はそこで行ったが、原因は仕様と異なる単位で書いていたことであり、影響は `tkhd.duration` を参照する実装全般に及ぶため
+- **仕様要素は `mvhd` / `mdhd` / `timescale` のようにボックスとフィールドを名指しする**。「movie timescale」のような中途半端な英語や、「ムービーのタイムスケール」のような訳語を使わない。説明文自体は日本語で書く
+
+正当な入力に対して出力バイト列が変わる修正だが、仕様違反の是正なので `[CHANGE]` ではなく `[FIX]` とする（`CHANGES.md` の「Mp4FileMuxer が使用した SampleEntry に応じて ftyp の compatible brands を更新する」と同じ扱い）。

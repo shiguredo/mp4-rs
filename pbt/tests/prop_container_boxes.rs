@@ -26,7 +26,7 @@ fn minimal_mvhd_box() -> MvhdBox {
     MvhdBox {
         creation_time: Mp4FileTime::from_secs(0),
         modification_time: Mp4FileTime::from_secs(0),
-        timescale: NonZeroU32::new(1000).unwrap(),
+        timescale: NonZeroU32::new(1000).expect("1000 は非ゼロ"),
         duration: 0,
         rate: MvhdBox::DEFAULT_RATE,
         volume: MvhdBox::DEFAULT_VOLUME,
@@ -60,7 +60,7 @@ fn minimal_mdhd_box() -> MdhdBox {
     MdhdBox {
         creation_time: Mp4FileTime::from_secs(0),
         modification_time: Mp4FileTime::from_secs(0),
-        timescale: NonZeroU32::new(48000).unwrap(),
+        timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
         duration: 0,
         language: MdhdBox::LANGUAGE_UNDEFINED,
     }
@@ -114,7 +114,7 @@ fn minimal_stco_box() -> StcoBox {
 fn minimal_opus_box() -> OpusBox {
     OpusBox {
         audio: AudioSampleEntryFields {
-            data_reference_index: NonZeroU16::new(1).unwrap(),
+            data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
             channelcount: 2,
             samplesize: 16,
             samplerate: FixedPointNumber::new(48000, 0),
@@ -321,9 +321,11 @@ fn arb_stts_entry() -> impl Strategy<Value = SttsEntry> {
 fn arb_stsc_entry() -> impl Strategy<Value = StscEntry> {
     (1u32..=u32::MAX, any::<u32>(), 1u32..=u32::MAX).prop_map(
         |(first_chunk, sample_per_chunk, sample_description_index)| StscEntry {
-            first_chunk: NonZeroU32::new(first_chunk).unwrap(),
+            first_chunk: NonZeroU32::new(first_chunk)
+                .expect("Strategy の値域が 1 以上なので非ゼロ"),
             sample_per_chunk,
-            sample_description_index: NonZeroU32::new(sample_description_index).unwrap(),
+            sample_description_index: NonZeroU32::new(sample_description_index)
+                .expect("Strategy の値域が 1 以上なので非ゼロ"),
         },
     )
 }
@@ -353,14 +355,18 @@ proptest! {
                 None
             } else {
                 Some(StssBox {
-                    sample_numbers: stss_numbers.iter().map(|&n| NonZeroU32::new(n).unwrap()).collect(),
+                    sample_numbers: stss_numbers
+                        .iter()
+                        .map(|&n| NonZeroU32::new(n).expect("Strategy の値域が 1 以上なので非ゼロ"))
+                        .collect(),
                 })
             },
             sdtp_box: None,
             unknown_boxes: vec![],
         };
-        let encoded = stbl.encode_to_vec().unwrap();
-        let (decoded, size) = StblBox::decode(&encoded).unwrap();
+        let encoded = stbl.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = StblBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StblBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.stts_box.entries.len(), stts_entries.len());
@@ -388,8 +394,9 @@ proptest! {
             sdtp_box: None,
             unknown_boxes: vec![],
         };
-        let encoded = stbl.encode_to_vec().unwrap();
-        let (decoded, size) = StblBox::decode(&encoded).unwrap();
+        let encoded = stbl.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = StblBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StblBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         match &decoded.stco_or_co64_box {
@@ -414,8 +421,9 @@ proptest! {
             stbl_box: minimal_stbl_box_audio(),
             unknown_boxes: vec![],
         };
-        let encoded = minf.encode_to_vec().unwrap();
-        let (decoded, size) = MinfBox::decode(&encoded).unwrap();
+        let encoded = minf.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MinfBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MinfBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         match &decoded.media_header {
@@ -436,8 +444,9 @@ proptest! {
             stbl_box: minimal_stbl_box_audio(),
             unknown_boxes: vec![],
         };
-        let encoded = minf.encode_to_vec().unwrap();
-        let (decoded, size) = MinfBox::decode(&encoded).unwrap();
+        let encoded = minf.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MinfBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MinfBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         match &decoded.media_header {
@@ -459,7 +468,7 @@ proptest! {
             mdhd_box: MdhdBox {
                 creation_time: Mp4FileTime::from_secs(0),
                 modification_time: Mp4FileTime::from_secs(0),
-                timescale: NonZeroU32::new(timescale).unwrap(),
+                timescale: NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ"),
                 duration,
                 language,
             },
@@ -467,8 +476,9 @@ proptest! {
             minf_box: minimal_minf_box_audio(),
             unknown_boxes: vec![],
         };
-        let encoded = mdia.encode_to_vec().unwrap();
-        let (decoded, size) = MdiaBox::decode(&encoded).unwrap();
+        let encoded = mdia.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MdiaBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdiaBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.mdhd_box.timescale.get(), timescale);
@@ -507,8 +517,9 @@ proptest! {
             mdia_box: minimal_mdia_box_audio(),
             unknown_boxes: vec![],
         };
-        let encoded = trak.encode_to_vec().unwrap();
-        let (decoded, size) = TrakBox::decode(&encoded).unwrap();
+        let encoded = trak.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = TrakBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrakBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.tkhd_box.track_id, track_id);
@@ -535,7 +546,7 @@ proptest! {
             mvhd_box: MvhdBox {
                 creation_time: Mp4FileTime::from_secs(0),
                 modification_time: Mp4FileTime::from_secs(0),
-                timescale: NonZeroU32::new(timescale).unwrap(),
+                timescale: NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ"),
                 duration,
                 rate: MvhdBox::DEFAULT_RATE,
                 volume: MvhdBox::DEFAULT_VOLUME,
@@ -546,8 +557,9 @@ proptest! {
             mvex_box: None,
             unknown_boxes: vec![],
         };
-        let encoded = moov.encode_to_vec().unwrap();
-        let (decoded, size) = MoovBox::decode(&encoded).unwrap();
+        let encoded = moov.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MoovBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MoovBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.mvhd_box.timescale.get(), timescale);
@@ -566,8 +578,9 @@ mod boundary_tests {
     #[test]
     fn moov_box_minimal() {
         let moov = minimal_moov_box();
-        let encoded = moov.encode_to_vec().unwrap();
-        let (decoded, _) = MoovBox::decode(&encoded).unwrap();
+        let encoded = moov.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MoovBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MoovBox は必ずデコードできる");
         assert_eq!(decoded.trak_boxes.len(), 1);
     }
 
@@ -1630,8 +1643,9 @@ mod boundary_tests {
             mvex_box: None,
             unknown_boxes: vec![],
         };
-        let encoded = moov.encode_to_vec().unwrap();
-        let (decoded, _) = MoovBox::decode(&encoded).unwrap();
+        let encoded = moov.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MoovBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MoovBox は必ずデコードできる");
         assert_eq!(decoded.trak_boxes.len(), 3);
         assert_eq!(decoded.trak_boxes[0].tkhd_box.track_id, 1);
         assert_eq!(decoded.trak_boxes[1].tkhd_box.track_id, 2);
@@ -1642,8 +1656,9 @@ mod boundary_tests {
     #[test]
     fn trak_box_minimal() {
         let trak = minimal_trak_box_audio(1);
-        let encoded = trak.encode_to_vec().unwrap();
-        let (decoded, _) = TrakBox::decode(&encoded).unwrap();
+        let encoded = trak.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TrakBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrakBox は必ずデコードできる");
         assert_eq!(decoded.tkhd_box.track_id, 1);
         assert!(decoded.edts_box.is_none());
     }
@@ -1652,8 +1667,9 @@ mod boundary_tests {
     #[test]
     fn mdia_box_minimal() {
         let mdia = minimal_mdia_box_audio();
-        let encoded = mdia.encode_to_vec().unwrap();
-        let (decoded, _) = MdiaBox::decode(&encoded).unwrap();
+        let encoded = mdia.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MdiaBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdiaBox は必ずデコードできる");
         assert_eq!(decoded.hdlr_box.handler_type, HdlrBox::HANDLER_TYPE_SOUN);
     }
 
@@ -1661,8 +1677,9 @@ mod boundary_tests {
     #[test]
     fn minf_box_audio_minimal() {
         let minf = minimal_minf_box_audio();
-        let encoded = minf.encode_to_vec().unwrap();
-        let (decoded, _) = MinfBox::decode(&encoded).unwrap();
+        let encoded = minf.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MinfBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MinfBox は必ずデコードできる");
         assert!(matches!(decoded.media_header, Some(MediaHeader::Smhd(_))));
     }
 
@@ -1670,8 +1687,9 @@ mod boundary_tests {
     #[test]
     fn stbl_box_empty_samples() {
         let stbl = minimal_stbl_box_audio();
-        let encoded = stbl.encode_to_vec().unwrap();
-        let (decoded, _) = StblBox::decode(&encoded).unwrap();
+        let encoded = stbl.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = StblBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StblBox は必ずデコードできる");
         assert!(decoded.stts_box.entries.is_empty());
         assert!(decoded.stsc_box.entries.is_empty());
         match &decoded.stco_or_co64_box {
@@ -1689,8 +1707,9 @@ mod boundary_tests {
                 SampleEntry::Opus(minimal_opus_box()),
             ],
         };
-        let encoded = stsd.encode_to_vec().unwrap();
-        let (decoded, _) = StsdBox::decode(&encoded).unwrap();
+        let encoded = stsd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = StsdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StsdBox は必ずデコードできる");
         assert_eq!(decoded.entries.len(), 2);
     }
 }

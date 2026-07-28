@@ -270,8 +270,9 @@ proptest! {
     /// SampleFlags の encode/decode roundtrip
     #[test]
     fn sample_flags_roundtrip(flags in arb_sample_flags()) {
-        let encoded = flags.encode_to_vec().unwrap();
-        let (decoded, size) = SampleFlags::decode(&encoded).unwrap();
+        let encoded = flags.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SampleFlags::decode(&encoded)
+            .expect("直前にエンコードした有効な SampleFlags は必ずデコードできる");
 
         prop_assert_eq!(size, 4);
         prop_assert_eq!(decoded.get(), flags.get());
@@ -312,8 +313,9 @@ proptest! {
     /// TrexBox の encode/decode roundtrip
     #[test]
     fn trex_box_roundtrip(trex in arb_trex_box()) {
-        let encoded = trex.encode_to_vec().unwrap();
-        let (decoded, size) = TrexBox::decode(&encoded).unwrap();
+        let encoded = trex.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = TrexBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrexBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.track_id, trex.track_id);
@@ -328,8 +330,9 @@ proptest! {
     /// MehdBox の encode/decode roundtrip
     #[test]
     fn mehd_box_roundtrip(mehd in arb_mehd_box()) {
-        let encoded = mehd.encode_to_vec().unwrap();
-        let (decoded, size) = MehdBox::decode(&encoded).unwrap();
+        let encoded = mehd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MehdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MehdBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.fragment_duration, mehd.fragment_duration);
@@ -340,8 +343,9 @@ proptest! {
     /// MvexBox の encode/decode roundtrip
     #[test]
     fn mvex_box_roundtrip(mvex in arb_mvex_box()) {
-        let encoded = mvex.encode_to_vec().unwrap();
-        let (decoded, size) = MvexBox::decode(&encoded).unwrap();
+        let encoded = mvex.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MvexBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MvexBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.mehd_box.is_some(), mvex.mehd_box.is_some());
@@ -353,8 +357,9 @@ proptest! {
     /// MfhdBox の encode/decode roundtrip
     #[test]
     fn mfhd_box_roundtrip(mfhd in arb_mfhd_box()) {
-        let encoded = mfhd.encode_to_vec().unwrap();
-        let (decoded, size) = MfhdBox::decode(&encoded).unwrap();
+        let encoded = mfhd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MfhdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MfhdBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.sequence_number, mfhd.sequence_number);
@@ -365,8 +370,9 @@ proptest! {
     /// TfdtBox の encode/decode roundtrip
     #[test]
     fn tfdt_box_roundtrip(tfdt in arb_tfdt_box()) {
-        let encoded = tfdt.encode_to_vec().unwrap();
-        let (decoded, size) = TfdtBox::decode(&encoded).unwrap();
+        let encoded = tfdt.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = TfdtBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfdtBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.base_media_decode_time, tfdt.base_media_decode_time);
@@ -377,8 +383,9 @@ proptest! {
     /// TfhdBox の encode/decode roundtrip
     #[test]
     fn tfhd_box_roundtrip(tfhd in arb_tfhd_box()) {
-        let encoded = tfhd.encode_to_vec().unwrap();
-        let (decoded, size) = TfhdBox::decode(&encoded).unwrap();
+        let encoded = tfhd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = TfhdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfhdBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.track_id, tfhd.track_id);
@@ -395,8 +402,9 @@ proptest! {
     /// TrunBox の encode/decode roundtrip
     #[test]
     fn trun_box_roundtrip(trun in arb_trun_box()) {
-        let encoded = trun.encode_to_vec().unwrap();
-        let (decoded, size) = TrunBox::decode(&encoded).unwrap();
+        let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = TrunBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.data_offset, trun.data_offset);
@@ -408,8 +416,9 @@ proptest! {
     /// TrafBox の encode/decode roundtrip
     #[test]
     fn traf_box_roundtrip(traf in arb_traf_box()) {
-        let encoded = traf.encode_to_vec().unwrap();
-        let (decoded, size) = TrafBox::decode(&encoded).unwrap();
+        let encoded = traf.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = TrafBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrafBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.tfhd_box.track_id, traf.tfhd_box.track_id);
@@ -422,8 +431,9 @@ proptest! {
     /// MoofBox の encode/decode roundtrip
     #[test]
     fn moof_box_roundtrip(moof in arb_moof_box()) {
-        let encoded = moof.encode_to_vec().unwrap();
-        let (decoded, size) = MoofBox::decode(&encoded).unwrap();
+        let encoded = moof.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MoofBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MoofBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.mfhd_box.sequence_number, moof.mfhd_box.sequence_number);
@@ -435,8 +445,9 @@ proptest! {
     /// SidxBox の encode/decode roundtrip
     #[test]
     fn sidx_box_roundtrip(sidx in arb_sidx_box()) {
-        let encoded = sidx.encode_to_vec().unwrap();
-        let (decoded, size) = SidxBox::decode(&encoded).unwrap();
+        let encoded = sidx.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SidxBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SidxBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.reference_id, sidx.reference_id);
@@ -461,8 +472,9 @@ mod boundary_tests {
         };
         assert_eq!(mehd.full_box_version(), 0);
 
-        let encoded = mehd.encode_to_vec().unwrap();
-        let (decoded, _) = MehdBox::decode(&encoded).unwrap();
+        let encoded = mehd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MehdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MehdBox は必ずデコードできる");
         assert_eq!(decoded.fragment_duration, u32::MAX as u64);
     }
 
@@ -474,8 +486,9 @@ mod boundary_tests {
         };
         assert_eq!(mehd.full_box_version(), 1);
 
-        let encoded = mehd.encode_to_vec().unwrap();
-        let (decoded, _) = MehdBox::decode(&encoded).unwrap();
+        let encoded = mehd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MehdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MehdBox は必ずデコードできる");
         assert_eq!(decoded.fragment_duration, u32::MAX as u64 + 1);
     }
 
@@ -488,8 +501,9 @@ mod boundary_tests {
         };
         assert_eq!(tfdt.full_box_version(), 0);
 
-        let encoded = tfdt.encode_to_vec().unwrap();
-        let (decoded, _) = TfdtBox::decode(&encoded).unwrap();
+        let encoded = tfdt.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TfdtBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfdtBox は必ずデコードできる");
         assert_eq!(decoded.base_media_decode_time, u32::MAX as u64);
     }
 
@@ -502,8 +516,9 @@ mod boundary_tests {
         };
         assert_eq!(tfdt.full_box_version(), 1);
 
-        let encoded = tfdt.encode_to_vec().unwrap();
-        let (decoded, _) = TfdtBox::decode(&encoded).unwrap();
+        let encoded = tfdt.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TfdtBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfdtBox は必ずデコードできる");
         assert_eq!(decoded.base_media_decode_time, u32::MAX as u64 + 1);
     }
 
@@ -522,8 +537,9 @@ mod boundary_tests {
         };
         assert_eq!(tfhd.full_box_flags().get(), 0);
 
-        let encoded = tfhd.encode_to_vec().unwrap();
-        let (decoded, _) = TfhdBox::decode(&encoded).unwrap();
+        let encoded = tfhd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TfhdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfhdBox は必ずデコードできる");
         assert_eq!(decoded.track_id, 1);
         assert!(decoded.base_data_offset.is_none());
     }
@@ -551,8 +567,9 @@ mod boundary_tests {
         assert!(flags & TfhdBox::FLAG_DURATION_IS_EMPTY != 0);
         assert!(flags & TfhdBox::FLAG_DEFAULT_BASE_IS_MOOF != 0);
 
-        let encoded = tfhd.encode_to_vec().unwrap();
-        let (decoded, _) = TfhdBox::decode(&encoded).unwrap();
+        let encoded = tfhd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TfhdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfhdBox は必ずデコードできる");
         assert_eq!(decoded.base_data_offset, Some(100));
         assert_eq!(decoded.sample_description_index, Some(1));
         assert_eq!(decoded.default_sample_duration, Some(1024));
@@ -570,8 +587,9 @@ mod boundary_tests {
             samples: vec![],
         };
 
-        let encoded = trun.encode_to_vec().unwrap();
-        let (decoded, _) = TrunBox::decode(&encoded).unwrap();
+        let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TrunBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
         assert!(decoded.samples.is_empty());
         assert_eq!(decoded.data_offset, Some(8));
     }
@@ -598,8 +616,9 @@ mod boundary_tests {
             ],
         };
 
-        let encoded = trun.encode_to_vec().unwrap();
-        let (decoded, _) = TrunBox::decode(&encoded).unwrap();
+        let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TrunBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
         assert_eq!(decoded.samples.len(), 2);
         assert_eq!(decoded.samples[0].duration, Some(1024));
         assert_eq!(decoded.samples[1].size, Some(256));
@@ -621,8 +640,9 @@ mod boundary_tests {
 
         assert_eq!(trun.full_box_version(), 1);
 
-        let encoded = trun.encode_to_vec().unwrap();
-        let (decoded, _) = TrunBox::decode(&encoded).unwrap();
+        let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TrunBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
         assert_eq!(decoded.samples[0].composition_time_offset, Some(-100));
     }
 
@@ -638,8 +658,9 @@ mod boundary_tests {
         };
         assert_eq!(sidx.full_box_version(), 0);
 
-        let encoded = sidx.encode_to_vec().unwrap();
-        let (decoded, _) = SidxBox::decode(&encoded).unwrap();
+        let encoded = sidx.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = SidxBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SidxBox は必ずデコードできる");
         assert_eq!(decoded.earliest_presentation_time, u32::MAX as u64);
     }
 
@@ -655,8 +676,9 @@ mod boundary_tests {
         };
         assert_eq!(sidx.full_box_version(), 1);
 
-        let encoded = sidx.encode_to_vec().unwrap();
-        let (decoded, _) = SidxBox::decode(&encoded).unwrap();
+        let encoded = sidx.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = SidxBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SidxBox は必ずデコードできる");
         assert_eq!(decoded.earliest_presentation_time, u32::MAX as u64 + 1);
     }
 
@@ -688,8 +710,9 @@ mod boundary_tests {
             ],
         };
 
-        let encoded = sidx.encode_to_vec().unwrap();
-        let (decoded, _) = SidxBox::decode(&encoded).unwrap();
+        let encoded = sidx.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = SidxBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SidxBox は必ずデコードできる");
         assert_eq!(decoded.references.len(), 2);
         assert!(!decoded.references[0].reference_type);
         assert!(decoded.references[1].reference_type);
@@ -706,8 +729,9 @@ mod boundary_tests {
             unknown_boxes: vec![],
         };
 
-        let encoded = moof.encode_to_vec().unwrap();
-        let (decoded, _) = MoofBox::decode(&encoded).unwrap();
+        let encoded = moof.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MoofBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MoofBox は必ずデコードできる");
         assert_eq!(decoded.mfhd_box.sequence_number, 1);
         assert!(decoded.traf_boxes.is_empty());
     }
@@ -755,8 +779,9 @@ mod boundary_tests {
             unknown_boxes: vec![],
         };
 
-        let encoded = moof.encode_to_vec().unwrap();
-        let (decoded, _) = MoofBox::decode(&encoded).unwrap();
+        let encoded = moof.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MoofBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MoofBox は必ずデコードできる");
         assert_eq!(decoded.traf_boxes.len(), 2);
         assert_eq!(decoded.traf_boxes[0].tfhd_box.track_id, 1);
         assert_eq!(decoded.traf_boxes[1].tfhd_box.track_id, 2);
@@ -773,8 +798,9 @@ mod boundary_tests {
             unknown_boxes: vec![],
         };
 
-        let encoded = mvex.encode_to_vec().unwrap();
-        let (decoded, _) = MvexBox::decode(&encoded).unwrap();
+        let encoded = mvex.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MvexBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MvexBox は必ずデコードできる");
         assert!(decoded.mehd_box.is_none());
         assert!(decoded.trex_boxes.is_empty());
     }
@@ -805,10 +831,17 @@ mod boundary_tests {
             unknown_boxes: vec![],
         };
 
-        let encoded = mvex.encode_to_vec().unwrap();
-        let (decoded, _) = MvexBox::decode(&encoded).unwrap();
+        let encoded = mvex.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MvexBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MvexBox は必ずデコードできる");
         assert!(decoded.mehd_box.is_some());
-        assert_eq!(decoded.mehd_box.unwrap().fragment_duration, 1000000);
+        assert_eq!(
+            decoded
+                .mehd_box
+                .expect("直前の is_some 検証で Some であることを確認済み")
+                .fragment_duration,
+            1000000
+        );
         assert_eq!(decoded.trex_boxes.len(), 2);
         assert_eq!(decoded.trex_boxes[0].track_id, 1);
         assert_eq!(decoded.trex_boxes[1].track_id, 2);

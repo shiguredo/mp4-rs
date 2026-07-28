@@ -86,8 +86,9 @@ proptest! {
     #[test]
     fn decoder_specific_info_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
         let info = DecoderSpecificInfo { payload: payload.clone() };
-        let encoded = info.encode_to_vec().unwrap();
-        let (decoded, _) = DecoderSpecificInfo::decode(&encoded).unwrap();
+        let encoded = info.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DecoderSpecificInfo::decode(&encoded)
+            .expect("直前にエンコードした有効な DecoderSpecificInfo は必ずデコードできる");
 
         prop_assert_eq!(decoded.payload, payload);
     }
@@ -97,8 +98,9 @@ proptest! {
     /// DecoderConfigDescriptor の encode/decode roundtrip
     #[test]
     fn decoder_config_descriptor_roundtrip(desc in arb_decoder_config_descriptor()) {
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = DecoderConfigDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DecoderConfigDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な DecoderConfigDescriptor は必ずデコードできる");
 
         prop_assert_eq!(decoded.object_type_indication, desc.object_type_indication);
         prop_assert_eq!(decoded.stream_type.get(), desc.stream_type.get());
@@ -114,8 +116,9 @@ proptest! {
     /// EsDescriptor の encode/decode roundtrip
     #[test]
     fn es_descriptor_roundtrip(desc in arb_es_descriptor()) {
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = EsDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = EsDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な EsDescriptor は必ずデコードできる");
 
         prop_assert_eq!(decoded.es_id, desc.es_id);
         prop_assert_eq!(decoded.stream_priority.get(), desc.stream_priority.get());
@@ -138,8 +141,9 @@ mod boundary_tests {
     #[test]
     fn decoder_specific_info_empty() {
         let info = DecoderSpecificInfo { payload: vec![] };
-        let encoded = info.encode_to_vec().unwrap();
-        let (decoded, _) = DecoderSpecificInfo::decode(&encoded).unwrap();
+        let encoded = info.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DecoderSpecificInfo::decode(&encoded)
+            .expect("直前にエンコードした有効な DecoderSpecificInfo は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -156,8 +160,9 @@ mod boundary_tests {
             avg_bitrate: 128000,
             dec_specific_info: None,
         };
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = DecoderConfigDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DecoderConfigDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な DecoderConfigDescriptor は必ずデコードできる");
         assert_eq!(decoded.object_type_indication, 0x40);
         assert_eq!(decoded.stream_type.get(), 0x05);
         assert_eq!(decoded.up_stream.get(), 0);
@@ -183,8 +188,9 @@ mod boundary_tests {
             },
             sl_config_descr: SlConfigDescriptor,
         };
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = EsDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = EsDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な EsDescriptor は必ずデコードできる");
         assert_eq!(decoded.es_id, 1);
         assert_eq!(decoded.stream_priority.get(), 0);
         assert!(decoded.depends_on_es_id.is_none());
@@ -214,8 +220,9 @@ mod boundary_tests {
             },
             sl_config_descr: SlConfigDescriptor,
         };
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = EsDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = EsDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な EsDescriptor は必ずデコードできる");
         assert_eq!(decoded.es_id, 1000);
         assert_eq!(decoded.stream_priority.get(), 31);
         assert_eq!(decoded.depends_on_es_id, Some(1));
@@ -229,8 +236,9 @@ mod boundary_tests {
     #[test]
     fn sl_config_descriptor_fixed() {
         let desc = SlConfigDescriptor;
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = SlConfigDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = SlConfigDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な SlConfigDescriptor は必ずデコードできる");
         // SlConfigDescriptor はフィールドを持たない
         assert_eq!(decoded, SlConfigDescriptor);
     }
@@ -248,8 +256,9 @@ mod boundary_tests {
             avg_bitrate: 0,
             dec_specific_info: None,
         };
-        let encoded = desc.encode_to_vec().unwrap();
-        let (decoded, _) = DecoderConfigDescriptor::decode(&encoded).unwrap();
+        let encoded = desc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DecoderConfigDescriptor::decode(&encoded)
+            .expect("直前にエンコードした有効な DecoderConfigDescriptor は必ずデコードできる");
         assert_eq!(decoded.stream_type.get(), 63);
         assert_eq!(decoded.up_stream.get(), 1);
     }

@@ -10,7 +10,8 @@ use shiguredo_mp4::{
     Decode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, FtypBox,
-        HdlrBox, Hev1Box, Hvc1Box, HvccBox, OpusBox, SampleEntry, StppBox, VisualSampleEntryFields,
+        HdlrBox, Hev1Box, Hvc1Box, HvccBox, MoovBox, OpusBox, SampleEntry, StppBox,
+        VisualSampleEntryFields,
     },
     demux::{Input, Mp4FileDemuxer},
     mux::{
@@ -289,6 +290,60 @@ fn arb_subtitle_sample_info() -> impl Strategy<Value = SubtitleSampleInfo> {
         duration,
         data_size,
     })
+}
+
+/// moov ボックスの尺に関する不変条件を検証する
+///
+/// `expected` は (ハンドラー種別, 入力した timescale, 入力したサンプルの尺の合計) を
+/// トラックごとに並べたもの。`mdhd` には入力した値がそのまま入り、
+/// `tkhd` はそれを `mvhd` の `timescale` 単位へ切り上げ換算した値になる。
+///
+/// demuxer は尺として `mdhd` しか読まないため、`tkhd` の単位の誤りは
+/// mux → demux のラウンドトリップでは検出できない。そのため moov ボックスを直接検証する
+fn assert_moov_duration_invariants(
+    moov_box: &MoovBox,
+    expected: &[([u8; 4], NonZeroU32, u64)],
+) -> Result<(), TestCaseError> {
+    prop_assert_eq!(
+        moov_box.trak_boxes.len(),
+        expected.len(),
+        "出力された trak の数が想定と一致しない"
+    );
+
+    let movie_timescale = moov_box.mvhd_box.timescale.get() as u128;
+    for trak_box in &moov_box.trak_boxes {
+        // moov を直接見ているため demuxer の `TrackKind` が使えず、ハンドラー種別で判別する
+        let handler_type = trak_box.mdia_box.hdlr_box.handler_type;
+        let (_, expected_timescale, expected_duration) = expected
+            .iter()
+            .find(|(h, _, _)| *h == handler_type)
+            .expect("想定していないハンドラー種別の trak が出力された");
+
+        let mdhd_box = &trak_box.mdia_box.mdhd_box;
+        prop_assert_eq!(
+            mdhd_box.timescale,
+            *expected_timescale,
+            "mdhd の timescale が入力の timescale と一致しない"
+        );
+        prop_assert_eq!(
+            mdhd_box.duration,
+            *expected_duration,
+            "mdhd の duration が入力サンプルの尺の合計と一致しない"
+        );
+
+        let expected_tkhd_duration = u64::try_from(
+            (mdhd_box.duration as u128 * movie_timescale)
+                .div_ceil(mdhd_box.timescale.get() as u128),
+        )
+        .expect("この生成範囲では換算結果は必ず u64 に収まる");
+        prop_assert_eq!(
+            trak_box.tkhd_box.duration,
+            expected_tkhd_duration,
+            "tkhd の duration が mvhd の timescale 単位になっていない"
+        );
+    }
+
+    Ok(())
 }
 
 proptest! {
@@ -768,6 +823,30 @@ proptest! {
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("failed to finalize");
 
+        // 3 トラックとも `timescale` が異なるため、少なくとも 2 つは換算を経る。
+        // 特に音声（48000）は正規化した尺が映像（30）に届かず `mvhd` に採用されないので、
+        // 換算結果が 1 未満になり切り上げが効くケースをほぼ確実に通る
+        assert_moov_duration_invariants(
+            finalized.moov_box(),
+            &[
+                (
+                    HdlrBox::HANDLER_TYPE_VIDE,
+                    video_timescale,
+                    video_samples.iter().map(|s| s.duration as u64).sum(),
+                ),
+                (
+                    HdlrBox::HANDLER_TYPE_SOUN,
+                    audio_timescale,
+                    audio_samples.iter().map(|s| s.duration as u64).sum(),
+                ),
+                (
+                    HdlrBox::HANDLER_TYPE_SUBT,
+                    subtitle_timescale,
+                    subtitle_samples.iter().map(|s| s.duration as u64).sum(),
+                ),
+            ],
+        )?;
+
         // ファイルデータを構築
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
 
@@ -1094,47 +1173,23 @@ proptest! {
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("failed to finalize");
 
-        // moov ボックスの尺に関する不変条件を検証する
-        //
-        // このテストは音声と映像の `timescale` を独立に生成するため、両者が食い違う入力が普通に現れる。
-        // demuxer は尺として `mdhd` しか読まないので、`tkhd` の単位の誤りは
-        // mux → demux のラウンドトリップでは検出できない。そのため moov ボックスを直接検証する
-        let moov_box = finalized.moov_box();
-        let movie_timescale = moov_box.mvhd_box.timescale.get() as u128;
-        // `expected_video` は (keyframe, duration, data_size)、`expected_audio` は (duration, data_size)
-        let expected_video_duration = expected_video.iter().map(|s| s.1 as u64).sum::<u64>();
-        let expected_audio_duration = expected_audio.iter().map(|s| s.0 as u64).sum::<u64>();
-
-        for trak_box in &moov_box.trak_boxes {
-            // moov を直接見ているため demuxer の `TrackKind` が使えず、ハンドラー種別で判別する
-            let (expected_timescale, expected_duration) = match trak_box.mdia_box.hdlr_box.handler_type {
-                HdlrBox::HANDLER_TYPE_VIDE => (video_timescale, expected_video_duration),
-                HdlrBox::HANDLER_TYPE_SOUN => (audio_timescale, expected_audio_duration),
-                _ => unreachable!("音声・映像以外のトラックは本テストの対象外"),
-            };
-
-            // `mdhd` の `duration` はそのトラックの `timescale` 単位なので、入力した値がそのまま入る
-            let mdhd_box = &trak_box.mdia_box.mdhd_box;
-            prop_assert_eq!(
-                mdhd_box.timescale, expected_timescale,
-                "mdhd の timescale が入力の timescale と一致しない"
-            );
-            prop_assert_eq!(
-                mdhd_box.duration, expected_duration,
-                "mdhd の duration が入力サンプルの尺の合計と一致しない"
-            );
-
-            // `tkhd` の `duration` は `mvhd` の `timescale` 単位なので、`mdhd` の尺を切り上げ換算した値になる
-            let expected_tkhd_duration = u64::try_from(
-                (mdhd_box.duration as u128 * movie_timescale)
-                    .div_ceil(mdhd_box.timescale.get() as u128),
-            )
-            .expect("この生成範囲では換算結果は必ず u64 に収まる");
-            prop_assert_eq!(
-                trak_box.tkhd_box.duration, expected_tkhd_duration,
-                "tkhd の duration が mvhd の timescale 単位になっていない"
-            );
-        }
+        // 音声と映像の `timescale` を独立に生成するため、両者が食い違う入力が普通に現れる
+        // （`expected_video` は (keyframe, duration, data_size)、`expected_audio` は (duration, data_size)）
+        assert_moov_duration_invariants(
+            finalized.moov_box(),
+            &[
+                (
+                    HdlrBox::HANDLER_TYPE_VIDE,
+                    video_timescale,
+                    expected_video.iter().map(|s| s.1 as u64).sum(),
+                ),
+                (
+                    HdlrBox::HANDLER_TYPE_SOUN,
+                    audio_timescale,
+                    expected_audio.iter().map(|s| s.0 as u64).sum(),
+                ),
+            ],
+        )?;
 
         let file_data = build_hybrid_file_data(&initial_bytes, finalized, &regions);
 

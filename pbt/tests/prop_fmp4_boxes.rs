@@ -8,8 +8,8 @@ use proptest::strategy::BoxedStrategy;
 use shiguredo_mp4::{
     Decode, Encode, SampleFlags,
     boxes::{
-        MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TrafBox,
-        TrexBox, TrunBox, TrunSample,
+        MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
+        TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
     },
 };
 
@@ -262,6 +262,96 @@ fn arb_sidx_box() -> impl Strategy<Value = SidxBox> {
         )
 }
 
+/// TfraEntry を生成する Strategy
+///
+/// 各フィールドの上限は呼び出し側から与える。
+/// `traf_number` / `trun_number` / `sample_number` は対応する `length_size` に応じた
+/// `byte_count` バイトに収める必要があり（`encode_variable_uint` の 1〜3 バイトアームが
+/// 上位バイトを silently 捨てる仕様のためラウンドトリップが崩れる）、
+/// `time` / `moof_offset` は version に応じて `u32` 範囲まで／`u64` 全域とする。
+fn arb_tfra_entry(
+    max_traf: u32,
+    max_trun: u32,
+    max_sample: u32,
+    max_time: u64,
+    max_moof_offset: u64,
+) -> impl Strategy<Value = TfraEntry> {
+    (
+        0u64..=max_time,
+        0u64..=max_moof_offset,
+        0u32..=max_traf,
+        0u32..=max_trun,
+        0u32..=max_sample,
+    )
+        .prop_map(
+            |(time, moof_offset, traf_number, trun_number, sample_number)| TfraEntry {
+                time,
+                moof_offset,
+                traf_number,
+                trun_number,
+                sample_number,
+            },
+        )
+}
+
+/// TfraBox を生成する Strategy
+///
+/// version と `length_size_*` を先に決めたうえで `prop_flat_map` に入り、
+/// 対応する上限に絞った `TfraEntry` を生成する。
+///
+/// - version は 0 / 1 のいずれか（ISO/IEC 14496-12 での有効値）
+/// - version = 0 のとき `time` / `moof_offset` は `u32` 範囲、
+///   version = 1 のとき `u64` 全域（`TfraBox::full_box_version` は
+///   `time` / `moof_offset` の実値が `u32::MAX` を超えると自動で version=1 を返すため、
+///   version=0 で 64-bit 値を混ぜるとラウンドトリップで元の version=0 が失われる）
+/// - `traf_number` / `trun_number` / `sample_number` は対応する `length_size` に応じた
+///   `byte_count` バイトに収まる範囲（`length_size = 0` なら上限 `0xFF`、
+///   `length_size = 3` なら上限 `u32::MAX`）
+fn arb_tfra_box() -> impl Strategy<Value = TfraBox> {
+    (
+        any::<u32>(),                        // track_id
+        any::<bool>().prop_map(|b| b as u8), // version (0 または 1)
+        0u8..=3u8,                           // length_size_of_traf_num
+        0u8..=3u8,                           // length_size_of_trun_num
+        0u8..=3u8,                           // length_size_of_sample_num
+    )
+        .prop_flat_map(|(track_id, version, l_traf, l_trun, l_sample)| {
+            // length_size に応じた上限（length_size = 3 は u32::MAX、それ以外はシフトで算出）
+            let max_of = |l: u8| -> u32 {
+                if l >= 3 {
+                    u32::MAX
+                } else {
+                    (1u32 << (8 * (l as u32 + 1))) - 1
+                }
+            };
+            let max_traf = max_of(l_traf);
+            let max_trun = max_of(l_trun);
+            let max_sample = max_of(l_sample);
+            let max_time = if version == 0 {
+                u32::MAX as u64
+            } else {
+                u64::MAX
+            };
+            let max_moof_offset = if version == 0 {
+                u32::MAX as u64
+            } else {
+                u64::MAX
+            };
+            prop::collection::vec(
+                arb_tfra_entry(max_traf, max_trun, max_sample, max_time, max_moof_offset),
+                0..3,
+            )
+            .prop_map(move |entries| TfraBox {
+                version,
+                track_id,
+                length_size_of_traf_num: l_traf,
+                length_size_of_trun_num: l_trun,
+                length_size_of_sample_num: l_sample,
+                entries,
+            })
+        })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -444,6 +534,23 @@ proptest! {
         prop_assert_eq!(decoded.earliest_presentation_time, sidx.earliest_presentation_time);
         prop_assert_eq!(decoded.first_offset, sidx.first_offset);
         prop_assert_eq!(decoded.references.len(), sidx.references.len());
+    }
+
+    // ===== TfraBox のテスト =====
+
+    /// TfraBox の encode/decode roundtrip
+    ///
+    /// `TfraBox` は `PartialEq` を derive しているため、
+    /// 個別フィールドを比較せずに全体一致で検証する。
+    /// これにより `version` / `track_id` / 各 `length_size_*` / `entries`
+    /// （`TfraEntry` の 5 フィールドすべてを含む）が一括で照合される。
+    #[test]
+    fn tfra_box_roundtrip(tfra in arb_tfra_box()) {
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, size) = TfraBox::decode(&encoded).unwrap();
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded, tfra);
     }
 }
 

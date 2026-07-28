@@ -28,8 +28,6 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
         let mut acc_duration = 0;
         for entry in &stbl_box_ref.stts_box.entries {
             sample_durations.push((sample_count, entry.sample_delta, acc_duration));
-            // sample_count は checked_add でオーバーフロー時に Err を返し、
-            // acc_duration は通常の += で加算する。
             // sample_count の checked_add により Σ sample_count <= u32::MAX が保証され、
             // acc_duration <= (2^32 - 1) * (2^32 - 1) = 18446744065119617025 < u64::MAX
             // が成り立つため、acc_duration の加算はオーバーフローしない。
@@ -331,6 +329,11 @@ pub enum SampleTableAccessorError {
     },
 
     /// サンプルデータのバイト位置の累計が [`u64`] の範囲を超えた
+    ///
+    /// [`Co64Box`][crate::boxes::Co64Box] 由来のチャンクオフセットと
+    /// [`StszBox`] 由来のサンプルサイズの累計で発生する。
+    /// [`StcoBox`][crate::boxes::StcoBox] はチャンクオフセットが [`u32`] のため
+    /// 単独ではオーバーフローしない。
     SampleDataOffsetOverflow {
         /// オフセットの累計がオーバーフローした時点で処理していたサンプルのインデックス
         ///

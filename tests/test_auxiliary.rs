@@ -2,6 +2,10 @@
 //!
 //! `SampleTableAccessorError` の `SampleCountOverflow` / `SampleDataOffsetOverflow`
 //! バリアントが期待通りの値で返ることを、公開 API のみを使って検証する。
+//!
+//! 固定入力による回帰テストであり PBT で代替できないため、
+//! `pbt/tests/prop_auxiliary.rs` ではなく `tests/test_<module>.rs` 規約に従って
+//! integration test として配置している。
 
 use std::num::NonZeroU32;
 

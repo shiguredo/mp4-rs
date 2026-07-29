@@ -138,8 +138,8 @@
 
 ### misc
 
-- [UPDATE] WASM の `parse_json_mp4_sample_entry_*` 系関数で、JSON フィールドをすべて Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
-  - JSON パース途中で失敗したときに、既に確保した C 側バッファが `mp4_free` されずにリークする経路を構造的に消す
+- [UPDATE] WASM の JSON サンプルエントリー変換で、パースが途中で失敗した場合に確保済みバッファがリークし得たのを防ぐ
+  - `parse_json_mp4_sample_entry_*` 系関数で、全 JSON フィールドを Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
   - 対象は avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g（stpp / wvtt は既に同順か経路なし）
   - @sile
 - [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する

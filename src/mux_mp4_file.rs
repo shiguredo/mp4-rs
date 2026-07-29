@@ -1575,6 +1575,7 @@ mod tests {
     ///
     /// advance_position で次の書き込み位置を u64::MAX 付近まで進め、
     /// Overflow を起こしたあとに同じ data_offset かつ収まる data_size で再投入する。
+    /// Overflow 直後に tracks / chunk / sample 数が増えていないことと、
     /// finalize 後の stsz エントリ数が先行サンプル + 1 であることを確認し、二重登録が無いことを示す。
     #[test]
     fn test_append_sample_overflow_keeps_muxer_state() {
@@ -1618,6 +1619,20 @@ mod tests {
             .append_sample(&overflowing_sample)
             .expect_err("オーバーフローする data_size ではエラーが返るべき");
         assert!(matches!(err, MuxError::Overflow), "予期しないエラー: {err}");
+
+        // Overflow 直後に tracks / chunk / sample が増えていないことを直接確認する
+        // （finalize 後の stsz だけでなく、中間状態の残留も回帰として捕まえる）
+        assert_eq!(muxer.tracks.len(), 1, "Overflow で TrackEntry が増えている");
+        assert_eq!(
+            muxer.tracks[0].chunks.len(),
+            1,
+            "Overflow で Chunk が増えている"
+        );
+        assert_eq!(
+            muxer.tracks[0].chunks[0].samples.len(),
+            1,
+            "Overflow で sample metadata が増えている"
+        );
 
         let fitting_size = 5usize;
         let fitting_sample = Sample {

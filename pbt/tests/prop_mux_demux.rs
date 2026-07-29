@@ -1281,7 +1281,7 @@ mod boundary_tests {
 
         let sample = demuxer
             .next_sample()
-            .expect("失敗した")
+            .expect("sample の読み取りに失敗した")
             .expect("sample が無い");
         assert!(sample.keyframe);
         assert_eq!(sample.data_size, 100);

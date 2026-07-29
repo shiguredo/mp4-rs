@@ -924,7 +924,7 @@ mod fixed_stsz_tests {
                 }],
             },
             stsz_box: StszBox::Fixed {
-                sample_size: NonZeroU32::new(256).expect("不正である"),
+                sample_size: NonZeroU32::new(256).expect("256 は非ゼロなので失敗しない"),
                 sample_count: 5,
             },
             stco_or_co64_box: Either::A(StcoBox {

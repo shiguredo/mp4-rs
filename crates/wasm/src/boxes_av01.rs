@@ -176,4 +176,16 @@ mod tests {
         assert_eq!(sample_entry.config_obus_size, 0);
         assert!(sample_entry.config_obus.is_null());
     }
+
+    #[test]
+    fn test_json_to_av01_rejects_missing_width_after_config_obus() {
+        // configObus は揃っているが後段の必須フィールド width が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{"kind": "av01", "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "configObus": [10, 11, 0, 0]}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_av01(json.value());
+        assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
 }

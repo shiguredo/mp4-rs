@@ -351,4 +351,33 @@ mod tests {
 
         mp4_sample_entry_tx3g_free(&mut sample_entry);
     }
+
+    #[test]
+    fn test_json_to_tx3g_rejects_missing_display_flags_after_ftab() {
+        // ftab / default_style は揃っているが後段の必須フィールド display_flags が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{
+            "kind": "tx3g",
+            "horizontal_justification": 0,
+            "vertical_justification": 0,
+            "background_color_rgba": [0, 0, 0, 255],
+            "default_text_box": [0, 0, 240, 320],
+            "default_style": {
+                "start_char": 0,
+                "end_char": 0,
+                "font_id": 1,
+                "face_style_flags": 0,
+                "font_size": 12,
+                "text_color_rgba": [255, 255, 255, 255]
+            },
+            "ftab": [
+                { "font_id": 1, "font_name": [83, 101, 114, 105, 102] }
+            ]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_tx3g(json.value());
+        assert!(result.is_err(), "display_flags 欠落時はパース失敗すること");
+    }
 }

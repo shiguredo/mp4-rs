@@ -142,4 +142,24 @@ mod tests {
         assert_eq!(sample_entry.dec_specific_info_size, 0);
         assert!(sample_entry.dec_specific_info.is_null());
     }
+
+    #[test]
+    fn test_json_to_mp4a_rejects_missing_channel_count_after_dec_specific_info() {
+        // decSpecificInfo は揃っているが後段の必須フィールド channelCount が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{
+            "kind": "mp4a",
+            "sampleRate": 44100,
+            "sampleSize": 16,
+            "bufferSizeDb": 0,
+            "maxBitrate": 128000,
+            "avgBitrate": 128000,
+            "decSpecificInfo": [1, 2]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_mp4a(json.value());
+        assert!(result.is_err(), "channelCount 欠落時はパース失敗すること");
+    }
 }

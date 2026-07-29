@@ -399,6 +399,42 @@ mod tests {
         assert!(sample_entry.nalu_sizes.is_null());
     }
 
+    #[test]
+    fn test_json_to_hvc1_rejects_missing_width_after_nalu_arrays() {
+        // naluArrays は揃っているが後段の必須フィールド width が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{
+            "kind": "hvc1",
+            "height": 1080,
+            "generalProfileSpace": 0,
+            "generalTierFlag": 0,
+            "generalProfileIdc": 2,
+            "generalProfileCompatibilityFlags": 0,
+            "generalConstraintIndicatorFlags": 0,
+            "generalLevelIdc": 120,
+            "chromaFormatIdc": 1,
+            "bitDepthLumaMinus8": 0,
+            "bitDepthChromaMinus8": 0,
+            "minSpatialSegmentationIdc": 0,
+            "parallelismType": 0,
+            "avgFrameRate": 0,
+            "constantFrameRate": 0,
+            "numTemporalLayers": 1,
+            "temporalIdNested": 0,
+            "lengthSizeMinusOne": 3,
+            "naluArrays": [
+                {"naluType": 32, "units": [[64, 1, 12, 1]]},
+                {"naluType": 33, "units": [[66, 1, 1, 1]]},
+                {"naluType": 34, "units": [[68, 1, 0]]}
+            ]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_hvc1(json.value());
+        assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
+
     /// 1 配列に 2 個の NALU を持つ入力（総数 2 > 配列数 1）の parse → free 回帰テスト
     ///
     /// 修正前は `free_array_list` に配列数（1）を渡していたため、確保時の総数（2）と

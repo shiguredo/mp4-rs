@@ -239,4 +239,16 @@ mod tests {
         mp4_sample_entry_avc1_free(&mut sample_entry);
         assert_eq!(sample_entry.sps_count, 0);
     }
+
+    #[test]
+    fn test_json_to_avc1_rejects_missing_width_after_sps_pps() {
+        // sps / pps は揃っているが後段の必須フィールド width が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{"kind": "avc1", "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[103, 100, 0, 40]], "pps": [[104, 238, 60, 128]]}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_avc1(json.value());
+        assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
 }

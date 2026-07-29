@@ -109,4 +109,16 @@ mod tests {
         assert_eq!(sample_entry.streaminfo_size, 0);
         assert!(sample_entry.streaminfo_data.is_null());
     }
+
+    #[test]
+    fn test_json_to_flac_rejects_missing_channel_count_after_streaminfo() {
+        // streaminfoData は揃っているが後段の必須フィールド channelCount が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{"kind": "flac", "sampleRate": 44100, "sampleSize": 16, "streaminfoData": [0, 16, 0, 16]}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_flac(json.value());
+        assert!(result.is_err(), "channelCount 欠落時はパース失敗すること");
+    }
 }

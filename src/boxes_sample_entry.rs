@@ -602,51 +602,30 @@ impl Hev1Box {
 
 impl Encode for Hev1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let header = BoxHeader::new_variable_size(Self::TYPE);
-        let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.hvcc_box.encode(&mut buf[offset..])?;
-        for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
-        }
-        header.finalize_box_size(&mut buf[..offset])?;
-        Ok(offset)
+        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
+        encode_hevc_sample_entry(
+            buf,
+            Self::TYPE,
+            &self.visual,
+            &self.hvcc_box,
+            &self.unknown_boxes,
+        )
     }
 }
 
 impl Decode for Hev1Box {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        with_box_type(Self::TYPE, || {
-            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
-            header.box_type.expect(Self::TYPE)?;
-
-            let mut offset = 0;
-            let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
-
-            let mut hvcc_box = None;
-            let mut unknown_boxes = Vec::new();
-
-            while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
-                match child_header.box_type {
-                    HvccBox::TYPE if hvcc_box.is_none() => {
-                        hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
-                    }
-                    _ => {
-                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
-                    }
-                }
-            }
-
-            Ok((
-                Self {
-                    visual,
-                    hvcc_box: check_mandatory_box(hvcc_box, "hvcc", "hev1")?,
-                    unknown_boxes,
-                },
-                header.external_size() + payload.len(),
-            ))
-        })
+        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
+        let (visual, hvcc_box, unknown_boxes, size) =
+            decode_hevc_sample_entry(buf, Self::TYPE, "hev1")?;
+        Ok((
+            Self {
+                visual,
+                hvcc_box,
+                unknown_boxes,
+            },
+            size,
+        ))
     }
 }
 
@@ -686,51 +665,30 @@ impl Hvc1Box {
 
 impl Encode for Hvc1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let header = BoxHeader::new_variable_size(Self::TYPE);
-        let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.hvcc_box.encode(&mut buf[offset..])?;
-        for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
-        }
-        header.finalize_box_size(&mut buf[..offset])?;
-        Ok(offset)
+        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
+        encode_hevc_sample_entry(
+            buf,
+            Self::TYPE,
+            &self.visual,
+            &self.hvcc_box,
+            &self.unknown_boxes,
+        )
     }
 }
 
 impl Decode for Hvc1Box {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        with_box_type(Self::TYPE, || {
-            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
-            header.box_type.expect(Self::TYPE)?;
-
-            let mut offset = 0;
-            let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
-
-            let mut hvcc_box = None;
-            let mut unknown_boxes = Vec::new();
-
-            while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
-                match child_header.box_type {
-                    HvccBox::TYPE if hvcc_box.is_none() => {
-                        hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
-                    }
-                    _ => {
-                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
-                    }
-                }
-            }
-
-            Ok((
-                Self {
-                    visual,
-                    hvcc_box: check_mandatory_box(hvcc_box, "hvcc", "hvc1")?,
-                    unknown_boxes,
-                },
-                header.external_size() + payload.len(),
-            ))
-        })
+        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
+        let (visual, hvcc_box, unknown_boxes, size) =
+            decode_hevc_sample_entry(buf, Self::TYPE, "hvc1")?;
+        Ok((
+            Self {
+                visual,
+                hvcc_box,
+                unknown_boxes,
+            },
+            size,
+        ))
     }
 }
 
@@ -746,6 +704,68 @@ impl BaseBox for Hvc1Box {
                 .chain(self.unknown_boxes.iter().map(as_box_object)),
         )
     }
+}
+
+/// HEVC サンプルエントリー（`hev1` / `hvc1`）のエンコード共通処理
+///
+/// ISO/IEC 14496-15 上、`hev1` と `hvc1` の内部構造は同一であるため、
+/// ボックス種別だけを引数で受け取り、ヘッダ書き込みからサイズ確定までを一括で行う
+fn encode_hevc_sample_entry(
+    buf: &mut [u8],
+    box_type: BoxType,
+    visual: &VisualSampleEntryFields,
+    hvcc_box: &HvccBox,
+    unknown_boxes: &[UnknownBox],
+) -> Result<usize> {
+    let header = BoxHeader::new_variable_size(box_type);
+    let mut offset = header.encode(buf)?;
+    offset += visual.encode(&mut buf[offset..])?;
+    offset += hvcc_box.encode(&mut buf[offset..])?;
+    for b in unknown_boxes {
+        offset += b.encode(&mut buf[offset..])?;
+    }
+    header.finalize_box_size(&mut buf[..offset])?;
+    Ok(offset)
+}
+
+/// HEVC サンプルエントリー（`hev1` / `hvc1`）のデコード共通処理
+///
+/// `parent_name` は `check_mandatory_box` のエラーメッセージ用に呼び出し側が明示する
+/// （`BoxType` から `&str` を導出する API がないため）
+fn decode_hevc_sample_entry(
+    buf: &[u8],
+    expected_type: BoxType,
+    parent_name: &str,
+) -> Result<(VisualSampleEntryFields, HvccBox, Vec<UnknownBox>, usize)> {
+    with_box_type(expected_type, || {
+        let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+        header.box_type.expect(expected_type)?;
+
+        let mut offset = 0;
+        let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
+
+        let mut hvcc_box = None;
+        let mut unknown_boxes = Vec::new();
+
+        while offset < payload.len() {
+            let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+            match child_header.box_type {
+                HvccBox::TYPE if hvcc_box.is_none() => {
+                    hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
+                }
+                _ => {
+                    unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                }
+            }
+        }
+
+        Ok((
+            visual,
+            check_mandatory_box(hvcc_box, "hvcc", parent_name)?,
+            unknown_boxes,
+            header.external_size() + payload.len(),
+        ))
+    })
 }
 
 /// [`HvccBox`] 内の NAL ユニット配列を保持する構造体

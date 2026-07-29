@@ -28,7 +28,47 @@
 //! サンプルデータはサンプルの出現順に連結されていてよい。
 //! 実際の `mdat` payload 配置順は、このモジュールが fMP4 muxer の要求に合わせて
 //! 必要に応じて並べ替える。
+use c_api::boxes::Mp4SampleEntry;
 use c_api::fmp4_segment_mux::Fmp4SegmentMuxer;
+
+/// `Mp4SampleEntry` を Box で所有し、Drop 時に内部ポインタごと `mp4_sample_entry_free` で解放する
+///
+/// `Mp4SampleEntry` 本体の Drop は `mp4_alloc` で確保した各 kind の可変長データ
+/// (SPS/PPS/NALU 配列など) を解放しないため、その所有権を必ずこの型に載せる必要がある。
+///
+/// Box を構築時に確保しておくことで、`as_ptr` が返すポインタは Box のヒープ位置に固定される。
+/// ラッパを含む `Vec` の再確保でポインタが無効化されず、Drop 内でアロケータを呼ばずに済む。
+struct OwnedMp4SampleEntry {
+    entry: Option<Box<Mp4SampleEntry>>,
+}
+
+impl OwnedMp4SampleEntry {
+    fn new(entry: Option<Mp4SampleEntry>) -> Self {
+        Self {
+            entry: entry.map(Box::new),
+        }
+    }
+
+    /// C API へ渡すポインタを返す。`None` のときは null
+    fn as_ptr(&self) -> *const Mp4SampleEntry {
+        match &self.entry {
+            Some(b) => std::ptr::from_ref(b.as_ref()),
+            None => std::ptr::null(),
+        }
+    }
+}
+
+impl Drop for OwnedMp4SampleEntry {
+    fn drop(&mut self) {
+        // `mp4_sample_entry_free` は渡した raw pointer を `Box::from_raw` で消費する契約。
+        // 構築時の Box をそのまま `Box::into_raw` で渡し、ラッパ側で本体を二重 Drop しない
+        if let Some(b) = self.entry.take() {
+            unsafe {
+                crate::boxes::mp4_sample_entry_free(Box::into_raw(b));
+            }
+        }
+    }
+}
 
 fn same_track_kind(
     lhs: c_api::basic_types::Mp4TrackKind,
@@ -178,27 +218,25 @@ fn write_segment_impl(
     // 各サンプルのデータ範囲を計算する
     // 呼び出し元からはサンプル出現順の payload を受け取り、
     // muxer が要求するトラック単位の連続配置にここで並べ替える。
-    let mut sample_entry_boxes: Vec<Option<Box<c_api::boxes::Mp4SampleEntry>>> = Vec::new();
+    //
+    // `c_samples` に格納する `sample_entry` は `OwnedMp4SampleEntry` が構築時に
+    // 確保した Box のヒープ位置を指す。sample_metas を drop すると Box も解放
+    // されるため、C API 呼び出しが終わるまで sample_metas を生存させる
     let mut c_samples: Vec<c_api::fmp4_segment_mux::Fmp4SegmentSample> = Vec::new();
     let mut payload_ranges: Vec<&[u8]> = Vec::new();
     let mut data_offset = 0usize;
-    for meta in sample_metas {
+    for meta in sample_metas.iter() {
         let Some(end) = data_offset.checked_add(meta.data_size) else {
             return std::ptr::null_mut();
         };
         if end > sample_data_slice.len() {
             return std::ptr::null_mut();
         }
-        sample_entry_boxes.push(meta.sample_entry.map(Box::new));
-        let sample_entry_ptr = sample_entry_boxes
-            .last()
-            .and_then(|entry| entry.as_ref())
-            .map_or(std::ptr::null(), |entry| (&**entry) as *const _);
         payload_ranges.push(&sample_data_slice[data_offset..end]);
         c_samples.push(c_api::fmp4_segment_mux::Fmp4SegmentSample {
             track_kind: meta.track_kind,
             timescale: meta.timescale,
-            sample_entry: sample_entry_ptr,
+            sample_entry: meta.sample_entry.as_ptr(),
             duration: meta.duration,
             keyframe: meta.keyframe,
             has_composition_time_offset: meta.composition_time_offset.is_some(),
@@ -206,7 +244,7 @@ fn write_segment_impl(
             // 実際の payload 配置順が確定した後で上書きする。
             data_offset: 0,
             data_size: u32::try_from(meta.data_size)
-                .expect("data_size exceeds u32::MAX; validated by parse_json_sample_metas"),
+                .expect("data_size fits in u32 because it is bounded by sample_data_len: u32"),
         });
         data_offset = end;
     }
@@ -273,7 +311,7 @@ fn write_segment_impl(
 struct SampleMeta {
     track_kind: c_api::basic_types::Mp4TrackKind,
     timescale: u32,
-    sample_entry: Option<c_api::boxes::Mp4SampleEntry>,
+    sample_entry: OwnedMp4SampleEntry,
     duration: u32,
     keyframe: bool,
     composition_time_offset: Option<i64>,
@@ -302,11 +340,6 @@ fn parse_json_sample_metas(
                 }
             };
             let timescale: u32 = item.to_member("timescale")?.required()?.try_into()?;
-            let sample_entry = if let Some(value) = item.to_member("sample_entry")?.optional() {
-                Some(crate::boxes::parse_json_mp4_sample_entry(value)?)
-            } else {
-                None
-            };
             let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
             let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
             let composition_time_offset: Option<i64> =
@@ -322,10 +355,17 @@ fn parse_json_sample_metas(
                     .map(|v| v.invalid("data_size exceeds usize::MAX"))
                     .unwrap_or_else(|e| e)
             })?;
+            // sample_entry の確保は他フィールドの `?` が全て通ってから行う。
+            // 途中で失敗した場合は mp4_alloc 経路に一切入らずリークしない
+            let sample_entry = if let Some(value) = item.to_member("sample_entry")?.optional() {
+                Some(crate::boxes::parse_json_mp4_sample_entry(value)?)
+            } else {
+                None
+            };
             Ok(SampleMeta {
                 track_kind,
                 timescale,
-                sample_entry,
+                sample_entry: OwnedMp4SampleEntry::new(sample_entry),
                 duration,
                 keyframe,
                 composition_time_offset,
@@ -348,4 +388,165 @@ fn parse_json_muxer_options(
     Ok(c_api::fmp4_segment_mux::Fmp4SegmentMuxerOptions {
         creation_timestamp_secs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ポインタフィールド付き avc1 をラッパで所有し、Drop してもパニックしないこと
+    #[test]
+    fn test_owned_sample_entry_drop_avc1_does_not_panic() {
+        let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[103, 100, 0, 40]], "pps": [[104, 238, 60, 128]]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let entry =
+            crate::boxes::parse_json_mp4_sample_entry(json.value()).expect("有効な avc1 JSON");
+        let owned = OwnedMp4SampleEntry::new(Some(entry));
+        drop(owned);
+    }
+
+    /// 複数 item のうち後続 item のパースに失敗しても null を返し、パニックしないこと
+    ///
+    /// 1 個目は完全にパース成功、2 個目は `duration` 欠落でパース失敗させる。
+    /// 1 個目の sample_entry は `parse_json_sample_metas` が Err を返した瞬間に
+    /// 蓄積済み `Vec<SampleMeta>` ごと Drop されるため、
+    /// `OwnedMp4SampleEntry::drop` 経由で `mp4_sample_entry_free` が呼ばれる
+    #[test]
+    fn test_write_segment_parse_error_on_later_item_returns_null_without_panic() {
+        let muxer = unsafe { c_api::fmp4_segment_mux::fmp4_segment_muxer_new() };
+        assert!(!muxer.is_null(), "muxer の生成に成功すること");
+
+        let meta_json = r#"[
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "duration": 3000,
+                "keyframe": true,
+                "data_size": 100
+            },
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "keyframe": true,
+                "data_size": 100
+            }
+        ]"#;
+        let sample_data = [0u8; 200];
+
+        let result = write_segment_impl(
+            muxer,
+            meta_json.as_ptr(),
+            meta_json.len() as u32,
+            sample_data.as_ptr(),
+            sample_data.len() as u32,
+            false,
+        );
+        assert!(result.is_null(), "パース失敗時は null を返すこと");
+
+        unsafe {
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_free(muxer);
+        }
+    }
+
+    /// 複数サンプルの中央で data_size が sample_data の残余を超えた場合に、
+    /// 未処理の残余 sample_entry まで含めて null 返却時に正しく解放されること
+    ///
+    /// サンプル構成は `[avc1(ok), None(over), avc1(unreached)]`。
+    /// サンプル 0 は c_samples に push 済み、サンプル 1 で早期 return し、
+    /// サンプル 2 は for ループに到達しないままとなる。
+    /// いずれのサンプルの `OwnedMp4SampleEntry` も `sample_metas` の Drop で
+    /// 一括解放され、Some/None 両方の分岐と push 済み・未処理・失敗の全経路を踏む
+    #[test]
+    fn test_write_segment_oversized_middle_sample_returns_null_without_panic() {
+        let muxer = unsafe { c_api::fmp4_segment_mux::fmp4_segment_muxer_new() };
+        assert!(!muxer.is_null(), "muxer の生成に成功すること");
+
+        let meta_json = r#"[
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "duration": 3000,
+                "keyframe": true,
+                "data_size": 10
+            },
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "duration": 3000,
+                "keyframe": false,
+                "data_size": 100
+            },
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "duration": 3000,
+                "keyframe": true,
+                "data_size": 10
+            }
+        ]"#;
+        // 合計 data_size = 120 に対し sample_data は 20 バイトのみ。
+        // サンプル 1 の data_size=100 で end=110 > 20 となり早期 return する
+        let sample_data = [0u8; 20];
+
+        let result = write_segment_impl(
+            muxer,
+            meta_json.as_ptr(),
+            meta_json.len() as u32,
+            sample_data.as_ptr(),
+            sample_data.len() as u32,
+            false,
+        );
+        assert!(
+            result.is_null(),
+            "中央サンプルのサイズ超過時は null を返すこと"
+        );
+
+        unsafe {
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_free(muxer);
+        }
+    }
 }

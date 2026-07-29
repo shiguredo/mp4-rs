@@ -8,8 +8,8 @@ use proptest::strategy::BoxedStrategy;
 use shiguredo_mp4::{
     Decode, Encode, SampleFlags,
     boxes::{
-        MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TrafBox,
-        TrexBox, TrunBox, TrunSample,
+        MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
+        TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
     },
 };
 
@@ -276,6 +276,97 @@ fn arb_sidx_box() -> impl Strategy<Value = SidxBox> {
         )
 }
 
+/// TfraEntry を生成する Strategy
+///
+/// 各フィールドの上限は呼び出し側から与える
+/// （上限を絞る理由は `arb_tfra_box` の doc を参照）。
+fn arb_tfra_entry(
+    max_traf: u32,
+    max_trun: u32,
+    max_sample: u32,
+    max_time: u64,
+    max_moof_offset: u64,
+) -> impl Strategy<Value = TfraEntry> {
+    (
+        0u64..=max_time,
+        0u64..=max_moof_offset,
+        0u32..=max_traf,
+        0u32..=max_trun,
+        0u32..=max_sample,
+    )
+        .prop_map(
+            |(time, moof_offset, traf_number, trun_number, sample_number)| TfraEntry {
+                time,
+                moof_offset,
+                traf_number,
+                trun_number,
+                sample_number,
+            },
+        )
+}
+
+/// TfraBox を生成する Strategy
+///
+/// version と `length_size_*` を先に決めたうえで `prop_flat_map` に入り、
+/// 対応する上限に絞った `TfraEntry` を生成する。
+///
+/// - version は 0 / 1 のいずれか（ISO/IEC 14496-12 での有効値）
+/// - version = 0 のとき `time` / `moof_offset` は `u32` 範囲、
+///   version = 1 のとき `u64` 全域（`TfraBox::full_box_version` は
+///   `time` / `moof_offset` の実値が `u32::MAX` を超えると自動で version=1 を返すため、
+///   version=0 で 64-bit 値を混ぜるとラウンドトリップで元の version=0 が失われる）
+/// - `traf_number` / `trun_number` / `sample_number` は対応する `length_size` に応じた
+///   `byte_count` バイトに収まる範囲（`length_size = 0` なら上限 `0xFF`、
+///   `length_size = 3` なら上限 `u32::MAX`）
+fn arb_tfra_box() -> impl Strategy<Value = TfraBox> {
+    (
+        any::<u32>(), // track_id
+        0u8..=1u8,    // version (0 または 1)
+        0u8..=3u8,    // length_size_of_traf_num
+        0u8..=3u8,    // length_size_of_trun_num
+        0u8..=3u8,    // length_size_of_sample_num
+    )
+        .prop_flat_map(|(track_id, version, l_traf, l_trun, l_sample)| {
+            // length_size に応じた u32 の上限
+            // （length_size = 3 は u32::MAX、それ以外はシフトで算出）
+            let max_value_for_length_size = |length_size: u8| -> u32 {
+                if length_size >= 3 {
+                    u32::MAX
+                } else {
+                    (1u32 << (8 * (length_size as u32 + 1))) - 1
+                }
+            };
+            let max_traf = max_value_for_length_size(l_traf);
+            let max_trun = max_value_for_length_size(l_trun);
+            let max_sample = max_value_for_length_size(l_sample);
+            // time と moof_offset は同じ制約に従う（version = 0 のとき u32 範囲、
+            // version = 1 のとき u64 全域）
+            let max_time_and_moof_offset = if version == 0 {
+                u32::MAX as u64
+            } else {
+                u64::MAX
+            };
+            prop::collection::vec(
+                arb_tfra_entry(
+                    max_traf,
+                    max_trun,
+                    max_sample,
+                    max_time_and_moof_offset,
+                    max_time_and_moof_offset,
+                ),
+                0..3,
+            )
+            .prop_map(move |entries| TfraBox {
+                version,
+                track_id,
+                length_size_of_traf_num: l_traf,
+                length_size_of_trun_num: l_trun,
+                length_size_of_sample_num: l_sample,
+                entries,
+            })
+        })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -469,6 +560,18 @@ proptest! {
         prop_assert_eq!(decoded.earliest_presentation_time, sidx.earliest_presentation_time);
         prop_assert_eq!(decoded.first_offset, sidx.first_offset);
         prop_assert_eq!(decoded.references.len(), sidx.references.len());
+    }
+
+    // ===== TfraBox のテスト =====
+
+    /// TfraBox の encode/decode roundtrip
+    #[test]
+    fn tfra_box_roundtrip(tfra in arb_tfra_box()) {
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, size) = TfraBox::decode(&encoded).unwrap();
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded, tfra);
     }
 }
 
@@ -1020,5 +1123,118 @@ mod boundary_tests {
 
         let children: Vec<_> = moof.children().collect();
         assert_eq!(children.len(), 2); // mfhd + 1 traf
+    }
+
+    /// TfraBox: version = 0 の上限値ラウンドトリップ
+    ///
+    /// `length_size_of_*` を全て 3（byte_count = 4）にして
+    /// `traf_number` / `trun_number` / `sample_number` を `u32::MAX` まで、
+    /// `time` / `moof_offset` を `u32::MAX` まで詰める。
+    /// full_box_version は 0 を返し、self.version = 0 のまま保持される。
+    #[test]
+    fn tfra_box_version0_max_boundaries() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: u32::MAX,
+            length_size_of_traf_num: 3,
+            length_size_of_trun_num: 3,
+            length_size_of_sample_num: 3,
+            entries: vec![TfraEntry {
+                time: u32::MAX as u64,
+                moof_offset: u32::MAX as u64,
+                traf_number: u32::MAX,
+                trun_number: u32::MAX,
+                sample_number: u32::MAX,
+            }],
+        };
+        assert_eq!(tfra.full_box_version(), 0);
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(decoded, tfra);
+    }
+
+    /// TfraBox: self.version = 0 でも time > u32::MAX で自動的に version = 1 に昇格する
+    ///
+    /// `full_box_version` は entries のいずれかが `u32::MAX` を超えたら 1 を返す仕様
+    /// （`src/boxes_fmp4.rs:1305-1318`）。この挙動により、encode 時のヘッダー版数は
+    /// self.version より entries の値が優先される。decode 側は書かれた版数をそのまま
+    /// self.version に戻すため、self.version = 0 → 1 への「意図的な化け」が起きる。
+    #[test]
+    fn tfra_box_version_auto_promotion() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: 1,
+            length_size_of_traf_num: 0,
+            length_size_of_trun_num: 0,
+            length_size_of_sample_num: 0,
+            entries: vec![TfraEntry {
+                time: u32::MAX as u64 + 1,
+                moof_offset: 0,
+                traf_number: 1,
+                trun_number: 1,
+                sample_number: 1,
+            }],
+        };
+        assert_eq!(
+            tfra.full_box_version(),
+            1,
+            "time が u32::MAX を超えるので version は 1 に昇格する"
+        );
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(
+            decoded.version, 1,
+            "decode 側は書かれた版数 1 をそのまま self.version に戻す"
+        );
+        assert_eq!(decoded.entries, tfra.entries);
+    }
+
+    /// TfraBox: `length_size_of_*` = 0 の最小構成ラウンドトリップ
+    ///
+    /// 各可変長整数フィールドが 1 バイトで書かれ、上位バイトを持たない最小のケース。
+    /// `encode_variable_uint` の 1 バイトアーム（`src/boxes_fmp4.rs:1409-1411`）と
+    /// `decode_variable_uint` の 1 バイト分岐を通す。
+    #[test]
+    fn tfra_box_length_size_zero() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: 1,
+            length_size_of_traf_num: 0,
+            length_size_of_trun_num: 0,
+            length_size_of_sample_num: 0,
+            entries: vec![TfraEntry {
+                time: 0,
+                moof_offset: 0,
+                traf_number: 0xFF,
+                trun_number: 0xFF,
+                sample_number: 0xFF,
+            }],
+        };
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(decoded, tfra);
+    }
+
+    /// TfraBox: entries が空
+    ///
+    /// `number_of_entry` = 0 で entries ループを 1 度も回らない縮退ケース。
+    /// `encode_variable_uint` は 1 度も呼ばれない。
+    #[test]
+    fn tfra_box_empty_entries() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: 1,
+            length_size_of_traf_num: 0,
+            length_size_of_trun_num: 0,
+            length_size_of_sample_num: 0,
+            entries: vec![],
+        };
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(decoded, tfra);
     }
 }

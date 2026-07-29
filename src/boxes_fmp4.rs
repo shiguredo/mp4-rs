@@ -1425,6 +1425,10 @@ impl FullBox for MfroBox {
 
 /// 可変長の符号なし整数をエンコード
 fn encode_variable_uint(value: u32, byte_count: u8, buf: &mut [u8]) -> Result<usize> {
+    // 1〜3 バイトのアームは buf[i] への直接代入で書き込むため、
+    // バッファ長不足時に InsufficientBuffer を返せるよう match の直前で長さを検査する
+    Error::check_buffer_size(byte_count as usize, buf)?;
+
     match byte_count {
         1 => {
             buf[0] = value as u8;

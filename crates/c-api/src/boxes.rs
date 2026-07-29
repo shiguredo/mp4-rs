@@ -942,93 +942,45 @@ pub struct Mp4SampleEntryHev1 {
 }
 
 impl Mp4SampleEntryHev1 {
-    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // NALU 配列を構築
-        let mut nalu_arrays = Vec::new();
-        if self.nalu_array_count > 0 {
-            // 外側ループで必ず参照される配列ベースポインタを検査する
-            // `nalu_data_index` 内の `nalu_counts.add(i)` もこの検査で保護される
-            if self.nalu_types.is_null() || self.nalu_counts.is_null() {
-                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-            }
-            unsafe {
-                for i in 0..self.nalu_array_count as usize {
-                    let nalu_type = *self.nalu_types.add(i);
-                    let nalu_count = *self.nalu_counts.add(i);
-
-                    let mut nalus = Vec::new();
-                    // 内側ループが実際に回るときだけ検査する
-                    // （全 nalu_counts[i] == 0 の入力を過剰に弾かないため）
-                    if nalu_count > 0 && (self.nalu_data.is_null() || self.nalu_sizes.is_null()) {
-                        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                    }
-                    for j in 0..nalu_count as usize {
-                        let nalu_index = self.nalu_data_index(i, j);
-                        let nalu_ptr = *self.nalu_data.add(nalu_index);
-                        let nalu_size = *self.nalu_sizes.add(nalu_index) as usize;
-
-                        if nalu_ptr.is_null() {
-                            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                        }
-                        nalus.push(std::slice::from_raw_parts(nalu_ptr, nalu_size).to_vec());
-                    }
-
-                    nalu_arrays.push(shiguredo_mp4::boxes::HvccNalUintArray {
-                        // 保守的な固定値: この NALU 型のすべてのインスタンスが配列に含まれていない可能性を示す
-                        array_completeness: shiguredo_mp4::Uint::new(0),
-
-                        nal_unit_type: shiguredo_mp4::Uint::new(nalu_type),
-                        nalus,
-                    });
-                }
-            }
-        }
-
-        // ボックスを構築
-        let hvcc_box = shiguredo_mp4::boxes::HvccBox {
-            general_profile_space: shiguredo_mp4::Uint::new(self.general_profile_space),
-            general_tier_flag: shiguredo_mp4::Uint::new(self.general_tier_flag),
-            general_profile_idc: shiguredo_mp4::Uint::new(self.general_profile_idc),
+    /// C ABI 構造体のフィールドを中間表現へ写し替える
+    fn to_raw(self) -> HevcSampleEntryRaw {
+        HevcSampleEntryRaw {
+            width: self.width,
+            height: self.height,
+            general_profile_space: self.general_profile_space,
+            general_tier_flag: self.general_tier_flag,
+            general_profile_idc: self.general_profile_idc,
             general_profile_compatibility_flags: self.general_profile_compatibility_flags,
-            general_constraint_indicator_flags: shiguredo_mp4::Uint::new(
-                self.general_constraint_indicator_flags,
-            ),
+            general_constraint_indicator_flags: self.general_constraint_indicator_flags,
             general_level_idc: self.general_level_idc,
-            min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(
-                self.min_spatial_segmentation_idc,
-            ),
-            parallelism_type: shiguredo_mp4::Uint::new(self.parallelism_type),
-            chroma_format_idc: shiguredo_mp4::Uint::new(self.chroma_format_idc),
-            bit_depth_luma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_luma_minus8),
-            bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_chroma_minus8),
+            chroma_format_idc: self.chroma_format_idc,
+            bit_depth_luma_minus8: self.bit_depth_luma_minus8,
+            bit_depth_chroma_minus8: self.bit_depth_chroma_minus8,
+            min_spatial_segmentation_idc: self.min_spatial_segmentation_idc,
+            parallelism_type: self.parallelism_type,
             avg_frame_rate: self.avg_frame_rate,
-            constant_frame_rate: shiguredo_mp4::Uint::new(self.constant_frame_rate),
-            num_temporal_layers: shiguredo_mp4::Uint::new(self.num_temporal_layers),
-            temporal_id_nested: shiguredo_mp4::Uint::new(self.temporal_id_nested),
-            length_size_minus_one: shiguredo_mp4::Uint::new(self.length_size_minus_one),
-            nalu_arrays,
-        };
+            constant_frame_rate: self.constant_frame_rate,
+            num_temporal_layers: self.num_temporal_layers,
+            temporal_id_nested: self.temporal_id_nested,
+            length_size_minus_one: self.length_size_minus_one,
+            nalu_array_count: self.nalu_array_count,
+            nalu_types: self.nalu_types,
+            nalu_counts: self.nalu_counts,
+            nalu_data: self.nalu_data,
+            nalu_sizes: self.nalu_sizes,
+        }
+    }
+
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        let raw = self.to_raw();
+        let nalu_arrays = build_hvcc_nalu_arrays(&raw)?;
+        let hvcc_box = build_hvcc_box(&raw, nalu_arrays);
         let hev1_box = shiguredo_mp4::boxes::Hev1Box {
-            visual: create_visual_sample_entry_fields(self.width, self.height),
+            visual: create_visual_sample_entry_fields(raw.width, raw.height),
             hvcc_box,
             unknown_boxes: Vec::new(),
         };
-
         Ok(shiguredo_mp4::boxes::SampleEntry::Hev1(hev1_box))
-    }
-
-    fn nalu_data_index(&self, array_index: usize, nalu_index: usize) -> usize {
-        unsafe {
-            let mut index = 0;
-            // 指定された配列インデックスまでの NALU 数を合計する
-            for i in 0..array_index {
-                let count = *self.nalu_counts.add(i) as usize;
-                index += count;
-            }
-            // 現在の配列内でのインデックスを加算
-            index += nalu_index;
-            index
-        }
     }
 }
 
@@ -1105,89 +1057,45 @@ pub struct Mp4SampleEntryHvc1 {
 }
 
 impl Mp4SampleEntryHvc1 {
-    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // NALU 配列を構築（null 検査の意図は Mp4SampleEntryHev1::to_sample_entry を参照）
-        let mut nalu_arrays = Vec::new();
-        if self.nalu_array_count > 0 {
-            if self.nalu_types.is_null() || self.nalu_counts.is_null() {
-                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-            }
-            unsafe {
-                for i in 0..self.nalu_array_count as usize {
-                    let nalu_type = *self.nalu_types.add(i);
-                    let nalu_count = *self.nalu_counts.add(i);
-
-                    let mut nalus = Vec::new();
-                    if nalu_count > 0 && (self.nalu_data.is_null() || self.nalu_sizes.is_null()) {
-                        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                    }
-                    for j in 0..nalu_count as usize {
-                        let nalu_index = self.nalu_data_index(i, j);
-                        let nalu_ptr = *self.nalu_data.add(nalu_index);
-                        let nalu_size = *self.nalu_sizes.add(nalu_index) as usize;
-
-                        if nalu_ptr.is_null() {
-                            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                        }
-                        nalus.push(std::slice::from_raw_parts(nalu_ptr, nalu_size).to_vec());
-                    }
-
-                    nalu_arrays.push(shiguredo_mp4::boxes::HvccNalUintArray {
-                        // 保守的な固定値: この NALU 型のすべてのインスタンスが配列に含まれていない可能性を示す
-                        array_completeness: shiguredo_mp4::Uint::new(0),
-
-                        nal_unit_type: shiguredo_mp4::Uint::new(nalu_type),
-                        nalus,
-                    });
-                }
-            }
-        }
-
-        // ボックスを構築
-        let hvcc_box = shiguredo_mp4::boxes::HvccBox {
-            general_profile_space: shiguredo_mp4::Uint::new(self.general_profile_space),
-            general_tier_flag: shiguredo_mp4::Uint::new(self.general_tier_flag),
-            general_profile_idc: shiguredo_mp4::Uint::new(self.general_profile_idc),
+    /// C ABI 構造体のフィールドを中間表現へ写し替える
+    fn to_raw(self) -> HevcSampleEntryRaw {
+        HevcSampleEntryRaw {
+            width: self.width,
+            height: self.height,
+            general_profile_space: self.general_profile_space,
+            general_tier_flag: self.general_tier_flag,
+            general_profile_idc: self.general_profile_idc,
             general_profile_compatibility_flags: self.general_profile_compatibility_flags,
-            general_constraint_indicator_flags: shiguredo_mp4::Uint::new(
-                self.general_constraint_indicator_flags,
-            ),
+            general_constraint_indicator_flags: self.general_constraint_indicator_flags,
             general_level_idc: self.general_level_idc,
-            min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(
-                self.min_spatial_segmentation_idc,
-            ),
-            parallelism_type: shiguredo_mp4::Uint::new(self.parallelism_type),
-            chroma_format_idc: shiguredo_mp4::Uint::new(self.chroma_format_idc),
-            bit_depth_luma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_luma_minus8),
-            bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_chroma_minus8),
+            chroma_format_idc: self.chroma_format_idc,
+            bit_depth_luma_minus8: self.bit_depth_luma_minus8,
+            bit_depth_chroma_minus8: self.bit_depth_chroma_minus8,
+            min_spatial_segmentation_idc: self.min_spatial_segmentation_idc,
+            parallelism_type: self.parallelism_type,
             avg_frame_rate: self.avg_frame_rate,
-            constant_frame_rate: shiguredo_mp4::Uint::new(self.constant_frame_rate),
-            num_temporal_layers: shiguredo_mp4::Uint::new(self.num_temporal_layers),
-            temporal_id_nested: shiguredo_mp4::Uint::new(self.temporal_id_nested),
-            length_size_minus_one: shiguredo_mp4::Uint::new(self.length_size_minus_one),
-            nalu_arrays,
-        };
+            constant_frame_rate: self.constant_frame_rate,
+            num_temporal_layers: self.num_temporal_layers,
+            temporal_id_nested: self.temporal_id_nested,
+            length_size_minus_one: self.length_size_minus_one,
+            nalu_array_count: self.nalu_array_count,
+            nalu_types: self.nalu_types,
+            nalu_counts: self.nalu_counts,
+            nalu_data: self.nalu_data,
+            nalu_sizes: self.nalu_sizes,
+        }
+    }
+
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        let raw = self.to_raw();
+        let nalu_arrays = build_hvcc_nalu_arrays(&raw)?;
+        let hvcc_box = build_hvcc_box(&raw, nalu_arrays);
         let hvc1_box = shiguredo_mp4::boxes::Hvc1Box {
-            visual: create_visual_sample_entry_fields(self.width, self.height),
+            visual: create_visual_sample_entry_fields(raw.width, raw.height),
             hvcc_box,
             unknown_boxes: Vec::new(),
         };
-
         Ok(shiguredo_mp4::boxes::SampleEntry::Hvc1(hvc1_box))
-    }
-
-    fn nalu_data_index(&self, array_index: usize, nalu_index: usize) -> usize {
-        unsafe {
-            let mut index = 0;
-            // 指定された配列インデックスまでの NALU 数を合計する
-            for i in 0..array_index {
-                let count = *self.nalu_counts.add(i) as usize;
-                index += count;
-            }
-            // 現在の配列内でのインデックスを加算
-            index += nalu_index;
-            index
-        }
     }
 }
 
@@ -1415,6 +1323,126 @@ fn create_visual_sample_entry_fields(
         frame_count: shiguredo_mp4::boxes::VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
         compressorname: shiguredo_mp4::boxes::VisualSampleEntryFields::NULL_COMPRESSORNAME,
         depth: shiguredo_mp4::boxes::VisualSampleEntryFields::DEFAULT_DEPTH,
+    }
+}
+
+/// `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の共通フィールドを保持する中間構造体
+///
+/// C ABI (`#[repr(C)]`) ではなく内部専用。生ポインタの有効期間は C 側の契約
+/// （`to_sample_entry` 呼び出しスコープ中に生存）で決まるため、ライフタイムは付けない
+#[derive(Clone, Copy)]
+struct HevcSampleEntryRaw {
+    width: u16,
+    height: u16,
+    general_profile_space: u8,
+    general_tier_flag: u8,
+    general_profile_idc: u8,
+    general_profile_compatibility_flags: u32,
+    general_constraint_indicator_flags: u64,
+    general_level_idc: u8,
+    chroma_format_idc: u8,
+    bit_depth_luma_minus8: u8,
+    bit_depth_chroma_minus8: u8,
+    min_spatial_segmentation_idc: u16,
+    parallelism_type: u8,
+    avg_frame_rate: u16,
+    constant_frame_rate: u8,
+    num_temporal_layers: u8,
+    temporal_id_nested: u8,
+    length_size_minus_one: u8,
+    nalu_array_count: u32,
+    nalu_types: *const u8,
+    nalu_counts: *const u32,
+    nalu_data: *const *const u8,
+    nalu_sizes: *const u32,
+}
+
+/// HEVC サンプルエントリーの NALU 配列を構築する
+///
+/// null 契約は `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の docstring
+/// 「# ポインタフィールドの null 契約」に従う
+fn build_hvcc_nalu_arrays(
+    raw: &HevcSampleEntryRaw,
+) -> Result<Vec<shiguredo_mp4::boxes::HvccNalUintArray>, Mp4Error> {
+    let mut nalu_arrays = Vec::new();
+    if raw.nalu_array_count == 0 {
+        return Ok(nalu_arrays);
+    }
+
+    // 外側ループで必ず参照される配列ベースポインタを検査する
+    // 後続の `nalu_counts.add(i)` もこの検査で保護される
+    if raw.nalu_types.is_null() || raw.nalu_counts.is_null() {
+        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+    }
+
+    // SAFETY: null ポインタは本関数で検査済み。残る前提は、C 側が宣言した
+    // 要素数分の有効なメモリ領域（適切な長さ・アライメント）を指していること
+    unsafe {
+        for i in 0..raw.nalu_array_count as usize {
+            let nalu_type = *raw.nalu_types.add(i);
+            let nalu_count = *raw.nalu_counts.add(i);
+
+            let mut nalus = Vec::new();
+            // 内側ループが実際に回るときだけ検査する
+            // （全 nalu_counts[i] == 0 の入力を過剰に弾かないため）
+            if nalu_count > 0 && (raw.nalu_data.is_null() || raw.nalu_sizes.is_null()) {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
+
+            // 指定配列までの NALU 数合計 + 配列内インデックスを平坦インデックスにする
+            let mut flat_base = 0;
+            for prev in 0..i {
+                flat_base += *raw.nalu_counts.add(prev) as usize;
+            }
+
+            for j in 0..nalu_count as usize {
+                let nalu_index = flat_base + j;
+                let nalu_ptr = *raw.nalu_data.add(nalu_index);
+                let nalu_size = *raw.nalu_sizes.add(nalu_index) as usize;
+
+                if nalu_ptr.is_null() {
+                    return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+                }
+                nalus.push(std::slice::from_raw_parts(nalu_ptr, nalu_size).to_vec());
+            }
+
+            nalu_arrays.push(shiguredo_mp4::boxes::HvccNalUintArray {
+                // 保守的な固定値: この NALU 型のすべてのインスタンスが配列に含まれていない可能性を示す
+                array_completeness: shiguredo_mp4::Uint::new(0),
+                nal_unit_type: shiguredo_mp4::Uint::new(nalu_type),
+                nalus,
+            });
+        }
+    }
+
+    Ok(nalu_arrays)
+}
+
+/// HEVC サンプルエントリーの `hvcC` ボックスを構築する
+fn build_hvcc_box(
+    raw: &HevcSampleEntryRaw,
+    nalu_arrays: Vec<shiguredo_mp4::boxes::HvccNalUintArray>,
+) -> shiguredo_mp4::boxes::HvccBox {
+    shiguredo_mp4::boxes::HvccBox {
+        general_profile_space: shiguredo_mp4::Uint::new(raw.general_profile_space),
+        general_tier_flag: shiguredo_mp4::Uint::new(raw.general_tier_flag),
+        general_profile_idc: shiguredo_mp4::Uint::new(raw.general_profile_idc),
+        general_profile_compatibility_flags: raw.general_profile_compatibility_flags,
+        general_constraint_indicator_flags: shiguredo_mp4::Uint::new(
+            raw.general_constraint_indicator_flags,
+        ),
+        general_level_idc: raw.general_level_idc,
+        min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(raw.min_spatial_segmentation_idc),
+        parallelism_type: shiguredo_mp4::Uint::new(raw.parallelism_type),
+        chroma_format_idc: shiguredo_mp4::Uint::new(raw.chroma_format_idc),
+        bit_depth_luma_minus8: shiguredo_mp4::Uint::new(raw.bit_depth_luma_minus8),
+        bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(raw.bit_depth_chroma_minus8),
+        avg_frame_rate: raw.avg_frame_rate,
+        constant_frame_rate: shiguredo_mp4::Uint::new(raw.constant_frame_rate),
+        num_temporal_layers: shiguredo_mp4::Uint::new(raw.num_temporal_layers),
+        temporal_id_nested: shiguredo_mp4::Uint::new(raw.temporal_id_nested),
+        length_size_minus_one: shiguredo_mp4::Uint::new(raw.length_size_minus_one),
+        nalu_arrays,
     }
 }
 

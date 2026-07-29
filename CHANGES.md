@@ -131,12 +131,20 @@
 - [FIX] `FullBoxFlags::from_flags` に同一ビット位置を複数回渡すと u32 加算オーバーフローでパニックしていたのを修正する
   - 内部の畳み込みを `.sum()` から OR (`.fold`) に変更し、重複を冪等に扱う
   - @sile
+- [FIX] `TfraBox` のエンコードで短いバッファを渡すとパニックしていたのを修正する
+  - 内部の `encode_variable_uint` の 1〜3 バイトのアームが `buf.len()` を検査せず `buf[i]` へ直接代入していたため、バッファが不足するとインデックス範囲外で `Encode` トレイト契約に反してパニックしていた
+  - `match` の直前で `Error::check_buffer_size` を呼び、バッファ不足時は `InsufficientBuffer` を返すようにする
+  - @sile
 
 ### misc
 
 - [UPDATE] WASM の `parse_json_mp4_sample_entry_*` 系関数で、JSON フィールドをすべて Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
   - JSON パース途中で失敗したときに、既に確保した C 側バッファが `mp4_free` されずにリークする経路を構造的に消す
   - 対象は avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g（stpp / wvtt は既に同順か経路なし）
+  - @sile
+- [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する
+  - ISO/IEC 14496-15 上で内部構造が同一の HEVC サンプルエントリー対について、エンコード / デコードおよび `to_sample_entry` の重複を解消する
+  - 公開 API（Rust の構造体フィールド・C ABI）は変更しない
   - @sile
 - [UPDATE] `#[expect(missing_docs)]` を全撤廃して公開アイテムにドキュメントを付与する
   - `MvhdBox::timescale` / `MdhdBox::timescale` / `SidxBox::timescale` の doc に、それぞれのタイムスケールが何を定義するかを明記する

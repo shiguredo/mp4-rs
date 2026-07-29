@@ -2021,6 +2021,9 @@ impl SttsBox {
     ///
     /// 同一の `sample_delta` が連続して [`u32::MAX`] 回を超える場合は
     /// [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) を返す。
+    ///
+    /// overflow 時の境界挙動は内部ヘルパーの単体テストが担う
+    ///（公開 API で同一 delta を [`u32::MAX`] + 1 回走査するのは現実的でないため）。
     pub fn from_sample_deltas<I>(sample_deltas: I) -> Result<Self>
     where
         I: IntoIterator<Item = u32>,
@@ -2034,7 +2037,10 @@ impl SttsBox {
 
     /// 連続する同一 `sample_delta` を run-length 集約しながら 1 サンプル分を追加する
     ///
-    /// 同一値の連続が [`u32::MAX`] を超えると overflow として [`Err`] を返す。
+    /// 同一の `sample_delta` が連続して [`u32::MAX`] 回を超えると overflow として [`Err`] を返す。
+    ///
+    /// [`u32::MAX`] 近傍の境界を現実的なコストで単体検証するため、集約ロジックをここに切り出している
+    ///（公開 API だけで同一 delta を [`u32::MAX`] + 1 回走査するのは現実的でない）。
     fn push_sample_delta(entries: &mut Vec<SttsEntry>, sample_delta: u32) -> Result<()> {
         if let Some(last) = entries.last_mut()
             && last.sample_delta == sample_delta
@@ -2116,7 +2122,7 @@ mod stts_box_tests {
     use super::*;
     use crate::ErrorKind;
 
-    /// 連続する同一 delta が run-length 集約されること
+    /// 連続する同一 `sample_delta` が run-length 集約されること
     #[test]
     fn from_sample_deltas_aggregates_identical_deltas() {
         let stts = SttsBox::from_sample_deltas([10, 10, 10, 20, 20, 1])
@@ -2140,7 +2146,9 @@ mod stts_box_tests {
         );
     }
 
-    /// sample_count がちょうど u32::MAX まで積めること
+    /// `sample_count` がちょうど [`u32::MAX`] まで積めること
+    ///
+    /// overflow 契約の境界（[`u32::MAX`] ちょうどは成功）は公開 API ではなく本ヘルパーで検証する。
     #[test]
     fn push_sample_delta_accepts_u32_max_count() {
         let mut entries = Vec::new();
@@ -2156,7 +2164,9 @@ mod stts_box_tests {
         );
     }
 
-    /// sample_count が u32::MAX を超えると Err になること
+    /// `sample_count` が [`u32::MAX`] を超えると [`Err`] になること
+    ///
+    /// overflow 契約の境界（[`u32::MAX`] + 1 相当は失敗・非破壊）は公開 API ではなく本ヘルパーで検証する。
     #[test]
     fn push_sample_delta_rejects_overflow() {
         let mut entries = Vec::from([SttsEntry {

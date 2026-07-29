@@ -139,6 +139,10 @@
   - `parse_json_mp4_sample_entry_*` 系関数で、全 JSON フィールドを Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
   - 対象は avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g（stpp / wvtt は既に同順か経路なし）
   - @sile
+- [FIX] WASM の `fmp4_segment_muxer_write_media_segment_metadata*_json` で sample entry の内部ポインタが解放されずリークするのを修正する
+  - `write_segment_impl` が `Box<Mp4SampleEntry>` の通常 Drop だけに頼っており、`mp4_alloc` で確保した SPS/PPS 等が残っていた
+  - Drop 時に `mp4_sample_entry_free` を呼ぶラッパへ移し、パース直後に全 entry をその寿命へ載せる
+  - @sile
 
 ### misc
 

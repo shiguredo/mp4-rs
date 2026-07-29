@@ -405,13 +405,6 @@ mod tests {
         drop(owned);
     }
 
-    /// sample_entry 省略（None）のラッパを Drop してもパニックしないこと
-    #[test]
-    fn test_owned_sample_entry_drop_none_does_not_panic() {
-        let owned = OwnedMp4SampleEntry::new(None);
-        drop(owned);
-    }
-
     /// 複数 item のうち後続 item のパースに失敗しても null を返し、パニックしないこと
     ///
     /// 1 個目は完全にパース成功、2 個目は `duration` 欠落でパース失敗させる。
@@ -477,32 +470,67 @@ mod tests {
         }
     }
 
-    /// data_size 不正で早期 return してもパニックしないこと
+    /// 複数サンプルの中央で data_size が sample_data の残余を超えた場合に、
+    /// 未処理の残余 sample_entry まで含めて null 返却時に正しく解放されること
+    ///
+    /// サンプル構成は `[avc1(ok), None(over), avc1(unreached)]`。
+    /// サンプル 0 は c_samples に push 済み、サンプル 1 で早期 return し、
+    /// サンプル 2 は for ループに到達しないままとなる。
+    /// いずれのサンプルの `OwnedMp4SampleEntry` も `sample_metas` の Drop で
+    /// 一括解放され、Some/None 両方の分岐と push 済み・未処理・失敗の全経路を踏む
     #[test]
-    fn test_write_segment_oversized_data_size_returns_null_without_panic() {
+    fn test_write_segment_oversized_middle_sample_returns_null_without_panic() {
         let muxer = unsafe { c_api::fmp4_segment_mux::fmp4_segment_muxer_new() };
         assert!(!muxer.is_null(), "muxer の生成に成功すること");
 
-        let meta_json = r#"[{
-            "track_kind": "video",
-            "timescale": 90000,
-            "sample_entry": {
-                "kind": "avc1",
-                "width": 1920,
-                "height": 1080,
-                "avcProfileIndication": 100,
-                "profileCompatibility": 0,
-                "avcLevelIndication": 40,
-                "lengthSizeMinusOne": 3,
-                "sps": [[103, 100, 0, 40]],
-                "pps": [[104, 238, 60, 128]]
+        let meta_json = r#"[
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "duration": 3000,
+                "keyframe": true,
+                "data_size": 10
             },
-            "duration": 3000,
-            "keyframe": true,
-            "data_size": 100
-        }]"#;
-        // data_size より短いペイロードにしてサイズ不正の早期 return を起こす
-        let sample_data = [0u8; 10];
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "duration": 3000,
+                "keyframe": false,
+                "data_size": 100
+            },
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "duration": 3000,
+                "keyframe": true,
+                "data_size": 10
+            }
+        ]"#;
+        // 合計 data_size = 120 に対し sample_data は 20 バイトのみ。
+        // サンプル 1 の data_size=100 で end=110 > 20 となり早期 return する
+        let sample_data = [0u8; 20];
 
         let result = write_segment_impl(
             muxer,
@@ -512,7 +540,10 @@ mod tests {
             sample_data.len() as u32,
             false,
         );
-        assert!(result.is_null(), "data_size 不正時は null を返すこと");
+        assert!(
+            result.is_null(),
+            "中央サンプルのサイズ超過時は null を返すこと"
+        );
 
         unsafe {
             c_api::fmp4_segment_mux::fmp4_segment_muxer_free(muxer);

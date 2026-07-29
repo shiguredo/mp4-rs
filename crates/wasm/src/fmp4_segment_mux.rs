@@ -31,23 +31,28 @@
 use c_api::boxes::Mp4SampleEntry;
 use c_api::fmp4_segment_mux::Fmp4SegmentMuxer;
 
-/// `Mp4SampleEntry` を所有し、Drop 時に内部ポインタごと `mp4_sample_entry_free` で解放する
+/// `Mp4SampleEntry` を Box で所有し、Drop 時に内部ポインタごと `mp4_sample_entry_free` で解放する
 ///
 /// `Mp4SampleEntry` 本体の Drop は `mp4_alloc` で確保した各 kind の可変長データ
 /// (SPS/PPS/NALU 配列など) を解放しないため、その所有権を必ずこの型に載せる必要がある。
+///
+/// Box を構築時に確保しておくことで、`as_ptr` が返すポインタは Box のヒープ位置に固定される。
+/// ラッパを含む `Vec` の再確保でポインタが無効化されず、Drop 内でアロケータを呼ばずに済む。
 struct OwnedMp4SampleEntry {
-    entry: Option<Mp4SampleEntry>,
+    entry: Option<Box<Mp4SampleEntry>>,
 }
 
 impl OwnedMp4SampleEntry {
     fn new(entry: Option<Mp4SampleEntry>) -> Self {
-        Self { entry }
+        Self {
+            entry: entry.map(Box::new),
+        }
     }
 
     /// C API へ渡すポインタを返す。`None` のときは null
     fn as_ptr(&self) -> *const Mp4SampleEntry {
         match &self.entry {
-            Some(entry) => entry as *const Mp4SampleEntry,
+            Some(b) => std::ptr::from_ref(b.as_ref()),
             None => std::ptr::null(),
         }
     }
@@ -56,10 +61,10 @@ impl OwnedMp4SampleEntry {
 impl Drop for OwnedMp4SampleEntry {
     fn drop(&mut self) {
         // `mp4_sample_entry_free` は渡した raw pointer を `Box::from_raw` で消費する契約。
-        // `Box::into_raw` で所有権を移し、ラッパ側で本体を二重 Drop しない
-        if let Some(entry) = self.entry.take() {
+        // 構築時の Box をそのまま `Box::into_raw` で渡し、ラッパ側で本体を二重 Drop しない
+        if let Some(b) = self.entry.take() {
             unsafe {
-                crate::boxes::mp4_sample_entry_free(Box::into_raw(Box::new(entry)));
+                crate::boxes::mp4_sample_entry_free(Box::into_raw(b));
             }
         }
     }
@@ -214,9 +219,9 @@ fn write_segment_impl(
     // 呼び出し元からはサンプル出現順の payload を受け取り、
     // muxer が要求するトラック単位の連続配置にここで並べ替える。
     //
-    // sample_metas はここから関数末尾まで move / mutation されない。
-    // `c_samples` に格納する `sample_entry` は sample_metas 内 OwnedMp4SampleEntry
-    // への生ポインタなので、sample_metas の寿命に依存する
+    // `c_samples` に格納する `sample_entry` は `OwnedMp4SampleEntry` が構築時に
+    // 確保した Box のヒープ位置を指す。sample_metas を drop すると Box も解放
+    // されるため、C API 呼び出しが終わるまで sample_metas を生存させる
     let mut c_samples: Vec<c_api::fmp4_segment_mux::Fmp4SegmentSample> = Vec::new();
     let mut payload_ranges: Vec<&[u8]> = Vec::new();
     let mut data_offset = 0usize;

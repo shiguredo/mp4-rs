@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-append-sample-overflow-state
 - Polished: 2026-07-29
@@ -93,7 +93,22 @@
 
 ## 解決方法
 
-1. `append_sample` で `next_position` の `checked_add` を `MixedSampleEntries` チェックの直後・`ensure_track_entry()` 呼び出しの前に移動し、結果をローカル変数に保持する
-2. `self.tracks` への push をすべて成功確定後に行い、末尾で `self.next_position` / `self.last_sample_kind` を更新する
-3. `Overflow` 経路を検証するテストを新規に追加する。既存の `test_append_sample_error_keeps_muxer_state` は `#[cfg(target_pointer_width = "64")]` 付きで `EncodeError` 経路専用のためそのまま維持し、`Overflow` は 32-bit でも到達可能なので `cfg` を付けない別テストにする。テストは通常サンプルを 1 つ登録したうえで `advance_position()` により次の書き込み位置を `u64::MAX` 付近まで進め、オーバーフローする `data_size` で `Overflow` を発生させ、その時点で状態が変わっていないことを確認したあと、同じ `data_offset` かつ収まる `data_size` で再投入し、`finalize()` 後の `stsz` エントリ数から二重登録が無いことを検証する
-4. `append_sample` の doc の「# エラー返却時の内部状態」節を更新し、`Overflow` を不変側の列挙に統合する
+`feature/fix-append-sample-overflow-state` ブランチで対応した。
+
+### 実施内容
+
+- `append_sample` で `next_position` の `checked_add` を `MixedSampleEntries` チェックの直後・`ensure_track_entry()` 呼び出しの前に移し、加算結果をローカル変数に保持してから `self.tracks` へ push するようにした
+- `Overflow` 直後に `tracks` / `chunks` / `samples` が増えていないことと、収まる `data_size` での再投入後に `stsz` が二重登録されないことを検証するテストを追加した
+- 既存トラックの `timescale` 不一致と `Overflow` が同時に成立するとき `Overflow` が先に返る回帰テストを追加した
+- `append_sample` の「エラー返却時の内部状態」doc を、エラー時は状態不変で再呼び出し可能である旨に簡潔化した
+- `CHANGES.md` の `## develop` に `[FIX]` を追記した（病理的入力での優先順位変化も同一エントリ内に注記）
+
+### 計画から外れた点
+
+- issue 文面ではエラー種別を列挙して「全エラー種別で不変」と書く想定だったが、修正後は種別ごとの例外が無くなったため、状態不変と再呼び出し可能性だけを書く形にした
+- `Sample::timescale` の doc に Overflow 優先の補足を書く案は採らなかった（フィールドの本来の契約は `TimescaleMismatch` であり、病理的同時成立は CHANGES と回帰テストで足りる）
+
+### 検証
+
+- `cargo fmt` / `cargo clippy -D warnings` / 関連単体テストが通ることを確認した
+- `/review-diff-code` の重要指摘（expect 日本語化、優先順位回帰、CHANGES 文言、中間状態アサート、doc 簡潔化）を反映した

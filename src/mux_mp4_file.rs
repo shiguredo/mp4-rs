@@ -551,17 +551,8 @@ impl Mp4FileMuxer {
     ///
     /// # エラー返却時の内部状態
     ///
-    /// エラー種別ごとに `self` に残る副作用は以下:
-    ///
-    /// - [`MuxError::AlreadyFinalized`] / [`MuxError::PositionMismatch`] /
-    ///   [`MuxError::EncodeError`]（`data_size` の `u32::MAX` 超過）/
-    ///   [`MuxError::MissingSampleEntry`] / [`MuxError::MixedSampleEntries`] /
-    ///   [`MuxError::TimescaleMismatch`]:
-    ///   内部状態は完全に不変となる。呼び出し側は内容を補正したサンプルで再呼び出しできる
-    /// - [`MuxError::Overflow`]（次の書き込み位置の加算オーバーフロー）:
-    ///   このサンプルの登録は完了した状態で残り、次の書き込み位置だけが未更新となる。
-    ///   同じサンプルで再呼び出しすると二重に登録されるため、
-    ///   このエラーを受け取った [`Mp4FileMuxer`] は復旧できないものとして破棄すること
+    /// エラーを返した場合も内部状態は変わらない。
+    /// 呼び出し側は内容を補正したうえで再呼び出しできる。
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
@@ -623,8 +614,16 @@ impl Mp4FileMuxer {
             });
         }
 
+        // tracks への副作用より先に Overflow を確定させ、エラー時に内部状態を不変に保つ
+        let next_position = self
+            .next_position
+            .checked_add(sample.data_size as u64)
+            .ok_or(MuxError::Overflow)?;
+
         // サンプルエントリーの解決を先に済ませてから ensure_track_entry を呼ぶことで
-        // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ
+        // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ。
+        // ここより後に ? 付きの失敗経路を足すと、TrackEntry push 後にエラー返却できてしまい
+        // 「エラー時は内部状態不変」の契約が壊れる
         let track_index = self.ensure_track_entry(sample.track_kind, sample.timescale)?;
 
         if let Some(sample_entry) = resolved_sample_entry {
@@ -642,10 +641,7 @@ impl Mp4FileMuxer {
             .samples
             .push(metadata);
 
-        self.next_position = self
-            .next_position
-            .checked_add(sample.data_size as u64)
-            .ok_or(MuxError::Overflow)?;
+        self.next_position = next_position;
         self.last_sample_kind = Some(sample.track_kind);
         Ok(())
     }
@@ -1245,7 +1241,7 @@ mod tests {
         Uint,
         boxes::{
             AudioSampleEntryFields, Avc1Box, AvccBox, BoxRecord, DopsBox, FtabBox, OpusBox,
-            StppBox, StyleRecord, Tx3gBox, VisualSampleEntryFields,
+            StppBox, StszBox, StyleRecord, Tx3gBox, VisualSampleEntryFields,
         },
     };
 
@@ -1563,6 +1559,147 @@ mod tests {
             .append_sample(&good_sample)
             .expect("failed to append sample after error");
         muxer.finalize().expect("failed to finalize muxer");
+    }
+
+    /// Overflow 後も内部状態が不変で、収まる data_size なら再投入できることを検証するテスト
+    ///
+    /// advance_position で次の書き込み位置を u64::MAX 付近まで進め、
+    /// Overflow を起こしたあとに同じ data_offset かつ収まる data_size で再投入する。
+    /// Overflow 直後に tracks / chunk / sample 数が増えていないことと、
+    /// finalize 後の stsz エントリ数が先行サンプル + 1 であることを確認し、二重登録が無いことを示す。
+    #[test]
+    fn test_append_sample_overflow_keeps_muxer_state() {
+        let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::MIN.saturating_add(30 - 1);
+        let first_size = 1024usize;
+
+        let first_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale,
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: first_size,
+        };
+        muxer
+            .append_sample(&first_sample)
+            .expect("最初のサンプルの追加に失敗した");
+
+        let overflow_offset = u64::MAX - 10;
+        let after_first = initial_size + first_size as u64;
+        muxer
+            .advance_position(overflow_offset - after_first)
+            .expect("書き込み位置の前進に失敗した");
+
+        // data_size = 100 では overflow_offset + 100 が u64::MAX を超える
+        let overflowing_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: None,
+            keyframe: false,
+            timescale,
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: overflow_offset,
+            data_size: 100,
+        };
+        let err = muxer
+            .append_sample(&overflowing_sample)
+            .expect_err("オーバーフローする data_size ではエラーが返るべき");
+        assert!(matches!(err, MuxError::Overflow), "予期しないエラー: {err}");
+
+        // Overflow 直後に tracks / chunk / sample が増えていないことを直接確認する
+        // （finalize 後の stsz だけでなく、中間状態の残留も回帰として捕まえる）
+        assert_eq!(muxer.tracks.len(), 1, "Overflow で TrackEntry が増えている");
+        assert_eq!(
+            muxer.tracks[0].chunks.len(),
+            1,
+            "Overflow で Chunk が増えている"
+        );
+        assert_eq!(
+            muxer.tracks[0].chunks[0].samples.len(),
+            1,
+            "Overflow で sample metadata が増えている"
+        );
+
+        let fitting_size = 5usize;
+        let fitting_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: None,
+            keyframe: false,
+            timescale,
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: overflow_offset,
+            data_size: fitting_size,
+        };
+        muxer
+            .append_sample(&fitting_sample)
+            .expect("Overflow 後の再投入に失敗した");
+
+        let finalized = muxer.finalize().expect("finalize に失敗した");
+        let stsz_box = &finalized.moov_box().trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box
+            .stsz_box;
+        let StszBox::Variable { entry_sizes } = stsz_box else {
+            panic!("stsz は Variable であるべき");
+        };
+        assert_eq!(
+            entry_sizes.as_slice(),
+            &[first_size as u32, fitting_size as u32],
+            "Overflow 後の再投入で二重登録が起きている"
+        );
+    }
+
+    /// timescale 不一致と Overflow が同時に成立するとき Overflow が先に返ることを検証するテスト
+    #[test]
+    fn test_append_sample_overflow_before_timescale_mismatch() {
+        let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");
+        let initial_size = muxer.initial_boxes_bytes().len() as u64;
+        let first_size = 1024usize;
+
+        let first_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry()),
+            keyframe: true,
+            timescale: NonZeroU32::MIN.saturating_add(30 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: initial_size,
+            data_size: first_size,
+        };
+        muxer
+            .append_sample(&first_sample)
+            .expect("最初のサンプルの追加に失敗した");
+
+        let overflow_offset = u64::MAX - 10;
+        let after_first = initial_size + first_size as u64;
+        muxer
+            .advance_position(overflow_offset - after_first)
+            .expect("書き込み位置の前進に失敗した");
+
+        // timescale 不一致かつ加算オーバーフローする入力
+        let conflicting_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: None,
+            keyframe: false,
+            timescale: NonZeroU32::MIN.saturating_add(60 - 1),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset: overflow_offset,
+            data_size: 100,
+        };
+        let err = muxer
+            .append_sample(&conflicting_sample)
+            .expect_err("エラーが返るべき");
+        assert!(
+            matches!(err, MuxError::Overflow),
+            "TimescaleMismatch より Overflow が先に返るべき: {err}"
+        );
     }
 
     /// `muxer` に解像度 `width` x `height` の AVC1 サンプルを 1 つ追加して `finalize()` を呼ぶ

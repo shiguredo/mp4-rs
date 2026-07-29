@@ -33,8 +33,8 @@ use c_api::fmp4_segment_mux::Fmp4SegmentMuxer;
 
 /// `Mp4SampleEntry` を所有し、Drop 時に内部ポインタごと `mp4_sample_entry_free` で解放する
 ///
-/// `Box<Mp4SampleEntry>` の通常 Drop では構造体本体しか解放されず、
-/// `mp4_alloc` で確保した SPS/PPS 等がリークするため、所有をこの型に載せる。
+/// `Mp4SampleEntry` 本体の Drop は `mp4_alloc` で確保した各 kind の可変長データ
+/// (SPS/PPS/NALU 配列など) を解放しないため、その所有権を必ずこの型に載せる必要がある。
 struct OwnedMp4SampleEntry {
     entry: Option<Mp4SampleEntry>,
 }
@@ -55,8 +55,8 @@ impl OwnedMp4SampleEntry {
 
 impl Drop for OwnedMp4SampleEntry {
     fn drop(&mut self) {
-        // `mp4_sample_entry_free` は内部ポインタ解放のあと `Box::from_raw` で本体も消費する。
-        // ここでは `into_raw` で所有権を渡し、ラッパ側で本体を再 Drop しない。
+        // `mp4_sample_entry_free` は渡した raw pointer を `Box::from_raw` で消費する契約。
+        // `Box::into_raw` で所有権を移し、ラッパ側で本体を二重 Drop しない
         if let Some(entry) = self.entry.take() {
             unsafe {
                 crate::boxes::mp4_sample_entry_free(Box::into_raw(Box::new(entry)));
@@ -242,7 +242,7 @@ fn write_segment_impl(
             // 実際の payload 配置順が確定した後で上書きする。
             data_offset: 0,
             data_size: u32::try_from(meta.data_size)
-                .expect("data_size exceeds u32::MAX; validated by parse_json_sample_metas"),
+                .expect("data_size fits in u32 because it is bounded by sample_data_len: u32"),
         });
         data_offset = end;
     }
@@ -409,8 +409,6 @@ mod tests {
     }
 
     /// data_size 不正で早期 return してもパニックしないこと
-    ///
-    /// ループ前 take により、未 push / 残余の sample_entry もラッパ側に載ったまま Drop される。
     #[test]
     fn test_write_segment_oversized_data_size_returns_null_without_panic() {
         let muxer = unsafe { c_api::fmp4_segment_mux::fmp4_segment_muxer_new() };

@@ -55,7 +55,7 @@
   - ただし同一 `trun` 内に負値と `> i32::MAX` の値が混在する場合は encode 時に `invalid_input` エラーとなる
   - @sile
 - [CHANGE] `SttsBox::from_sample_deltas()` の戻り値を `Result<SttsBox, Error>` に変更する
-  - これまでは同一 `sample_delta` が連続して `u32::MAX` 回を超えると debug ビルドで panic、release ビルドで silent に wrap して不正な `stts` を出力していたのを、代わりに `InvalidData` を返すようにする
+  - 同一 `sample_delta` が連続して `u32::MAX` 回を超える異常な入力（通常のメディアでは到達しない境界）で、これまでは panic または不正な `stts` を出力していたのを、代わりに `InvalidData` を返すようにする
   - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ

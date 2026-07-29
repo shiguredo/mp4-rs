@@ -2034,10 +2034,10 @@ impl SttsBox {
 
     /// 連続する同一 `sample_delta` を run-length 集約しながら 1 サンプル分を追加する
     ///
-    /// 同一の `sample_delta` が連続して [`u32::MAX`] 回を超えると overflow として [`Err`] を返す。
-    ///
-    /// [`u32::MAX`] 近傍の境界を現実的なコストで単体検証するため、集約ロジックをここに切り出している
-    ///（公開 API だけで同一 delta を [`u32::MAX`] + 1 回走査するのは現実的でない）。
+    /// 末尾エントリの `sample_delta` が引数と一致する場合は末尾の `sample_count` を 1 加算し、
+    /// 一致しない場合は `sample_count = 1` の新規エントリーを追加する。
+    /// `sample_count` が [`u32::MAX`] に達している状態でさらに加算しようとすると
+    /// オーバーフローとして [`Err`] を返す。
     fn push_sample_delta(entries: &mut Vec<SttsEntry>, sample_delta: u32) -> Result<()> {
         if let Some(last) = entries.last_mut()
             && last.sample_delta == sample_delta

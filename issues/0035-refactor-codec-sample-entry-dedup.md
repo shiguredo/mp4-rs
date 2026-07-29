@@ -5,7 +5,7 @@
 - Completed: YYYY-MM-DD
 - Model: qwen3.8-max-preview
 - Branch: feature/refactor-codec-sample-entry-dedup
-- Polished: 2026-07-20
+- Polished: 2026-07-29
 
 ## 目的
 

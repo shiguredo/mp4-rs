@@ -8,6 +8,6 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-futures = "0.3.30"
-nojson = "0.3.10"
+futures = "0.3"
+nojson = "0.3"
 shiguredo_mp4 = { "path" = "../../" }

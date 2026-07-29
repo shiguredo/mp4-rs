@@ -2119,10 +2119,11 @@ mod stts_box_tests {
     use super::*;
     use crate::ErrorKind;
 
-    /// 連続する同一 `sample_delta` が run-length 集約されること
+    /// 連続する同一 `sample_delta` は run-length 集約され、
+    /// 非隣接に再登場した同一 `sample_delta` は別エントリーになること
     #[test]
     fn from_sample_deltas_aggregates_identical_deltas() {
-        let stts = SttsBox::from_sample_deltas([10, 10, 10, 20, 20, 1])
+        let stts = SttsBox::from_sample_deltas([10, 10, 10, 20, 20, 10, 1])
             .expect("正常系入力で overflow しない");
         assert_eq!(
             stts.entries,
@@ -2135,6 +2136,11 @@ mod stts_box_tests {
                     sample_count: 2,
                     sample_delta: 20,
                 },
+                // 非隣接で同じ 10 が再登場した場合は run-length を跨がず別エントリーになる
+                SttsEntry {
+                    sample_count: 1,
+                    sample_delta: 10,
+                },
                 SttsEntry {
                     sample_count: 1,
                     sample_delta: 1,
@@ -2146,9 +2152,10 @@ mod stts_box_tests {
     /// `sample_count` がちょうど [`u32::MAX`] まで積めること
     #[test]
     fn push_sample_delta_accepts_u32_max_count() {
-        let mut entries = Vec::new();
-        SttsBox::push_sample_delta(&mut entries, 7).expect("最初の 1 件は成功する");
-        entries[0].sample_count = u32::MAX - 1;
+        let mut entries = Vec::from([SttsEntry {
+            sample_count: u32::MAX - 1,
+            sample_delta: 7,
+        }]);
         SttsBox::push_sample_delta(&mut entries, 7).expect("u32::MAX まで加算できる");
         assert_eq!(
             entries,

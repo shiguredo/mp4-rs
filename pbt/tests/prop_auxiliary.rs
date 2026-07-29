@@ -411,7 +411,8 @@ mod timestamp_tests {
             stsd_box: StsdBox {
                 entries: vec![dummy_sample_entry()],
             },
-            stts_box: SttsBox::from_sample_deltas(sample_durations),
+            stts_box: SttsBox::from_sample_deltas(sample_durations)
+                .expect("短い正常系入力で sample_count が溢れることはない"),
             stsc_box: StscBox {
                 entries: vec![StscEntry {
                     first_chunk: nz(1),

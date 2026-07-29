@@ -613,7 +613,8 @@ mod tests {
                     payload: Vec::new(),
                 })],
             },
-            stts_box: SttsBox::from_sample_deltas(sample_durations),
+            stts_box: SttsBox::from_sample_deltas(sample_durations)
+                .expect("短い正常系入力で sample_count が溢れることはない"),
             stsc_box: StscBox {
                 entries: [(index(1), 2, index(1)), (index(3), 3, index(1))]
                     .into_iter()

@@ -684,7 +684,9 @@ impl Fmp4SegmentMuxer {
             stsd_box: StsdBox {
                 entries: entry.sample_entries.clone(),
             },
-            stts_box: SttsBox::from_sample_deltas(core::iter::empty()),
+            stts_box: SttsBox {
+                entries: Vec::new(),
+            },
             ctts_box: None,
             cslg_box: None,
             stsc_box: StscBox { entries: vec![] },

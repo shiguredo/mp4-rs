@@ -120,7 +120,8 @@ proptest! {
     /// SttsBox::from_sample_deltas の不変条件: 連続する同じ delta は集約される
     #[test]
     fn stts_from_sample_deltas_invariant(deltas in prop::collection::vec(any::<u32>(), 0..100)) {
-        let stts = SttsBox::from_sample_deltas(deltas.iter().cloned());
+        let stts = SttsBox::from_sample_deltas(deltas.iter().cloned())
+            .expect("100 件以下の入力で sample_count が溢れることはない");
 
         // 隣接エントリは異なる sample_delta を持つ
         for window in stts.entries.windows(2) {

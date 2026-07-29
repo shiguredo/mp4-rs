@@ -1024,7 +1024,7 @@ impl Mp4FileMuxer {
             chunks
                 .iter()
                 .flat_map(|c| c.samples.iter().map(|s| s.duration)),
-        );
+        )?;
         let ctts_box = build_ctts_box(chunks)?;
 
         let stsc_box = StscBox {

@@ -99,7 +99,7 @@ pub fn parse_json_mp4_sample_entry_XXX(
 - いずれの関数も、最初の `allocate_and_copy_*` より後段に `?` を伴う JSON 抽出が残っていないことを確認した
 - コメント表記を日本語に揃え、hev1 / hvc1 / tx3g の見出しコメントを補った
 - 可変長フィールドは揃えて後段スカラーだけ欠落させた不正 JSON で `Err` になる回帰テストを 7 関数それぞれに追加した
-- `CHANGES.md` の `### misc` に `[UPDATE]` を追記した（タイトルはユーザ影響側、実施内容はサブリスト）
+- `CHANGES.md` に `[FIX]` を追記した（タイトルはユーザ影響側、実施内容はサブリスト）
 - `boxes_stpp.rs` / `boxes_wvtt.rs` は対象外のまま変更していない
 
 ### 検証
@@ -109,4 +109,4 @@ pub fn parse_json_mp4_sample_entry_XXX(
 
 ## CHANGES.md
 
-`[UPDATE]` として記載する。挙動変化はない（正常経路の結果は同一）ため `[FIX]` ではなく `[UPDATE]` が妥当。
+`[FIX]` として記載する。パース途中失敗時のリークはバグ修正として扱う。

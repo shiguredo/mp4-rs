@@ -972,7 +972,6 @@ impl Mp4SampleEntryHev1 {
     }
 
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // `hev1` / `hvc1` はフィールド構成が同一のため、共通ヘルパーに委譲する
         let raw = self.to_raw();
         let nalu_arrays = build_hvcc_nalu_arrays(&raw)?;
         let hvcc_box = build_hvcc_box(&raw, nalu_arrays);
@@ -1088,7 +1087,6 @@ impl Mp4SampleEntryHvc1 {
     }
 
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // `hev1` / `hvc1` はフィールド構成が同一のため、共通ヘルパーに委譲する
         let raw = self.to_raw();
         let nalu_arrays = build_hvcc_nalu_arrays(&raw)?;
         let hvcc_box = build_hvcc_box(&raw, nalu_arrays);
@@ -1377,8 +1375,8 @@ fn build_hvcc_nalu_arrays(
         return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
     }
 
-    // SAFETY: 呼び出し側は `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の
-    // null 契約を満たすポインタを渡している。上記の明示検査後にのみ参照する
+    // SAFETY: null ポインタは本関数で検査済み。残る前提は、C 側が宣言した
+    // 要素数分の有効なメモリ領域（適切な長さ・アライメント）を指していること
     unsafe {
         for i in 0..raw.nalu_array_count as usize {
             let nalu_type = *raw.nalu_types.add(i);
@@ -1392,7 +1390,6 @@ fn build_hvcc_nalu_arrays(
             }
 
             // 指定配列までの NALU 数合計 + 配列内インデックスを平坦インデックスにする
-            // （旧 `nalu_data_index` 相当。両 impl から消すためにここにインライン展開する）
             let mut flat_base = 0;
             for prev in 0..i {
                 flat_base += *raw.nalu_counts.add(prev) as usize;

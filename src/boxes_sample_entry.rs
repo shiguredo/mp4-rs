@@ -602,7 +602,6 @@ impl Hev1Box {
 
 impl Encode for Hev1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
         encode_hevc_sample_entry(
             buf,
             Self::TYPE,
@@ -615,7 +614,6 @@ impl Encode for Hev1Box {
 
 impl Decode for Hev1Box {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
         let (visual, hvcc_box, unknown_boxes, size) =
             decode_hevc_sample_entry(buf, Self::TYPE, "hev1")?;
         Ok((
@@ -665,7 +663,6 @@ impl Hvc1Box {
 
 impl Encode for Hvc1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
         encode_hevc_sample_entry(
             buf,
             Self::TYPE,
@@ -678,7 +675,6 @@ impl Encode for Hvc1Box {
 
 impl Decode for Hvc1Box {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        // `hev1` / `hvc1` は ISO/IEC 14496-15 上で内部構造が同一のため、共通ヘルパーに委譲する
         let (visual, hvcc_box, unknown_boxes, size) =
             decode_hevc_sample_entry(buf, Self::TYPE, "hvc1")?;
         Ok((

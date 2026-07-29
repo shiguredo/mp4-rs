@@ -86,6 +86,11 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `Mp4FileMuxer::append_sample()` が `MuxError::Overflow` を返したあとも内部状態を不変に保つようにする
+  - これまでは `self.tracks` への登録が残ったまま次の書き込み位置だけが未更新になり、同じ `data_offset` で再投入するとサンプルが二重登録されていた
+  - `next_position` の加算オーバーフロー検査を `self.tracks` への副作用より前に移し、全エラー種別で内部状態が不変になるようにした
+  - 既存トラックの `timescale` 不一致とオーバーフローが同時に成立する病理的入力では、返るエラーが `TimescaleMismatch` から `Overflow` に変わる
+  - @sile
 - [FIX] c-api の `Mp4SampleEntryAvc1` / `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` で配列ベースポインタが null の場合に未定義動作ではなくエラーを返すようにする
   - `avc1` では `sps_count > 0` で `sps_sizes` が null、`pps_count > 0` で `pps_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
   - `hev1` / `hvc1` では `nalu_array_count > 0` で `nalu_types` / `nalu_counts` が null のとき、および `nalu_counts[i] > 0` となる各 i について `nalu_data` / `nalu_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す

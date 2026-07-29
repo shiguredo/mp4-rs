@@ -324,18 +324,21 @@ fn arb_tfra_box() -> impl Strategy<Value = TfraBox> {
             let max_traf = max_of(l_traf);
             let max_trun = max_of(l_trun);
             let max_sample = max_of(l_sample);
-            let max_time = if version == 0 {
-                u32::MAX as u64
-            } else {
-                u64::MAX
-            };
-            let max_moof_offset = if version == 0 {
+            // time と moof_offset は同じ制約に従う（version = 0 のとき u32 範囲、
+            // version = 1 のとき u64 全域）
+            let max_time_and_moof_offset = if version == 0 {
                 u32::MAX as u64
             } else {
                 u64::MAX
             };
             prop::collection::vec(
-                arb_tfra_entry(max_traf, max_trun, max_sample, max_time, max_moof_offset),
+                arb_tfra_entry(
+                    max_traf,
+                    max_trun,
+                    max_sample,
+                    max_time_and_moof_offset,
+                    max_time_and_moof_offset,
+                ),
                 0..3,
             )
             .prop_map(move |entries| TfraBox {

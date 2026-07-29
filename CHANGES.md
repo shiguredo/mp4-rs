@@ -138,6 +138,10 @@
 
 ### misc
 
+- [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する
+  - ISO/IEC 14496-15 上で内部構造が同一の HEVC サンプルエントリー対について、エンコード / デコードおよび `to_sample_entry` の重複を解消する
+  - 公開 API（Rust の構造体フィールド・C ABI）は変更しない
+  - @sile
 - [UPDATE] `#[expect(missing_docs)]` を全撤廃して公開アイテムにドキュメントを付与する
   - `MvhdBox::timescale` / `MdhdBox::timescale` / `SidxBox::timescale` の doc に、それぞれのタイムスケールが何を定義するかを明記する
   - `MvhdBox::duration` / `MdhdBox::duration` / `TkhdBox::duration` / `ElstEntry::edit_duration` / `ElstEntry::media_time` の doc に、値がどの timescale 単位で表されるかを明記する（過去に `tkhd` の duration の単位を取り違える不具合を出しているための再発防止）

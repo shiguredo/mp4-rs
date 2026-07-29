@@ -40,7 +40,7 @@ pub fn parse_json_mp4_sample_entry_av01(
     // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
     // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
     let config_obus_vec: Vec<u8> = value.to_member("configObus")?.required()?.try_into()?;
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
@@ -71,7 +71,7 @@ pub fn parse_json_mp4_sample_entry_av01(
         .map(|v| v.try_into())?
         .unwrap_or(0);
 
-    // フェーズ 2: すべての parse が成功したときだけ allocate する
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (config_obus, config_obus_size) = crate::boxes::allocate_and_copy_bytes(&config_obus_vec);
 
     Ok(Mp4SampleEntryAv01 {

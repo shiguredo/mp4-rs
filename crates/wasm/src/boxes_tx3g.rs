@@ -53,10 +53,11 @@ pub fn parse_json_mp4_sample_entry_tx3g(
     // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
     // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
     let default_style = value.to_member("default_style")?.required()?;
 
-    // ftab は `{ "font_id": u16, "font_name": [u8; N] }` オブジェクトの配列
+    // ftab は `{ "font_id": u16, "font_name": [u8; N] }` オブジェクトの配列。
+    // 要素ごとに 2 値あるため一度 Vec に組んでから unzip する
     let ftab_value = value.to_member("ftab")?.required()?;
     let ftab_pairs: Vec<(u16, Vec<u8>)> = ftab_value
         .to_array()?
@@ -107,7 +108,7 @@ pub fn parse_json_mp4_sample_entry_tx3g(
         .required()?
         .try_into()?;
 
-    // フェーズ 2: すべての parse が成功したときだけ allocate する
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (ftab_font_ids, ftab_count) = crate::boxes::allocate_and_copy_u16_array(&font_ids_vec);
     let (ftab_font_name_ptrs, ftab_font_name_sizes, _) =
         crate::boxes::allocate_and_copy_array_list(&font_names_vec);

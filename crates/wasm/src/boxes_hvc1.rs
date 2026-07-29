@@ -100,7 +100,8 @@ pub fn parse_json_mp4_sample_entry_hvc1(
     // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
     // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
+    // NALU 配列を走査して nalu_types_vec / nalu_counts_vec / nalu_data_vec を構築する
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
 
     let mut nalu_types_vec = Vec::new();
@@ -124,6 +125,7 @@ pub fn parse_json_mp4_sample_entry_hvc1(
         nalu_counts_vec.push(nalu_count);
     }
 
+    // 残りのスカラーフィールド
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
     let general_profile_space: u8 = value
@@ -177,7 +179,7 @@ pub fn parse_json_mp4_sample_entry_hvc1(
         .try_into()?;
     let nalu_array_count = nalu_types_vec.len() as u32;
 
-    // フェーズ 2: すべての parse が成功したときだけ allocate する
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (nalu_types, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
         std::slice::from_raw_parts(nalu_types_vec.as_ptr(), nalu_types_vec.len())
     });

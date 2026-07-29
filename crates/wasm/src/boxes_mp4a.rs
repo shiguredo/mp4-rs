@@ -30,7 +30,7 @@ pub fn parse_json_mp4_sample_entry_mp4a(
     // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
     // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
     let dec_specific_info_vec: Vec<u8> =
         value.to_member("decSpecificInfo")?.required()?.try_into()?;
     let channel_count: u8 = value.to_member("channelCount")?.required()?.try_into()?;
@@ -40,7 +40,7 @@ pub fn parse_json_mp4_sample_entry_mp4a(
     let max_bitrate: u32 = value.to_member("maxBitrate")?.required()?.try_into()?;
     let avg_bitrate: u32 = value.to_member("avgBitrate")?.required()?.try_into()?;
 
-    // フェーズ 2: すべての parse が成功したときだけ allocate する
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (dec_specific_info, dec_specific_info_size) =
         crate::boxes::allocate_and_copy_bytes(&dec_specific_info_vec);
 

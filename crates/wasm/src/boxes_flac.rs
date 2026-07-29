@@ -27,13 +27,13 @@ pub fn parse_json_mp4_sample_entry_flac(
     // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
     // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
     let streaminfo_data_vec: Vec<u8> = value.to_member("streaminfoData")?.required()?.try_into()?;
     let channel_count: u8 = value.to_member("channelCount")?.required()?.try_into()?;
     let sample_rate: u16 = value.to_member("sampleRate")?.required()?.try_into()?;
     let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
 
-    // フェーズ 2: すべての parse が成功したときだけ allocate する
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (streaminfo_data, streaminfo_size) =
         crate::boxes::allocate_and_copy_bytes(&streaminfo_data_vec);
 

@@ -50,7 +50,7 @@ pub fn parse_json_mp4_sample_entry_avc1(
     // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
     // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
     let sps_vec: Vec<Vec<u8>> = value
         .to_member("sps")?
         .required()?
@@ -101,7 +101,7 @@ pub fn parse_json_mp4_sample_entry_avc1(
         .map(|v| v.try_into())?
         .unwrap_or(0);
 
-    // フェーズ 2: すべての parse が成功したときだけ allocate する
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (sps_data, sps_sizes, sps_count) = crate::boxes::allocate_and_copy_array_list(&sps_vec);
     let (pps_data, pps_sizes, pps_count) = crate::boxes::allocate_and_copy_array_list(&pps_vec);
 

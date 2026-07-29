@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-stts-from-sample-deltas-overflow
 - Polished: 2026-07-29
@@ -48,10 +48,15 @@ for sample_delta in sample_deltas {
 
 ## 解決方法
 
-1. `SttsBox::from_sample_deltas` のシグネチャを `Result<SttsBox, Error>` に変更する
-2. `last.sample_count += 1` を `last.sample_count = last.sample_count.checked_add(1).ok_or_else(|| Error::invalid_data("stts sample_count overflow"))?` に置き換える
-3. 呼び出し側を修正する
-   - `mux_mp4_file` / `mux_fmp4_segment`: `?` で伝播する（`MuxError` は `From<Error>` あり）
-   - `src/auxiliary.rs` のテスト / `pbt`: 正常系では overflow しない入力なので `.expect("...")` で取り出す（これらは `Result` / `MuxError` 文脈ではない。`?` ではコンパイルできない）
-   - `examples/transcode_wasm`: `map_err(|e| Error::new(e.to_string()))` で独自 `Error` に変換する
-4. 境界値テストを追加する
+- `src/boxes_moov_tree.rs` の `SttsBox::from_sample_deltas` の戻り値を `SttsBox` から `Result<SttsBox, Error>` に変更した
+- 集約ロジックを private helper `SttsBox::push_sample_delta(entries: &mut Vec<SttsEntry>, sample_delta: u32) -> Result<()>` に切り出し、`last.sample_count.checked_add(1).ok_or_else(|| Error::invalid_data("stts sample_count overflow"))?` で overflow を検出するようにした。切り出したのは、`u32::MAX` 近傍の境界を `entries` に事前状態を仕込む形で単体テストから叩けるようにするため
+- 呼び出し側を追従した
+  - `src/mux_mp4_file.rs` の `build_stbl_box`: `?` で伝播（`From<Error> for MuxError` 経由で `MuxError::EncodeError` になる）
+  - `src/mux_fmp4_segment.rs` の `build_init_trak` 相当箇所: 元は空 iter を渡していたため `SttsBox { entries: Vec::new() }` の直接構築に置換して不要な `?` を除去した（周辺の空 box 直接構築の慣習に揃えた）
+  - `examples/transcode_wasm/src/mp4.rs`: 同ファイルの他箇所と同じく `map_err(|e| Error::new(e.to_string()))` で独自 `Error` に変換
+  - `src/auxiliary.rs` のテスト・`pbt/tests/prop_auxiliary.rs`・`pbt/tests/prop_boxes.rs`: 正常系入力なので `.expect(...)` で取り出す
+- `src/boxes_moov_tree.rs` に `#[cfg(test)] mod stts_box_tests` を追加し、以下 3 テストを配置した
+  - `from_sample_deltas_aggregates_identical_deltas`: 連続同一 `sample_delta` の run-length 集約と、非隣接に再登場した同一 `sample_delta` が別エントリーになることを検証
+  - `push_sample_delta_accepts_u32_max_count`: 末尾エントリの `sample_count` が `u32::MAX - 1` の状態から 1 加算して `u32::MAX` に達するケースが成功することを検証
+  - `push_sample_delta_rejects_overflow`: 末尾エントリの `sample_count` が `u32::MAX` の状態からさらに加算すると `Err(ErrorKind::InvalidData)` を返し、失敗時に `entries` を破壊しないことを検証
+- `CHANGES.md` の `## develop` セクションに `[CHANGE]` エントリを追加した（`Result` 化と、これまで異常入力で panic または不正な `stts` を出力していた挙動を `InvalidData` に置き換えた旨を記載）

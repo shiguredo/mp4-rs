@@ -2021,9 +2021,6 @@ impl SttsBox {
     ///
     /// 同一の `sample_delta` が連続して [`u32::MAX`] 回を超える場合は
     /// [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) を返す。
-    ///
-    /// overflow 時の境界挙動は内部ヘルパーの単体テストが担う
-    ///（公開 API で同一 delta を [`u32::MAX`] + 1 回走査するのは現実的でないため）。
     pub fn from_sample_deltas<I>(sample_deltas: I) -> Result<Self>
     where
         I: IntoIterator<Item = u32>,
@@ -2147,8 +2144,6 @@ mod stts_box_tests {
     }
 
     /// `sample_count` がちょうど [`u32::MAX`] まで積めること
-    ///
-    /// overflow 契約の境界（[`u32::MAX`] ちょうどは成功）は公開 API ではなく本ヘルパーで検証する。
     #[test]
     fn push_sample_delta_accepts_u32_max_count() {
         let mut entries = Vec::new();
@@ -2165,8 +2160,6 @@ mod stts_box_tests {
     }
 
     /// `sample_count` が [`u32::MAX`] を超えると [`Err`] になること
-    ///
-    /// overflow 契約の境界（[`u32::MAX`] + 1 相当は失敗・非破壊）は公開 API ではなく本ヘルパーで検証する。
     #[test]
     fn push_sample_delta_rejects_overflow() {
         let mut entries = Vec::from([SttsEntry {

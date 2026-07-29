@@ -306,24 +306,25 @@ fn arb_tfra_entry(
 ///   `length_size = 3` なら上限 `u32::MAX`）
 fn arb_tfra_box() -> impl Strategy<Value = TfraBox> {
     (
-        any::<u32>(),                        // track_id
-        any::<bool>().prop_map(|b| b as u8), // version (0 または 1)
-        0u8..=3u8,                           // length_size_of_traf_num
-        0u8..=3u8,                           // length_size_of_trun_num
-        0u8..=3u8,                           // length_size_of_sample_num
+        any::<u32>(), // track_id
+        0u8..=1u8,    // version (0 または 1)
+        0u8..=3u8,    // length_size_of_traf_num
+        0u8..=3u8,    // length_size_of_trun_num
+        0u8..=3u8,    // length_size_of_sample_num
     )
         .prop_flat_map(|(track_id, version, l_traf, l_trun, l_sample)| {
-            // length_size に応じた上限（length_size = 3 は u32::MAX、それ以外はシフトで算出）
-            let max_of = |l: u8| -> u32 {
-                if l >= 3 {
+            // length_size に応じた u32 の上限
+            // （length_size = 3 は u32::MAX、それ以外はシフトで算出）
+            let max_value_for_length_size = |length_size: u8| -> u32 {
+                if length_size >= 3 {
                     u32::MAX
                 } else {
-                    (1u32 << (8 * (l as u32 + 1))) - 1
+                    (1u32 << (8 * (length_size as u32 + 1))) - 1
                 }
             };
-            let max_traf = max_of(l_traf);
-            let max_trun = max_of(l_trun);
-            let max_sample = max_of(l_sample);
+            let max_traf = max_value_for_length_size(l_traf);
+            let max_trun = max_value_for_length_size(l_trun);
+            let max_sample = max_value_for_length_size(l_sample);
             // time と moof_offset は同じ制約に従う（version = 0 のとき u32 範囲、
             // version = 1 のとき u64 全域）
             let max_time_and_moof_offset = if version == 0 {

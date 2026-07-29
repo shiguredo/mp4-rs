@@ -30,25 +30,29 @@ C API 層（`crates/c-api/src/boxes.rs`）にも `Mp4SampleEntryHev1` / `Mp4Samp
 
 ## 設計方針
 
-`Hev1Box` / `Hvc1Box` の struct 定義・`TYPE` 定数・trait impl の外枠は不変のまま、Encode / Decode の重複ロジックを **共通ヘルパー関数** に抽出する。マクロは使用しない（AGENTS.md / shiguredo-rust スキルの「マクロを作らないこと」規約に従う）。
+`Hev1Box` / `Hvc1Box` の struct 定義・`TYPE` 定数・trait impl の外枠は不変のまま、Encode / Decode の重複ロジックを **共通ヘルパー関数** に抽出する。マクロもトレイトも新設しない（AGENTS.md / shiguredo-rust スキルの「マクロを作らないこと」「トレイトを作らないこと」規約に従う）。
 
-「共通の内部構造体を抽出して薄いラッパーにする」という代替案は、公開 struct の `pub` フィールドが変わり後方互換性を壊すため採用しない。
+「共通の内部構造体を抽出して薄いラッパーにする」という代替案は、公開 struct の `pub` フィールドが変わり後方互換性を壊すため採用しない。「トレイト（例: `trait HevcSampleEntry`）でフィールドアクセスを抽象化する」代替案も上記規約に反するため採用しない。
 
 ### コアライブラリ側の抽出候補
 
-- `encode_hevc_sample_entry_body(buf, box_type, visual, hvcc_box, unknown_boxes) -> Result<usize>`
-- `decode_hevc_sample_entry_body(buf, expected_type) -> Result<(VisualSampleEntryFields, HvccBox, Vec<UnknownBox>, usize)>`
-  - `check_mandatory_box` に渡す親ボックス名は `expected_type` から導出する
+- `encode_hevc_sample_entry(buf, box_type, visual, hvcc_box, unknown_boxes) -> Result<usize>`
+  - box ヘッダ書き込みから `finalize_box_size` までを含む「box 全体のエンコード」を担う
+- `decode_hevc_sample_entry(buf, expected_type, parent_name) -> Result<(VisualSampleEntryFields, HvccBox, Vec<UnknownBox>, usize)>`
+  - `with_box_type` / `BoxHeader::decode_header_and_payload` / `header.box_type.expect` を含む「box 全体のデコード」を担う
+  - `check_mandatory_box` に渡す親ボックス名（`"hev1"` / `"hvc1"`）は呼び出し側から `parent_name: &str` として明示的に受け取る。`BoxType` は `as_bytes() -> &[u8]` しか提供しておらず、`&str` への導出には `core::str::from_utf8` の失敗パス処理や `unsafe` の追加、あるいは `BoxType` 側 API 追加が必要になり、いずれも本 issue のスコープを超えるため、引数で受ける方針とする
 - `BaseBox::children()` の実装は 5 行程度で共通化の効果が薄いためインラインのまま残す
 
 `Hev1Box` / `Hvc1Box` の `Encode::encode` / `Decode::decode` はそれぞれヘルパー関数への薄い委譲になる。
 
 ### C API 層の抽出候補
 
-- `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の struct 定義は `#[repr(C)]` の ABI であり不変
-- NALU 配列構築ロジックを free 関数に抽出（`nalu_data_index` は完全に同一なのでこれも free 関数化）
-- `HvccBox` 構築ロジックを共通ヘルパーに抽出
-- `to_sample_entry()` は最後の `SampleEntry` variant 生成だけを各 impl に残す
+`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` は `#[repr(C)]` の ABI であり、struct 定義自体は不変。両者は 23 個の `pub` フィールドがすべて完全同一のため、次の 2 段構えでヘルパーへ渡す。
+
+- **中間構造体**: c-api 内部（非 `#[repr(C)]`・非 `pub`）に `HevcSampleEntryRaw` 相当の中間 struct を導入する。フィールド構成は `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` と同型（数値フィールド 18 個 + `nalu_array_count: u32` + 生ポインタ 4 本 = 23 フィールド）を **生の型のまま** 保持する。生ポインタは C API 呼び出し側のメモリを指しており、有効期間は Rust の借用ではなく C 側の契約（`to_sample_entry` の呼び出しスコープ中に生存）で決まるため、ライフタイムパラメータは付けない（付けると `Copy` スカラーと生ポインタだけの構成では `unused lifetime parameter` になり、回避のための `PhantomData` は装飾的でむしろ誤解を招く）。`Uint<u8, 2, 6>` 等のラップは中間構造体では行わず、後述の `build_hvcc_box` 側で `Uint::new(...)` にラップして責務を 1 箇所に集約する。`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の各 `impl` に `fn to_raw(&self) -> HevcSampleEntryRaw` を持たせて 23 フィールドの写し替えを 1 箇所ずつ書く（この写し替えは完全同一だが、`&self` の型が異なるため実装は 2 箇所残る。フィールドが多いためこれ以上の共通化は行わない）
+- **NALU 配列構築ヘルパー**: `fn build_hvcc_nalu_arrays(raw: &HevcSampleEntryRaw) -> Result<Vec<HvccNalUintArray>, Mp4Error>` として抽出する。関数自体は safe とし、生ポインタを触る箇所は関数内部の `unsafe` ブロックに閉じ、`SAFETY:` コメントで null 契約（`crates/c-api/src/boxes.rs` の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` docstring の `# ポインタフィールドの null 契約` を参照）を文書化する。現状の `nalu_data_index` 相当のロジックはこのヘルパー内部にインライン展開し、別関数として残さない（両 `impl` から完全に消える）
+- **HvccBox 構築ヘルパー**: `fn build_hvcc_box(raw: &HevcSampleEntryRaw, nalu_arrays: Vec<HvccNalUintArray>) -> HvccBox`
+- **`to_sample_entry()`**: 既存の `self` 値渡しシグネチャは維持し、内部でまず `let raw = self.to_raw();` として `&raw` を各ヘルパーへ渡す。最後は `SampleEntry::Hev1` / `SampleEntry::Hvc1` variant を生成するだけの薄い委譲になる
 
 ### 後方互換性への影響
 

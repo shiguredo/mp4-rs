@@ -26,18 +26,31 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
 pub fn parse_json_mp4_sample_entry_mp4a(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryMp4a, nojson::JsonParseError> {
-    let dec_specific_info_value = value.to_member("decSpecificInfo")?.required()?;
-    let dec_specific_info_vec: Vec<u8> = dec_specific_info_value.try_into()?;
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    let dec_specific_info_vec: Vec<u8> =
+        value.to_member("decSpecificInfo")?.required()?.try_into()?;
+    let channel_count: u8 = value.to_member("channelCount")?.required()?.try_into()?;
+    let sample_rate: u16 = value.to_member("sampleRate")?.required()?.try_into()?;
+    let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
+    let buffer_size_db: u32 = value.to_member("bufferSizeDb")?.required()?.try_into()?;
+    let max_bitrate: u32 = value.to_member("maxBitrate")?.required()?.try_into()?;
+    let avg_bitrate: u32 = value.to_member("avgBitrate")?.required()?.try_into()?;
+
+    // フェーズ 2: すべての parse が成功したときだけ allocate する
     let (dec_specific_info, dec_specific_info_size) =
         crate::boxes::allocate_and_copy_bytes(&dec_specific_info_vec);
 
     Ok(Mp4SampleEntryMp4a {
-        channel_count: value.to_member("channelCount")?.required()?.try_into()?,
-        sample_rate: value.to_member("sampleRate")?.required()?.try_into()?,
-        sample_size: value.to_member("sampleSize")?.required()?.try_into()?,
-        buffer_size_db: value.to_member("bufferSizeDb")?.required()?.try_into()?,
-        max_bitrate: value.to_member("maxBitrate")?.required()?.try_into()?,
-        avg_bitrate: value.to_member("avgBitrate")?.required()?.try_into()?,
+        channel_count,
+        sample_rate,
+        sample_size,
+        buffer_size_db,
+        max_bitrate,
+        avg_bitrate,
         dec_specific_info,
         dec_specific_info_size,
     })

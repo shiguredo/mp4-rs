@@ -134,6 +134,10 @@
 
 ### misc
 
+- [UPDATE] WASM の `parse_json_mp4_sample_entry_*` 系関数で、JSON フィールドをすべて Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
+  - JSON パース途中で失敗したときに、既に確保した C 側バッファが `mp4_free` されずにリークする経路を構造的に消す
+  - 対象は avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g（stpp / wvtt は既に同順か経路なし）
+  - @sile
 - [UPDATE] `#[expect(missing_docs)]` を全撤廃して公開アイテムにドキュメントを付与する
   - `MvhdBox::timescale` / `MdhdBox::timescale` / `SidxBox::timescale` の doc に、それぞれのタイムスケールが何を定義するかを明記する
   - `MvhdBox::duration` / `MdhdBox::duration` / `TkhdBox::duration` / `ElstEntry::edit_duration` / `ElstEntry::media_time` の doc に、値がどの timescale 単位で表されるかを明記する（過去に `tkhd` の duration の単位を取り違える不具合を出しているための再発防止）

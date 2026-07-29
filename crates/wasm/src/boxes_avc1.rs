@@ -46,70 +46,84 @@ pub fn fmt_json_mp4_sample_entry_avc1(
 pub fn parse_json_mp4_sample_entry_avc1(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryAvc1, nojson::JsonParseError> {
-    // SPS データを解析
-    let sps_value = value.to_member("sps")?.required()?;
-    let sps_vec: Vec<Vec<u8>> = sps_value
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    let sps_vec: Vec<Vec<u8>> = value
+        .to_member("sps")?
+        .required()?
         .to_array()?
         .map(|v| v.try_into())
         .collect::<Result<_, _>>()?;
+    let pps_vec: Vec<Vec<u8>> = value
+        .to_member("pps")?
+        .required()?
+        .to_array()?
+        .map(|v| v.try_into())
+        .collect::<Result<_, _>>()?;
+    let width: u16 = value.to_member("width")?.required()?.try_into()?;
+    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let avc_profile_indication: u8 = value
+        .to_member("avcProfileIndication")?
+        .required()?
+        .try_into()?;
+    let profile_compatibility: u8 = value
+        .to_member("profileCompatibility")?
+        .required()?
+        .try_into()?;
+    let avc_level_indication: u8 = value
+        .to_member("avcLevelIndication")?
+        .required()?
+        .try_into()?;
+    let length_size_minus_one: u8 = value
+        .to_member("lengthSizeMinusOne")?
+        .required()?
+        .try_into()?;
+    let is_chroma_format_present = value.to_member("chromaFormat")?.optional().is_some();
+    let chroma_format: u8 = value
+        .to_member("chromaFormat")?
+        .map(|v| v.try_into())?
+        .unwrap_or(0);
+    let is_bit_depth_luma_minus8_present =
+        value.to_member("bitDepthLumaMinus8")?.optional().is_some();
+    let bit_depth_luma_minus8: u8 = value
+        .to_member("bitDepthLumaMinus8")?
+        .map(|v| v.try_into())?
+        .unwrap_or(0);
+    let is_bit_depth_chroma_minus8_present = value
+        .to_member("bitDepthChromaMinus8")?
+        .optional()
+        .is_some();
+    let bit_depth_chroma_minus8: u8 = value
+        .to_member("bitDepthChromaMinus8")?
+        .map(|v| v.try_into())?
+        .unwrap_or(0);
 
+    // フェーズ 2: すべての parse が成功したときだけ allocate する
     let (sps_data, sps_sizes, sps_count) = crate::boxes::allocate_and_copy_array_list(&sps_vec);
-
-    // PPS データを解析
-    let pps_value = value.to_member("pps")?.required()?;
-    let pps_vec: Vec<Vec<u8>> = pps_value
-        .to_array()?
-        .map(|v| v.try_into())
-        .collect::<Result<_, _>>()?;
-
     let (pps_data, pps_sizes, pps_count) = crate::boxes::allocate_and_copy_array_list(&pps_vec);
 
     Ok(Mp4SampleEntryAvc1 {
-        width: value.to_member("width")?.required()?.try_into()?,
-        height: value.to_member("height")?.required()?.try_into()?,
-        avc_profile_indication: value
-            .to_member("avcProfileIndication")?
-            .required()?
-            .try_into()?,
-        profile_compatibility: value
-            .to_member("profileCompatibility")?
-            .required()?
-            .try_into()?,
-        avc_level_indication: value
-            .to_member("avcLevelIndication")?
-            .required()?
-            .try_into()?,
-        length_size_minus_one: value
-            .to_member("lengthSizeMinusOne")?
-            .required()?
-            .try_into()?,
+        width,
+        height,
+        avc_profile_indication,
+        profile_compatibility,
+        avc_level_indication,
+        length_size_minus_one,
         sps_data,
         sps_sizes,
         sps_count,
         pps_data,
         pps_sizes,
         pps_count,
-        is_chroma_format_present: value.to_member("chromaFormat")?.optional().is_some(),
-        chroma_format: value
-            .to_member("chromaFormat")?
-            .map(|v| v.try_into())?
-            .unwrap_or(0),
-        is_bit_depth_luma_minus8_present: value
-            .to_member("bitDepthLumaMinus8")?
-            .optional()
-            .is_some(),
-        bit_depth_luma_minus8: value
-            .to_member("bitDepthLumaMinus8")?
-            .map(|v| v.try_into())?
-            .unwrap_or(0),
-        is_bit_depth_chroma_minus8_present: value
-            .to_member("bitDepthChromaMinus8")?
-            .optional()
-            .is_some(),
-        bit_depth_chroma_minus8: value
-            .to_member("bitDepthChromaMinus8")?
-            .map(|v| v.try_into())?
-            .unwrap_or(0),
+        is_chroma_format_present,
+        chroma_format,
+        is_bit_depth_luma_minus8_present,
+        bit_depth_luma_minus8,
+        is_bit_depth_chroma_minus8_present,
+        bit_depth_chroma_minus8,
     })
 }
 

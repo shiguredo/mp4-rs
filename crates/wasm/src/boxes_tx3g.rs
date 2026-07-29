@@ -49,11 +49,14 @@ pub fn fmt_json_mp4_sample_entry_tx3g(
 pub fn parse_json_mp4_sample_entry_tx3g(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryTx3g, nojson::JsonParseError> {
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
     let default_style = value.to_member("default_style")?.required()?;
 
-    // ftab は `{ "font_id": u16, "font_name": [u8; N] }` オブジェクトの配列。
-    // 部分失敗時のメモリリークを避けるため、先に `Vec<u16>` / `Vec<Vec<u8>>` を組み上げてから
-    // まとめて allocate する
+    // ftab は `{ "font_id": u16, "font_name": [u8; N] }` オブジェクトの配列
     let ftab_value = value.to_member("ftab")?.required()?;
     let ftab_pairs: Vec<(u16, Vec<u8>)> = ftab_value
         .to_array()?
@@ -63,52 +66,64 @@ pub fn parse_json_mp4_sample_entry_tx3g(
             Ok((font_id, font_name))
         })
         .collect::<Result<_, nojson::JsonParseError>>()?;
-
     let (font_ids_vec, font_names_vec): (Vec<u16>, Vec<Vec<u8>>) = ftab_pairs.into_iter().unzip();
 
+    let display_flags: u32 = value.to_member("display_flags")?.required()?.try_into()?;
+    let horizontal_justification: i8 = value
+        .to_member("horizontal_justification")?
+        .required()?
+        .try_into()?;
+    let vertical_justification: i8 = value
+        .to_member("vertical_justification")?
+        .required()?
+        .try_into()?;
+    let background_color_rgba: [u8; 4] = value
+        .to_member("background_color_rgba")?
+        .required()?
+        .try_into()?;
+    let default_text_box: [i16; 4] = value
+        .to_member("default_text_box")?
+        .required()?
+        .try_into()?;
+    let default_style_start_char: u16 = default_style
+        .to_member("start_char")?
+        .required()?
+        .try_into()?;
+    let default_style_end_char: u16 = default_style
+        .to_member("end_char")?
+        .required()?
+        .try_into()?;
+    let default_style_font_id: u16 = default_style.to_member("font_id")?.required()?.try_into()?;
+    let default_style_face_style_flags: u8 = default_style
+        .to_member("face_style_flags")?
+        .required()?
+        .try_into()?;
+    let default_style_font_size: u8 = default_style
+        .to_member("font_size")?
+        .required()?
+        .try_into()?;
+    let default_style_text_color_rgba: [u8; 4] = default_style
+        .to_member("text_color_rgba")?
+        .required()?
+        .try_into()?;
+
+    // フェーズ 2: すべての parse が成功したときだけ allocate する
     let (ftab_font_ids, ftab_count) = crate::boxes::allocate_and_copy_u16_array(&font_ids_vec);
     let (ftab_font_name_ptrs, ftab_font_name_sizes, _) =
         crate::boxes::allocate_and_copy_array_list(&font_names_vec);
 
     Ok(Mp4SampleEntryTx3g {
-        display_flags: value.to_member("display_flags")?.required()?.try_into()?,
-        horizontal_justification: value
-            .to_member("horizontal_justification")?
-            .required()?
-            .try_into()?,
-        vertical_justification: value
-            .to_member("vertical_justification")?
-            .required()?
-            .try_into()?,
-        background_color_rgba: value
-            .to_member("background_color_rgba")?
-            .required()?
-            .try_into()?,
-        default_text_box: value
-            .to_member("default_text_box")?
-            .required()?
-            .try_into()?,
-        default_style_start_char: default_style
-            .to_member("start_char")?
-            .required()?
-            .try_into()?,
-        default_style_end_char: default_style
-            .to_member("end_char")?
-            .required()?
-            .try_into()?,
-        default_style_font_id: default_style.to_member("font_id")?.required()?.try_into()?,
-        default_style_face_style_flags: default_style
-            .to_member("face_style_flags")?
-            .required()?
-            .try_into()?,
-        default_style_font_size: default_style
-            .to_member("font_size")?
-            .required()?
-            .try_into()?,
-        default_style_text_color_rgba: default_style
-            .to_member("text_color_rgba")?
-            .required()?
-            .try_into()?,
+        display_flags,
+        horizontal_justification,
+        vertical_justification,
+        background_color_rgba,
+        default_text_box,
+        default_style_start_char,
+        default_style_end_char,
+        default_style_font_id,
+        default_style_face_style_flags,
+        default_style_font_size,
+        default_style_text_color_rgba,
         ftab_font_ids,
         ftab_font_name_ptrs,
         ftab_font_name_sizes,

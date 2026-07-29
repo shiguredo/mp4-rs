@@ -23,15 +23,24 @@ pub fn fmt_json_mp4_sample_entry_flac(
 pub fn parse_json_mp4_sample_entry_flac(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryFlac, nojson::JsonParseError> {
-    let streaminfo_data_value = value.to_member("streaminfoData")?.required()?;
-    let streaminfo_data_vec: Vec<u8> = streaminfo_data_value.try_into()?;
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    let streaminfo_data_vec: Vec<u8> = value.to_member("streaminfoData")?.required()?.try_into()?;
+    let channel_count: u8 = value.to_member("channelCount")?.required()?.try_into()?;
+    let sample_rate: u16 = value.to_member("sampleRate")?.required()?.try_into()?;
+    let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
+
+    // フェーズ 2: すべての parse が成功したときだけ allocate する
     let (streaminfo_data, streaminfo_size) =
         crate::boxes::allocate_and_copy_bytes(&streaminfo_data_vec);
 
     Ok(Mp4SampleEntryFlac {
-        channel_count: value.to_member("channelCount")?.required()?.try_into()?,
-        sample_rate: value.to_member("sampleRate")?.required()?.try_into()?,
-        sample_size: value.to_member("sampleSize")?.required()?.try_into()?,
+        channel_count,
+        sample_rate,
+        sample_size,
         streaminfo_data,
         streaminfo_size,
     })

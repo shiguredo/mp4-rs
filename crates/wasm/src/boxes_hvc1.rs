@@ -96,7 +96,11 @@ impl nojson::DisplayJson for NaluArrays {
 pub fn parse_json_mp4_sample_entry_hvc1(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryHvc1, nojson::JsonParseError> {
-    // NALU 配列を解析
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
 
     let mut nalu_types_vec = Vec::new();
@@ -120,75 +124,91 @@ pub fn parse_json_mp4_sample_entry_hvc1(
         nalu_counts_vec.push(nalu_count);
     }
 
-    // nalu_types をメモリに割り当ててコピー
+    let width: u16 = value.to_member("width")?.required()?.try_into()?;
+    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let general_profile_space: u8 = value
+        .to_member("generalProfileSpace")?
+        .required()?
+        .try_into()?;
+    let general_tier_flag: u8 = value.to_member("generalTierFlag")?.required()?.try_into()?;
+    let general_profile_idc: u8 = value
+        .to_member("generalProfileIdc")?
+        .required()?
+        .try_into()?;
+    let general_profile_compatibility_flags: u32 = value
+        .to_member("generalProfileCompatibilityFlags")?
+        .required()?
+        .try_into()?;
+    let general_constraint_indicator_flags: u64 = value
+        .to_member("generalConstraintIndicatorFlags")?
+        .required()?
+        .try_into()?;
+    let general_level_idc: u8 = value.to_member("generalLevelIdc")?.required()?.try_into()?;
+    let chroma_format_idc: u8 = value.to_member("chromaFormatIdc")?.required()?.try_into()?;
+    let bit_depth_luma_minus8: u8 = value
+        .to_member("bitDepthLumaMinus8")?
+        .required()?
+        .try_into()?;
+    let bit_depth_chroma_minus8: u8 = value
+        .to_member("bitDepthChromaMinus8")?
+        .required()?
+        .try_into()?;
+    let min_spatial_segmentation_idc: u16 = value
+        .to_member("minSpatialSegmentationIdc")?
+        .required()?
+        .try_into()?;
+    let parallelism_type: u8 = value.to_member("parallelismType")?.required()?.try_into()?;
+    let avg_frame_rate: u16 = value.to_member("avgFrameRate")?.required()?.try_into()?;
+    let constant_frame_rate: u8 = value
+        .to_member("constantFrameRate")?
+        .required()?
+        .try_into()?;
+    let num_temporal_layers: u8 = value
+        .to_member("numTemporalLayers")?
+        .required()?
+        .try_into()?;
+    let temporal_id_nested: u8 = value
+        .to_member("temporalIdNested")?
+        .required()?
+        .try_into()?;
+    let length_size_minus_one: u8 = value
+        .to_member("lengthSizeMinusOne")?
+        .required()?
+        .try_into()?;
+    let nalu_array_count = nalu_types_vec.len() as u32;
+
+    // フェーズ 2: すべての parse が成功したときだけ allocate する
     let (nalu_types, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
         std::slice::from_raw_parts(nalu_types_vec.as_ptr(), nalu_types_vec.len())
     });
-
-    // nalu_counts をメモリに割り当ててコピー
     let (nalu_counts, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
         std::slice::from_raw_parts(
             nalu_counts_vec.as_ptr() as *const u8,
             nalu_counts_vec.len() * std::mem::size_of::<u32>(),
         )
     });
-
-    // nalu_data と nalu_sizes を割り当ててコピー
     let (nalu_data, nalu_sizes, _) = crate::boxes::allocate_and_copy_array_list(&nalu_data_vec);
 
     Ok(Mp4SampleEntryHvc1 {
-        width: value.to_member("width")?.required()?.try_into()?,
-        height: value.to_member("height")?.required()?.try_into()?,
-        general_profile_space: value
-            .to_member("generalProfileSpace")?
-            .required()?
-            .try_into()?,
-        general_tier_flag: value.to_member("generalTierFlag")?.required()?.try_into()?,
-        general_profile_idc: value
-            .to_member("generalProfileIdc")?
-            .required()?
-            .try_into()?,
-        general_profile_compatibility_flags: value
-            .to_member("generalProfileCompatibilityFlags")?
-            .required()?
-            .try_into()?,
-        general_constraint_indicator_flags: value
-            .to_member("generalConstraintIndicatorFlags")?
-            .required()?
-            .try_into()?,
-        general_level_idc: value.to_member("generalLevelIdc")?.required()?.try_into()?,
-        chroma_format_idc: value.to_member("chromaFormatIdc")?.required()?.try_into()?,
-        bit_depth_luma_minus8: value
-            .to_member("bitDepthLumaMinus8")?
-            .required()?
-            .try_into()?,
-        bit_depth_chroma_minus8: value
-            .to_member("bitDepthChromaMinus8")?
-            .required()?
-            .try_into()?,
-        min_spatial_segmentation_idc: value
-            .to_member("minSpatialSegmentationIdc")?
-            .required()?
-            .try_into()?,
-        parallelism_type: value.to_member("parallelismType")?.required()?.try_into()?,
-        avg_frame_rate: value.to_member("avgFrameRate")?.required()?.try_into()?,
-        constant_frame_rate: value
-            .to_member("constantFrameRate")?
-            .required()?
-            .try_into()?,
-        num_temporal_layers: value
-            .to_member("numTemporalLayers")?
-            .required()?
-            .try_into()?,
-        temporal_id_nested: value
-            .to_member("temporalIdNested")?
-            .required()?
-            .try_into()?,
-        length_size_minus_one: value
-            .to_member("lengthSizeMinusOne")?
-            .required()?
-            .try_into()?,
-        nalu_array_count: nalu_types_vec.len() as u32,
+        width,
+        height,
+        general_profile_space,
+        general_tier_flag,
+        general_profile_idc,
+        general_profile_compatibility_flags,
+        general_constraint_indicator_flags,
+        general_level_idc,
+        chroma_format_idc,
+        bit_depth_luma_minus8,
+        bit_depth_chroma_minus8,
+        min_spatial_segmentation_idc,
+        parallelism_type,
+        avg_frame_rate,
+        constant_frame_rate,
+        num_temporal_layers,
+        temporal_id_nested,
+        length_size_minus_one,
+        nalu_array_count,
         nalu_types,
         nalu_counts: nalu_counts as *const u32,
         nalu_data,

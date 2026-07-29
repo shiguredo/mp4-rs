@@ -36,39 +36,58 @@ pub fn fmt_json_mp4_sample_entry_av01(
 pub fn parse_json_mp4_sample_entry_av01(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryAv01, nojson::JsonParseError> {
-    let config_obus_value = value.to_member("configObus")?.required()?;
-    let config_obus_vec: Vec<u8> = config_obus_value.try_into()?;
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（allocate 前）
+    let config_obus_vec: Vec<u8> = value.to_member("configObus")?.required()?.try_into()?;
+    let width: u16 = value.to_member("width")?.required()?.try_into()?;
+    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let seq_profile: u8 = value.to_member("seqProfile")?.required()?.try_into()?;
+    let seq_level_idx_0: u8 = value.to_member("seqLevelIdx0")?.required()?.try_into()?;
+    let seq_tier_0: u8 = value.to_member("seqTier0")?.required()?.try_into()?;
+    let high_bitdepth: u8 = value.to_member("highBitdepth")?.required()?.try_into()?;
+    let twelve_bit: u8 = value.to_member("twelveBit")?.required()?.try_into()?;
+    let monochrome: u8 = value.to_member("monochrome")?.required()?.try_into()?;
+    let chroma_subsampling_x: u8 = value
+        .to_member("chromaSubsamplingX")?
+        .required()?
+        .try_into()?;
+    let chroma_subsampling_y: u8 = value
+        .to_member("chromaSubsamplingY")?
+        .required()?
+        .try_into()?;
+    let chroma_sample_position: u8 = value
+        .to_member("chromaSamplePosition")?
+        .required()?
+        .try_into()?;
+    let initial_presentation_delay_present = value
+        .to_member("initialPresentationDelayMinusOne")?
+        .optional()
+        .is_some();
+    let initial_presentation_delay_minus_one: u8 = value
+        .to_member("initialPresentationDelayMinusOne")?
+        .map(|v| v.try_into())?
+        .unwrap_or(0);
+
+    // フェーズ 2: すべての parse が成功したときだけ allocate する
     let (config_obus, config_obus_size) = crate::boxes::allocate_and_copy_bytes(&config_obus_vec);
 
     Ok(Mp4SampleEntryAv01 {
-        width: value.to_member("width")?.required()?.try_into()?,
-        height: value.to_member("height")?.required()?.try_into()?,
-        seq_profile: value.to_member("seqProfile")?.required()?.try_into()?,
-        seq_level_idx_0: value.to_member("seqLevelIdx0")?.required()?.try_into()?,
-        seq_tier_0: value.to_member("seqTier0")?.required()?.try_into()?,
-        high_bitdepth: value.to_member("highBitdepth")?.required()?.try_into()?,
-        twelve_bit: value.to_member("twelveBit")?.required()?.try_into()?,
-        monochrome: value.to_member("monochrome")?.required()?.try_into()?,
-        chroma_subsampling_x: value
-            .to_member("chromaSubsamplingX")?
-            .required()?
-            .try_into()?,
-        chroma_subsampling_y: value
-            .to_member("chromaSubsamplingY")?
-            .required()?
-            .try_into()?,
-        chroma_sample_position: value
-            .to_member("chromaSamplePosition")?
-            .required()?
-            .try_into()?,
-        initial_presentation_delay_present: value
-            .to_member("initialPresentationDelayMinusOne")?
-            .optional()
-            .is_some(),
-        initial_presentation_delay_minus_one: value
-            .to_member("initialPresentationDelayMinusOne")?
-            .map(|v| v.try_into())?
-            .unwrap_or(0),
+        width,
+        height,
+        seq_profile,
+        seq_level_idx_0,
+        seq_tier_0,
+        high_bitdepth,
+        twelve_bit,
+        monochrome,
+        chroma_subsampling_x,
+        chroma_subsampling_y,
+        chroma_sample_position,
+        initial_presentation_delay_present,
+        initial_presentation_delay_minus_one,
         config_obus,
         config_obus_size,
     })

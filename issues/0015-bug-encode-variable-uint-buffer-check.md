@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-encode-variable-uint-buffer-check
 - Polished: 2026-07-28
@@ -87,10 +87,29 @@ fn encode_variable_uint(value: u32, byte_count: u8, buf: &mut [u8]) -> Result<us
 
 ## 解決方法
 
-1. `src/boxes_fmp4.rs:1407-1428` の `encode_variable_uint` を、`match byte_count` の直前で `Error::check_buffer_size(byte_count as usize, buf)?` を呼ぶ形に書き換える。`byte_count == 4` 側の `value.encode(buf)` はそのまま残し、二重検査は許容する（設計方針参照）
-2. `tests/test_boxes_fmp4.rs` を新設し、`TfraBox::encode` に短いバッファを渡した際の `ErrorKind::InsufficientBuffer` 返却と、十分な長さのバッファでの正しい書き出しを検証する（配置と役割分担は「テストの配置」参照）
-3. `pbt/tests/prop_fmp4_boxes.rs` に `arb_tfra_box` と `tfra_box_roundtrip` PBT を追加する（既存の `arb_traf_box` / `traf_box_roundtrip` と同じ書式）
-4. `CHANGES.md` の `## develop` の `[FIX]` 群の末尾に、`- [FIX] TfraBox のエンコードでバッファ長を検査せずにパニックする問題を修正する` の趣旨のエントリと担当者行を追記する
+`feature/fix-encode-variable-uint-buffer-check` ブランチで対応した。
+
+### 実施内容
+
+- `src/boxes_fmp4.rs` の `encode_variable_uint` を、`match byte_count` の直前で `Error::check_buffer_size(byte_count as usize, buf)?` を呼ぶ形に書き換えた。`byte_count == 4` 側の `value.encode(buf)` はそのまま残し、二重検査は許容する
+- `tests/test_boxes_fmp4.rs` を新設し、3 呼び出し位置（`traf_number` / `trun_number` / `sample_number`）× `byte_count` 1〜3 の 9 ケースと `byte_count = 4` のサニティ 1 ケースの計 10 ケースで `TfraBox::encode` に短いバッファを渡した際の `ErrorKind::InsufficientBuffer` 返却を検証する
+- `pbt/tests/prop_fmp4_boxes.rs` に `arb_tfra_entry` / `arb_tfra_box` / `tfra_box_roundtrip` PBT を追加した。`arb_tfra_box` は `prop_flat_map` で `length_size_of_*` を先に決めてから各可変長フィールドの上限を絞り、`encode_variable_uint` の 3 バイトアームの truncation を回避してラウンドトリップを成立させる。version と `time` / `moof_offset` の対応も同様に整合させる
+- `CHANGES.md` の `## develop` の `[FIX]` 群の末尾にエントリと担当者行を追記した
+
+### 計画から外れた点
+
+- `encode_variable_uint` に追加したコメントから「4 バイトアームの二重検査を許容する」旨の弁明を後で削除した。`value.encode` 側の実装に依存した記述で、将来 `Encode for u32` が変わるとコメントが古くなるため
+
+### レビューを受けて追加で対応した内容
+
+- `arb_tfra_box` 内の `max_time` / `max_moof_offset` の同一分岐重複を 1 変数 `max_time_and_moof_offset` に統合した
+- `arb_tfra_box` の `max_of` クロージャを `max_value_for_length_size` に、引数名 `l` を `length_size` に改名した
+- `arb_tfra_box` の `version` 生成を `any::<bool>().prop_map(|b| b as u8)` から `0u8..=1u8` に変え、`arb_tfdt_box` の書式に揃えた
+- `pbt/tests/prop_fmp4_boxes.rs` の `boundary_tests` モジュールに `TfraBox` の境界テスト 4 件（version=0 の上限値ラウンドトリップ、`self.version = 0` からの version 自動昇格、`length_size_of_* = 0` の最小構成、`entries` が空）を追加した。既存 PBT の 100 ケースでは version 自動昇格等の端点が確率的に届かないため
+- `assert_insufficient_buffer_err` のパニックメッセージ内の `InsufficientBuffer` を backtick 引用に揃えた
+- テスト・PBT の doc コメントから冗長な記述を削除し、`shiguredo-rust` 規約引用や `PartialEq` の説明などファイル名から自明な内容を落とした
+- `tests/test_boxes_fmp4.rs` のテストコメントから「本 issue」への言及を除去した（`shiguredo-issues` の「ソースコード本体に issue 番号や issue への言及を書かない」規約に従う）
+- `pbt/tests/prop_fmp4_boxes.rs` の `arb_tfra_entry` の doc から日本語文中の「silently」を除去した（`shiguredo-rust` の日本語訳語規約に従う）
 
 ### テストの配置
 

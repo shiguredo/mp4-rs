@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: qwen3.8-max-preview
 - Branch: feature/update-test-messages-japanese
 - Polished: 2026-07-29
@@ -68,4 +68,8 @@ AGENTS.md の規約違反であり、プロジェクト全体の一貫性の観�
 
 ## 解決方法
 
-各対象ファイルの英語メッセージ引数を日本語に翻訳する。ファイル数が多い場合はファイル単位でコミットを分けてよい。
+1. `pbt/tests/` 配下 10 ファイルと `crates/c-api/tests/e2e.rs` の英語メッセージ引数（`.expect()` / `assert!` / `assert_eq!` / `prop_assert!` / `prop_assert_eq!` / `panic!`）を日本語に翻訳した（459 件）
+2. 既存の日本語メッセージ、Display / エラー文字列の期待部分文字列、`assert_eq!` / `prop_assert_eq!` の第 1・第 2 引数の比較値は変更していない
+3. もともと日本語済みの `prop_additional_boxes.rs` / `prop_codec_boxes.rs` / `prop_descriptors.rs` / `prop_fmp4_boxes.rs` / `test_boxes.rs` は対象外のまま触っていない
+4. レビュー指摘のうち、曖昧だった `.expect("失敗した")` と `.expect("不正である")` の 2 箇所を具体的な文言に直した
+5. 対象パスの英語メッセージ引数が 0 件であること、および `cargo test -p pbt` / `cargo test -p c-api --test e2e` が通ることを確認した

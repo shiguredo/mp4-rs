@@ -25,7 +25,7 @@ fn dummy_sample_entry() -> SampleEntry {
 
 /// NonZeroU32 を作成するヘルパー
 fn nz(i: u32) -> NonZeroU32 {
-    NonZeroU32::new(i).expect("invalid index")
+    NonZeroU32::new(i).expect("不正な index である")
 }
 
 // ===== エラーケースのテスト =====
@@ -72,7 +72,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::InconsistentSampleCount { .. })
             ),
-            "Expected InconsistentSampleCount error, got {:?}",
+            "InconsistentSampleCount エラーを期待したが {:?} だった",
             result
         );
     }
@@ -116,7 +116,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::InconsistentSampleCount { .. })
             ),
-            "Expected InconsistentSampleCount error, got {:?}",
+            "InconsistentSampleCount エラーを期待したが {:?} だった",
             result
         );
     }
@@ -149,7 +149,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::ChunksExistButNoSamples { .. })
             ),
-            "Expected ChunksExistButNoSamples error, got {:?}",
+            "ChunksExistButNoSamples エラーを期待したが {:?} だった",
             result
         );
     }
@@ -193,7 +193,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::FirstChunkIndexIsNotOne { .. })
             ),
-            "Expected FirstChunkIndexIsNotOne error, got {:?}",
+            "FirstChunkIndexIsNotOne エラーを期待したが {:?} だった",
             result
         );
     }
@@ -237,7 +237,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::MissingSampleEntry { .. })
             ),
-            "Expected MissingSampleEntry error, got {:?}",
+            "MissingSampleEntry エラーを期待したが {:?} だった",
             result
         );
     }
@@ -288,7 +288,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::ChunkIndicesNotMonotonicallyIncreasing)
             ),
-            "Expected ChunkIndicesNotMonotonicallyIncreasing error, got {:?}",
+            "ChunkIndicesNotMonotonicallyIncreasing エラーを期待したが {:?} だった",
             result
         );
     }
@@ -339,7 +339,7 @@ mod error_cases {
                 result,
                 Err(SampleTableAccessorError::LastChunkIndexIsTooLarge { .. })
             ),
-            "Expected LastChunkIndexIsTooLarge error, got {:?}",
+            "LastChunkIndexIsTooLarge エラーを期待したが {:?} だった",
             result
         );
     }
@@ -392,7 +392,7 @@ mod error_cases {
                     ..
                 }) if other_box_type == CttsBox::TYPE
             ),
-            "Expected InconsistentSampleCount error for ctts, got {:?}",
+            "ctts で InconsistentSampleCount エラーを期待したが {:?} だった",
             result
         );
     }
@@ -432,7 +432,7 @@ mod timestamp_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
 
         // 各サンプルの開始タイムスタンプでテスト
         // sample 1: timestamp 0-9
@@ -443,37 +443,37 @@ mod timestamp_tests {
 
         let sample = accessor
             .get_sample_by_timestamp(0)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 1);
 
         let sample = accessor
             .get_sample_by_timestamp(9)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 1);
 
         let sample = accessor
             .get_sample_by_timestamp(10)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 2);
 
         let sample = accessor
             .get_sample_by_timestamp(29)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 2);
 
         let sample = accessor
             .get_sample_by_timestamp(30)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 3);
 
         let sample = accessor
             .get_sample_by_timestamp(100)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 5);
 
         let sample = accessor
             .get_sample_by_timestamp(149)
-            .expect("sample not found");
+            .expect("sample が見つからない");
         assert_eq!(sample.index().get(), 5);
 
         // 範囲外のタイムスタンプ
@@ -514,7 +514,7 @@ mod timestamp_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         let mut count = 0;
         for (i, sample) in accessor.samples().enumerate() {
             assert_eq!(sample.index().get(), i as u32 + 1);
@@ -559,7 +559,7 @@ mod timestamp_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         assert_eq!(accessor.sample_count(), 20);
         assert_eq!(accessor.chunk_count(), 4);
     }
@@ -625,12 +625,12 @@ mod composition_time_offset_tests {
                 unknown_boxes: Vec::new(),
             };
 
-            let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+            let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
 
             for (i, expected_offset) in expected_offsets.iter().enumerate() {
                 let sample = accessor
                     .get_sample(nz(i as u32 + 1))
-                    .expect("sample not found");
+                    .expect("sample が見つからない");
                 prop_assert_eq!(sample.composition_time_offset(), Some(*expected_offset));
             }
         }
@@ -668,8 +668,8 @@ mod composition_time_offset_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
-        let sample = accessor.get_sample(nz(1)).expect("sample not found");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
+        let sample = accessor.get_sample(nz(1)).expect("sample が見つからない");
         assert_eq!(sample.composition_time_offset(), None);
     }
 }
@@ -712,11 +712,11 @@ mod co64_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         assert_eq!(accessor.sample_count(), 5);
         assert_eq!(accessor.chunk_count(), 1);
 
-        let chunk = accessor.get_chunk(nz(1)).expect("chunk not found");
+        let chunk = accessor.get_chunk(nz(1)).expect("chunk が見つからない");
         assert_eq!(chunk.offset(), 0x100000000);
     }
 }
@@ -761,43 +761,89 @@ mod sync_sample_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
 
         // サンプル 1 は同期サンプル
-        let sample1 = accessor.get_sample(nz(1)).expect("sample not found");
+        let sample1 = accessor.get_sample(nz(1)).expect("sample が見つからない");
         assert!(sample1.is_sync_sample());
-        assert_eq!(sample1.sync_sample().expect("sync sample").index().get(), 1);
+        assert_eq!(
+            sample1
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
+            1
+        );
 
         // サンプル 2 は非同期、同期サンプルは 1
-        let sample2 = accessor.get_sample(nz(2)).expect("sample not found");
+        let sample2 = accessor.get_sample(nz(2)).expect("sample が見つからない");
         assert!(!sample2.is_sync_sample());
-        assert_eq!(sample2.sync_sample().expect("sync sample").index().get(), 1);
+        assert_eq!(
+            sample2
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
+            1
+        );
 
         // サンプル 4 は非同期、同期サンプルは 1
-        let sample4 = accessor.get_sample(nz(4)).expect("sample not found");
+        let sample4 = accessor.get_sample(nz(4)).expect("sample が見つからない");
         assert!(!sample4.is_sync_sample());
-        assert_eq!(sample4.sync_sample().expect("sync sample").index().get(), 1);
+        assert_eq!(
+            sample4
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
+            1
+        );
 
         // サンプル 5 は同期サンプル
-        let sample5 = accessor.get_sample(nz(5)).expect("sample not found");
+        let sample5 = accessor.get_sample(nz(5)).expect("sample が見つからない");
         assert!(sample5.is_sync_sample());
-        assert_eq!(sample5.sync_sample().expect("sync sample").index().get(), 5);
+        assert_eq!(
+            sample5
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
+            5
+        );
 
         // サンプル 6 は非同期、同期サンプルは 5
-        let sample6 = accessor.get_sample(nz(6)).expect("sample not found");
+        let sample6 = accessor.get_sample(nz(6)).expect("sample が見つからない");
         assert!(!sample6.is_sync_sample());
-        assert_eq!(sample6.sync_sample().expect("sync sample").index().get(), 5);
+        assert_eq!(
+            sample6
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
+            5
+        );
 
         // サンプル 9 は同期サンプル
-        let sample9 = accessor.get_sample(nz(9)).expect("sample not found");
+        let sample9 = accessor.get_sample(nz(9)).expect("sample が見つからない");
         assert!(sample9.is_sync_sample());
-        assert_eq!(sample9.sync_sample().expect("sync sample").index().get(), 9);
+        assert_eq!(
+            sample9
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
+            9
+        );
 
         // サンプル 10 は非同期、同期サンプルは 9
-        let sample10 = accessor.get_sample(nz(10)).expect("sample not found");
+        let sample10 = accessor.get_sample(nz(10)).expect("sample が見つからない");
         assert!(!sample10.is_sync_sample());
         assert_eq!(
-            sample10.sync_sample().expect("sync sample").index().get(),
+            sample10
+                .sync_sample()
+                .expect("sync sample である")
+                .index()
+                .get(),
             9
         );
     }
@@ -835,12 +881,19 @@ mod sync_sample_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
 
         for i in 1..=5 {
-            let sample = accessor.get_sample(nz(i)).expect("sample not found");
+            let sample = accessor.get_sample(nz(i)).expect("sample が見つからない");
             assert!(sample.is_sync_sample());
-            assert_eq!(sample.sync_sample().expect("sync sample").index().get(), i);
+            assert_eq!(
+                sample
+                    .sync_sample()
+                    .expect("sync sample である")
+                    .index()
+                    .get(),
+                i
+            );
         }
     }
 }
@@ -871,7 +924,7 @@ mod fixed_stsz_tests {
                 }],
             },
             stsz_box: StszBox::Fixed {
-                sample_size: NonZeroU32::new(256).expect("invalid"),
+                sample_size: NonZeroU32::new(256).expect("256 は非ゼロなので失敗しない"),
                 sample_count: 5,
             },
             stco_or_co64_box: Either::A(StcoBox {
@@ -884,11 +937,11 @@ mod fixed_stsz_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         assert_eq!(accessor.sample_count(), 5);
 
         for i in 1..=5 {
-            let sample = accessor.get_sample(nz(i)).expect("sample not found");
+            let sample = accessor.get_sample(nz(i)).expect("sample が見つからない");
             assert_eq!(sample.data_size(), 256);
             assert_eq!(sample.data_offset(), 1000 + (i as u64 - 1) * 256);
         }
@@ -943,7 +996,7 @@ mod multiple_stts_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         assert_eq!(accessor.sample_count(), 7);
 
         // sample 1: duration=10, timestamp=0
@@ -965,9 +1018,16 @@ mod multiple_stts_tests {
         ];
 
         for (index, duration, timestamp) in expected {
-            let sample = accessor.get_sample(nz(index)).expect("sample not found");
-            assert_eq!(sample.duration(), duration, "sample {} duration", index);
-            assert_eq!(sample.timestamp(), timestamp, "sample {} timestamp", index);
+            let sample = accessor
+                .get_sample(nz(index))
+                .expect("sample が見つからない");
+            assert_eq!(sample.duration(), duration, "sample {} の duration", index);
+            assert_eq!(
+                sample.timestamp(),
+                timestamp,
+                "sample {} の timestamp",
+                index
+            );
         }
     }
 }
@@ -1017,32 +1077,32 @@ mod multiple_chunks_tests {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         assert_eq!(accessor.chunk_count(), 3);
 
         // chunk 1: 2 samples (sample 1-2)
-        let chunk1 = accessor.get_chunk(nz(1)).expect("chunk not found");
+        let chunk1 = accessor.get_chunk(nz(1)).expect("chunk が見つからない");
         assert_eq!(chunk1.offset(), 0);
         assert_eq!(chunk1.sample_count(), 2);
 
         // chunk 2: 2 samples (sample 3-4)
-        let chunk2 = accessor.get_chunk(nz(2)).expect("chunk not found");
+        let chunk2 = accessor.get_chunk(nz(2)).expect("chunk が見つからない");
         assert_eq!(chunk2.offset(), 200);
         assert_eq!(chunk2.sample_count(), 2);
 
         // chunk 3: 5 samples (sample 5-9)
-        let chunk3 = accessor.get_chunk(nz(3)).expect("chunk not found");
+        let chunk3 = accessor.get_chunk(nz(3)).expect("chunk が見つからない");
         assert_eq!(chunk3.offset(), 400);
         assert_eq!(chunk3.sample_count(), 5);
 
         // サンプルからチャンクを取得
-        let sample1 = accessor.get_sample(nz(1)).expect("sample not found");
+        let sample1 = accessor.get_sample(nz(1)).expect("sample が見つからない");
         assert_eq!(sample1.chunk().index().get(), 1);
 
-        let sample3 = accessor.get_sample(nz(3)).expect("sample not found");
+        let sample3 = accessor.get_sample(nz(3)).expect("sample が見つからない");
         assert_eq!(sample3.chunk().index().get(), 2);
 
-        let sample5 = accessor.get_sample(nz(5)).expect("sample not found");
+        let sample5 = accessor.get_sample(nz(5)).expect("sample が見つからない");
         assert_eq!(sample5.chunk().index().get(), 3);
     }
 }
@@ -1089,20 +1149,20 @@ proptest! {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         let total_duration = sample_count as u64 * duration as u64;
 
         // 有効なタイムスタンプ範囲内でテスト
         let timestamp = timestamp_offset % total_duration;
         let sample = accessor.get_sample_by_timestamp(timestamp);
-        prop_assert!(sample.is_some(), "sample should be found for timestamp {}", timestamp);
+        prop_assert!(sample.is_some(), "timestamp {} に対応する sample が見つかる", timestamp);
 
         let sample = sample.expect("直前の prop_assert! で Some であることを確認済み");
         let sample_start = sample.timestamp();
         let sample_end = sample_start + sample.duration() as u64;
         prop_assert!(
             timestamp >= sample_start && timestamp < sample_end,
-            "timestamp {} should be in range [{}, {})",
+            "timestamp {} は範囲 [{}, {}) 内である",
             timestamp, sample_start, sample_end
         );
 
@@ -1150,25 +1210,25 @@ proptest! {
             unknown_boxes: Vec::new(),
         };
 
-        let accessor = SampleTableAccessor::new(&stbl_box).expect("failed to create accessor");
+        let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
         prop_assert_eq!(accessor.sample_count(), sample_count);
         prop_assert_eq!(accessor.chunk_count(), chunk_count);
 
         // 各サンプルが正しいチャンクに属していることを確認
         for i in 1..=sample_count {
-            let sample = accessor.get_sample(nz(i)).expect("sample not found");
+            let sample = accessor.get_sample(nz(i)).expect("sample が見つからない");
             let expected_chunk = (i - 1) / samples_per_chunk + 1;
             prop_assert_eq!(
                 sample.chunk().index().get(),
                 expected_chunk,
-                "sample {} should be in chunk {}",
+                "sample {} は chunk {} に属する",
                 i, expected_chunk
             );
         }
 
         // 各チャンクのサンプル数を確認
         for i in 1..=chunk_count {
-            let chunk = accessor.get_chunk(nz(i)).expect("chunk not found");
+            let chunk = accessor.get_chunk(nz(i)).expect("chunk が見つからない");
             prop_assert_eq!(chunk.sample_count(), samples_per_chunk);
             prop_assert_eq!(chunk.samples().count(), samples_per_chunk as usize);
         }

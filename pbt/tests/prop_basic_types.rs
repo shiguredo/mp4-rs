@@ -85,7 +85,7 @@ proptest! {
 
         for i in 0..24 {
             let expected = (bit_mask & (1 << i)) != 0;
-            prop_assert_eq!(flags.is_set(i), expected, "bit {} mismatch", i);
+            prop_assert_eq!(flags.is_set(i), expected, "bit {} が一致しない", i);
         }
     }
 
@@ -102,7 +102,7 @@ proptest! {
         } else {
             false
         };
-        prop_assert_eq!(fbf.is_set(i), expected, "flags={:#x} i={}", flags, i);
+        prop_assert_eq!(fbf.is_set(i), expected, "フラグ不一致 flags={:#x} i={}", flags, i);
     }
 
     // FullBoxFlags::from_flags の任意ビット位置に対する挙動を検証する
@@ -115,8 +115,8 @@ proptest! {
     fn full_box_flags_from_flags_any_bit_position(i in arb_bit_position()) {
         let fbf = FullBoxFlags::from_flags([(i, true)]);
         let expected = if i < 32 { 1u32 << i } else { 0 };
-        prop_assert_eq!(fbf.get(), expected, "i={}", i);
-        prop_assert_eq!(fbf.is_set(i), i < 32, "is_set mismatch i={}", i);
+        prop_assert_eq!(fbf.get(), expected, "不一致 i={}", i);
+        prop_assert_eq!(fbf.is_set(i), i < 32, "is_set が一致しない i={}", i);
     }
 
     // FullBoxFlags::from_flags の重複ビット位置に対する冪等性を検証する
@@ -137,7 +137,7 @@ proptest! {
             .filter(|(i, _)| *i < 32)
             .fold(0u32, |acc, (i, _)| acc | (1u32 << *i));
 
-        prop_assert_eq!(actual, expected, "items={:?}", items);
+        prop_assert_eq!(actual, expected, "items が一致しない: {:?}", items);
     }
 
     // FullBoxHeader の Roundtrip
@@ -772,7 +772,7 @@ mod codec_box_boundary_tests {
         // 修正後はエラーを返すはず (panic しない)
         assert!(
             result.is_err(),
-            "HvccBox should return error for NAL unit length exceeding payload: got {:?}",
+            "HvccBox は NAL unit 長が payload を超える場合にエラーを返す: 実際は {:?}",
             result
         );
     }
@@ -836,7 +836,7 @@ mod codec_box_boundary_tests {
         // 修正前は panic、修正後はエラーを返すはず
         assert!(
             result.is_err(),
-            "HvccBox should return error for NAL unit length exceeding payload: got {:?}",
+            "HvccBox は NAL unit 長が payload を超える場合にエラーを返す: 実際は {:?}",
             result
         );
     }
@@ -878,7 +878,7 @@ mod codec_box_boundary_tests {
         // 修正後はエラーを返すはず (panic しない)
         assert!(
             result.is_err(),
-            "VpccBox should return error for codec_init_size exceeding payload"
+            "VpccBox は codec_init_size が payload を超える場合にエラーを返す"
         );
     }
 
@@ -925,7 +925,7 @@ mod codec_box_boundary_tests {
         // 修正前は panic、修正後はエラーを返すはず
         assert!(
             result.is_err(),
-            "VpccBox should return error for codec_init_size exceeding payload: got {:?}",
+            "VpccBox は codec_init_size が payload を超える場合にエラーを返す: 実際は {:?}",
             result
         );
     }

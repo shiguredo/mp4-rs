@@ -77,7 +77,7 @@ fn build_regular_mp4_file_data(
         reserved_moov_box_size: if faststart { 8192 } else { 0 },
         ..Mp4FileMuxerOptions::default()
     };
-    let mut muxer = Mp4FileMuxer::with_options(options).expect("failed to create muxer");
+    let mut muxer = Mp4FileMuxer::with_options(options).expect("muxer の作成に失敗した");
     let initial_bytes = muxer.initial_boxes_bytes().to_vec();
     let mut data_offset = initial_bytes.len() as u64;
     let mut sample_entry = Some(create_avc1_sample_entry(width, height));
@@ -88,7 +88,7 @@ fn build_regular_mp4_file_data(
             track_kind: TrackKind::Video,
             sample_entry: sample_entry.take(),
             keyframe: index == 0,
-            timescale: NonZeroU32::new(90_000).expect("non-zero"),
+            timescale: NonZeroU32::new(90_000).expect("非ゼロである"),
             duration: 3_000,
             composition_time_offset: None,
             data_offset,
@@ -96,12 +96,12 @@ fn build_regular_mp4_file_data(
         };
         muxer
             .append_sample(&sample)
-            .expect("failed to append sample");
+            .expect("sample の追加に失敗した");
         data_offset += data_size as u64;
         total_data_size += data_size;
     }
 
-    let finalized = muxer.finalize().expect("failed to finalize");
+    let finalized = muxer.finalize().expect("finalize に失敗した");
     let offset_and_bytes_pairs: Vec<_> = finalized
         .offset_and_bytes_pairs()
         .map(|(offset, bytes)| (offset, bytes.to_vec()))
@@ -112,7 +112,7 @@ fn build_regular_mp4_file_data(
 }
 
 fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize]) -> Vec<u8> {
-    let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create Fmp4SegmentMuxer");
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer の作成に失敗した");
     let sample_entry = create_avc1_sample_entry(width, height);
 
     let sample_payloads: Vec<Vec<u8>> = sample_sizes.iter().map(|size| vec![0u8; *size]).collect();
@@ -123,7 +123,7 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
         .map(|(index, payload)| {
             let sample = Sample {
                 track_kind: TrackKind::Video,
-                timescale: NonZeroU32::new(90_000).expect("non-zero"),
+                timescale: NonZeroU32::new(90_000).expect("非ゼロである"),
                 sample_entry: Some(sample_entry.clone()),
                 duration: 3_000,
                 keyframe: index == 0,
@@ -137,14 +137,14 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
         .collect();
     let media_segment_metadata = muxer
         .create_media_segment_metadata(&segment_samples)
-        .expect("failed to build media segment");
+        .expect("media セグメントの構築に失敗した");
     let mut media_segment = media_segment_metadata;
     for payload in &sample_payloads {
         media_segment.extend_from_slice(payload);
     }
     let mut file_data = muxer
         .init_segment_bytes()
-        .expect("failed to build init segment");
+        .expect("init セグメントの構築に失敗した");
     file_data.extend_from_slice(&media_segment);
     file_data
 }
@@ -189,7 +189,7 @@ proptest! {
         feed_detector(&mut detector, &file_data, &extra_sizes);
 
         prop_assert_eq!(
-            detector.file_kind().expect("file_kind failed"),
+            detector.file_kind().expect("file_kind に失敗した"),
             Some(Mp4FileKind::Mp4)
         );
         prop_assert!(detector.required_input().is_none());
@@ -207,7 +207,7 @@ proptest! {
         feed_detector(&mut detector, &file_data, &extra_sizes);
 
         prop_assert_eq!(
-            detector.file_kind().expect("file_kind failed"),
+            detector.file_kind().expect("file_kind に失敗した"),
             Some(Mp4FileKind::FragmentedMp4)
         );
         prop_assert!(detector.required_input().is_none());
@@ -230,18 +230,18 @@ proptest! {
 
             let start = required.position as usize;
             let end = start
-                .saturating_add(required.size.expect("bug: detector must require sized input before moov"))
+                .saturating_add(required.size.expect("実装バグ: detector は moov より前にサイズ付き入力を要求する"))
                 .min(file_data.len());
             detector.handle_input(Input {
                 position: required.position,
                 data: &file_data[start..end],
             });
-            prop_assert_eq!(detector.file_kind().expect("file_kind failed"), None);
+            prop_assert_eq!(detector.file_kind().expect("file_kind に失敗した"), None);
         }
 
         feed_detector(&mut detector, &file_data, &[]);
         prop_assert_eq!(
-            detector.file_kind().expect("file_kind failed"),
+            detector.file_kind().expect("file_kind に失敗した"),
             Some(Mp4FileKind::Mp4)
         );
     }

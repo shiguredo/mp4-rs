@@ -2,9 +2,9 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: opencode-go glm-5.2
-- Branch: feature/fix-dependency-version-patch
+- Branch: develop
 - Polished: YYYY-MM-DD
 
 ## 目的
@@ -57,6 +57,7 @@ nojson = "0.3.10"
 
 ## 解決方法
 
-1. 上記 4 ファイルの依存バージョン指定を修正する
-2. `cargo update` で `Cargo.lock` を更新する
-3. `cargo build --workspace` でビルドが通ることを確認する
+1. `crates/c-api/Cargo.toml` の `cbindgen` は着手時点で既に `"0.29"` になっていたため変更不要だった
+2. `pbt/Cargo.toml` / `examples/dump_wasm/Cargo.toml` / `examples/transcode_wasm/Cargo.toml` の依存バージョン指定をマイナーまでに直した
+3. `cargo update` で `Cargo.lock` を更新し、`cargo build --workspace` / `cargo test --workspace` / `cargo clippy --workspace --all-targets -- -D warnings` が通ることを確認した
+4. CHANGES.md は依存指定の規約揃えのみのため更新していない

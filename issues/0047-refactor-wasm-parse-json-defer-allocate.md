@@ -1,11 +1,11 @@
-# WASM の parse_json_mp4_sample_entry 系関数を部分失敗リーク回避のため allocate 順序を deferred に統一する
+# WASM の parse_json_mp4_sample_entry 系関数を JSON パース途中失敗リーク回避のため allocate 順序を deferred に統一する
 
 - Priority: Medium
 - Created: 2026-07-23
 - Completed: YYYY-MM-DD
 - Model: Opus 4.7
 - Branch: feature/refactor-wasm-parse-json-defer-allocate
-- Polished: YYYY-MM-DD
+- Polished: 2026-07-29
 
 ## 目的
 
@@ -19,7 +19,7 @@ Medium。実運用では JSON 入力の妥当性は上流で保証される想�
 
 ## 現状
 
-対象関数（`parse_json_mp4_sample_entry_*`）は以下 9 個:
+対象関数（`parse_json_mp4_sample_entry_*`）は以下 7 個:
 
 - `crates/wasm/src/boxes_avc1.rs:46-113` `parse_json_mp4_sample_entry_avc1`
 - `crates/wasm/src/boxes_hev1.rs` `parse_json_mp4_sample_entry_hev1`
@@ -27,9 +27,12 @@ Medium。実運用では JSON 入力の妥当性は上流で保証される想�
 - `crates/wasm/src/boxes_av01.rs` `parse_json_mp4_sample_entry_av01`
 - `crates/wasm/src/boxes_mp4a.rs` `parse_json_mp4_sample_entry_mp4a`
 - `crates/wasm/src/boxes_flac.rs` `parse_json_mp4_sample_entry_flac`
-- `crates/wasm/src/boxes_stpp.rs` `parse_json_mp4_sample_entry_stpp`
-- `crates/wasm/src/boxes_wvtt.rs` `parse_json_mp4_sample_entry_wvtt`
 - `crates/wasm/src/boxes_tx3g.rs` `parse_json_mp4_sample_entry_tx3g`
+
+なお `parse_json_mp4_sample_entry_stpp` / `_wvtt` は同種の refactor 対象に見えるが、実装確認の結果いずれも本 issue の対象外である:
+
+- `crates/wasm/src/boxes_stpp.rs:42-76` は既にフェーズ 1（3 本の `&str` を先に取り出す）→ フェーズ 2（3 回 `allocate_and_copy_bytes`）の順序で実装済みで、末尾の `Ok(Mp4SampleEntryStpp { .. })` 内に `try_into?` を残さない（`boxes_stpp.rs:45-47` にコメントで意図まで明記されている）
+- `crates/wasm/src/boxes_wvtt.rs:26-41` は `config` 1 本のみを扱うため、JSON パース途中失敗リーク経路が構造的に存在しない（`boxes_wvtt.rs:29` にコメントで明記されている）
 
 典型パターン（`boxes_avc1.rs:46-113`）:
 
@@ -39,9 +42,9 @@ Medium。実運用では JSON 入力の妥当性は上流で保証される想�
 4. L67 以降で `width` / `height` / `avcProfileIndication` 等の残りフィールドを `try_into()?` で読む
 5. L67-113 のいずれかで `try_into()?` が失敗すると、既に確保済みの SPS / PPS の raw 領域が `mp4_free` されずにリーク
 
-同種のパターンが 9 関数すべてに存在する。`boxes_tx3g.rs:49-118` の `parse_json_mp4_sample_entry_tx3g` では、`allocate_and_copy_u16_array(&font_ids_vec)` と `allocate_and_copy_array_list(&font_names_vec)` の直後に `display_flags` 以降を parse するため、同じリスクを持つ。
+同種のパターンが上記 7 関数に存在する。`boxes_tx3g.rs:49-118` の `parse_json_mp4_sample_entry_tx3g` では、`allocate_and_copy_u16_array(&font_ids_vec)` と `allocate_and_copy_array_list(&font_names_vec)` の直後に `display_flags` 以降を parse するため、同じリスクを持つ。
 
-対応する `mp4_sample_entry_*_free` 系関数はいずれも `Mp4SampleEntry` を先頭で受け取って `mp4_free` を呼ぶ設計で、`parse_json_*` が途中で `Err` を返したケースはカバーしていない。
+対応する variant 固有の free 関数（`mp4_sample_entry_avc1_free(&mut Mp4SampleEntryAvc1)` など）は、いずれも variant 固有型を第 1 引数で受け取って `mp4_free` / `crate::boxes::free_array_list` / `free_u16_array` を variant に応じて組み合わせて呼び、確保済みバッファを解放する設計だが、`parse_json_*` が途中で `Err` を返して struct 構築に到達しなかったケースはカバーしていない。
 
 ## 設計方針
 
@@ -68,11 +71,19 @@ pub fn parse_json_mp4_sample_entry_XXX(
 }
 ```
 
-これにより「allocate 済みで parse 途中失敗」の経路が構造的に消える。allocate の後に発生し得る失敗は無い（`allocate_and_copy_*` 自体は失敗しない設計）。
+これにより「allocate 済みで parse 途中失敗」の経路が構造的に消える。
+
+ただし本 refactor が構造的に消せるのは **JSON パース途中失敗** による leak に限られる。allocate 段階の部分失敗による leak は本 refactor の scope 外に残り、次の 2 クラスがある:
+
+1. `allocate_and_copy_bytes`（`crates/wasm/src/boxes.rs:234-249` の early-return は `:242-244`）と `allocate_and_copy_u16_array`（同 `:291-305` の early-return は `:298-300`）は `mp4_alloc` 失敗時に `(null, 0)` を返す。同じ関数内で複数の `allocate_and_copy_*` を順に呼ぶ場合、先の呼び出しが成功して後の呼び出しが失敗すると、先に確保した領域が回収されないまま `Ok(...)` に到達する（`crates/wasm/src/boxes_hev1.rs:240-242` のコメントで別種の非常態として言及されている）
+2. `allocate_and_copy_array_list`（同 `:254-285`）は返り値が 3-tuple で、内部の `mp4_alloc` 失敗を検出する early-return を持たない。個別要素の確保（同 `:262-265`）が部分的に失敗すると null が data_ptrs に混ざったまま呼び出し元に伝わる。集約側の `allocate_and_copy_bytes`（同 `:266-272` / `:276-282`）が失敗した場合は個別で確保済みの領域を参照するポインタ配列自体が引き回せなくなり、成功した個別領域がまるごと leak する
+
+これらの allocate 段階の部分失敗経路は本 refactor の対象外とする（別途 issue 化する場合は本 issue とは独立の課題として起票する）。
 
 ## 完了条件
 
-- `parse_json_mp4_sample_entry_*` 系 9 関数すべてを「フェーズ 1: Rust 型に落とす → フェーズ 2: 末尾 allocate」の順序に統一する
+- `parse_json_mp4_sample_entry_*` 系 7 関数（avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g）を「フェーズ 1: Rust 型に落とす → フェーズ 2: 末尾 allocate」の順序に統一する
+- 上記 7 関数のいずれも、関数内で最初の `allocate_and_copy_*` 呼び出しより後段に `?` 演算子を伴う JSON 抽出（`try_into?` / `.required()?` / `.to_member(...)?` 等）が残っていないこと（テストは valid JSON 経路しか叩かないため、順序統一自体はコードレビューで確認する）
 - `cargo test --workspace` が全 pass する
 - `cargo clippy --all-targets --all-features -- -D warnings` が warning なしで通る
 - `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` が warning なしで通る
@@ -83,12 +94,13 @@ pub fn parse_json_mp4_sample_entry_XXX(
 以下の順で対応する:
 
 1. `boxes_avc1.rs` を書き換える（SPS/PPS を末尾 allocate に移動）
-2. `boxes_hev1.rs` / `boxes_hvc1.rs`（NALU リスト同型パターン）
+2. `boxes_hev1.rs` / `boxes_hvc1.rs`（NALU リスト系。avc1 と比べて allocate 呼び出し数が多く、集約前段にネストした NALU 配列パースが入る点が異なる）
 3. `boxes_av01.rs` / `boxes_mp4a.rs` / `boxes_flac.rs`（単一 array or bytes パターン）
-4. `boxes_stpp.rs` / `boxes_wvtt.rs`（allocate_and_copy_bytes 単発。実質リスクは低いが順序統一のため対応）
-5. `boxes_tx3g.rs`（3 並列 `allocate_and_copy_u16_array` + `allocate_and_copy_array_list`）
-6. 各関数に対応する `#[cfg(test)]` ラウンドトリップテストが引き続き pass することを確認する
-7. `cargo test --workspace` / `cargo clippy` / `cargo doc` で最終検証する
+4. `boxes_tx3g.rs`（`allocate_and_copy_u16_array` + `allocate_and_copy_array_list` を並べるパターン）
+5. 各関数に対応する `#[cfg(test)]` ラウンドトリップテストが引き続き pass することを確認する
+6. `cargo test --workspace` / `cargo clippy` / `cargo doc` で最終検証する
+
+`boxes_stpp.rs` / `boxes_wvtt.rs` は現状セクションで示したとおり本 issue の対象外。
 
 各関数の refactor は独立して機能するため、機能単位のコミットに分けても良い。
 

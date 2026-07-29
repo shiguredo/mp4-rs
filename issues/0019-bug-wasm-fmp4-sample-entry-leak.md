@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-wasm-fmp4-sample-entry-leak
 - Polished: 2026-07-29
@@ -69,9 +69,27 @@ pub unsafe fn mp4_sample_entry_free(sample_entry: *mut Mp4SampleEntry) {
 
 ## 解決方法
 
-1. `fmp4_segment_mux.rs` に Drop ラッパ型を追加する。`Drop` は `Option::take` した `Some` だけを `Box::into_raw` → `mp4_sample_entry_free` する
-2. `write_segment_impl` で `let mut sample_metas` とし、`parse_json_sample_metas` 直後に全 `sample_entry` をラッパ `Vec` へ `take` し、以降のループ・早期 return はこの `Vec` の寿命に載せる。ポインタはラッパ内エントリへの参照から取得する（C API 呼び出しが終わるまで `Vec` を drop しない）
-3. ラッパの Drop 実装以外から `mp4_sample_entry_free` を呼ばない
-4. `crates/wasm/src/fmp4_segment_mux.rs` の `#[cfg(test)]` に次を追加する（モック不可。これらは二重解放の有無と早期 return の健全性を見るものであり、「解放されたこと」自体の証明には使わない）
-   - ラッパ単体: avc1（ポインタあり）を `Some` で包んで Drop してもパニックしないこと、`None` を Drop してもパニックしないこと
-   - 統合: `sample_entry` 付きメタで `data_size` 不正による早期 return が null を返し、パニックしないこと
+`feature/fix-wasm-fmp4-sample-entry-leak` ブランチで対応した。
+
+### 実施内容
+
+- `crates/wasm/src/fmp4_segment_mux.rs` に Drop ラッパ型 `OwnedMp4SampleEntry` を追加した。`entry: Option<Box<Mp4SampleEntry>>` を保持し、Drop 時に `Some` だけ `Box::into_raw` → `mp4_sample_entry_free` を呼ぶ
+- `SampleMeta.sample_entry` の型を `Option<Mp4SampleEntry>` から `OwnedMp4SampleEntry` に置換した。`parse_json_sample_metas` の途中失敗（同一 item 内 / item 間の `collect` 途中失敗）でも、蓄積済み `Vec<SampleMeta>` の Drop 経由で内部ポインタが解放される
+- `parse_json_sample_metas` 内で `parse_json_mp4_sample_entry` の呼び出しを他フィールドの `?` が全て通ってからの位置に移動した。他フィールドが失敗した場合は `mp4_alloc` 経路に一切入らないため、同一 item 内リークが構造的に不可能になる
+- `write_segment_impl` から中間 `Vec<OwnedMp4SampleEntry>` を除去し、`sample_metas.iter()` で回して `meta.sample_entry.as_ptr()` を直接 C API に渡す形にした
+- `OwnedMp4SampleEntry` が Box を構築時に確保することで、`as_ptr` が返すポインタは Box のヒープ位置に固定される。ラッパを含む `Vec` の再確保でポインタが無効化されず、Drop 内でアロケータを呼ばずに済む
+- テストは以下を追加した:
+  - ラッパ単体: avc1（ポインタあり）を `Some` で包んで Drop してもパニックしないこと
+  - 統合（cross-item leak）: 1 個目が完全にパース成功、2 個目で `duration` 欠落によりパース失敗するとき、蓄積済み `SampleMeta` の Drop が発火し null を返してパニックしないこと
+  - 統合（多サンプル残余）: `[avc1(ok), None(over), avc1(unreached)]` の 3 サンプル構成で、中央サンプルの `data_size` が sample_data 残余を超えたときに null を返し、push 済み・未処理・失敗の全経路の `OwnedMp4SampleEntry` が Drop されてもパニックしないこと
+
+### 計画から外れた点
+
+- 当初計画では `write_segment_impl` の入口で全 `sample_entry` を中間 `Vec<OwnedMp4SampleEntry>` に `take` する設計だったが、`parse_json_sample_metas` の途中失敗経路も同種のリークを起こすことがレビューで発覚したため、`SampleMeta.sample_entry` 自体を `OwnedMp4SampleEntry` にする設計に変更した。中間 `Vec` は不要になり、`write_segment_impl` は `sample_metas.iter()` で回すだけになった
+- 当初計画のラッパは `entry: Option<Mp4SampleEntry>` を inline 保持し、Drop 時に `Box::new(entry)` してから `mp4_sample_entry_free` に渡す設計だった。しかし (a) Drop 内アロケーションが OOM 時に二次パニックする脆さ、(b) `as_ptr` がラッパを含む `Vec` のヒープ位置に依存する脆さ、をレビューで指摘されたため、`entry: Option<Box<Mp4SampleEntry>>` に変更し構築時に Box を確保する設計にした
+- 当初計画では `None` を Drop してもパニックしないことの単体テストを追加する予定だったが、多サンプル統合テストが `None` 分岐を実経路で踏むため、`Option::None` の Drop（言語仕様の範囲）を単体で検証する冗長を削った
+
+### 検証
+
+- `cargo fmt --all -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all` が通ることを確認した
+- `/review-diff-code` の指摘（コメントの旧実装ベース記述、Drop 内アロケの脆さ、`as_ptr` の Vec 依存、命名の齟齬、`expect` メッセージの不整合、CHANGES 本文の残余 `Option` Drop 記述欠落、`parse_json_sample_metas` 途中失敗リーク、テスト網羅）を反映した

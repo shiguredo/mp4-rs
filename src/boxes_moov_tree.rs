@@ -2018,24 +2018,38 @@ impl SttsBox {
     pub const TYPE: BoxType = BoxType::Normal(*b"stts");
 
     /// サンプル群の尺を走査するイテレーターを受け取って、対応する [`SttsBox`] インスタンスを作成する
-    pub fn from_sample_deltas<I>(sample_deltas: I) -> Self
+    ///
+    /// 同一の `sample_delta` が連続して [`u32::MAX`] 回を超える場合は
+    /// [`ErrorKind::InvalidData`](crate::ErrorKind::InvalidData) を返す。
+    pub fn from_sample_deltas<I>(sample_deltas: I) -> Result<Self>
     where
         I: IntoIterator<Item = u32>,
     {
         let mut entries = Vec::<SttsEntry>::new();
         for sample_delta in sample_deltas {
-            if let Some(last) = entries.last_mut()
-                && last.sample_delta == sample_delta
-            {
-                last.sample_count += 1;
-                continue;
-            }
-            entries.push(SttsEntry {
-                sample_count: 1,
-                sample_delta,
-            });
+            Self::push_sample_delta(&mut entries, sample_delta)?;
         }
-        Self { entries }
+        Ok(Self { entries })
+    }
+
+    /// 連続する同一 `sample_delta` を run-length 集約しながら 1 サンプル分を追加する
+    ///
+    /// 同一値の連続が [`u32::MAX`] を超えると overflow として [`Err`] を返す。
+    fn push_sample_delta(entries: &mut Vec<SttsEntry>, sample_delta: u32) -> Result<()> {
+        if let Some(last) = entries.last_mut()
+            && last.sample_delta == sample_delta
+        {
+            last.sample_count = last
+                .sample_count
+                .checked_add(1)
+                .ok_or_else(|| Error::invalid_data("stts sample_count overflow"))?;
+            return Ok(());
+        }
+        entries.push(SttsEntry {
+            sample_count: 1,
+            sample_delta,
+        });
+        Ok(())
     }
 }
 
@@ -2094,6 +2108,76 @@ impl FullBox for SttsBox {
 
     fn full_box_flags(&self) -> FullBoxFlags {
         FullBoxFlags::new(0)
+    }
+}
+
+#[cfg(test)]
+mod stts_box_tests {
+    use super::*;
+    use crate::ErrorKind;
+
+    /// 連続する同一 delta が run-length 集約されること
+    #[test]
+    fn from_sample_deltas_aggregates_identical_deltas() {
+        let stts = SttsBox::from_sample_deltas([10, 10, 10, 20, 20, 1])
+            .expect("正常系入力で overflow しない");
+        assert_eq!(
+            stts.entries,
+            [
+                SttsEntry {
+                    sample_count: 3,
+                    sample_delta: 10,
+                },
+                SttsEntry {
+                    sample_count: 2,
+                    sample_delta: 20,
+                },
+                SttsEntry {
+                    sample_count: 1,
+                    sample_delta: 1,
+                },
+            ]
+        );
+    }
+
+    /// sample_count がちょうど u32::MAX まで積めること
+    #[test]
+    fn push_sample_delta_accepts_u32_max_count() {
+        let mut entries = Vec::new();
+        SttsBox::push_sample_delta(&mut entries, 7).expect("最初の 1 件は成功する");
+        entries[0].sample_count = u32::MAX - 1;
+        SttsBox::push_sample_delta(&mut entries, 7).expect("u32::MAX まで加算できる");
+        assert_eq!(
+            entries,
+            [SttsEntry {
+                sample_count: u32::MAX,
+                sample_delta: 7,
+            }]
+        );
+    }
+
+    /// sample_count が u32::MAX を超えると Err になること
+    #[test]
+    fn push_sample_delta_rejects_overflow() {
+        let mut entries = Vec::from([SttsEntry {
+            sample_count: u32::MAX,
+            sample_delta: 7,
+        }]);
+        let err = SttsBox::push_sample_delta(&mut entries, 7).expect_err("overflow で失敗する");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("stts sample_count overflow"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+        // 失敗時に entries を壊さないこと
+        assert_eq!(
+            entries,
+            [SttsEntry {
+                sample_count: u32::MAX,
+                sample_delta: 7,
+            }]
+        );
     }
 }
 

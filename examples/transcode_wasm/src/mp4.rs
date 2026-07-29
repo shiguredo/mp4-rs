@@ -172,7 +172,8 @@ impl OutputMp4Builder {
                 .collect(),
         };
         let stts_box =
-            SttsBox::from_sample_deltas(track.samples().map(|s| s.duration.as_micros() as u32));
+            SttsBox::from_sample_deltas(track.samples().map(|s| s.duration.as_micros() as u32))
+                .map_err(|e| Error::new(e.to_string()))?;
         let stsc_box = StscBox {
             entries: track
                 .chunks

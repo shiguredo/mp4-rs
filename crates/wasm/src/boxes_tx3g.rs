@@ -49,11 +49,15 @@ pub fn fmt_json_mp4_sample_entry_tx3g(
 pub fn parse_json_mp4_sample_entry_tx3g(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryTx3g, nojson::JsonParseError> {
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
     let default_style = value.to_member("default_style")?.required()?;
 
     // ftab は `{ "font_id": u16, "font_name": [u8; N] }` オブジェクトの配列。
-    // 部分失敗時のメモリリークを避けるため、先に `Vec<u16>` / `Vec<Vec<u8>>` を組み上げてから
-    // まとめて allocate する
+    // 要素ごとに 2 値あるため一度 Vec に組んでから unzip する
     let ftab_value = value.to_member("ftab")?.required()?;
     let ftab_pairs: Vec<(u16, Vec<u8>)> = ftab_value
         .to_array()?
@@ -63,52 +67,64 @@ pub fn parse_json_mp4_sample_entry_tx3g(
             Ok((font_id, font_name))
         })
         .collect::<Result<_, nojson::JsonParseError>>()?;
-
     let (font_ids_vec, font_names_vec): (Vec<u16>, Vec<Vec<u8>>) = ftab_pairs.into_iter().unzip();
 
+    let display_flags: u32 = value.to_member("display_flags")?.required()?.try_into()?;
+    let horizontal_justification: i8 = value
+        .to_member("horizontal_justification")?
+        .required()?
+        .try_into()?;
+    let vertical_justification: i8 = value
+        .to_member("vertical_justification")?
+        .required()?
+        .try_into()?;
+    let background_color_rgba: [u8; 4] = value
+        .to_member("background_color_rgba")?
+        .required()?
+        .try_into()?;
+    let default_text_box: [i16; 4] = value
+        .to_member("default_text_box")?
+        .required()?
+        .try_into()?;
+    let default_style_start_char: u16 = default_style
+        .to_member("start_char")?
+        .required()?
+        .try_into()?;
+    let default_style_end_char: u16 = default_style
+        .to_member("end_char")?
+        .required()?
+        .try_into()?;
+    let default_style_font_id: u16 = default_style.to_member("font_id")?.required()?.try_into()?;
+    let default_style_face_style_flags: u8 = default_style
+        .to_member("face_style_flags")?
+        .required()?
+        .try_into()?;
+    let default_style_font_size: u8 = default_style
+        .to_member("font_size")?
+        .required()?
+        .try_into()?;
+    let default_style_text_color_rgba: [u8; 4] = default_style
+        .to_member("text_color_rgba")?
+        .required()?
+        .try_into()?;
+
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (ftab_font_ids, ftab_count) = crate::boxes::allocate_and_copy_u16_array(&font_ids_vec);
     let (ftab_font_name_ptrs, ftab_font_name_sizes, _) =
         crate::boxes::allocate_and_copy_array_list(&font_names_vec);
 
     Ok(Mp4SampleEntryTx3g {
-        display_flags: value.to_member("display_flags")?.required()?.try_into()?,
-        horizontal_justification: value
-            .to_member("horizontal_justification")?
-            .required()?
-            .try_into()?,
-        vertical_justification: value
-            .to_member("vertical_justification")?
-            .required()?
-            .try_into()?,
-        background_color_rgba: value
-            .to_member("background_color_rgba")?
-            .required()?
-            .try_into()?,
-        default_text_box: value
-            .to_member("default_text_box")?
-            .required()?
-            .try_into()?,
-        default_style_start_char: default_style
-            .to_member("start_char")?
-            .required()?
-            .try_into()?,
-        default_style_end_char: default_style
-            .to_member("end_char")?
-            .required()?
-            .try_into()?,
-        default_style_font_id: default_style.to_member("font_id")?.required()?.try_into()?,
-        default_style_face_style_flags: default_style
-            .to_member("face_style_flags")?
-            .required()?
-            .try_into()?,
-        default_style_font_size: default_style
-            .to_member("font_size")?
-            .required()?
-            .try_into()?,
-        default_style_text_color_rgba: default_style
-            .to_member("text_color_rgba")?
-            .required()?
-            .try_into()?,
+        display_flags,
+        horizontal_justification,
+        vertical_justification,
+        background_color_rgba,
+        default_text_box,
+        default_style_start_char,
+        default_style_end_char,
+        default_style_font_id,
+        default_style_face_style_flags,
+        default_style_font_size,
+        default_style_text_color_rgba,
         ftab_font_ids,
         ftab_font_name_ptrs,
         ftab_font_name_sizes,
@@ -334,5 +350,34 @@ mod tests {
         assert_eq!(name1, b"CDE");
 
         mp4_sample_entry_tx3g_free(&mut sample_entry);
+    }
+
+    #[test]
+    fn test_json_to_tx3g_rejects_missing_display_flags_after_ftab() {
+        // ftab / default_style は揃っているが後段の必須フィールド display_flags が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{
+            "kind": "tx3g",
+            "horizontal_justification": 0,
+            "vertical_justification": 0,
+            "background_color_rgba": [0, 0, 0, 255],
+            "default_text_box": [0, 0, 240, 320],
+            "default_style": {
+                "start_char": 0,
+                "end_char": 0,
+                "font_id": 1,
+                "face_style_flags": 0,
+                "font_size": 12,
+                "text_color_rgba": [255, 255, 255, 255]
+            },
+            "ftab": [
+                { "font_id": 1, "font_name": [83, 101, 114, 105, 102] }
+            ]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_tx3g(json.value());
+        assert!(result.is_err(), "display_flags 欠落時はパース失敗すること");
     }
 }

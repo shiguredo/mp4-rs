@@ -135,6 +135,10 @@
   - 内部の `encode_variable_uint` の 1〜3 バイトのアームが `buf.len()` を検査せず `buf[i]` へ直接代入していたため、バッファが不足するとインデックス範囲外で `Encode` トレイト契約に反してパニックしていた
   - `match` の直前で `Error::check_buffer_size` を呼び、バッファ不足時は `InsufficientBuffer` を返すようにする
   - @sile
+- [FIX] WASM の JSON サンプルエントリー変換で、パースが途中で失敗した場合に確保済みバッファがリークし得たのを防ぐ
+  - `parse_json_mp4_sample_entry_*` 系関数で、全 JSON フィールドを Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
+  - 対象は avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g（stpp / wvtt は既に同順か経路なし）
+  - @sile
 
 ### misc
 

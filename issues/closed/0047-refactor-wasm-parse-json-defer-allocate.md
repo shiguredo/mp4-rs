@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-23
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: Opus 4.7
 - Branch: feature/refactor-wasm-parse-json-defer-allocate
 - Polished: 2026-07-29
@@ -91,19 +91,22 @@ pub fn parse_json_mp4_sample_entry_XXX(
 
 ## 解決方法
 
-以下の順で対応する:
+`feature/refactor-wasm-parse-json-defer-allocate` ブランチで対応した。
 
-1. `boxes_avc1.rs` を書き換える（SPS/PPS を末尾 allocate に移動）
-2. `boxes_hev1.rs` / `boxes_hvc1.rs`（NALU リスト系。avc1 と比べて allocate 呼び出し数が多く、集約前段にネストした NALU 配列パースが入る点が異なる）
-3. `boxes_av01.rs` / `boxes_mp4a.rs` / `boxes_flac.rs`（単一 array or bytes パターン）
-4. `boxes_tx3g.rs`（`allocate_and_copy_u16_array` + `allocate_and_copy_array_list` を並べるパターン）
-5. 各関数に対応する `#[cfg(test)]` ラウンドトリップテストが引き続き pass することを確認する
-6. `cargo test --workspace` / `cargo clippy` / `cargo doc` で最終検証する
+### 実施内容
 
-`boxes_stpp.rs` / `boxes_wvtt.rs` は現状セクションで示したとおり本 issue の対象外。
+- 対象 7 関数（avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g）を「フェーズ 1: 全 JSON フィールドを Rust 型に落とす → フェーズ 2: 末尾で `allocate_and_copy_*`」の順序に統一した
+- いずれの関数も、最初の `allocate_and_copy_*` より後段に `?` を伴う JSON 抽出が残っていないことを確認した
+- コメント表記を日本語に揃え、hev1 / hvc1 / tx3g の見出しコメントを補った
+- 可変長フィールドは揃えて後段スカラーだけ欠落させた不正 JSON で `Err` になる回帰テストを 7 関数それぞれに追加した
+- `CHANGES.md` に `[FIX]` を追記した（タイトルはユーザ影響側、実施内容はサブリスト）
+- `boxes_stpp.rs` / `boxes_wvtt.rs` は対象外のまま変更していない
 
-各関数の refactor は独立して機能するため、機能単位のコミットに分けても良い。
+### 検証
+
+- `cargo test --workspace` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` が通ることを確認した
+- `/review-diff-code` で致命的・重要が 0 件であることを確認した
 
 ## CHANGES.md
 
-`[UPDATE]` として記載する。挙動変化はない（正常経路の結果は同一）ため `[FIX]` ではなく `[UPDATE]` が妥当。
+`[FIX]` として記載する。パース途中失敗時のリークはバグ修正として扱う。

@@ -26,18 +26,31 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
 pub fn parse_json_mp4_sample_entry_mp4a(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryMp4a, nojson::JsonParseError> {
-    let dec_specific_info_value = value.to_member("decSpecificInfo")?.required()?;
-    let dec_specific_info_vec: Vec<u8> = dec_specific_info_value.try_into()?;
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
+    let dec_specific_info_vec: Vec<u8> =
+        value.to_member("decSpecificInfo")?.required()?.try_into()?;
+    let channel_count: u8 = value.to_member("channelCount")?.required()?.try_into()?;
+    let sample_rate: u16 = value.to_member("sampleRate")?.required()?.try_into()?;
+    let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
+    let buffer_size_db: u32 = value.to_member("bufferSizeDb")?.required()?.try_into()?;
+    let max_bitrate: u32 = value.to_member("maxBitrate")?.required()?.try_into()?;
+    let avg_bitrate: u32 = value.to_member("avgBitrate")?.required()?.try_into()?;
+
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (dec_specific_info, dec_specific_info_size) =
         crate::boxes::allocate_and_copy_bytes(&dec_specific_info_vec);
 
     Ok(Mp4SampleEntryMp4a {
-        channel_count: value.to_member("channelCount")?.required()?.try_into()?,
-        sample_rate: value.to_member("sampleRate")?.required()?.try_into()?,
-        sample_size: value.to_member("sampleSize")?.required()?.try_into()?,
-        buffer_size_db: value.to_member("bufferSizeDb")?.required()?.try_into()?,
-        max_bitrate: value.to_member("maxBitrate")?.required()?.try_into()?,
-        avg_bitrate: value.to_member("avgBitrate")?.required()?.try_into()?,
+        channel_count,
+        sample_rate,
+        sample_size,
+        buffer_size_db,
+        max_bitrate,
+        avg_bitrate,
         dec_specific_info,
         dec_specific_info_size,
     })
@@ -128,5 +141,25 @@ mod tests {
         mp4_sample_entry_mp4a_free(&mut sample_entry);
         assert_eq!(sample_entry.dec_specific_info_size, 0);
         assert!(sample_entry.dec_specific_info.is_null());
+    }
+
+    #[test]
+    fn test_json_to_mp4a_rejects_missing_channel_count_after_dec_specific_info() {
+        // decSpecificInfo は揃っているが後段の必須フィールド channelCount が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{
+            "kind": "mp4a",
+            "sampleRate": 44100,
+            "sampleSize": 16,
+            "bufferSizeDb": 0,
+            "maxBitrate": 128000,
+            "avgBitrate": 128000,
+            "decSpecificInfo": [1, 2]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_mp4a(json.value());
+        assert!(result.is_err(), "channelCount 欠落時はパース失敗すること");
     }
 }

@@ -23,15 +23,24 @@ pub fn fmt_json_mp4_sample_entry_flac(
 pub fn parse_json_mp4_sample_entry_flac(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryFlac, nojson::JsonParseError> {
-    let streaminfo_data_value = value.to_member("streaminfoData")?.required()?;
-    let streaminfo_data_vec: Vec<u8> = streaminfo_data_value.try_into()?;
+    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
+    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
+    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+
+    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
+    let streaminfo_data_vec: Vec<u8> = value.to_member("streaminfoData")?.required()?.try_into()?;
+    let channel_count: u8 = value.to_member("channelCount")?.required()?.try_into()?;
+    let sample_rate: u16 = value.to_member("sampleRate")?.required()?.try_into()?;
+    let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
+
+    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
     let (streaminfo_data, streaminfo_size) =
         crate::boxes::allocate_and_copy_bytes(&streaminfo_data_vec);
 
     Ok(Mp4SampleEntryFlac {
-        channel_count: value.to_member("channelCount")?.required()?.try_into()?,
-        sample_rate: value.to_member("sampleRate")?.required()?.try_into()?,
-        sample_size: value.to_member("sampleSize")?.required()?.try_into()?,
+        channel_count,
+        sample_rate,
+        sample_size,
         streaminfo_data,
         streaminfo_size,
     })
@@ -99,5 +108,17 @@ mod tests {
         mp4_sample_entry_flac_free(&mut sample_entry);
         assert_eq!(sample_entry.streaminfo_size, 0);
         assert!(sample_entry.streaminfo_data.is_null());
+    }
+
+    #[test]
+    fn test_json_to_flac_rejects_missing_channel_count_after_streaminfo() {
+        // streaminfoData は揃っているが後段の必須フィールド channelCount が欠落している。
+        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
+        // この失敗経路では確保処理に到達せず Err だけが返る
+        let json_str = r#"{"kind": "flac", "sampleRate": 44100, "sampleSize": 16, "streaminfoData": [0, 16, 0, 16]}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let result = parse_json_mp4_sample_entry_flac(json.value());
+        assert!(result.is_err(), "channelCount 欠落時はパース失敗すること");
     }
 }

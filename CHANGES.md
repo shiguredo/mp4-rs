@@ -88,7 +88,7 @@
   - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` が `MuxError::Overflow` を返したあとも内部状態を不変に保つようにする
   - これまでは `self.tracks` への登録が残ったまま次の書き込み位置だけが未更新になり、同じ `data_offset` で再投入するとサンプルが二重登録されていた
-  - `next_position` の加算オーバーフロー検査を `self.tracks` への副作用より前に移し、全エラー種別で内部状態が不変になるようにした
+  - `next_position` の加算オーバーフロー検査を `self.tracks` への副作用より前に移し、`MuxError::Overflow` でも内部状態が不変になるようにした
   - 既存トラックの `timescale` 不一致とオーバーフローが同時に成立する病理的入力では、返るエラーが `TimescaleMismatch` から `Overflow` に変わる
   - @sile
 - [FIX] c-api の `Mp4SampleEntryAvc1` / `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` で配列ベースポインタが null の場合に未定義動作ではなくエラーを返すようにする

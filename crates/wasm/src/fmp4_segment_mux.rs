@@ -206,24 +206,21 @@ fn write_segment_impl(
         unsafe { std::slice::from_raw_parts(sample_data, sample_data_len as usize) }
     };
 
-    let Ok(mut sample_metas) = parse_json_sample_metas(raw_json.value()) else {
+    let Ok(sample_metas) = parse_json_sample_metas(raw_json.value()) else {
         return std::ptr::null_mut();
     };
-
-    // サイズ検証・C API 呼び出しより前に全 sample_entry をラッパへ移す。
-    // 途中で早期 return しても Vec の Drop で内部ポインタまで解放される。
-    let sample_entry_boxes: Vec<OwnedMp4SampleEntry> = sample_metas
-        .iter_mut()
-        .map(|meta| OwnedMp4SampleEntry::new(meta.sample_entry.take()))
-        .collect();
 
     // 各サンプルのデータ範囲を計算する
     // 呼び出し元からはサンプル出現順の payload を受け取り、
     // muxer が要求するトラック単位の連続配置にここで並べ替える。
+    //
+    // sample_metas はここから関数末尾まで move / mutation されない。
+    // `c_samples` に格納する `sample_entry` は sample_metas 内 OwnedMp4SampleEntry
+    // への生ポインタなので、sample_metas の寿命に依存する
     let mut c_samples: Vec<c_api::fmp4_segment_mux::Fmp4SegmentSample> = Vec::new();
     let mut payload_ranges: Vec<&[u8]> = Vec::new();
     let mut data_offset = 0usize;
-    for (meta, owned_entry) in sample_metas.into_iter().zip(sample_entry_boxes.iter()) {
+    for meta in sample_metas.iter() {
         let Some(end) = data_offset.checked_add(meta.data_size) else {
             return std::ptr::null_mut();
         };
@@ -234,7 +231,7 @@ fn write_segment_impl(
         c_samples.push(c_api::fmp4_segment_mux::Fmp4SegmentSample {
             track_kind: meta.track_kind,
             timescale: meta.timescale,
-            sample_entry: owned_entry.as_ptr(),
+            sample_entry: meta.sample_entry.as_ptr(),
             duration: meta.duration,
             keyframe: meta.keyframe,
             has_composition_time_offset: meta.composition_time_offset.is_some(),
@@ -309,7 +306,7 @@ fn write_segment_impl(
 struct SampleMeta {
     track_kind: c_api::basic_types::Mp4TrackKind,
     timescale: u32,
-    sample_entry: Option<c_api::boxes::Mp4SampleEntry>,
+    sample_entry: OwnedMp4SampleEntry,
     duration: u32,
     keyframe: bool,
     composition_time_offset: Option<i64>,
@@ -338,11 +335,6 @@ fn parse_json_sample_metas(
                 }
             };
             let timescale: u32 = item.to_member("timescale")?.required()?.try_into()?;
-            let sample_entry = if let Some(value) = item.to_member("sample_entry")?.optional() {
-                Some(crate::boxes::parse_json_mp4_sample_entry(value)?)
-            } else {
-                None
-            };
             let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
             let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
             let composition_time_offset: Option<i64> =
@@ -358,10 +350,17 @@ fn parse_json_sample_metas(
                     .map(|v| v.invalid("data_size exceeds usize::MAX"))
                     .unwrap_or_else(|e| e)
             })?;
+            // sample_entry の確保は他フィールドの `?` が全て通ってから行う。
+            // 途中で失敗した場合は mp4_alloc 経路に一切入らずリークしない
+            let sample_entry = if let Some(value) = item.to_member("sample_entry")?.optional() {
+                Some(crate::boxes::parse_json_mp4_sample_entry(value)?)
+            } else {
+                None
+            };
             Ok(SampleMeta {
                 track_kind,
                 timescale,
-                sample_entry,
+                sample_entry: OwnedMp4SampleEntry::new(sample_entry),
                 duration,
                 keyframe,
                 composition_time_offset,
@@ -406,6 +405,71 @@ mod tests {
     fn test_owned_sample_entry_drop_none_does_not_panic() {
         let owned = OwnedMp4SampleEntry::new(None);
         drop(owned);
+    }
+
+    /// 複数 item のうち後続 item のパースに失敗しても null を返し、パニックしないこと
+    ///
+    /// 1 個目は完全にパース成功、2 個目は `duration` 欠落でパース失敗させる。
+    /// 1 個目の sample_entry は `parse_json_sample_metas` が Err を返した瞬間に
+    /// 蓄積済み `Vec<SampleMeta>` ごと Drop されるため、
+    /// `OwnedMp4SampleEntry::drop` 経由で `mp4_sample_entry_free` が呼ばれる
+    #[test]
+    fn test_write_segment_parse_error_on_later_item_returns_null_without_panic() {
+        let muxer = unsafe { c_api::fmp4_segment_mux::fmp4_segment_muxer_new() };
+        assert!(!muxer.is_null(), "muxer の生成に成功すること");
+
+        let meta_json = r#"[
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "duration": 3000,
+                "keyframe": true,
+                "data_size": 100
+            },
+            {
+                "track_kind": "video",
+                "timescale": 90000,
+                "sample_entry": {
+                    "kind": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                    "avcProfileIndication": 100,
+                    "profileCompatibility": 0,
+                    "avcLevelIndication": 40,
+                    "lengthSizeMinusOne": 3,
+                    "sps": [[103, 100, 0, 40]],
+                    "pps": [[104, 238, 60, 128]]
+                },
+                "keyframe": true,
+                "data_size": 100
+            }
+        ]"#;
+        let sample_data = [0u8; 200];
+
+        let result = write_segment_impl(
+            muxer,
+            meta_json.as_ptr(),
+            meta_json.len() as u32,
+            sample_data.as_ptr(),
+            sample_data.len() as u32,
+            false,
+        );
+        assert!(result.is_null(), "パース失敗時は null を返すこと");
+
+        unsafe {
+            c_api::fmp4_segment_mux::fmp4_segment_muxer_free(muxer);
+        }
     }
 
     /// data_size 不正で早期 return してもパニックしないこと

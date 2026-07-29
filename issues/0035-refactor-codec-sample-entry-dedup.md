@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-29
 - Model: qwen3.8-max-preview
 - Branch: feature/refactor-codec-sample-entry-dedup
 - Polished: 2026-07-29
@@ -70,7 +70,24 @@ C API 層（`crates/c-api/src/boxes.rs`）にも `Mp4SampleEntryHev1` / `Mp4Samp
 
 ## 解決方法
 
-コアライブラリで HEVC サンプルエントリー共通の Encode / Decode ヘルパー関数を抽出し、`Hev1Box` / `Hvc1Box` の実装を薄い委譲にする。C API 層でも NALU 配列構築と HvccBox 構築の共通ヘルパー関数を抽出する。
+`feature/refactor-codec-sample-entry-dedup` ブランチで対応した。
+
+### 実施内容
+
+- `src/boxes_sample_entry.rs` に `encode_hevc_sample_entry` / `decode_hevc_sample_entry` を追加し、`Hev1Box` / `Hvc1Box` の Encode / Decode を薄い委譲にした。`BaseBox::children()` はインラインのまま残した
+- `crates/c-api/src/boxes.rs` に非公開の中間構造体 `HevcSampleEntryRaw` と `build_hvcc_nalu_arrays` / `build_hvcc_box` を追加し、`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry` を委譲にした。旧 `nalu_data_index` はヘルパー内にインライン展開して削除した
+- `CHANGES.md` の `### misc` に `[UPDATE]` を追記した
+- Vp08Box / Vp09Box および C API 側の `Mp4SampleEntryVp08` / `Mp4SampleEntryVp09` は変更していない
+- 公開 API（Rust の構造体フィールド・trait impl・C ABI）は変更していない
+
+### 計画から外れた点
+
+- issue 文面では `to_raw(&self)` としていたが、`Copy` 型への `to_*` は clippy の `wrong_self_convention` に抵触するため `to_raw(self)` にした
+
+### 検証
+
+- `cargo fmt` / `cargo clippy -D warnings` / workspace test / c-api test / PBT が通ることを確認した
+- `/review-diff-code` で致命的・重要が 0 件であることを確認した
 
 ## CHANGES.md
 

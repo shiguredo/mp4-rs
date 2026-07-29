@@ -5,7 +5,7 @@
 - Completed: YYYY-MM-DD
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-vpcc-len-as-u16
-- Polished: YYYY-MM-DD
+- Polished: 2026-07-29
 
 ## 目的
 
@@ -18,14 +18,14 @@
 ## 現状
 
 ```rust
-// src/boxes_sample_entry.rs:1057
+// src/boxes_sample_entry.rs の VpccBox::encode
 offset += (self.codec_initialization_data.len() as u16).encode(&mut buf[offset..])?;
 offset += self.codec_initialization_data.encode(&mut buf[offset..])?;
 ```
 
 `Vec::len()` は `usize`。`as u16` は `u16::MAX`（65535）超で上位ビットを黙って切り捨てる。長さフィールドだけ壊れ、実データは全量書き込まれるため、decode 側は `u16` 分だけ読み、残りは未読になる。
 
-対照的に AvcC / HvcC の encode は `u16::try_from(sps.len()).map_err(|_| Error::invalid_input("Too long SPS"))?` で拒否する。
+対照的に同ファイルの `AvccBox::encode` / `HvccBox::encode` は `u16::try_from(...).map_err(...)` で拒否する（例: `AvccBox::encode` の `Too long SPS`）。
 
 ## 設計方針
 
@@ -40,5 +40,5 @@ offset += self.codec_initialization_data.encode(&mut buf[offset..])?;
 
 ## 解決方法
 
-1. `src/boxes_sample_entry.rs:1057` の `as u16` を `u16::try_from(self.codec_initialization_data.len()).map_err(|_| Error::invalid_input("codec_initialization_data exceeds u16::MAX"))?` に置き換える
+1. `src/boxes_sample_entry.rs` の `VpccBox::encode` 内にある `self.codec_initialization_data.len() as u16` を `u16::try_from(self.codec_initialization_data.len()).map_err(|_| Error::invalid_input("codec_initialization_data exceeds u16::MAX"))?` に置き換える
 2. 境界値テストを追加する

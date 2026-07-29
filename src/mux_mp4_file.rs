@@ -211,10 +211,7 @@ pub struct Sample {
     /// 同じトラック内のすべてのサンプルは同じタイムスケール値を使用する必要がある
     ///
     /// 異なるタイムスケール値を指定すると
-    /// [`Mp4FileMuxer::append_sample()`] 呼び出し時に [`MuxError::TimescaleMismatch`] エラーが発生する。
-    /// ただし既存トラックのタイムスケール不一致と次の書き込み位置のオーバーフローが
-    /// 同時に成立する入力では [`MuxError::Overflow`] が先に返る
-    /// （通常の `TimescaleMismatch` のみのケースの挙動は変わらない）
+    /// [`Mp4FileMuxer::append_sample()`] 呼び出し時に [`MuxError::TimescaleMismatch`] エラーが発生する
     pub timescale: NonZeroU32,
 
     /// サンプルの尺（タイムスケール単位）
@@ -554,15 +551,8 @@ impl Mp4FileMuxer {
     ///
     /// # エラー返却時の内部状態
     ///
-    /// [`MuxError::AlreadyFinalized`] / [`MuxError::PositionMismatch`] /
-    /// [`MuxError::EncodeError`]（`data_size` の `u32::MAX` 超過）/
-    /// [`MuxError::MissingSampleEntry`] / [`MuxError::MixedSampleEntries`] /
-    /// [`MuxError::TimescaleMismatch`] / [`MuxError::Overflow`] のいずれでも、
-    /// 内部状態は完全に不変となる。呼び出し側は内容を補正したサンプルで再呼び出しできる。
-    ///
-    /// なお既存トラックの `timescale` 不一致と次の書き込み位置のオーバーフローが
-    /// 同時に成立する入力では [`MuxError::Overflow`] が先に返る
-    /// （通常の `TimescaleMismatch` のみのケースの挙動は変わらない）。
+    /// エラーを返した場合も内部状態は変わらない。
+    /// 呼び出し側は内容を補正したうえで再呼び出しできる。
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);

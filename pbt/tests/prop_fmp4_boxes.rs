@@ -960,4 +960,117 @@ mod boundary_tests {
         let children: Vec<_> = moof.children().collect();
         assert_eq!(children.len(), 2); // mfhd + 1 traf
     }
+
+    /// TfraBox: version = 0 の上限値ラウンドトリップ
+    ///
+    /// `length_size_of_*` を全て 3（byte_count = 4）にして
+    /// `traf_number` / `trun_number` / `sample_number` を `u32::MAX` まで、
+    /// `time` / `moof_offset` を `u32::MAX` まで詰める。
+    /// full_box_version は 0 を返し、self.version = 0 のまま保持される。
+    #[test]
+    fn tfra_box_version0_max_boundaries() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: u32::MAX,
+            length_size_of_traf_num: 3,
+            length_size_of_trun_num: 3,
+            length_size_of_sample_num: 3,
+            entries: vec![TfraEntry {
+                time: u32::MAX as u64,
+                moof_offset: u32::MAX as u64,
+                traf_number: u32::MAX,
+                trun_number: u32::MAX,
+                sample_number: u32::MAX,
+            }],
+        };
+        assert_eq!(tfra.full_box_version(), 0);
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(decoded, tfra);
+    }
+
+    /// TfraBox: self.version = 0 でも time > u32::MAX で自動的に version = 1 に昇格する
+    ///
+    /// `full_box_version` は entries のいずれかが `u32::MAX` を超えたら 1 を返す仕様
+    /// （`src/boxes_fmp4.rs:1305-1318`）。この挙動により、encode 時のヘッダー版数は
+    /// self.version より entries の値が優先される。decode 側は書かれた版数をそのまま
+    /// self.version に戻すため、self.version = 0 → 1 への「意図的な化け」が起きる。
+    #[test]
+    fn tfra_box_version_auto_promotion() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: 1,
+            length_size_of_traf_num: 0,
+            length_size_of_trun_num: 0,
+            length_size_of_sample_num: 0,
+            entries: vec![TfraEntry {
+                time: u32::MAX as u64 + 1,
+                moof_offset: 0,
+                traf_number: 1,
+                trun_number: 1,
+                sample_number: 1,
+            }],
+        };
+        assert_eq!(
+            tfra.full_box_version(),
+            1,
+            "time が u32::MAX を超えるので version は 1 に昇格する"
+        );
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(
+            decoded.version, 1,
+            "decode 側は書かれた版数 1 をそのまま self.version に戻す"
+        );
+        assert_eq!(decoded.entries, tfra.entries);
+    }
+
+    /// TfraBox: `length_size_of_*` = 0 の最小構成ラウンドトリップ
+    ///
+    /// 各可変長整数フィールドが 1 バイトで書かれ、上位バイトを持たない最小のケース。
+    /// `encode_variable_uint` の 1 バイトアーム（`src/boxes_fmp4.rs:1409-1411`）と
+    /// `decode_variable_uint` の 1 バイト分岐を通す。
+    #[test]
+    fn tfra_box_length_size_zero() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: 1,
+            length_size_of_traf_num: 0,
+            length_size_of_trun_num: 0,
+            length_size_of_sample_num: 0,
+            entries: vec![TfraEntry {
+                time: 0,
+                moof_offset: 0,
+                traf_number: 0xFF,
+                trun_number: 0xFF,
+                sample_number: 0xFF,
+            }],
+        };
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(decoded, tfra);
+    }
+
+    /// TfraBox: entries が空
+    ///
+    /// `number_of_entry` = 0 で entries ループを 1 度も回らない縮退ケース。
+    /// `encode_variable_uint` は 1 度も呼ばれない。
+    #[test]
+    fn tfra_box_empty_entries() {
+        let tfra = TfraBox {
+            version: 0,
+            track_id: 1,
+            length_size_of_traf_num: 0,
+            length_size_of_trun_num: 0,
+            length_size_of_sample_num: 0,
+            entries: vec![],
+        };
+
+        let encoded = tfra.encode_to_vec().unwrap();
+        let (decoded, _) = TfraBox::decode(&encoded).unwrap();
+        assert_eq!(decoded, tfra);
+    }
 }

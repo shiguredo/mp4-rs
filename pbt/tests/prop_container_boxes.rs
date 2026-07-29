@@ -373,7 +373,7 @@ proptest! {
         prop_assert_eq!(decoded.stsc_box.entries.len(), stsc_entries.len());
         match &decoded.stco_or_co64_box {
             Either::A(stco) => prop_assert_eq!(stco.chunk_offsets.clone(), stco_offsets),
-            Either::B(_) => prop_assert!(false, "Expected StcoBox, got Co64Box"),
+            Either::B(_) => prop_assert!(false, "StcoBox を期待したが Co64Box だった"),
         }
     }
 
@@ -400,7 +400,7 @@ proptest! {
 
         prop_assert_eq!(size, encoded.len());
         match &decoded.stco_or_co64_box {
-            Either::A(_) => prop_assert!(false, "Expected Co64Box, got StcoBox"),
+            Either::A(_) => prop_assert!(false, "Co64Box を期待したが StcoBox だった"),
             Either::B(co64) => prop_assert_eq!(co64.chunk_offsets.clone(), co64_offsets),
         }
     }
@@ -428,7 +428,7 @@ proptest! {
         prop_assert_eq!(size, encoded.len());
         match &decoded.media_header {
             Some(MediaHeader::Smhd(_smhd)) => {}
-            _ => prop_assert!(false, "Expected SmhdBox"),
+            _ => prop_assert!(false, "SmhdBox を期待した"),
         }
     }
 
@@ -451,7 +451,7 @@ proptest! {
         prop_assert_eq!(size, encoded.len());
         match &decoded.media_header {
             Some(MediaHeader::Vmhd(vmhd)) => prop_assert_eq!(vmhd.graphicsmode, graphicsmode),
-            _ => prop_assert!(false, "Expected VmhdBox"),
+            _ => prop_assert!(false, "VmhdBox を期待した"),
         }
     }
 
@@ -666,7 +666,7 @@ mod boundary_tests {
         inner.extend_from_slice(&stbl_bytes);
 
         // minf ヘッダー (size u32 + type "minf") を先頭に付ける
-        let box_size = u32::try_from(8 + inner.len()).expect("minf size fits in u32");
+        let box_size = u32::try_from(8 + inner.len()).expect("minf サイズは u32 に収まる");
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&box_size.to_be_bytes());
         bytes.extend_from_slice(b"minf");
@@ -829,7 +829,7 @@ mod boundary_tests {
             };
             let mut demuxer = Mp4FileDemuxer::new();
             demuxer.handle_input(input);
-            let tracks = demuxer.tracks().expect("failed to get tracks");
+            let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
             assert_eq!(
                 tracks.len(),
                 1,
@@ -865,7 +865,7 @@ mod boundary_tests {
                     data: bytes.get(start..end).unwrap_or(&[]),
                 });
             }
-            let tracks = demuxer.tracks().expect("failed to get tracks");
+            let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
             assert_eq!(
                 tracks.len(),
                 1,
@@ -891,8 +891,8 @@ mod boundary_tests {
             let mut demuxer = Fmp4SegmentDemuxer::new();
             demuxer
                 .handle_init_segment(&init_bytes)
-                .expect("failed to handle init segment");
-            let tracks = demuxer.tracks().expect("failed to get tracks");
+                .expect("init セグメントの処理に失敗した");
+            let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
             assert_eq!(
                 tracks.len(),
                 1,
@@ -931,19 +931,19 @@ mod boundary_tests {
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(subtitle_sample_entry),
             keyframe: true,
-            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            timescale: NonZeroU32::new(1000).expect("非ゼロである"),
             duration: 1000,
             composition_time_offset: None,
             data_offset: 0,
             data_size: sample_payload.len(),
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("muxer の作成に失敗した");
         // メディアセグメントを生成して muxer にトラック情報を蓄積させる
         // （`init_segment_bytes` は tracks が空だと `EmptyTracks` エラーになるため）
         let media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
-            .expect("failed to create media segment");
+            .expect("media セグメントの作成に失敗した");
         assert!(
             !media_segment.is_empty(),
             "メディアセグメントのバイト列が空になっている"
@@ -952,12 +952,12 @@ mod boundary_tests {
 
         let init_bytes = muxer
             .init_segment_bytes()
-            .expect("failed to build init segment");
+            .expect("init セグメントの構築に失敗した");
 
         // init segment 内の trak を検証（ftyp のあとに moov が続く前提）
-        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("failed to decode ftyp");
+        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
         let (moov, _moov_size) =
-            MoovBox::decode(&init_bytes[ftyp_size..]).expect("failed to decode moov");
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
 
         assert_eq!(moov.trak_boxes.len(), 1);
         let trak = &moov.trak_boxes[0];
@@ -993,23 +993,23 @@ mod boundary_tests {
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(sample_entry),
             keyframe: true,
-            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            timescale: NonZeroU32::new(1000).expect("非ゼロである"),
             duration: 1000,
             composition_time_offset: None,
             data_offset: 0,
             data_size: sample_payload.len(),
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("muxer の作成に失敗した");
         // メディアセグメントのメタデータを生成した後、サンプル payload を連結する
         let mut media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
-            .expect("failed to create media segment metadata");
+            .expect("media セグメントメタデータの作成に失敗した");
         media_segment.extend_from_slice(sample_payload);
 
         let init_bytes = muxer
             .init_segment_bytes()
-            .expect("failed to build init segment");
+            .expect("init セグメントの構築に失敗した");
 
         (init_bytes, media_segment)
     }
@@ -1061,8 +1061,8 @@ mod boundary_tests {
         // 最初のサンプルを取り出して sample_entry が Stpp バリアントであることを検証する
         let sample = demuxer
             .next_sample()
-            .expect("failed to fetch next_sample")
-            .expect("no sample returned from Fmp4FileDemuxer");
+            .expect("next_sample の取得に失敗した")
+            .expect("Fmp4FileDemuxer から sample が返らなかった");
         let entry = sample
             .sample_entry
             .expect("最初のサンプルは SampleEntry を持つ");
@@ -1083,10 +1083,10 @@ mod boundary_tests {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
         let samples = demuxer
             .handle_media_segment(&media_segment)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
         assert!(
             !samples.is_empty(),
             "メディアセグメントから少なくとも 1 サンプル取り出せる"
@@ -1137,7 +1137,7 @@ mod boundary_tests {
         sample_entry: SampleEntry,
         payload: &[u8],
     ) -> (Vec<u8>, MoovBox) {
-        let mut muxer = Mp4FileMuxer::new().expect("failed to create muxer");
+        let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let mut output: Vec<u8> = muxer.initial_boxes_bytes().to_vec();
         let data_offset = output.len() as u64;
         output.extend_from_slice(payload);
@@ -1146,7 +1146,7 @@ mod boundary_tests {
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(sample_entry),
             keyframe: true,
-            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            timescale: NonZeroU32::new(1000).expect("非ゼロである"),
             duration: 1000,
             composition_time_offset: None,
             data_offset,
@@ -1154,8 +1154,8 @@ mod boundary_tests {
         };
         muxer
             .append_sample(&sample)
-            .expect("failed to append sample");
-        let finalized = muxer.finalize().expect("failed to finalize");
+            .expect("sample の追加に失敗した");
+        let finalized = muxer.finalize().expect("finalize に失敗した");
         let moov_box = finalized.moov_box().clone();
 
         // moov などの書き戻し範囲を先に計算して output を事前拡張する
@@ -1208,7 +1208,7 @@ mod boundary_tests {
             data: &mp4_bytes,
         });
 
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         assert_eq!(tracks.len(), 1);
         assert!(
             matches!(tracks[0].kind, TrackKind::Subtitle),
@@ -1217,8 +1217,8 @@ mod boundary_tests {
 
         let sample = demuxer
             .next_sample()
-            .expect("failed to fetch next_sample")
-            .expect("no sample returned from Mp4FileDemuxer");
+            .expect("next_sample の取得に失敗した")
+            .expect("Mp4FileDemuxer から sample が返らなかった");
         let entry = sample
             .sample_entry
             .expect("最初のサンプルは SampleEntry を持つ");
@@ -1249,18 +1249,18 @@ mod boundary_tests {
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(wvtt_sample_entry),
             keyframe: true,
-            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            timescale: NonZeroU32::new(1000).expect("非ゼロである"),
             duration: 1000,
             composition_time_offset: None,
             data_offset: 0,
             data_size: sample_payload.len(),
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("muxer の作成に失敗した");
         // メディアセグメントを生成して muxer にトラック情報を蓄積させる
         let media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
-            .expect("failed to create media segment");
+            .expect("media セグメントの作成に失敗した");
         assert!(
             !media_segment.is_empty(),
             "メディアセグメントのバイト列が空になっている"
@@ -1268,11 +1268,11 @@ mod boundary_tests {
 
         let init_bytes = muxer
             .init_segment_bytes()
-            .expect("failed to build init segment");
+            .expect("init セグメントの構築に失敗した");
 
-        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("failed to decode ftyp");
+        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
         let (moov, _moov_size) =
-            MoovBox::decode(&init_bytes[ftyp_size..]).expect("failed to decode moov");
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
 
         assert_eq!(moov.trak_boxes.len(), 1);
         let trak = &moov.trak_boxes[0];
@@ -1333,8 +1333,8 @@ mod boundary_tests {
 
         let sample = demuxer
             .next_sample()
-            .expect("failed to fetch next_sample")
-            .expect("no sample returned from Fmp4FileDemuxer");
+            .expect("next_sample の取得に失敗した")
+            .expect("Fmp4FileDemuxer から sample が返らなかった");
         let entry = sample
             .sample_entry
             .expect("最初のサンプルは SampleEntry を持つ");
@@ -1352,10 +1352,10 @@ mod boundary_tests {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
         let samples = demuxer
             .handle_media_segment(&media_segment)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
         assert!(
             !samples.is_empty(),
             "メディアセグメントから少なくとも 1 サンプル取り出せる"
@@ -1402,7 +1402,7 @@ mod boundary_tests {
             data: &mp4_bytes,
         });
 
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         assert_eq!(tracks.len(), 1);
         assert!(
             matches!(tracks[0].kind, TrackKind::Subtitle),
@@ -1411,8 +1411,8 @@ mod boundary_tests {
 
         let sample = demuxer
             .next_sample()
-            .expect("failed to fetch next_sample")
-            .expect("no sample returned from Mp4FileDemuxer");
+            .expect("next_sample の取得に失敗した")
+            .expect("Mp4FileDemuxer から sample が返らなかった");
         let entry = sample
             .sample_entry
             .expect("最初のサンプルは SampleEntry を持つ");
@@ -1450,17 +1450,17 @@ mod boundary_tests {
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(tx3g_sample_entry),
             keyframe: true,
-            timescale: NonZeroU32::new(1000).expect("non-zero"),
+            timescale: NonZeroU32::new(1000).expect("非ゼロである"),
             duration: 1000,
             composition_time_offset: None,
             data_offset: 0,
             data_size: sample_payload.len(),
         };
 
-        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("muxer の作成に失敗した");
         let media_segment = muxer
             .create_media_segment_metadata(std::slice::from_ref(&sample))
-            .expect("failed to create media segment");
+            .expect("media セグメントの作成に失敗した");
         assert!(
             !media_segment.is_empty(),
             "メディアセグメントのバイト列が空になっている"
@@ -1468,11 +1468,11 @@ mod boundary_tests {
 
         let init_bytes = muxer
             .init_segment_bytes()
-            .expect("failed to build init segment");
+            .expect("init セグメントの構築に失敗した");
 
-        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("failed to decode ftyp");
+        let (_ftyp, ftyp_size) = FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
         let (moov, _moov_size) =
-            MoovBox::decode(&init_bytes[ftyp_size..]).expect("failed to decode moov");
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
 
         assert_eq!(moov.trak_boxes.len(), 1);
         let trak = &moov.trak_boxes[0];
@@ -1537,8 +1537,8 @@ mod boundary_tests {
 
         let sample = demuxer
             .next_sample()
-            .expect("failed to fetch next_sample")
-            .expect("no sample returned from Fmp4FileDemuxer");
+            .expect("next_sample の取得に失敗した")
+            .expect("Fmp4FileDemuxer から sample が返らなかった");
         let entry = sample
             .sample_entry
             .expect("最初のサンプルは SampleEntry を持つ");
@@ -1556,10 +1556,10 @@ mod boundary_tests {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
         let samples = demuxer
             .handle_media_segment(&media_segment)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
         assert!(
             !samples.is_empty(),
             "メディアセグメントから少なくとも 1 サンプル取り出せる"
@@ -1610,7 +1610,7 @@ mod boundary_tests {
             data: &mp4_bytes,
         });
 
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         assert_eq!(tracks.len(), 1);
         assert!(
             matches!(tracks[0].kind, TrackKind::Subtitle),
@@ -1619,8 +1619,8 @@ mod boundary_tests {
 
         let sample = demuxer
             .next_sample()
-            .expect("failed to fetch next_sample")
-            .expect("no sample returned from Mp4FileDemuxer");
+            .expect("next_sample の取得に失敗した")
+            .expect("Mp4FileDemuxer から sample が返らなかった");
         let entry = sample
             .sample_entry
             .expect("最初のサンプルは SampleEntry を持つ");
@@ -1694,7 +1694,7 @@ mod boundary_tests {
         assert!(decoded.stsc_box.entries.is_empty());
         match &decoded.stco_or_co64_box {
             Either::A(stco) => assert!(stco.chunk_offsets.is_empty()),
-            Either::B(_) => panic!("Expected StcoBox"),
+            Either::B(_) => panic!("StcoBox を期待した"),
         }
     }
 

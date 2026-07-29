@@ -179,7 +179,7 @@ proptest! {
         };
         let mut encoded = ctts
             .encode_to_vec()
-            .expect("ctts test fixture must be encodable");
+            .expect("ctts テスト fixture はエンコードできる");
         encoded[8] = version; // full box version
         prop_assert!(CttsBox::decode(&encoded).is_err());
     }
@@ -265,7 +265,7 @@ proptest! {
         };
         let mut encoded = cslg
             .encode_to_vec()
-            .expect("cslg test fixture must be encodable");
+            .expect("cslg テスト fixture はエンコードできる");
         encoded[8] = version; // full box version
         prop_assert!(CslgBox::decode(&encoded).is_err());
     }
@@ -295,7 +295,7 @@ proptest! {
         let sdtp = SdtpBox { entries };
         let mut encoded = sdtp
             .encode_to_vec()
-            .expect("sdtp test fixture must be encodable");
+            .expect("sdtp テスト fixture はエンコードできる");
         encoded[8] = version; // full box version
         prop_assert!(SdtpBox::decode(&encoded).is_err());
     }

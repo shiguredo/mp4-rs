@@ -645,9 +645,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_hvc1() {
         let hvc1 = create_hvc1_box();
         let mut buf = vec![0u8; 4096];
-        let size = hvc1.encode(&mut buf).expect("encode should succeed");
+        let size = hvc1.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Hvc1(_)));
     }
@@ -657,9 +657,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_vp08() {
         let vp08 = create_vp08_box();
         let mut buf = vec![0u8; 4096];
-        let size = vp08.encode(&mut buf).expect("encode should succeed");
+        let size = vp08.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Vp08(_)));
     }
@@ -669,9 +669,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_vp09() {
         let vp09 = create_vp09_box();
         let mut buf = vec![0u8; 4096];
-        let size = vp09.encode(&mut buf).expect("encode should succeed");
+        let size = vp09.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Vp09(_)));
     }
@@ -681,9 +681,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_av01() {
         let av01 = create_av01_box();
         let mut buf = vec![0u8; 4096];
-        let size = av01.encode(&mut buf).expect("encode should succeed");
+        let size = av01.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Av01(_)));
     }
@@ -693,9 +693,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_mp4a() {
         let mp4a = create_mp4a_box();
         let mut buf = vec![0u8; 4096];
-        let size = mp4a.encode(&mut buf).expect("encode should succeed");
+        let size = mp4a.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Mp4a(_)));
     }
@@ -705,9 +705,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_flac() {
         let flac = create_flac_box();
         let mut buf = vec![0u8; 4096];
-        let size = flac.encode(&mut buf).expect("encode should succeed");
+        let size = flac.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Flac(_)));
     }
@@ -717,9 +717,9 @@ mod sample_entry_base_box_tests {
     fn sample_entry_decode_hev1() {
         let hev1 = create_hev1_box();
         let mut buf = vec![0u8; 4096];
-        let size = hev1.encode(&mut buf).expect("encode should succeed");
+        let size = hev1.encode(&mut buf).expect("エンコードは失敗しない");
         let (decoded, decoded_size) =
-            SampleEntry::decode(&buf[..size]).expect("decode should succeed");
+            SampleEntry::decode(&buf[..size]).expect("デコードは失敗しない");
         assert_eq!(size, decoded_size);
         assert!(matches!(decoded, SampleEntry::Hev1(_)));
     }

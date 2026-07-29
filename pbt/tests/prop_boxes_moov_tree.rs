@@ -13,7 +13,7 @@ mod moov_tree_error_tests {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
             language: [0x00, 0x61, 0x61], // 最初の文字が 0x60 未満
         };
@@ -27,7 +27,7 @@ mod moov_tree_error_tests {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
             language: [0x61, 0x00, 0x61], // 2番目の文字が 0x60 未満
         };
@@ -41,7 +41,7 @@ mod moov_tree_error_tests {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
             language: [0x61, 0x61, 0x00], // 3番目の文字が 0x60 未満
         };
@@ -72,15 +72,15 @@ mod moov_tree_boundary_tests {
         let mvhd = MvhdBox {
             creation_time: Mp4FileTime::from_secs(u32::MAX as u64 + 1),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(1000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(1000).expect("timescale は非ゼロである"),
             duration: 0,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
             next_track_id: 1,
         };
-        let encoded = mvhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = MvhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = mvhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = MvhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.creation_time.as_secs(), u32::MAX as u64 + 1);
     }
 
@@ -90,15 +90,15 @@ mod moov_tree_boundary_tests {
         let mvhd = MvhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(u32::MAX as u64 + 1),
-            timescale: NonZeroU32::new(1000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(1000).expect("timescale は非ゼロである"),
             duration: 0,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
             next_track_id: 1,
         };
-        let encoded = mvhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = MvhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = mvhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = MvhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.modification_time.as_secs(), u32::MAX as u64 + 1);
     }
 
@@ -108,15 +108,15 @@ mod moov_tree_boundary_tests {
         let mvhd = MvhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(1000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(1000).expect("timescale は非ゼロである"),
             duration: u32::MAX as u64 + 1,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
             matrix: MvhdBox::DEFAULT_MATRIX,
             next_track_id: 1,
         };
-        let encoded = mvhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = MvhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = mvhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = MvhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.duration, u32::MAX as u64 + 1);
     }
 
@@ -139,8 +139,8 @@ mod moov_tree_boundary_tests {
             width: FixedPointNumber::new(0, 0),
             height: FixedPointNumber::new(0, 0),
         };
-        let encoded = tkhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = TkhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = tkhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = TkhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.creation_time.as_secs(), u32::MAX as u64 + 1);
     }
 
@@ -163,8 +163,8 @@ mod moov_tree_boundary_tests {
             width: FixedPointNumber::new(0, 0),
             height: FixedPointNumber::new(0, 0),
         };
-        let encoded = tkhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = TkhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = tkhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = TkhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.flag_track_enabled);
         assert!(decoded.flag_track_in_movie);
         assert!(decoded.flag_track_in_preview);
@@ -177,12 +177,12 @@ mod moov_tree_boundary_tests {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(u32::MAX as u64 + 1),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
             language: MdhdBox::LANGUAGE_UNDEFINED,
         };
-        let encoded = mdhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = MdhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = mdhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = MdhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.creation_time.as_secs(), u32::MAX as u64 + 1);
     }
 
@@ -198,8 +198,8 @@ mod moov_tree_boundary_tests {
                 media_rate: FixedPointNumber::new(1, 0),
             }],
         };
-        let encoded = elst.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = ElstBox::decode(&encoded).expect("decode should succeed");
+        let encoded = elst.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = ElstBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.entries[0].edit_duration, u32::MAX as u64 + 1);
     }
 
@@ -213,8 +213,8 @@ mod moov_tree_boundary_tests {
                 media_rate: FixedPointNumber::new(1, 0),
             }],
         };
-        let encoded = elst.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = ElstBox::decode(&encoded).expect("decode should succeed");
+        let encoded = elst.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = ElstBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.entries[0].media_time, i32::MAX as i64 + 1);
     }
 
@@ -228,8 +228,8 @@ mod moov_tree_boundary_tests {
                 media_rate: FixedPointNumber::new(1, 0),
             }],
         };
-        let encoded = elst.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = ElstBox::decode(&encoded).expect("decode should succeed");
+        let encoded = elst.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = ElstBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.entries[0].media_time, i32::MIN as i64 - 1);
     }
 
@@ -250,8 +250,8 @@ mod moov_tree_boundary_tests {
                 },
             ],
         };
-        let encoded = elst.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = ElstBox::decode(&encoded).expect("decode should succeed");
+        let encoded = elst.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = ElstBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.entries.len(), 2);
     }
 
@@ -270,8 +270,8 @@ mod moov_tree_boundary_tests {
             }),
             unknown_boxes: vec![],
         };
-        let encoded = edts.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = EdtsBox::decode(&encoded).expect("decode should succeed");
+        let encoded = edts.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = EdtsBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.elst_box.is_some());
     }
 
@@ -282,8 +282,8 @@ mod moov_tree_boundary_tests {
             elst_box: None,
             unknown_boxes: vec![],
         };
-        let encoded = edts.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = EdtsBox::decode(&encoded).expect("decode should succeed");
+        let encoded = edts.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = EdtsBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.elst_box.is_none());
     }
 
@@ -295,8 +295,8 @@ mod moov_tree_boundary_tests {
         let url = UrlBox {
             location: Utf8String::new("http://example.com"),
         };
-        let encoded = url.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = UrlBox::decode(&encoded).expect("decode should succeed");
+        let encoded = url.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = UrlBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.location.is_some());
         assert_eq!(
             decoded.location.as_ref().map(|l| l.get()),
@@ -308,8 +308,8 @@ mod moov_tree_boundary_tests {
     #[test]
     fn url_box_local_file() {
         let url = UrlBox::LOCAL_FILE;
-        let encoded = url.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = UrlBox::decode(&encoded).expect("decode should succeed");
+        let encoded = url.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = UrlBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.location.is_none());
     }
 
@@ -322,8 +322,8 @@ mod moov_tree_boundary_tests {
             url_box: None,
             unknown_boxes: vec![],
         };
-        let encoded = dref.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = DrefBox::decode(&encoded).expect("decode should succeed");
+        let encoded = dref.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = DrefBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.url_box.is_none());
     }
 
@@ -344,7 +344,7 @@ mod moov_tree_boundary_tests {
                     entries: vec![SampleEntry::Opus(OpusBox {
                         audio: AudioSampleEntryFields {
                             data_reference_index: NonZeroU16::new(1)
-                                .expect("data_reference_index should be non-zero"),
+                                .expect("data_reference_index は非ゼロである"),
                             channelcount: 2,
                             samplesize: 16,
                             samplerate: FixedPointNumber::new(48000, 0),
@@ -374,8 +374,8 @@ mod moov_tree_boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = minf.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = MinfBox::decode(&encoded).expect("decode should succeed");
+        let encoded = minf.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = MinfBox::decode(&encoded).expect("デコードは失敗しない");
         assert!(decoded.media_header.is_none());
     }
 
@@ -388,8 +388,8 @@ mod moov_tree_boundary_tests {
             handler_type: HdlrBox::HANDLER_TYPE_VIDE,
             name: b"VideoHandler\0".to_vec(),
         };
-        let encoded = hdlr.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = HdlrBox::decode(&encoded).expect("decode should succeed");
+        let encoded = hdlr.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = HdlrBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.handler_type, HdlrBox::HANDLER_TYPE_VIDE);
     }
 
@@ -402,8 +402,8 @@ mod moov_tree_boundary_tests {
             graphicsmode: 100,
             opcolor: [255, 128, 64],
         };
-        let encoded = vmhd.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = VmhdBox::decode(&encoded).expect("decode should succeed");
+        let encoded = vmhd.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = VmhdBox::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.graphicsmode, 100);
         assert_eq!(decoded.opcolor, [255, 128, 64]);
     }
@@ -414,11 +414,11 @@ mod moov_tree_boundary_tests {
     #[test]
     fn stsz_box_fixed_size() {
         let stsz = StszBox::Fixed {
-            sample_size: NonZeroU32::new(1024).expect("sample_size should be non-zero"),
+            sample_size: NonZeroU32::new(1024).expect("sample_size は非ゼロである"),
             sample_count: 100,
         };
-        let encoded = stsz.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = StszBox::decode(&encoded).expect("decode should succeed");
+        let encoded = stsz.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = StszBox::decode(&encoded).expect("デコードは失敗しない");
         match decoded {
             StszBox::Fixed {
                 sample_size,
@@ -427,7 +427,7 @@ mod moov_tree_boundary_tests {
                 assert_eq!(sample_size.get(), 1024);
                 assert_eq!(sample_count, 100);
             }
-            _ => panic!("Expected Fixed variant"),
+            _ => panic!("Fixed バリアントを期待した"),
         }
     }
 
@@ -439,8 +439,8 @@ mod moov_tree_boundary_tests {
         let co64 = Co64Box {
             chunk_offsets: vec![u32::MAX as u64 + 1, u64::MAX / 2],
         };
-        let encoded = co64.encode_to_vec().expect("encode should succeed");
-        let (decoded, _) = Co64Box::decode(&encoded).expect("decode should succeed");
+        let encoded = co64.encode_to_vec().expect("エンコードは失敗しない");
+        let (decoded, _) = Co64Box::decode(&encoded).expect("デコードは失敗しない");
         assert_eq!(decoded.chunk_offsets.len(), 2);
         assert_eq!(decoded.chunk_offsets[0], u32::MAX as u64 + 1);
     }
@@ -526,7 +526,7 @@ mod moov_tree_base_box_tests {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(30).expect("timescale は非ゼロである"),
             duration: 1000,
             language: MdhdBox::LANGUAGE_UNDEFINED,
         };
@@ -711,7 +711,7 @@ mod moov_tree_base_box_tests {
         MvhdBox {
             creation_time: Mp4FileTime::from_secs(0),
             modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(1000).expect("timescale should be non-zero"),
+            timescale: NonZeroU32::new(1000).expect("timescale は非ゼロである"),
             duration: 1000,
             rate: MvhdBox::DEFAULT_RATE,
             volume: MvhdBox::DEFAULT_VOLUME,
@@ -756,7 +756,7 @@ mod moov_tree_base_box_tests {
             mdhd_box: MdhdBox {
                 creation_time: Mp4FileTime::from_secs(0),
                 modification_time: Mp4FileTime::from_secs(0),
-                timescale: NonZeroU32::new(30).expect("timescale should be non-zero"),
+                timescale: NonZeroU32::new(30).expect("timescale は非ゼロである"),
                 duration: 1000,
                 language: MdhdBox::LANGUAGE_UNDEFINED,
             },

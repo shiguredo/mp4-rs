@@ -211,7 +211,10 @@ pub struct Sample {
     /// 同じトラック内のすべてのサンプルは同じタイムスケール値を使用する必要がある
     ///
     /// 異なるタイムスケール値を指定すると
-    /// [`Mp4FileMuxer::append_sample()`] 呼び出し時に [`MuxError::TimescaleMismatch`] エラーが発生する
+    /// [`Mp4FileMuxer::append_sample()`] 呼び出し時に [`MuxError::TimescaleMismatch`] エラーが発生する。
+    /// ただし既存トラックのタイムスケール不一致と次の書き込み位置のオーバーフローが
+    /// 同時に成立する入力では [`MuxError::Overflow`] が先に返る
+    /// （通常の `TimescaleMismatch` のみのケースの挙動は変わらない）
     pub timescale: NonZeroU32,
 
     /// サンプルの尺（タイムスケール単位）
@@ -621,16 +624,16 @@ impl Mp4FileMuxer {
             });
         }
 
-        // tracks への副作用より先に Overflow を確定させ、エラー時に内部状態を不変に保つ。
-        // TimescaleMismatch と同時に成立する入力では Overflow が先に返る
-        // （同時成立は u64::MAX 近傍でのみ起きる病理的ケース）。
+        // tracks への副作用より先に Overflow を確定させ、エラー時に内部状態を不変に保つ
         let next_position = self
             .next_position
             .checked_add(sample.data_size as u64)
             .ok_or(MuxError::Overflow)?;
 
         // サンプルエントリーの解決を先に済ませてから ensure_track_entry を呼ぶことで
-        // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ
+        // MissingSampleEntry エラー時に self.tracks を完全に不変に保つ。
+        // ここより後に ? 付きの失敗経路を足すと、TrackEntry push 後にエラー返却できてしまい
+        // 「エラー時は内部状態不変」の契約が壊れる
         let track_index = self.ensure_track_entry(sample.track_kind, sample.timescale)?;
 
         if let Some(sample_entry) = resolved_sample_entry {
@@ -1594,7 +1597,6 @@ mod tests {
             .append_sample(&first_sample)
             .expect("最初のサンプルの追加に失敗した");
 
-        // 次の書き込み位置を u64::MAX - 10 まで進める
         let overflow_offset = u64::MAX - 10;
         let after_first = initial_size + first_size as u64;
         muxer
@@ -1620,7 +1622,6 @@ mod tests {
             "オーバーフローする data_size では Overflow が返るべき"
         );
 
-        // Overflow 後も next_position は不変なので、同じ data_offset で収まるサイズなら再投入できる
         let fitting_size = 5usize;
         let fitting_sample = Sample {
             track_kind: TrackKind::Video,
@@ -1645,7 +1646,6 @@ mod tests {
         let StszBox::Variable { entry_sizes } = stsz_box else {
             panic!("stsz は Variable であるべき");
         };
-        // 先行サンプル 1 + 再投入 1。Overflow 時の残留が無いことをエントリ数で確認する
         assert_eq!(
             entry_sizes.as_slice(),
             &[first_size as u32, fitting_size as u32],

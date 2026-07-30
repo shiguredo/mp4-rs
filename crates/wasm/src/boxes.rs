@@ -411,7 +411,7 @@ impl nojson::DisplayJson for HevcNaluArrays {
 /// がいずれも panic せず失敗時に `(null, 0)` を返す前提に依存しており、
 /// 途中割り当て成功後の panic によるリークは発生しない。この前提を崩す変更を
 /// 入れる場合は所有権設計を見直すこと
-pub(crate) struct HevcSampleEntryAllocated {
+pub(crate) struct HevcSampleEntryFields {
     pub(crate) width: u16,
     pub(crate) height: u16,
     pub(crate) general_profile_space: u8,
@@ -444,7 +444,7 @@ pub(crate) struct HevcSampleEntryAllocated {
 /// 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
 pub(crate) fn parse_json_hevc_sample_entry_fields(
     value: nojson::RawJsonValue<'_, '_>,
-) -> Result<HevcSampleEntryAllocated, nojson::JsonParseError> {
+) -> Result<HevcSampleEntryFields, nojson::JsonParseError> {
     // フェーズ 1: JSON → Rust 型
     // NALU 配列を走査して nalu_types_vec / nalu_counts_vec / nalu_data_vec を構築する
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
@@ -534,7 +534,7 @@ pub(crate) fn parse_json_hevc_sample_entry_fields(
     });
     let (nalu_data, nalu_sizes, _) = allocate_and_copy_array_list(&nalu_data_vec);
 
-    Ok(HevcSampleEntryAllocated {
+    Ok(HevcSampleEntryFields {
         width,
         height,
         general_profile_space,

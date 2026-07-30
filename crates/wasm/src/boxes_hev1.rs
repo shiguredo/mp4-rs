@@ -3,7 +3,7 @@
 use c_api::boxes::Mp4SampleEntryHev1;
 
 use crate::boxes::{
-    HevcNaluArrays, HevcSampleEntryAllocated, free_hevc_sample_entry_fields,
+    HevcNaluArrays, HevcSampleEntryFields, free_hevc_sample_entry_fields,
     parse_json_hevc_sample_entry_fields,
 };
 
@@ -83,7 +83,7 @@ pub fn mp4_sample_entry_hev1_free(entry: &mut Mp4SampleEntryHev1) {
 /// `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` は c-api 側で独立した
 /// `#[repr(C)]` 型として定義されているため、`impl From` トレイトや
 /// `unsafe { transmute }` を導入せずに済ませる選択の帰結
-fn hevc_fields_to_hev1(fields: HevcSampleEntryAllocated) -> Mp4SampleEntryHev1 {
+fn hevc_fields_to_hev1(fields: HevcSampleEntryFields) -> Mp4SampleEntryHev1 {
     Mp4SampleEntryHev1 {
         width: fields.width,
         height: fields.height,
@@ -186,10 +186,31 @@ mod tests {
         let mut sample_entry =
             parse_json_mp4_sample_entry_hev1(json.value()).expect("有効な hev1 JSON");
 
+        // build_hevc_test_json の既定値と照合して 19 個のスカラーフィールドすべてが
+        // hevc_fields_to_hev1 経由で欠落・取り違えなく取り込まれることを検証する
         assert_eq!(sample_entry.width, 1920);
         assert_eq!(sample_entry.height, 1080);
+        assert_eq!(sample_entry.general_profile_space, 0);
+        assert_eq!(sample_entry.general_tier_flag, 0);
         assert_eq!(sample_entry.general_profile_idc, 2);
+        assert_eq!(
+            sample_entry.general_profile_compatibility_flags,
+            1_610_612_736
+        );
+        assert_eq!(
+            sample_entry.general_constraint_indicator_flags,
+            12_682_136_550_675_546_112
+        );
         assert_eq!(sample_entry.general_level_idc, 120);
+        assert_eq!(sample_entry.chroma_format_idc, 1);
+        assert_eq!(sample_entry.bit_depth_luma_minus8, 0);
+        assert_eq!(sample_entry.bit_depth_chroma_minus8, 0);
+        assert_eq!(sample_entry.min_spatial_segmentation_idc, 0);
+        assert_eq!(sample_entry.parallelism_type, 0);
+        assert_eq!(sample_entry.avg_frame_rate, 0);
+        assert_eq!(sample_entry.constant_frame_rate, 0);
+        assert_eq!(sample_entry.num_temporal_layers, 1);
+        assert_eq!(sample_entry.temporal_id_nested, 0);
         assert_eq!(sample_entry.length_size_minus_one, 3);
         assert_eq!(sample_entry.nalu_array_count, 3);
 

@@ -89,6 +89,11 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `MdhdBox::encode()` で言語コードの各バイトが 5 ビットに収まらない場合にエラーを返すようにする
+  - ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を `unsigned int(5)` にパックする
+  - これまでは `0x80` 以上のバイトも受け入れ、隣接ビットフィールドを破壊した不正な `mdhd` を生成し得た
+  - `code > 31` を明示的に拒否し、超過時は `ErrorKind::InvalidInput` を返すように変更した
+  - @sile
 - [FIX] `AvccBox::encode()` で PPS の上限を仕様どおり 255 に修正する
   - ISO/IEC 14496-15 の `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）だが、SPS と同じ 31 で拒否していた
   - これまでは PPS を 32〜255 個持つ合法な入力の `avcC` エンコードを誤って拒否していた

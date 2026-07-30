@@ -48,6 +48,83 @@ mod moov_tree_error_tests {
         let result = mdhd.encode_to_vec();
         assert!(result.is_err());
     }
+
+    /// MdhdBox: 言語コードが 0x7F を超える (1番目の文字) でエンコードエラー
+    #[test]
+    fn mdhd_box_invalid_language_code_high() {
+        let mdhd = MdhdBox {
+            creation_time: Mp4FileTime::from_secs(0),
+            modification_time: Mp4FileTime::from_secs(0),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
+            duration: 0,
+            // 1 文字目が 5 ビット上限 (0x7F) を超える
+            language: [0x80, 0x61, 0x61],
+        };
+        let result = mdhd.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// MdhdBox: 言語コードが 0x7F を超える (2番目の文字) でエンコードエラー
+    #[test]
+    fn mdhd_box_invalid_language_code_high_middle() {
+        let mdhd = MdhdBox {
+            creation_time: Mp4FileTime::from_secs(0),
+            modification_time: Mp4FileTime::from_secs(0),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
+            duration: 0,
+            // 2 文字目が 5 ビット上限 (0x7F) を超える
+            language: [0x61, 0x80, 0x61],
+        };
+        let result = mdhd.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// MdhdBox: 言語コードが 0x7F を超える (3番目の文字) でエンコードエラー
+    #[test]
+    fn mdhd_box_invalid_language_code_high_last() {
+        let mdhd = MdhdBox {
+            creation_time: Mp4FileTime::from_secs(0),
+            modification_time: Mp4FileTime::from_secs(0),
+            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
+            duration: 0,
+            // 3 文字目が 5 ビット上限 (0x7F) を超える
+            language: [0x61, 0x61, 0x80],
+        };
+        let result = mdhd.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// MdhdBox: 言語コードの 5 ビット境界値（下限・上限）
+    ///
+    /// `0x5F` はエラー、`0x60` / `0x7F` は成功、`0x80` はエラーであることを
+    /// 全 3 文字位置で確認する。
+    #[test]
+    fn mdhd_box_language_code_5bit_boundaries() {
+        let timescale = NonZeroU32::new(48000).expect("timescale は非ゼロである");
+        let base = |language: [u8; 3]| MdhdBox {
+            creation_time: Mp4FileTime::from_secs(0),
+            modification_time: Mp4FileTime::from_secs(0),
+            timescale,
+            duration: 0,
+            language,
+        };
+
+        // 下限: 0x5F はエラー、0x60 (code = 0) は成功
+        assert!(base([0x5F, 0x61, 0x61]).encode_to_vec().is_err());
+        assert!(base([0x61, 0x5F, 0x61]).encode_to_vec().is_err());
+        assert!(base([0x61, 0x61, 0x5F]).encode_to_vec().is_err());
+        assert!(base([0x60, 0x61, 0x61]).encode_to_vec().is_ok());
+        assert!(base([0x61, 0x60, 0x61]).encode_to_vec().is_ok());
+        assert!(base([0x61, 0x61, 0x60]).encode_to_vec().is_ok());
+
+        // 上限: 0x7F (code = 31) は成功、0x80 はエラー
+        assert!(base([0x7F, 0x61, 0x61]).encode_to_vec().is_ok());
+        assert!(base([0x61, 0x7F, 0x61]).encode_to_vec().is_ok());
+        assert!(base([0x61, 0x61, 0x7F]).encode_to_vec().is_ok());
+        assert!(base([0x80, 0x61, 0x61]).encode_to_vec().is_err());
+        assert!(base([0x61, 0x80, 0x61]).encode_to_vec().is_err());
+        assert!(base([0x61, 0x61, 0x80]).encode_to_vec().is_err());
+    }
 }
 
 // ===== boxes_moov_tree.rs 系ボックスの境界値・バリアント違いテスト =====

@@ -1,7 +1,7 @@
 # wasm クレートに対する miri を CI で継続実行する仕組みを追加する
 
 - Created: 2026-07-30
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Branch: feature/add-wasm-miri-ci
 - Polished: 2026-07-30
 
@@ -55,17 +55,29 @@
 
 ## 解決方法
 
-以下の順に対応する。前提確認で問題が判明した場合は設計方針に戻る:
+`feature/add-wasm-miri-ci` ブランチで対応した。
 
-1. **前提確認（ローカルで実施）**: `cargo +nightly miri test -p wasm` を走らせ、以下を確認する
-   - 全テストが miri で pass する
-   - FFI 境界（`mp4_alloc` / `mp4_free`）が miri で問題なく通ること
-2. `Makefile` に `miri` ターゲットを追加する（`.PHONY` に追記、`cargo +nightly miri test -p wasm` を実行するレシピ、失敗時の対処方針コメント）
-3. `.github/workflows/ci.yml` に `miri` ジョブを追加する
-   - toolchain セットアップ: nightly + `miri` component
-   - 実行: `make miri`
-   - `slack_notify.needs` に `miri` を追加する
-4. CI 上で miri ジョブが green になること、および実行時間を確認する（遅すぎれば分離・間引きを再検討する）
+### 実施内容
+
+- `Makefile` に `miri` ターゲット（`cargo +nightly miri test -p wasm`）を追加し、失敗時の対処方針（実 UB は fix、miri 未サポートは `#[cfg(not(miri))]` で条件コンパイル外に落とす）をコメントで明記した
+- `.github/workflows/ci.yml` に `miri` ジョブを追加し、既存 CI と同じトリガー（`push` + 月–金 cron）で `make miri` を回すようにした
+- `slack_notify.needs` に `miri` を加え、失敗時通知を既存 Slack 経路に統合した
+- `CHANGES.md` の `## develop` の `### misc` に `[ADD]` エントリを追記した
+
+### レビュー指摘への追加対応
+
+`/review-diff-code` の指摘を受け、以下も本 PR に含めた:
+
+- Makefile の miri 未サポート時対処を `#[cfg_attr(miri, ignore)]` から `#[cfg(not(miri))]` に変えた（`shiguredo-rust` の `#[ignore]` 禁止規則との衝突解消）
+- `cargo +nightly miri setup` の明示行を削り、`cargo miri test` の暗黙 setup に任せた
+- miri ジョブのステップ構成を既存 4 ジョブの `- run:` 単発形式に揃え、ジョブ名を `Miri (WebAssembly)` に、`timeout-minutes` を 15 に絞った
+- `crates/wasm/src/boxes.rs` の `test_free_hevc_sample_entry_fields_survives_partial_alloc_failure_state` のダミーポインタを `std::ptr::without_provenance` に置き換え、miri の integer-to-pointer cast 警告を消した
+- `Makefile` の `.PHONY` 宣言と実体の不一致（`pbt-cover` / `fuzz`）も合わせて直した
+
+### 検証
+
+- ローカルで `cargo test -p wasm` および `cargo +nightly miri test -p wasm` がいずれも 58 テスト pass することを確認した（aarch64-apple-darwin, 2026-07-30, wall clock 約 27 秒）
+- CI ワークフロー実行で miri ジョブが green になることを確認した
 
 ## CHANGES.md
 

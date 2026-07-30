@@ -2,8 +2,12 @@
 //!
 //! 対象:
 //! - 主要エラーパス（`EmptyTracks` / `EmptySamples` / `MixedSampleEntries`）
-//! - `create_media_segment_metadata_with_sidx` の `earliest_presentation_time` が
-//!   `composition_time_offset` を反映すること（固定入力で PTS 最小値を検証する）
+//! - `create_media_segment_metadata_with_sidx` の `earliest_presentation_time` の
+//!   値・境界・`Overflow` 契約
+//!   - CTO=None 時に旧挙動と等価であること（後方互換性の回帰防止）
+//!   - 複数サンプルで PTS 最小値が採用されること
+//!   - セグメント跨ぎで負 CTO により先頭 DTS を下回るケース
+//!   - 負 PTS で `MuxError::Overflow` を返すこと
 //!
 //! 意図的なエラーパスと境界値は固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担う。
@@ -159,6 +163,8 @@ fn mixed_sample_entries_in_segment() {
 /// CTO が全て `None` のとき、sidx の EPT はセグメント先頭の累積 DTS と一致すること
 ///
 /// 第 1 セグメント（DTS=0）と第 2 セグメント（先行 duration 累積後）の両方を確認する。
+/// 修正前実装（`EPT = track.decode_time`）でも通過するテストであり、
+/// 「CTO=None 時に旧挙動と等価であり後方互換性が壊れない」ことの回帰防止を目的とする。
 #[test]
 fn sidx_ept_matches_decode_time_when_cto_is_none() {
     let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");

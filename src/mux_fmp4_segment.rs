@@ -235,8 +235,10 @@ impl Fmp4SegmentMuxer {
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
     /// `sidx` の `earliest_presentation_time` は、参照トラック各サンプルの
-    /// presentation time（`DTS + composition_time_offset`、`None` は 0）の最小値である。
-    /// いずれかの PTS が負、または `u64` に収まらない場合は [`MuxError::Overflow`] を返す。
+    /// PTS（`DTS + composition_time_offset`、`None` は 0）の最小値である。
+    /// PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` の表現範囲を外れた場合は
+    /// [`MuxError::Overflow`] を返す。
+    /// エラー時は muxer の内部状態を変更しない。
     ///
     /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
@@ -823,7 +825,11 @@ impl Fmp4SegmentMuxer {
 ///
 /// `DTS_i = decode_time + Σ_{k < i} duration_k`（当該トラックのサンプルのみ）、
 /// `PTS_i = DTS_i + composition_time_offset.unwrap_or(0)`。
-/// PTS が負、または `u64` に収まらない場合は [`MuxError::Overflow`] を返す。
+/// PTS が負、あるいは PTS または累積 DTS が `u64` の表現範囲を外れた場合は
+/// [`MuxError::Overflow`] を返す。
+///
+/// 呼び出し側は `samples` に `track_kind` を持つサンプルを最低 1 件含めること
+/// （逸脱した場合は末尾の `expect` で panic する）。
 fn compute_earliest_presentation_time(
     samples: &[Sample],
     track_kind: TrackKind,

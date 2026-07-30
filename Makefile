@@ -1,4 +1,4 @@
-.PHONY: test cover pbt pbt-cover fuzz fuzzing fuzzing-list check clippy fmt clean
+.PHONY: test cover pbt pbt-cover fuzz fuzzing fuzzing-list miri check clippy fmt clean
 
 # 全テストを実行する
 #
@@ -30,6 +30,19 @@ fuzzing:
 # Fuzzing ターゲット一覧を表示する
 fuzzing-list:
 	cargo fuzz list
+
+# wasm クレートを miri で実行する
+#
+# UB（align 契約違反 / uninit read / UAF 等）の検出網として使う。
+# nightly と miri component が必要（`rustup toolchain install nightly --component miri`）。
+#
+# miri 特有の失敗が出た場合の対処方針:
+# - 実 UB（不正なポインタ操作・契約違反等）: コードを直す（skip しない）
+# - miri 未サポート（外部 FFI・未実装 intrinsic 等で実 UB でないもの）:
+#   当該テストに `#[cfg_attr(miri, ignore = "...")]` を付け、理由をコメントに残す
+# - 判断に迷う場合は skip せず、まず再現最小ケースを切り出して調査する
+miri:
+	cargo +nightly miri test -p wasm
 
 # cargo check を実行する
 check:

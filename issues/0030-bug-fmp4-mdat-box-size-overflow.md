@@ -4,8 +4,8 @@
 - Created: 2026-07-20
 - Completed: YYYY-MM-DD
 - Model: qwen3.8-max-preview
-- Branch: feature/fix-fmp4-mdat-box-size-overflow
-- Polished: 2026-07-20
+- Branch: feature/fix-fmp4-segment-size-overflow
+- Polished: 2026-07-30
 
 ## 目的
 
@@ -38,12 +38,14 @@ let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u32::MAX as u6
 
 #### mdat オーバーフローの到達経路
 
-1. `mux::Sample.data_offset`（ユーザー入力、`u64`。`mux_mp4_file.rs` の `Sample`）
-2. `resolve_segment_tracks` 内で `data_offset.checked_add(data_size as u64)` → 成功すれば `u64::MAX` まで到達可能
-3. その結果が `payload_end` になり、`mdat_payload_size` の最大値に使われる
+`resolve_segment_tracks` はトラック payload を `data_offset == 0` から連続配置することを要求する。そのため「巨大な `data_offset` 単体」では連続検査に落ち、mdat サイズ加算には届かない。加算へ届く典型は次のとおり。
+
+1. `mux::Sample`（定義は `mux_mp4_file.rs`、公開は `mux`）で先頭トラックの `data_offset = 0`
+2. `data_size` を十分大きくする（64-bit では `usize` が `u64` 幅のため `u64::MAX - 7` 以上も指定可能）
+3. `resolve_segment_tracks` 内の `data_offset.checked_add(data_size as u64)` が成功し、`payload_end`（ひいては `mdat_payload_size`）が `u64::MAX` 近傍になる
 4. `BoxHeader::MIN_SIZE as u64 + mdat_payload_size` または `16u64 + mdat_payload_size` でオーバーフロー
 
-根本原因はユーザー入力の `data_offset` が未検証であること。`payload_end` 自体は `checked_add` で計算されるため `u64::MAX` に到達し得る。
+なお `build_moof` 内の `TrunSample.size` は `u32::try_from(data_size)` だが、mdat サイズ計算はその前に実行されるため、`data_size > u32::MAX` でも mdat 加算のオーバーフロー地点には到達できる。
 
 #### mdat 境界値
 
@@ -68,7 +70,11 @@ let needs_v1 = entries.iter().any(|e| {
 moof_offset: init_segment_size + e.moof_relative_offset,
 ```
 
-`init_segment_size` は `init_segment_bytes()` の長さ、`moof_relative_offset` は各メディアセグメント生成時の `media_bytes_written`（sidx 経路ではさらに sidx サイズを加算）。どちらも大きくなり得るため、和が `u64` を超え得る。
+`init_segment_size` は `init_segment_bytes()` の長さ、`moof_relative_offset` は各メディアセグメント生成時の `media_bytes_written`（sidx 経路ではさらに sidx サイズを加算）。和が `u64` を超える理論上の余地はある。
+
+ただし公開 API だけで `u64::MAX` 近傍の `moof_relative_offset` を確定させるのは実質不可能に近い。成功したセグメントでは `TrunSample.size` が `u32::try_from(data_size)` のため、1 セグメントあたりの payload は高々 `u32::MAX` 程度に抑えられ、`media_bytes_written` を `u64::MAX` 近傍まで進めるには非現実的なセグメント数が必要になる。また `tfra_entries` と `media_bytes_written` は `build_media_segment_bytes` 成功時のみコミットされる。mdat 側を巨大 `data_size` で落とす経路では、そもそも成功セグメントとして `moof_relative_offset` を積み上げられない。
+
+そのため mfra 側は「到達しにくいが、同ファイルの他加算と同様に `checked_add` で防御する」修正とする。再現テストは必須にしない。
 
 `needs_v1` は `.any()` クロージャ内のため、`?` をそのまま使えず、明示ループなどへ組み替える必要がある。
 
@@ -85,8 +91,8 @@ moof_offset: init_segment_size + e.moof_relative_offset,
 
 - `build_media_segment_bytes` の `mdat_box_size_value` / `extended_box_size` が `checked_add` になり、オーバーフロー時に `MuxError::Overflow` が返ること
 - `mfra_bytes` の `init_segment_size + e.moof_relative_offset`（version 判定・`TfraEntry` 組み立て）が `checked_add` になり、オーバーフロー時に `MuxError::Overflow` が返ること
-- mdat オーバーフローをトリガーするテストが追加されること（例: `data_size = 1, data_offset = u64::MAX - 1` として `payload_end = u64::MAX` を作り、`create_media_segment_metadata()` が `Err(MuxError::Overflow)` を返すこと。サンプルには `sample_entry: Some(...)` が必要。未設定だと `MissingSampleEntry` で早期リターンしオーバーフロー地点に到達しない）
-- mfra オーバーフローをトリガーするテストが追加されること（例: 巨大な `mdat_payload_size` で第 1 セグメントを通し `media_bytes_written` を `u64::MAX` 近傍まで進め、続く小さな第 2 セグメントで大きな `moof_relative_offset` を確定させたうえで `mfra_bytes()` が `Err(MuxError::Overflow)` を返すこと。第 2 セグメントの合計サイズが残りの `u64` 余裕に収まり、かつ `init_segment_size` がその余裕より大きい必要がある）
+- mdat オーバーフローをトリガーするテストが既存の `tests/test_mux_fmp4_segment.rs` に追加されること（例: 先頭トラックで `data_offset = 0`、`data_size` を `u64::MAX - 7` 以上にして `payload_end` を `u64::MAX` 近傍にし、`create_media_segment_metadata()` が `Err(MuxError::Overflow)` を返すこと。サンプルには `sample_entry: Some(...)` が必要。未設定だと `MissingSampleEntry` で早期リターンする。`data_offset` を 0 以外の巨大値にする例は、連続配置検査で弾かれるため使わない）
+- mfra 側のオーバーフロー再現テストは必須としない（公開 API では実質到達不能なため。コードが `checked_add` になっていることで完了とする）
 - 既存のテストが通ること
 - `cargo clippy` が通ること
 
@@ -94,7 +100,7 @@ moof_offset: init_segment_size + e.moof_relative_offset,
 
 1. `BoxHeader::MIN_SIZE as u64 + mdat_payload_size` を `(BoxHeader::MIN_SIZE as u64).checked_add(mdat_payload_size).ok_or(MuxError::Overflow)?` に、`16u64 + mdat_payload_size` を同様に `checked_add` に置き換える。
 2. `mfra_bytes` で `init_segment_size.checked_add(e.moof_relative_offset).ok_or(MuxError::Overflow)?` を使い、version 判定は `.any()` から失敗を伝播できるループ（または同等）へ変更する。
-3. テストは `tests/test_mux_fmp4_segment.rs` を新規作成して追加する（同モジュール向けの既存単体テストファイルは無い）。mdat / mfra それぞれのオーバーフローケースを入れる。
+3. 既存の `tests/test_mux_fmp4_segment.rs` に mdat オーバーフローケースを追記する（ファイルは既に存在するため新規作成しない）。
 
 ## 後方互換
 

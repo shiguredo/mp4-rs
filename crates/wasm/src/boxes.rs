@@ -408,8 +408,8 @@ impl nojson::DisplayJson for HevcNaluArrays {
 ///
 /// `Drop` を実装していないが、`parse_json_hevc_sample_entry_fields` の
 /// フェーズ 2 では `allocate_and_copy_bytes` / `allocate_and_copy_array_list`
-/// がいずれも panic せず失敗時に `(null, 0)` を返す前提に依存しており、
-/// 途中割り当て成功後の panic によるリークは発生しない。この前提を崩す変更を
+/// がいずれもパニックせず失敗時に `(null, 0)` を返す前提に依存しており、
+/// 途中割り当て成功後のパニックによるリークは発生しない。この前提を崩す変更を
 /// 入れる場合は所有権設計を見直すこと
 pub(crate) struct HevcSampleEntryFields {
     pub(crate) width: u16,
@@ -689,7 +689,7 @@ pub(crate) fn build_hevc_test_json_omitting(
 mod tests {
     use super::*;
 
-    /// `nalu_counts == null && nalu_data != null` の非常態を渡しても panic せず、
+    /// `nalu_counts == null && nalu_data != null` の非常態を渡してもパニックせず、
     /// `total_nalu_count == 0` として `free_array_list` が早期 return し、
     /// 各ポインタと `nalu_array_count` がリセットされることを検証する。
     ///
@@ -718,7 +718,7 @@ mod tests {
             &mut nalu_sizes,
         );
 
-        // 非常態から panic せずに戻り、ポインタと個数がすべてリセットされている
+        // 非常態からパニックせずに戻り、ポインタと個数がすべてリセットされている
         assert_eq!(nalu_array_count, 0);
         assert!(nalu_types.is_null());
         assert!(nalu_counts.is_null());

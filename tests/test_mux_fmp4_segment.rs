@@ -54,7 +54,7 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
 fn video_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usize) -> Sample {
     Sample {
         track_kind: TrackKind::Video,
-        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロである"),
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(sample_entry),
         duration: 3000,
         keyframe: true,

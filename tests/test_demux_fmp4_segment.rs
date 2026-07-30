@@ -63,7 +63,7 @@ fn build_init_and_media_segments() -> (Vec<u8>, Vec<u8>) {
     let payload = [0u8; 16];
     let sample = Sample {
         track_kind: TrackKind::Video,
-        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロである"),
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(sample_entry),
         duration: 3000,
         keyframe: true,
@@ -88,12 +88,12 @@ fn build_init_and_media_segments() -> (Vec<u8>, Vec<u8>) {
 /// 正当な init を 2 回 `handle_init_segment` すると `InvalidState` になること
 #[test]
 fn invalid_state_double_init() {
-    let (init_segment, _) = build_init_and_media_segments();
+    let (init_segment, _media_segment) = build_init_and_media_segments();
     let mut demuxer = Fmp4SegmentDemuxer::new();
 
     demuxer
         .handle_init_segment(&init_segment)
-        .expect("1 回目の handle_init_segment は成功するはず");
+        .expect("1 回目の handle_init_segment に失敗した");
 
     let result = demuxer.handle_init_segment(&init_segment);
     assert!(
@@ -118,7 +118,7 @@ fn invalid_state_tracks_before_init() {
 /// init 前に正当なメディアセグメントを渡すと `InvalidState` になること
 #[test]
 fn invalid_state_media_before_init() {
-    let (_, media_segment) = build_init_and_media_segments();
+    let (_init_segment, media_segment) = build_init_and_media_segments();
     let mut demuxer = Fmp4SegmentDemuxer::new();
 
     let result = demuxer.handle_media_segment(&media_segment);

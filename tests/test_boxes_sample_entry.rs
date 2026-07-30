@@ -27,8 +27,7 @@ fn make_vpcc(codec_initialization_data: Vec<u8>) -> VpccBox {
 /// `..._exceeds_u16_max` が担う）
 #[test]
 fn vpcc_box_encode_codec_init_data_at_u16_max() {
-    let data = vec![0xAB; usize::from(u16::MAX)];
-    let vpcc = make_vpcc(data.clone());
+    let vpcc = make_vpcc(vec![0xAB; usize::from(u16::MAX)]);
 
     let encoded = vpcc
         .encode_to_vec()
@@ -37,7 +36,9 @@ fn vpcc_box_encode_codec_init_data_at_u16_max() {
         VpccBox::decode(&encoded).expect("直前にエンコードした有効な VpccBox は必ずデコードできる");
 
     assert_eq!(size, encoded.len());
-    assert_eq!(decoded.codec_initialization_data, data);
+    // codec_initialization_data だけでなく全フィールドが roundtrip で保存されることを確認する
+    // （65535 バイト特有のバッファ書き込みで直前のビットパックが壊れる回帰を検出できるように）
+    assert_eq!(decoded, vpcc);
 }
 
 /// `codec_initialization_data.len() == u16::MAX + 1` のとき encode が
@@ -56,10 +57,17 @@ fn vpcc_box_encode_codec_init_data_exceeds_u16_max() {
         "エラー種別が InvalidInput ではない (実際は {:?})",
         err.kind,
     );
+    // 現状 encode 側は with_box_type を通らないため box_type は None のはず。
+    // encode 側でも box_type 付与するように変えたときにこの assert が落ちて意図的な変更だと気付ける
+    assert_eq!(
+        err.box_type, None,
+        "encode 側は with_box_type を通っていないため box_type は None のはず (実際は {:?})",
+        err.box_type,
+    );
+    // 実装側のエラー文言と密結合させないため、識別に必要な最小限のキーワードだけ確認する
     assert!(
-        err.reason
-            .contains("codec_initialization_data exceeds u16::MAX"),
-        "エラー理由に長さ超過の説明が含まれるはず (実際は {:?})",
+        err.reason.contains("codec_initialization_data"),
+        "エラー理由に対象フィールド名が含まれるはず (実際は {:?})",
         err.reason,
     );
 }

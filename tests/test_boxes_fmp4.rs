@@ -194,7 +194,12 @@ mod trun_sample_option_consistency {
         }
     }
 
-    /// encode が `ErrorKind::InvalidInput` で失敗することを確認する
+    /// encode が per-sample Option 整合性チェックの経路で `ErrorKind::InvalidInput` を返すことを確認する
+    ///
+    /// `TrunBox::encode` には他の `InvalidInput` 経路（cto の version 0 / 1 範囲外など）もあるので、
+    /// `err.kind` の一致だけでは狙った validate 経路を確実には特定できない。
+    /// `validate_sample_option_consistency` が返す文言に含まれる特徴的な句 `"inconsistent Option presence"` を
+    /// 併せて確認し、別経路の `InvalidInput` を「合格」と誤認するリスクを消す。
     #[track_caller]
     fn assert_invalid_input_on_encode(trun: &TrunBox, ctx: &str) {
         let err = trun
@@ -205,6 +210,11 @@ mod trun_sample_option_consistency {
             ErrorKind::InvalidInput,
             "エラー種別が `InvalidInput` ではない: {ctx} (実際は {:?}, reason={})",
             err.kind,
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("inconsistent Option presence"),
+            "エラーが per-sample Option 整合性チェックの経路から出ていない: {ctx} (reason={})",
             err.reason,
         );
     }

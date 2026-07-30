@@ -597,6 +597,13 @@ proptest! {
             err.kind,
             err.reason,
         );
+        // TrunBox::encode には別の InvalidInput 経路 (cto 範囲外など) もあるため、
+        // validate_sample_option_consistency の特徴的な文言で経路を絞り込む
+        prop_assert!(
+            err.reason.contains("inconsistent Option presence"),
+            "エラーが per-sample Option 整合性チェックの経路から出ていない (reason={})",
+            err.reason,
+        );
     }
 
     // ===== TrafBox のテスト =====

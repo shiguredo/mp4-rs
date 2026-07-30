@@ -633,6 +633,7 @@ impl TrunBox {
     /// ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の
     /// 有無フラグ (`tr_flags`) が run 全体で共通のため、サンプルごとに `Some` / `None` が混在する
     /// 入力は表現できない。不整合なら [`crate::ErrorKind::InvalidInput`] を返す。
+    /// エラー文言には最初に不整合が検出されたサンプル index とフィールド名が含まれる。
     fn validate_sample_option_consistency(&self) -> Result<()> {
         let Some(first) = self.samples.first() else {
             return Ok(());
@@ -642,15 +643,31 @@ impl TrunBox {
         let has_flags = first.flags.is_some();
         let has_composition_time_offset = first.composition_time_offset.is_some();
 
-        for sample in self.samples.iter().skip(1) {
-            if sample.duration.is_some() != has_duration
-                || sample.size.is_some() != has_size
-                || sample.flags.is_some() != has_flags
-                || sample.composition_time_offset.is_some() != has_composition_time_offset
-            {
-                return Err(Error::invalid_input(
-                    "TrunBox samples must have consistent Option presence for duration, size, flags, and composition_time_offset",
-                ));
+        // enumerate() の index は samples 全体（先頭を含む）を基準とする
+        for (index, sample) in self.samples.iter().enumerate().skip(1) {
+            // どのフィールドで最初に不整合を見つけたかを（先頭側 / 当該サンプル側の Some/None つきで）報告する
+            let mismatch = if sample.duration.is_some() != has_duration {
+                Some(("duration", has_duration, sample.duration.is_some()))
+            } else if sample.size.is_some() != has_size {
+                Some(("size", has_size, sample.size.is_some()))
+            } else if sample.flags.is_some() != has_flags {
+                Some(("flags", has_flags, sample.flags.is_some()))
+            } else if sample.composition_time_offset.is_some() != has_composition_time_offset {
+                Some((
+                    "composition_time_offset",
+                    has_composition_time_offset,
+                    sample.composition_time_offset.is_some(),
+                ))
+            } else {
+                None
+            };
+            if let Some((field, expected_some, got_some)) = mismatch {
+                let presence = |is_some: bool| if is_some { "Some" } else { "None" };
+                return Err(Error::invalid_input(format!(
+                    "TrunBox sample {index} has inconsistent Option presence for {field}: sample 0 is {}, sample {index} is {}",
+                    presence(expected_some),
+                    presence(got_some),
+                )));
             }
         }
         Ok(())

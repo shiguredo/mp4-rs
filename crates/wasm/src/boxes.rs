@@ -739,4 +739,64 @@ mod tests {
         assert!(without_width.contains("\"height\": 1080"));
         assert!(without_width.contains("\"lengthSizeMinusOne\": 3"));
     }
+
+    /// 必須スカラーフィールドを 1 つずつ欠落させた JSON を渡し、
+    /// いずれのケースでも `parse_json_hevc_sample_entry_fields` が `Err` を返すことを検証する。
+    ///
+    /// closed issue 0047 で確立した「フェーズ 1 で全 JSON フィールドを Rust 型に落として
+    /// からフェーズ 2 で一括メモリ確保する」順序の invariant を、18 個の全スカラー欠落
+    /// パターンで守るための表駆動テスト
+    #[test]
+    fn test_parse_json_hevc_sample_entry_fields_rejects_each_missing_scalar_field() {
+        let arrays = r#"[{"naluType": 32, "units": [[1, 2]]}]"#;
+        for &(field_name, _) in HEVC_TEST_JSON_SCALAR_FIELDS {
+            let json_str = build_hevc_test_json_omitting("hev1", arrays, Some(field_name));
+            let json = nojson::RawJson::parse(&json_str)
+                .expect("有効な JSON（スカラー欠落は JSON 構造としては壊さない）");
+            let result = parse_json_hevc_sample_entry_fields(json.value());
+            assert!(
+                result.is_err(),
+                "スカラーフィールド {field_name} 欠落時はパース失敗すること"
+            );
+        }
+    }
+
+    /// `naluArrays` メンバ自体が欠落した JSON を渡すと `Err` を返すことを検証する。
+    ///
+    /// `parse_json_hevc_sample_entry_fields` はフェーズ 1 の先頭で `naluArrays` を読むため、
+    /// この経路はスカラーの取り込みに到達する前に失敗する
+    #[test]
+    fn test_parse_json_hevc_sample_entry_fields_rejects_missing_nalu_arrays() {
+        // スカラーは全揃いで `naluArrays` だけ欠落させる
+        let body = HEVC_TEST_JSON_SCALAR_FIELDS
+            .iter()
+            .map(|(name, value)| format!("    \"{name}\": {value}"))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        let json_str = format!("{{\n    \"kind\": \"hev1\",\n{body}\n}}");
+
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let result = parse_json_hevc_sample_entry_fields(json.value());
+        assert!(result.is_err(), "naluArrays 欠落時はパース失敗すること");
+    }
+
+    /// `naluArrays[i].naluType` が欠落した JSON を渡すと `Err` を返すことを検証する
+    #[test]
+    fn test_parse_json_hevc_sample_entry_fields_rejects_missing_nalu_type_in_array_element() {
+        let arrays = r#"[{"units": [[1, 2]]}]"#;
+        let json_str = build_hevc_test_json_omitting("hev1", arrays, None);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let result = parse_json_hevc_sample_entry_fields(json.value());
+        assert!(result.is_err(), "naluType 欠落時はパース失敗すること");
+    }
+
+    /// `naluArrays[i].units` が欠落した JSON を渡すと `Err` を返すことを検証する
+    #[test]
+    fn test_parse_json_hevc_sample_entry_fields_rejects_missing_units_in_array_element() {
+        let arrays = r#"[{"naluType": 32}]"#;
+        let json_str = build_hevc_test_json_omitting("hev1", arrays, None);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let result = parse_json_hevc_sample_entry_fields(json.value());
+        assert!(result.is_err(), "units 欠落時はパース失敗すること");
+    }
 }

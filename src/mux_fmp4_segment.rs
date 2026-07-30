@@ -234,6 +234,12 @@ impl Fmp4SegmentMuxer {
     ///
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
+    /// `sidx` の `earliest_presentation_time` は、参照トラック各サンプルの
+    /// PTS（`DTS + composition_time_offset`、`None` は 0）の最小値である。
+    /// PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` の表現範囲を外れた場合は
+    /// [`MuxError::Overflow`] を返す。
+    /// エラー時は muxer の内部状態を変更しない。
+    ///
     /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
     ///
@@ -258,11 +264,15 @@ impl Fmp4SegmentMuxer {
             .find(|s| s.track_kind == first_track_kind)
             .map(|s| s.keyframe)
             .unwrap_or(false);
-        let earliest_presentation_time = self
+        // build_media_segment_bytes 呼び出し前なので、ここでの decode_time は
+        // 当該セグメント先頭の累積 DTS（未登録トラックなら 0）である。
+        let decode_time = self
             .tracks
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
+        let earliest_presentation_time =
+            compute_earliest_presentation_time(samples, first_track_kind, decode_time)?;
 
         // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリ数を記録しておく。
         // sidx エンコード後にこの記録と比較すれば、今回の呼び出しで新規追加された
@@ -809,6 +819,41 @@ impl Fmp4SegmentMuxer {
             unknown_boxes: Vec::new(),
         })
     }
+}
+
+/// 参照トラックの各サンプルについて PTS を求め、その最小値を返す
+///
+/// `DTS_i = decode_time + Σ_{k < i} duration_k`（当該トラックのサンプルのみ）、
+/// `PTS_i = DTS_i + composition_time_offset.unwrap_or(0)`。
+/// PTS が負、あるいは PTS または累積 DTS が `u64` の表現範囲を外れた場合は
+/// [`MuxError::Overflow`] を返す。
+///
+/// 呼び出し側は `samples` に `track_kind` を持つサンプルを最低 1 件含めること
+/// （逸脱した場合は末尾の `expect` で panic する）。
+fn compute_earliest_presentation_time(
+    samples: &[Sample],
+    track_kind: TrackKind,
+    decode_time: u64,
+) -> Result<u64, MuxError> {
+    let mut dts = decode_time;
+    let mut min_pts: Option<i128> = None;
+
+    for sample in samples
+        .iter()
+        .filter(|sample| sample.track_kind == track_kind)
+    {
+        let cto = i128::from(sample.composition_time_offset.unwrap_or(0));
+        // dts (u64) + cto (i64) は i128 の表現範囲を超え得ないため、単純加算でよい
+        let pts = i128::from(dts) + cto;
+        min_pts = Some(min_pts.map_or(pts, |current| current.min(pts)));
+        dts = dts
+            .checked_add(u64::from(sample.duration))
+            .ok_or(MuxError::Overflow)?;
+    }
+
+    // 呼び出し側は samples[0].track_kind を渡すため、当該 kind のサンプルは少なくとも 1 件ある。
+    let min_pts = min_pts.expect("bug: reference track must have at least one sample");
+    u64::try_from(min_pts).map_err(|_| MuxError::Overflow)
 }
 
 fn resolve_segment_tracks(

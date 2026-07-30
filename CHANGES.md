@@ -163,6 +163,11 @@
   - `allocate_and_copy_u16_array` / `allocate_and_copy_array_list` および hev1 / hvc1 の `nalu_counts` が `mp4_alloc`（align 1）経由で `u16` / `u32` / ポインタ配列として読まれていた契約違反を解消する
   - `mp4_alloc` / `mp4_free` の C ABI は変更しない
   - @sile
+- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` で `sidx` の `earliest_presentation_time` が `composition_time_offset` を無視して DTS だけを使っていた問題を修正する
+  - これまではセグメント先頭の累積 DTS（`track.decode_time`）をそのまま入れていた
+  - 参照トラック各サンプルの PTS（`DTS + composition_time_offset`、`None` は 0）の最小値を使うようにする
+  - PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` に収まらない場合は `MuxError::Overflow` を返す
+  - @sile
 
 ### misc
 

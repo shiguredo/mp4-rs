@@ -5,11 +5,11 @@
 - Completed: YYYY-MM-DD
 - Model: Opus 4.7
 - Branch: feature/refactor-wasm-hev1-hvc1-dedup
-- Polished: YYYY-MM-DD
+- Polished: 2026-07-30
 
 ## 目的
 
-`crates/wasm/src/boxes_hev1.rs` と `crates/wasm/src/boxes_hvc1.rs` は、識別子（`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1`、関数名の `_hev1_` / `_hvc1_`）と一部のポインタキャスト書式を除いて、実装の 95% 以上が同一の重複コードである。closed issue 0010 で「片方だけ触って片方を忘れる」タイプのバグが実際に起きた場所であり、再発防止のため共通化する。
+`crates/wasm/src/boxes_hev1.rs` と `crates/wasm/src/boxes_hvc1.rs` は、識別子（`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1`、関数名の `_hev1_` / `_hvc1_`、JSON の `"kind"`）と一部コメント・テスト JSON の整形を除いて、実装の 95% 以上が同一の重複コードである。closed issue 0010 で「片方だけ触って片方を忘れる」タイプのバグが実際に起きた場所であり、再発防止のため共通化する。
 
 ## 優先度根拠
 
@@ -17,42 +17,50 @@ Medium。closed issue 0010 で「両方に同型のバグ（`mp4_free(_, 0)` の
 
 ## 現状
 
-hev1 / hvc1 の 2 ファイルは合計 1031 行あり、実質同一の 4 経路で重複している。
+hev1 / hvc1 の 2 ファイルは合計 1147 行（`boxes_hev1.rs` 566 + `boxes_hvc1.rs` 581）あり、実質同一の 4 経路で重複している。
 
 ### 経路 1: 解放関数
 
-- `crates/wasm/src/boxes_hev1.rs:202` `mp4_sample_entry_hev1_free`（約 45 行）
-- `crates/wasm/src/boxes_hvc1.rs:202` `mp4_sample_entry_hvc1_free`（同 45 行）
+- `crates/wasm/src/boxes_hev1.rs` の `mp4_sample_entry_hev1_free`
+- `crates/wasm/src/boxes_hvc1.rs` の `mp4_sample_entry_hvc1_free`
 
 差はコーデック名と `entry` の型（`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1`）のみ。
 
 ### 経路 2: JSON パース関数
 
-- `crates/wasm/src/boxes_hev1.rs:96` `parse_json_mp4_sample_entry_hev1`（約 100 行）
-- `crates/wasm/src/boxes_hvc1.rs:96` `parse_json_mp4_sample_entry_hvc1`（同 100 行）
+- `crates/wasm/src/boxes_hev1.rs` の `parse_json_mp4_sample_entry_hev1`
+- `crates/wasm/src/boxes_hvc1.rs` の `parse_json_mp4_sample_entry_hvc1`
 
-差はコーデック名のみ。**issue 0047 が別途「allocate 順序の deferred 化」で書き換えを予定しているため、共通化タイミングは 0047 との調整**（実装時に判断）。
+差はコーデック名と戻り値型のみ。closed issue 0047（`Completed: 2026-07-29`）により、両関数とも「フェーズ 1: JSON を Rust 型に落とす → フェーズ 2: 末尾で `allocate_and_copy_*`」の deferred allocate に既に揃っている。0047 は allocate 順序の統一のみで、hev1 / hvc1 間の共通化は行っていない。したがって経路 2 の共通化は本 issue の対象に含める。
 
 ### 経路 3: JSON 出力（NaluArrays::fmt）
 
-- `crates/wasm/src/boxes_hev1.rs:53-93` `struct NaluArrays` と `impl nojson::DisplayJson for NaluArrays`
-- `crates/wasm/src/boxes_hvc1.rs:53-93` 完全同一（コメントの「HEVC」の 1 文字だけ差）
+- `crates/wasm/src/boxes_hev1.rs` の `struct NaluArrays` と `impl nojson::DisplayJson for NaluArrays`
+- `crates/wasm/src/boxes_hvc1.rs` の同名定義
+
+本体は完全同一。差は doc コメントの接頭辞（`HEVC NALU` / `NALU`）のみ。
 
 ### 経路 4: テストの JSON リテラル
 
-- 各ファイルに 6 個のテスト（`test_*_to_json` / `test_json_to_*` / `test_json_to_*_free_{more,fewer,empty}_nalu_arrays`）
-- テスト内 JSON リテラルは 16 個の共通フィールド（`width` 〜 `lengthSizeMinusOne`）を繰り返しており、差は `"kind": "hev1"` vs `"kind": "hvc1"` と `naluArrays` の中身だけ
+- 各ファイルに 6 個のテスト（`test_*_to_json` / `test_json_to_*` / `test_json_to_*_rejects_missing_width_after_nalu_arrays` / `test_json_to_*_free_{more,fewer,empty}_nalu_arrays`）
+- テスト内 JSON リテラルは共通スカラーフィールド（`width` 〜 `lengthSizeMinusOne` の 18 個）を繰り返しており、差は `"kind": "hev1"` vs `"kind": "hvc1"` と `naluArrays` の中身、および一部テストでの JSON 整形差だけ
 
 ## 設計方針
 
 共通の内部 helper に寄せる。マクロは使わない（`shiguredo-rust` の「マクロを作らないこと」規約）。
 
-`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` は `crates/c-api/src/boxes.rs` の `#[repr(C)]` 構造体でフィールドレイアウトが完全に同一。共通化は次の 2 通りが考えられ、実装時に判断する:
+`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` は `crates/c-api/src/boxes.rs` の `#[repr(C)]` 構造体でフィールドレイアウトが完全に同一（closed issue 0035 で導入した非公開中間型 `HevcSampleEntryRaw` とも同型）。共通化は次の方針に固定する:
 
-- **案 A（ジェネリクス + トレイト）**: `fn free_hevc_sample_entry<T: HevcSampleEntry>(entry: &mut T)` + trait `HevcSampleEntry` でフィールドアクセスを抽象化する。ただし `shiguredo-rust` は「トレイトを作らないこと」を規約とするため、許可を取る必要がある
 - **案 B（ヘルパー関数の引数化）**: `fn free_hevc_sample_entry_fields(nalu_array_count: &mut u32, nalu_types: &mut *const u8, ...)` として生ポインタを渡す。`*_free` 関数はフィールドを取り出して helper に渡すだけの薄いラッパになる。トレイト不使用
+- **案 A（ジェネリクス + トレイト）は不採用**: `shiguredo-rust` は「トレイトを作らないこと」を規約としており、closed issue 0035（コア + c-api の Hev1 / Hvc1 共通化）もトレイトを使わずヘルパー抽出に寄せている。本 issue でも同様に案 A は採らない
 
-推奨は案 B（トレイト不使用）。
+### 経路 1 の共通化
+
+`crates/wasm/src/boxes.rs` に `free_hevc_sample_entry_fields` を置き、`mp4_sample_entry_hev1_free` / `_hvc1_free` を薄いラッパにする。
+
+### 経路 2 の共通化
+
+同様にヘルパーへ寄せる。公開関数 `parse_json_mp4_sample_entry_hev1` / `_hvc1` のシグネチャと戻り値型は変えず、JSON からのスカラー・NALU 配列の取り込みと `allocate_and_copy_*` 呼び出しを共通化する。戻り値の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` 構築だけを各公開関数側に残す。
 
 ### 経路 3 の共通化
 
@@ -64,22 +72,23 @@ hev1 / hvc1 の 2 ファイルは合計 1031 行あり、実質同一の 4 経�
 
 ### 他 issue との関係
 
-- **issue 0035**（コアの `src/boxes_sample_entry.rs` と `crates/c-api/src/boxes.rs` の Hev1Box / Hvc1Box 重複を共通化）: レイヤーが異なる（コア + c-api）。本 issue は wasm 側に閉じる
-- **issue 0047**（`parse_json_mp4_sample_entry_*` 系 9 関数の allocate 順序 defer 化）: 経路 2 と対象が重なる。0047 の実装時に共通化まで含めるか、完了後に本 issue で共通化するかは実装時に判断
+- **issue 0035**（コアの `src/boxes_sample_entry.rs` と `crates/c-api/src/boxes.rs` の Hev1Box / Hvc1Box 重複を共通化）: 完了済み。レイヤーが異なる（コア + c-api）。本 issue は wasm 側に閉じる
+- **issue 0047**（`parse_json_mp4_sample_entry_*` 系の allocate 順序 defer 化）: 完了済み。経路 2 の allocate 順序は既に揃っている。共通化は 0047 のスコープ外だったため、本 issue で行う
+- **issue 0048**（`mp4_alloc` / `allocate_and_copy_*` のアラインメント）: 別目的。本 issue では触らない
 
 ## 完了条件
 
-- 経路 1・3・4 の重複が解消される（経路 2 は 0047 との調整による）
+- 経路 1・2・3・4 の重複が解消される
 - 公開 API（`pub fn mp4_sample_entry_hev1_free` / `_hvc1_free`、`pub fn parse_json_mp4_sample_entry_hev1` / `_hvc1`、`pub fn fmt_json_mp4_sample_entry_hev1` / `_hvc1`）のシグネチャは変えない
 - `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz` が pass する
 - `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz --all-targets -- -D warnings` が warning なしで通る
 
 ## 解決方法
 
-案 B（トレイト不使用のヘルパー関数化）で対応する場合の手順:
+案 B（トレイト不使用のヘルパー関数化）で対応する手順:
 
 1. `crates/wasm/src/boxes.rs` に共通ヘルパー `free_hevc_sample_entry_fields` を追加する
 2. `mp4_sample_entry_hev1_free` / `_hvc1_free` を薄いラッパに置き換える
-3. `struct NaluArrays` と `impl nojson::DisplayJson for NaluArrays` を `crates/wasm/src/boxes.rs`（または新規モジュール）に集約し、両ファイルから `use` する
-4. テストヘルパー `build_hevc_test_json` を導入し、6 個の JSON リテラルからヘッダ部分を差し替え可能にする
-5. `parse_json_mp4_sample_entry_*` の共通化は 0047 完了後、あるいは 0047 に含めて対応
+3. JSON パース本体を共通ヘルパーへ寄せ、`parse_json_mp4_sample_entry_hev1` / `_hvc1` は戻り値型の構築だけを担う薄いラッパにする（deferred allocate のフェーズ分割は維持する）
+4. `struct NaluArrays` と `impl nojson::DisplayJson for NaluArrays` を `crates/wasm/src/boxes.rs`（または新規モジュール）に集約し、両ファイルから `use` する
+5. テストヘルパー `build_hevc_test_json` を導入し、6 個の JSON リテラルからヘッダ部分を差し替え可能にする

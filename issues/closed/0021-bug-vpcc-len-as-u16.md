@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-vpcc-len-as-u16
 - Polished: 2026-07-29

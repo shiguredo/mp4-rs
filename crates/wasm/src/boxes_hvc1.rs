@@ -2,6 +2,11 @@
 
 use c_api::boxes::Mp4SampleEntryHvc1;
 
+use crate::boxes::{
+    HevcNaluArrays, HevcSampleEntryAllocated, free_hevc_sample_entry_fields,
+    parse_json_hevc_sample_entry_fields,
+};
+
 /// HVC1（H.265/HEVC）サンプルエントリーを JSON フォーマットする
 pub fn fmt_json_mp4_sample_entry_hvc1(
     f: &mut nojson::JsonFormatter<'_, '_>,
@@ -38,7 +43,7 @@ pub fn fmt_json_mp4_sample_entry_hvc1(
         f.member("lengthSizeMinusOne", data.length_size_minus_one)?;
         f.member(
             "naluArrays",
-            NaluArrays {
+            HevcNaluArrays {
                 nalu_types: data.nalu_types,
                 nalu_counts: data.nalu_counts,
                 nalu_data: data.nalu_data,
@@ -49,236 +54,61 @@ pub fn fmt_json_mp4_sample_entry_hvc1(
     })
 }
 
-/// NALU 配列の JSON シリアライズ用構造体
-struct NaluArrays {
-    nalu_types: *const u8,
-    nalu_counts: *const u32,
-    nalu_data: *const *const u8,
-    nalu_sizes: *const u32,
-    nalu_array_count: u32,
-}
-
-impl nojson::DisplayJson for NaluArrays {
-    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
-        f.array(|f| {
-            let mut nalu_index_base = 0u32;
-            for i in 0..self.nalu_array_count as usize {
-                let nalu_type = unsafe { *self.nalu_types.add(i) };
-                let nalu_count = unsafe { *self.nalu_counts.add(i) };
-
-                f.element(nojson::object(|f| {
-                    f.member("naluType", nalu_type)?;
-                    f.member(
-                        "units",
-                        nojson::array(|f| {
-                            for j in 0..nalu_count {
-                                let nalu_index = nalu_index_base + j;
-                                let nalu_ptr = unsafe { *self.nalu_data.add(nalu_index as usize) };
-                                let nalu_size =
-                                    unsafe { *self.nalu_sizes.add(nalu_index as usize) } as usize;
-                                let nalu =
-                                    unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
-                                f.element(nalu)?;
-                            }
-                            Ok(())
-                        }),
-                    )
-                }))?;
-
-                nalu_index_base += nalu_count;
-            }
-            Ok(())
-        })
-    }
-}
-
 /// JSON から Mp4SampleEntryHvc1 に変換する
 pub fn parse_json_mp4_sample_entry_hvc1(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Mp4SampleEntryHvc1, nojson::JsonParseError> {
-    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
-    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
-    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
-
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
-    // NALU 配列を走査して nalu_types_vec / nalu_counts_vec / nalu_data_vec を構築する
-    let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
-
-    let mut nalu_types_vec = Vec::new();
-    let mut nalu_counts_vec = Vec::new();
-    let mut nalu_data_vec = Vec::new();
-
-    for nalu_array in nalu_arrays_value.to_array()? {
-        // NALU タイプを取得
-        let nalu_type: u8 = nalu_array.to_member("naluType")?.required()?.try_into()?;
-        nalu_types_vec.push(nalu_type);
-
-        // NALU ユニットを処理
-        let units_value = nalu_array.to_member("units")?.required()?;
-
-        let mut nalu_count = 0u32;
-        for unit in units_value.to_array()? {
-            let nalu_bytes: Vec<u8> = unit.try_into()?;
-            nalu_data_vec.push(nalu_bytes);
-            nalu_count += 1;
-        }
-        nalu_counts_vec.push(nalu_count);
-    }
-
-    // 残りのスカラーフィールド
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let general_profile_space: u8 = value
-        .to_member("generalProfileSpace")?
-        .required()?
-        .try_into()?;
-    let general_tier_flag: u8 = value.to_member("generalTierFlag")?.required()?.try_into()?;
-    let general_profile_idc: u8 = value
-        .to_member("generalProfileIdc")?
-        .required()?
-        .try_into()?;
-    let general_profile_compatibility_flags: u32 = value
-        .to_member("generalProfileCompatibilityFlags")?
-        .required()?
-        .try_into()?;
-    let general_constraint_indicator_flags: u64 = value
-        .to_member("generalConstraintIndicatorFlags")?
-        .required()?
-        .try_into()?;
-    let general_level_idc: u8 = value.to_member("generalLevelIdc")?.required()?.try_into()?;
-    let chroma_format_idc: u8 = value.to_member("chromaFormatIdc")?.required()?.try_into()?;
-    let bit_depth_luma_minus8: u8 = value
-        .to_member("bitDepthLumaMinus8")?
-        .required()?
-        .try_into()?;
-    let bit_depth_chroma_minus8: u8 = value
-        .to_member("bitDepthChromaMinus8")?
-        .required()?
-        .try_into()?;
-    let min_spatial_segmentation_idc: u16 = value
-        .to_member("minSpatialSegmentationIdc")?
-        .required()?
-        .try_into()?;
-    let parallelism_type: u8 = value.to_member("parallelismType")?.required()?.try_into()?;
-    let avg_frame_rate: u16 = value.to_member("avgFrameRate")?.required()?.try_into()?;
-    let constant_frame_rate: u8 = value
-        .to_member("constantFrameRate")?
-        .required()?
-        .try_into()?;
-    let num_temporal_layers: u8 = value
-        .to_member("numTemporalLayers")?
-        .required()?
-        .try_into()?;
-    let temporal_id_nested: u8 = value
-        .to_member("temporalIdNested")?
-        .required()?
-        .try_into()?;
-    let length_size_minus_one: u8 = value
-        .to_member("lengthSizeMinusOne")?
-        .required()?
-        .try_into()?;
-    let nalu_array_count = nalu_types_vec.len() as u32;
-
-    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
-    let (nalu_types, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
-        std::slice::from_raw_parts(nalu_types_vec.as_ptr(), nalu_types_vec.len())
-    });
-    let (nalu_counts, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
-        std::slice::from_raw_parts(
-            nalu_counts_vec.as_ptr() as *const u8,
-            nalu_counts_vec.len() * std::mem::size_of::<u32>(),
-        )
-    });
-    let (nalu_data, nalu_sizes, _) = crate::boxes::allocate_and_copy_array_list(&nalu_data_vec);
-
-    Ok(Mp4SampleEntryHvc1 {
-        width,
-        height,
-        general_profile_space,
-        general_tier_flag,
-        general_profile_idc,
-        general_profile_compatibility_flags,
-        general_constraint_indicator_flags,
-        general_level_idc,
-        chroma_format_idc,
-        bit_depth_luma_minus8,
-        bit_depth_chroma_minus8,
-        min_spatial_segmentation_idc,
-        parallelism_type,
-        avg_frame_rate,
-        constant_frame_rate,
-        num_temporal_layers,
-        temporal_id_nested,
-        length_size_minus_one,
-        nalu_array_count,
-        nalu_types,
-        nalu_counts: nalu_counts as *const u32,
-        nalu_data,
-        nalu_sizes,
-    })
+    Ok(hevc_fields_to_hvc1(parse_json_hevc_sample_entry_fields(
+        value,
+    )?))
 }
 
 /// HVC1 サンプルエントリーのメモリを解放する
 ///
 /// `parse_json_mp4_sample_entry_hvc1()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_hvc1_free(entry: &mut Mp4SampleEntryHvc1) {
-    // 全 NALU 総数を関数先頭のローカルに持たせておく理由は、後段の `free_array_list` の
-    // count 引数に使うため。総数の算出は `nalu_counts` の解放より前に済ませないと
-    // use-after-free になる。
-    //
-    // 各フィールドの確保サイズは要素型と `nalu_array_count` から求まる:
-    // - `nalu_types`: 要素 `u8` × `nalu_array_count`
-    // - `nalu_counts`: 要素 `u32` × `nalu_array_count`
-    // - `nalu_data` / `nalu_sizes`: 要素数は「NALU 配列の個数」ではなく「全 NALU の総数」
-    let mut total_nalu_count: u32 = 0;
+    free_hevc_sample_entry_fields(
+        &mut entry.nalu_array_count,
+        &mut entry.nalu_types,
+        &mut entry.nalu_counts,
+        &mut entry.nalu_data,
+        &mut entry.nalu_sizes,
+    );
+}
 
-    if !entry.nalu_types.is_null() {
-        unsafe {
-            crate::mp4_free(entry.nalu_types.cast_mut(), entry.nalu_array_count);
-        }
-        entry.nalu_types = std::ptr::null();
+/// 共通フィールドを `Mp4SampleEntryHvc1` へ写し替える
+fn hevc_fields_to_hvc1(fields: HevcSampleEntryAllocated) -> Mp4SampleEntryHvc1 {
+    Mp4SampleEntryHvc1 {
+        width: fields.width,
+        height: fields.height,
+        general_profile_space: fields.general_profile_space,
+        general_tier_flag: fields.general_tier_flag,
+        general_profile_idc: fields.general_profile_idc,
+        general_profile_compatibility_flags: fields.general_profile_compatibility_flags,
+        general_constraint_indicator_flags: fields.general_constraint_indicator_flags,
+        general_level_idc: fields.general_level_idc,
+        chroma_format_idc: fields.chroma_format_idc,
+        bit_depth_luma_minus8: fields.bit_depth_luma_minus8,
+        bit_depth_chroma_minus8: fields.bit_depth_chroma_minus8,
+        min_spatial_segmentation_idc: fields.min_spatial_segmentation_idc,
+        parallelism_type: fields.parallelism_type,
+        avg_frame_rate: fields.avg_frame_rate,
+        constant_frame_rate: fields.constant_frame_rate,
+        num_temporal_layers: fields.num_temporal_layers,
+        temporal_id_nested: fields.temporal_id_nested,
+        length_size_minus_one: fields.length_size_minus_one,
+        nalu_array_count: fields.nalu_array_count,
+        nalu_types: fields.nalu_types,
+        nalu_counts: fields.nalu_counts,
+        nalu_data: fields.nalu_data,
+        nalu_sizes: fields.nalu_sizes,
     }
-
-    if !entry.nalu_counts.is_null() {
-        unsafe {
-            let counts =
-                std::slice::from_raw_parts(entry.nalu_counts, entry.nalu_array_count as usize);
-            for count in counts {
-                total_nalu_count = total_nalu_count
-                    .checked_add(*count)
-                    .expect("invariant broken: total nalu count exceeds u32::MAX");
-            }
-
-            let bytes = entry
-                .nalu_array_count
-                .checked_mul(std::mem::size_of::<u32>() as u32)
-                .expect("invariant broken: nalu_counts byte size exceeds u32::MAX");
-            crate::mp4_free(entry.nalu_counts.cast_mut() as *mut u8, bytes);
-        }
-        entry.nalu_counts = std::ptr::null();
-    }
-
-    if !entry.nalu_data.is_null() {
-        // `nalu_counts == null && nalu_data != null` は `allocate_and_copy_array_list` の
-        // 部分的な `mp4_alloc` 失敗でのみ発生する非常態。この場合 `total_nalu_count == 0`
-        // のまま `free_array_list` が早期 return し、`nalu_data` / `nalu_sizes` が leak する
-        unsafe {
-            crate::boxes::free_array_list(
-                entry.nalu_data as *mut *mut u8,
-                entry.nalu_sizes as *mut u32,
-                total_nalu_count,
-            );
-            entry.nalu_data = std::ptr::null();
-            entry.nalu_sizes = std::ptr::null();
-        }
-    }
-
-    entry.nalu_array_count = 0;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boxes::build_hevc_test_json;
 
     #[test]
     fn test_hvc1_to_json() {
@@ -337,51 +167,18 @@ mod tests {
 
     #[test]
     fn test_json_to_hvc1() {
-        let json_str = r#"{
-            "kind": "hvc1",
-            "width": 1920,
-            "height": 1080,
-            "generalProfileSpace": 0,
-            "generalTierFlag": 0,
-            "generalProfileIdc": 2,
-            "generalProfileCompatibilityFlags": 1610612736,
-            "generalConstraintIndicatorFlags": 12682136550675546112,
-            "generalLevelIdc": 120,
-            "chromaFormatIdc": 1,
-            "bitDepthLumaMinus8": 0,
-            "bitDepthChromaMinus8": 0,
-            "minSpatialSegmentationIdc": 0,
-            "parallelismType": 0,
-            "avgFrameRate": 0,
-            "constantFrameRate": 0,
-            "numTemporalLayers": 1,
-            "temporalIdNested": 0,
-            "lengthSizeMinusOne": 3,
-            "naluArrays": [
-                {
-                    "naluType": 32,
-                    "units": [
-                        [64, 1, 12, 1]
-                    ]
-                },
-                {
-                    "naluType": 33,
-                    "units": [
-                        [66, 1, 1, 1]
-                    ]
-                },
-                {
-                    "naluType": 34,
-                    "units": [
-                        [68, 1, 0]
-                    ]
-                }
-            ]
-        }"#;
+        let json_str = build_hevc_test_json(
+            "hvc1",
+            r#"[
+                {"naluType": 32, "units": [[64, 1, 12, 1]]},
+                {"naluType": 33, "units": [[66, 1, 1, 1]]},
+                {"naluType": 34, "units": [[68, 1, 0]]}
+            ]"#,
+        );
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let mut sample_entry =
-            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("有効な hvc1 JSON");
 
         assert_eq!(sample_entry.width, 1920);
         assert_eq!(sample_entry.height, 1080);
@@ -404,33 +201,18 @@ mod tests {
         // naluArrays は揃っているが後段の必須フィールド width が欠落している。
         // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
         // この失敗経路では確保処理に到達せず Err だけが返る
-        let json_str = r#"{
-            "kind": "hvc1",
-            "height": 1080,
-            "generalProfileSpace": 0,
-            "generalTierFlag": 0,
-            "generalProfileIdc": 2,
-            "generalProfileCompatibilityFlags": 0,
-            "generalConstraintIndicatorFlags": 0,
-            "generalLevelIdc": 120,
-            "chromaFormatIdc": 1,
-            "bitDepthLumaMinus8": 0,
-            "bitDepthChromaMinus8": 0,
-            "minSpatialSegmentationIdc": 0,
-            "parallelismType": 0,
-            "avgFrameRate": 0,
-            "constantFrameRate": 0,
-            "numTemporalLayers": 1,
-            "temporalIdNested": 0,
-            "lengthSizeMinusOne": 3,
-            "naluArrays": [
+        let json_str = build_hevc_test_json(
+            "hvc1",
+            r#"[
                 {"naluType": 32, "units": [[64, 1, 12, 1]]},
                 {"naluType": 33, "units": [[66, 1, 1, 1]]},
                 {"naluType": 34, "units": [[68, 1, 0]]}
-            ]
-        }"#;
+            ]"#,
+        )
+        // 既定 JSON から width 行だけを取り除いて欠落ケースを作る
+        .replace("            \"width\": 1920,\n", "");
 
-        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let result = parse_json_mp4_sample_entry_hvc1(json.value());
         assert!(result.is_err(), "width 欠落時はパース失敗すること");
     }
@@ -441,34 +223,16 @@ mod tests {
     /// 食い違い、余剰バッファのリークと layout 不一致の `dealloc` を引き起こしていた
     #[test]
     fn test_json_to_hvc1_free_more_nalus_than_arrays() {
-        let json_str = r#"{
-            "kind": "hvc1",
-            "width": 1920,
-            "height": 1080,
-            "generalProfileSpace": 0,
-            "generalTierFlag": 0,
-            "generalProfileIdc": 2,
-            "generalProfileCompatibilityFlags": 1610612736,
-            "generalConstraintIndicatorFlags": 12682136550675546112,
-            "generalLevelIdc": 120,
-            "chromaFormatIdc": 1,
-            "bitDepthLumaMinus8": 0,
-            "bitDepthChromaMinus8": 0,
-            "minSpatialSegmentationIdc": 0,
-            "parallelismType": 0,
-            "avgFrameRate": 0,
-            "constantFrameRate": 0,
-            "numTemporalLayers": 1,
-            "temporalIdNested": 0,
-            "lengthSizeMinusOne": 3,
-            "naluArrays": [
+        let json_str = build_hevc_test_json(
+            "hvc1",
+            r#"[
                 {"naluType": 32, "units": [[1, 2], [3, 4]]}
-            ]
-        }"#;
+            ]"#,
+        );
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let mut sample_entry =
-            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("有効な hvc1 JSON");
 
         // 「配列数」は 1、平坦化した「NALU 総数」は 2 になっている
         assert_eq!(sample_entry.nalu_array_count, 1);
@@ -489,35 +253,17 @@ mod tests {
     /// 食い違い、確保外の領域を読み出して不正なポインタを `mp4_free` に渡していた
     #[test]
     fn test_json_to_hvc1_free_fewer_nalus_than_arrays() {
-        let json_str = r#"{
-            "kind": "hvc1",
-            "width": 1920,
-            "height": 1080,
-            "generalProfileSpace": 0,
-            "generalTierFlag": 0,
-            "generalProfileIdc": 2,
-            "generalProfileCompatibilityFlags": 1610612736,
-            "generalConstraintIndicatorFlags": 12682136550675546112,
-            "generalLevelIdc": 120,
-            "chromaFormatIdc": 1,
-            "bitDepthLumaMinus8": 0,
-            "bitDepthChromaMinus8": 0,
-            "minSpatialSegmentationIdc": 0,
-            "parallelismType": 0,
-            "avgFrameRate": 0,
-            "constantFrameRate": 0,
-            "numTemporalLayers": 1,
-            "temporalIdNested": 0,
-            "lengthSizeMinusOne": 3,
-            "naluArrays": [
+        let json_str = build_hevc_test_json(
+            "hvc1",
+            r#"[
                 {"naluType": 32, "units": [[1, 2]]},
                 {"naluType": 33, "units": []}
-            ]
-        }"#;
+            ]"#,
+        );
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let mut sample_entry =
-            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("有効な hvc1 JSON");
 
         // 「配列数」は 2、平坦化した「NALU 総数」は 1 になっている
         assert_eq!(sample_entry.nalu_array_count, 2);
@@ -536,32 +282,11 @@ mod tests {
     /// `(null, 0)` を返し、free 側の 3 ブロックが `is_null()` で素通りする経路を検証する
     #[test]
     fn test_json_to_hvc1_free_empty_nalu_arrays() {
-        let json_str = r#"{
-            "kind": "hvc1",
-            "width": 1920,
-            "height": 1080,
-            "generalProfileSpace": 0,
-            "generalTierFlag": 0,
-            "generalProfileIdc": 2,
-            "generalProfileCompatibilityFlags": 1610612736,
-            "generalConstraintIndicatorFlags": 12682136550675546112,
-            "generalLevelIdc": 120,
-            "chromaFormatIdc": 1,
-            "bitDepthLumaMinus8": 0,
-            "bitDepthChromaMinus8": 0,
-            "minSpatialSegmentationIdc": 0,
-            "parallelismType": 0,
-            "avgFrameRate": 0,
-            "constantFrameRate": 0,
-            "numTemporalLayers": 1,
-            "temporalIdNested": 0,
-            "lengthSizeMinusOne": 3,
-            "naluArrays": []
-        }"#;
+        let json_str = build_hevc_test_json("hvc1", "[]");
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let mut sample_entry =
-            parse_json_mp4_sample_entry_hvc1(json.value()).expect("valid hvc1 JSON");
+            parse_json_mp4_sample_entry_hvc1(json.value()).expect("有効な hvc1 JSON");
 
         // parse 直後: 配列個数 0、各ポインタは null
         assert_eq!(sample_entry.nalu_array_count, 0);

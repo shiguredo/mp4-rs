@@ -77,6 +77,12 @@ pub fn mp4_sample_entry_hev1_free(entry: &mut Mp4SampleEntryHev1) {
 }
 
 /// 共通フィールドを `Mp4SampleEntryHev1` へ写し替える
+///
+/// トレイト・マクロを作らないプロジェクト規約の下で、23 フィールドの
+/// field-by-field 写経が hev1 / hvc1 両モジュールに残る形を許容している。
+/// `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` は c-api 側で独立した
+/// `#[repr(C)]` 型として定義されているため、`impl From` トレイトや
+/// `unsafe { transmute }` を導入せずに済ませる選択の帰結
 fn hevc_fields_to_hev1(fields: HevcSampleEntryAllocated) -> Mp4SampleEntryHev1 {
     Mp4SampleEntryHev1 {
         width: fields.width,

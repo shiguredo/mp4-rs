@@ -396,10 +396,21 @@ impl nojson::DisplayJson for HevcNaluArrays {
     }
 }
 
-/// HEVC（hev1 / hvc1）サンプルエントリーの共通フィールド（allocate 済み）
+/// HEVC（hev1 / hvc1）サンプルエントリーの共通フィールド（割り当て済み）
 ///
 /// `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` と同型のフィールドを持ち、
-/// 公開関数側で対応する `#[repr(C)]` 構造体へ写し替える
+/// 公開関数側で対応する `#[repr(C)]` 構造体へ写し替える。
+///
+/// この構造体は `parse_json_hevc_sample_entry_fields` から
+/// `hevc_fields_to_hev1` / `_hvc1` への一回限りの受け渡し用途に限定し、
+/// フィールドの部分書き換えは行わないこと。生ポインタと個数の invariant を
+/// 局所コードで壊さないため。
+///
+/// `Drop` を実装していないが、`parse_json_hevc_sample_entry_fields` の
+/// フェーズ 2 では `allocate_and_copy_bytes` / `allocate_and_copy_array_list`
+/// がいずれも panic せず失敗時に `(null, 0)` を返す前提に依存しており、
+/// 途中割り当て成功後の panic によるリークは発生しない。この前提を崩す変更を
+/// 入れる場合は所有権設計を見直すこと
 pub(crate) struct HevcSampleEntryAllocated {
     pub(crate) width: u16,
     pub(crate) height: u16,
@@ -434,7 +445,7 @@ pub(crate) struct HevcSampleEntryAllocated {
 pub(crate) fn parse_json_hevc_sample_entry_fields(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<HevcSampleEntryAllocated, nojson::JsonParseError> {
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
+    // フェーズ 1: JSON → Rust 型
     // NALU 配列を走査して nalu_types_vec / nalu_counts_vec / nalu_data_vec を構築する
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
 
@@ -443,11 +454,9 @@ pub(crate) fn parse_json_hevc_sample_entry_fields(
     let mut nalu_data_vec = Vec::new();
 
     for nalu_array in nalu_arrays_value.to_array()? {
-        // NALU タイプを取得
         let nalu_type: u8 = nalu_array.to_member("naluType")?.required()?.try_into()?;
         nalu_types_vec.push(nalu_type);
 
-        // NALU ユニットを処理
         let units_value = nalu_array.to_member("units")?.required()?;
 
         let mut nalu_count = 0u32;
@@ -513,7 +522,7 @@ pub(crate) fn parse_json_hevc_sample_entry_fields(
         .try_into()?;
     let nalu_array_count = nalu_types_vec.len() as u32;
 
-    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
+    // フェーズ 2: メモリ確保
     let (nalu_types, _) = allocate_and_copy_bytes(unsafe {
         std::slice::from_raw_parts(nalu_types_vec.as_ptr(), nalu_types_vec.len())
     });

@@ -158,6 +158,10 @@
 
 ### misc
 
+- [UPDATE] WASM の `hev1` / `hvc1` サンプルエントリー JSON 変換の重複実装を共通ヘルパーへ抽出する
+  - `parse` / `free` / `NaluArrays` シリアライズおよびテスト JSON 組み立ての重複を解消する
+  - 公開 API（`parse_json_mp4_sample_entry_*` / `mp4_sample_entry_*_free` / `fmt_json_mp4_sample_entry_*`）のシグネチャは変更しない
+  - @sile
 - [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する
   - ISO/IEC 14496-15 上で内部構造が同一の HEVC サンプルエントリー対について、エンコード / デコードおよび `to_sample_entry` の重複を解消する
   - 公開 API（Rust の構造体フィールド・C ABI）は変更しない

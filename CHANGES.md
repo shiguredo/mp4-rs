@@ -154,6 +154,10 @@
 
 ### misc
 
+- [UPDATE] WASM の typed 配列確保を要素型のアラインメントに合わせて直す
+  - `allocate_and_copy_u16_array` / `allocate_and_copy_array_list` および hev1 / hvc1 の `nalu_counts` が `mp4_alloc`（align 1）経由で `u16` / `u32` / ポインタ配列として読まれていた契約違反を解消する
+  - `mp4_alloc` / `mp4_free` の C ABI は変更しない
+  - @sile
 - [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する
   - ISO/IEC 14496-15 上で内部構造が同一の HEVC サンプルエントリー対について、エンコード / デコードおよび `to_sample_entry` の重複を解消する
   - 公開 API（Rust の構造体フィールド・C ABI）は変更しない

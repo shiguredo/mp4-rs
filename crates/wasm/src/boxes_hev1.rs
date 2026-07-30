@@ -183,12 +183,7 @@ pub fn parse_json_mp4_sample_entry_hev1(
     let (nalu_types, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
         std::slice::from_raw_parts(nalu_types_vec.as_ptr(), nalu_types_vec.len())
     });
-    let (nalu_counts, _) = crate::boxes::allocate_and_copy_bytes(unsafe {
-        std::slice::from_raw_parts(
-            nalu_counts_vec.as_ptr() as *const u8,
-            nalu_counts_vec.len() * std::mem::size_of::<u32>(),
-        )
-    });
+    let (nalu_counts, _) = crate::boxes::allocate_and_copy_u32_array(&nalu_counts_vec);
     let (nalu_data, nalu_sizes, _) = crate::boxes::allocate_and_copy_array_list(&nalu_data_vec);
 
     Ok(Mp4SampleEntryHev1 {
@@ -212,7 +207,7 @@ pub fn parse_json_mp4_sample_entry_hev1(
         length_size_minus_one,
         nalu_array_count,
         nalu_types,
-        nalu_counts: nalu_counts as *const u32,
+        nalu_counts,
         nalu_data,
         nalu_sizes,
     })
@@ -249,11 +244,8 @@ pub fn mp4_sample_entry_hev1_free(entry: &mut Mp4SampleEntryHev1) {
                     .expect("invariant broken: total nalu count exceeds u32::MAX");
             }
 
-            let bytes = entry
-                .nalu_array_count
-                .checked_mul(std::mem::size_of::<u32>() as u32)
-                .expect("invariant broken: nalu_counts byte size exceeds u32::MAX");
-            crate::mp4_free(entry.nalu_counts.cast_mut() as *mut u8, bytes);
+            // 確保は allocate_and_copy_u32_array（u32 align）なので、対になる free を使う
+            crate::boxes::free_u32_array(entry.nalu_counts.cast_mut(), entry.nalu_array_count);
         }
         entry.nalu_counts = std::ptr::null();
     }

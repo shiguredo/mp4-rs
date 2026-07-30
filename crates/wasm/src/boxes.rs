@@ -1,6 +1,43 @@
 //! c_api::boxes の JSON シリアライズ機能を提供する wasm 専用モジュール
 
+use std::alloc::Layout;
+
 use c_api::boxes::{Mp4SampleEntry, Mp4SampleEntryKind};
+
+/// 要素型 `T` のアライメントで領域を確保し、`data` をコピーする
+///
+/// `mp4_alloc`（align 1）経由では `u16` / `u32` / ポインタ配列として読めないため、
+/// typed 配列の確保はこの関数（またはこれを使う公開ヘルパ）経由に限定する
+fn allocate_and_copy_aligned<T: Copy>(data: &[T]) -> (*const T, u32) {
+    if data.is_empty() {
+        return (std::ptr::null(), 0);
+    }
+
+    let byte_size = std::mem::size_of_val(data);
+    let layout = Layout::from_size_align(byte_size, std::mem::align_of::<T>())
+        .expect("layout for Copy element type with power-of-two alignment should never fail");
+    let allocated = unsafe { std::alloc::alloc(layout) };
+    if allocated.is_null() {
+        return (std::ptr::null(), 0);
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr().cast::<u8>(), allocated, byte_size);
+    }
+    (allocated.cast::<T>(), data.len() as u32)
+}
+
+/// `allocate_and_copy_aligned` で確保した領域を、同じ align で解放する
+unsafe fn free_aligned<T>(ptr: *mut T, count: u32) {
+    if ptr.is_null() || count == 0 {
+        return;
+    }
+    let byte_size = count as usize * std::mem::size_of::<T>();
+    let layout = Layout::from_size_align(byte_size, std::mem::align_of::<T>())
+        .expect("layout for Copy element type with power-of-two alignment should never fail");
+    unsafe {
+        std::alloc::dealloc(ptr.cast::<u8>(), layout);
+    }
+}
 
 pub(crate) fn fmt_json_mp4_sample_entry(
     f: &mut nojson::JsonFormatter<'_, '_>,
@@ -250,7 +287,9 @@ pub fn allocate_and_copy_bytes(data: &[u8]) -> (*const u8, u32) {
 
 /// 複数のバイト列をメモリに割り当ててコピーする
 ///
-/// JSON から複数の配列（SPS/PPS や NALU リストなど）を割り当てる際に使用する
+/// JSON から複数の配列（SPS/PPS や NALU リストなど）を割り当てる際に使用する。
+/// 各要素バイト列は `mp4_alloc`（u8 用途）で確保し、ポインタ配列とサイズ配列は
+/// それぞれ `*const u8` / `u32` のアライメントで確保する
 pub fn allocate_and_copy_array_list(arrays: &[Vec<u8>]) -> (*const *const u8, *const u32, u32) {
     let count = arrays.len() as u32;
 
@@ -258,64 +297,53 @@ pub fn allocate_and_copy_array_list(arrays: &[Vec<u8>]) -> (*const *const u8, *c
         return (std::ptr::null(), std::ptr::null(), 0);
     }
 
-    // データポインタ配列を割り当て
+    // 各要素バイト列を確保し、そのポインタ列を align 付きで確保する
     let data_ptrs: Vec<*const u8> = arrays
         .iter()
         .map(|array| allocate_and_copy_bytes(array).0)
         .collect();
-    let data_ptr = allocate_and_copy_bytes(unsafe {
-        std::slice::from_raw_parts(
-            data_ptrs.as_ptr() as *const u8,
-            data_ptrs.len() * std::mem::size_of::<*const u8>(),
-        )
-    })
-    .0 as *const *const u8;
+    let (data_ptr, _) = allocate_and_copy_aligned(&data_ptrs);
 
-    // サイズ配列を割り当て
+    // サイズ配列を u32 アライメントで確保する
     let sizes: Vec<u32> = arrays.iter().map(|array| array.len() as u32).collect();
-    let sizes_ptr = allocate_and_copy_bytes(unsafe {
-        std::slice::from_raw_parts(
-            sizes.as_ptr() as *const u8,
-            sizes.len() * std::mem::size_of::<u32>(),
-        )
-    })
-    .0 as *const u32;
+    let (sizes_ptr, _) = allocate_and_copy_aligned(&sizes);
 
     (data_ptr, sizes_ptr, count)
 }
 
-/// u16 の 1 本の連続バッファを mp4_alloc で確保してコピーするユーティリティ関数
+/// u16 の 1 本の連続バッファを、u16 アライメントで確保してコピーする
 ///
 /// 返り値は「バッファ先頭ポインタ」と「要素数」。
-/// バイト数は `count * 2` として `free_u16_array` に渡す
+/// 解放は必ず `free_u16_array` を使う（`mp4_free` では align が合わない）
 pub fn allocate_and_copy_u16_array(data: &[u16]) -> (*const u16, u32) {
-    if data.is_empty() {
-        return (std::ptr::null(), 0);
-    }
-    let byte_size = std::mem::size_of_val(data) as u32;
-    let ptr = unsafe {
-        let allocated = crate::mp4_alloc(byte_size);
-        if allocated.is_null() {
-            return (std::ptr::null(), 0);
-        }
-        std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, allocated, byte_size as usize);
-        allocated as *const u16
-    };
-    (ptr, data.len() as u32)
+    allocate_and_copy_aligned(data)
 }
 
 /// `allocate_and_copy_u16_array()` で割り当てられたメモリを解放する
 pub unsafe fn free_u16_array(ptr: *mut u16, count: u32) {
-    if ptr.is_null() || count == 0 {
-        return;
-    }
-    let byte_size = (count as usize * std::mem::size_of::<u16>()) as u32;
     unsafe {
-        crate::mp4_free(ptr as *mut u8, byte_size);
+        free_aligned(ptr, count);
+    }
+}
+
+/// u32 の 1 本の連続バッファを、u32 アライメントで確保してコピーする
+///
+/// 返り値は「バッファ先頭ポインタ」と「要素数」。
+/// 解放は必ず `free_u32_array` を使う（`mp4_free` では align が合わない）
+pub fn allocate_and_copy_u32_array(data: &[u32]) -> (*const u32, u32) {
+    allocate_and_copy_aligned(data)
+}
+
+/// `allocate_and_copy_u32_array()` で割り当てられたメモリを解放する
+pub unsafe fn free_u32_array(ptr: *mut u32, count: u32) {
+    unsafe {
+        free_aligned(ptr, count);
     }
 }
 
 /// `allocate_and_copy_array_list()` で割り当てられたメモリを解放する
+///
+/// 各要素バイト列は `mp4_free`、ポインタ配列とサイズ配列は確保時と同じ align で `dealloc` する
 pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, count: u32) {
     if count == 0 {
         return;
@@ -326,7 +354,7 @@ pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, count: u
         let ptrs = unsafe { std::slice::from_raw_parts(data_ptrs, count as usize) };
         let size_list = unsafe { std::slice::from_raw_parts(sizes, count as usize) };
 
-        // 各バイト列を実際のサイズで解放
+        // 各バイト列を実際のサイズで解放（u8 用途なので mp4_free）
         for (ptr, size) in ptrs.iter().zip(size_list.iter()) {
             if !ptr.is_null() {
                 unsafe {
@@ -335,20 +363,16 @@ pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, count: u
             }
         }
 
-        // ポインタ配列自体を解放
-        // サイズ: count 個のポインタ分
-        let data_ptrs_size = (count as usize * std::mem::size_of::<*const u8>()) as u32;
+        // ポインタ配列自体を解放（確保時の *const u8 アライメントと対にする）
         unsafe {
-            crate::mp4_free(data_ptrs as *mut u8, data_ptrs_size);
+            free_aligned(data_ptrs.cast::<*const u8>(), count);
         }
     }
 
-    // サイズ配列を解放
+    // サイズ配列を解放（確保時の u32 アライメントと対にする）
     if !sizes.is_null() {
-        // サイズ: count 個の u32 分
-        let sizes_size = (count as usize * std::mem::size_of::<u32>()) as u32;
         unsafe {
-            crate::mp4_free(sizes as *mut u8, sizes_size);
+            free_aligned(sizes, count);
         }
     }
 }

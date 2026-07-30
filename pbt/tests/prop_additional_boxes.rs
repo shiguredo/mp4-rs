@@ -149,8 +149,9 @@ fn arb_avcc_box() -> impl Strategy<Value = AvccBox> {
         any::<u8>(),
         any::<u8>(),
         0u8..4,
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..3),
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..3),
+        // SPS は unsigned int(5)（最大 31）、PPS は unsigned int(8)（最大 255）まで格納できる。
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..32),
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..256),
     )
         .prop_map(
             |(profile, compat, level, length_size, sps_list, pps_list)| AvccBox {

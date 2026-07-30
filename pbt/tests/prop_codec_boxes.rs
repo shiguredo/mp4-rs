@@ -16,8 +16,10 @@ fn arb_avcc_box_baseline() -> impl Strategy<Value = AvccBox> {
         any::<u8>(),                                     // profile_compatibility
         any::<u8>(),                                     // avc_level_indication
         0u8..4,                                          // length_size_minus_one (2 bits)
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..5), // sps_list
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..5), // pps_list
+        // SPS は numOfSequenceParameterSets（unsigned int(5)）で最大 31 個、
+        // PPS は numOfPictureParameterSets（unsigned int(8)）で最大 255 個まで格納できる。
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..32), // sps_list
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..256), // pps_list
     )
         .prop_map(
             |(
@@ -51,8 +53,9 @@ fn arb_avcc_box_high() -> impl Strategy<Value = AvccBox> {
         any::<u8>(),
         any::<u8>(),
         0u8..4,
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..5),
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..5),
+        // SPS/PPS の上限は arb_avcc_box_baseline と同じく仕様上限まで振る。
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..32),
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..50), 0..256),
         0u8..4, // chroma_format (2 bits)
         0u8..8, // bit_depth_luma_minus8 (3 bits)
         0u8..8, // bit_depth_chroma_minus8 (3 bits)

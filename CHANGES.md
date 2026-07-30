@@ -155,6 +155,10 @@
   - `write_segment_impl` および `parse_json_sample_metas` が `Box<Mp4SampleEntry>` / `Option<Mp4SampleEntry>` の通常 Drop だけに頼っており、`mp4_alloc` で確保した各 kind の可変長データ (SPS/PPS/NALU 配列など) が残っていた
   - Drop 時に `mp4_sample_entry_free` を呼ぶラッパを `SampleMeta.sample_entry` に載せ、さらに `parse_json_mp4_sample_entry` の呼び出しを他フィールド解決後の最後に移して、パース途中失敗経路と C API 呼び出し経路のどちらでも内部ポインタが解放されるようにする
   - @sile
+- [FIX] WASM の `u16` / `u32` / ポインタ配列の確保を要素型のアラインメントに合わせて直す
+  - `allocate_and_copy_u16_array` / `allocate_and_copy_array_list` および hev1 / hvc1 の `nalu_counts` が `mp4_alloc`（align 1）経由で `u16` / `u32` / ポインタ配列として読まれていた契約違反を解消する
+  - `mp4_alloc` / `mp4_free` の C ABI は変更しない
+  - @sile
 
 ### misc
 

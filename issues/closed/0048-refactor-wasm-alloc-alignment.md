@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-23
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: Opus 4.7
 - Branch: feature/refactor-wasm-alloc-alignment
 - Polished: 2026-07-30
@@ -79,4 +79,10 @@ C ABI 破壊（breaking change）と cbindgen / 既存 C consumer 追従が必�
 
 ## CHANGES.md
 
-`[UPDATE]` として記載する。挙動変化はなく、Rust semantic 上の UB 契約違反を解消する内部修正のため。C ABI（`mp4_alloc` / `mp4_free`）のシグネチャは維持する。
+`[FIX]` として `## develop` 直下の wasm FIX 群の隣に記載する。Rust semantic 上の UB 契約違反を解消する潜在バグ修正であり、同じ hev1 / hvc1 領域の `[FIX] wasm の mp4_sample_entry_hev1_free() / mp4_sample_entry_hvc1_free() のメモリ解放の不一致を修正する` と同水準の bug fix として扱う。C ABI（`mp4_alloc` / `mp4_free`）のシグネチャは維持する。
+
+当初 `[UPDATE]` / `### misc` として記載したが、`/review-diff-code` の重要指摘（同 CHANGES.md の分類・配置規約に反する）により `[FIX]` / `## develop` 直下へ移動した。
+
+## 実装補足
+
+merge 前提の追記。issue 0056（`crates/wasm` の `hev1` / `hvc1` 共通化）が本 issue の作業中に develop へ merge され、`nalu_counts` の確保・解放が個別ファイルから `crates/wasm/src/boxes.rs` の共通ヘルパ `parse_json_hevc_sample_entry_fields` / `free_hevc_sample_entry_fields` へ移動した。共通ヘルパは合流時点で旧経路（`allocate_and_copy_bytes` + `mp4_free`）に戻っていたため、本 issue の align 契約修正を共通ヘルパ側にも再適用している。個別ファイル（`boxes_hev1.rs` / `boxes_hvc1.rs`）は共通ヘルパへの委譲だけを持つ形になった。

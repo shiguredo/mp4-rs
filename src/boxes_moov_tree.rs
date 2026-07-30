@@ -861,6 +861,15 @@ pub struct MdhdBox {
     pub duration: u64,
 
     /// ISO-639-2/T 言語コード（3 文字の小文字 ASCII 相当を 3 バイト配列で保持する）
+    ///
+    /// ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を
+    /// `unsigned int(5)` にパックするため、encode 時に各バイトが `0x60..=0x7F` の
+    /// 範囲外の場合はエラーを返す。範囲外の値をパックすると隣接ビットフィールドを
+    /// 破壊した不正な `mdhd` が生成されるため。
+    ///
+    /// 一方、decode 側は 5 ビットマスクで防御的に読み取るため、必ず `0x60..=0x7F`
+    /// の値を返す。したがって decode 直後の値を再 encode するラウンドトリップは
+    /// 常に成功する。
     pub language: [u8; 3],
 }
 
@@ -892,14 +901,21 @@ impl Encode for MdhdBox {
             offset += (self.duration as u32).encode(&mut buf[offset..])?;
         }
 
+        // 各バイトの値域は `MdhdBox::language` の doc を参照。
         let mut language: u16 = 0;
         for l in &self.language {
             let Some(code) = l.checked_sub(0x60) else {
                 return Err(Error::invalid_input(format!(
-                    "Invalid language code: {:?}",
+                    "Invalid language code: {:?} (each byte must be in 0x60..=0x7F)",
                     self.language
                 )));
             };
+            if code > 31 {
+                return Err(Error::invalid_input(format!(
+                    "Invalid language code: {:?} (each byte must be in 0x60..=0x7F)",
+                    self.language
+                )));
+            }
             language = (language << 5) | code as u16;
         }
         offset += language.encode(&mut buf[offset..])?;

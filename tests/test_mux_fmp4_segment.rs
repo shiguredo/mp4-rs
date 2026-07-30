@@ -58,11 +58,6 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
     })
 }
 
-/// 映像トラック用の `Sample` を 1 件組み立てる
-fn video_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usize) -> Sample {
-    video_sample_with_timing(sample_entry, 3000, None, data_offset, data_size)
-}
-
 /// duration / CTO を指定できる映像サンプルを組み立てる
 fn video_sample_with_timing(
     sample_entry: SampleEntry,
@@ -189,8 +184,8 @@ fn mixed_sample_entries_in_segment() {
     let first_size = 16usize;
     let second_size = 32usize;
     let samples = [
-        video_sample(first_entry, 0, first_size),
-        video_sample(second_entry, first_size as u64, second_size),
+        video_sample_with_timing(first_entry, 3000, None, 0, first_size),
+        video_sample_with_timing(second_entry, 3000, None, first_size as u64, second_size),
     ];
 
     let result = muxer.create_media_segment_metadata(&samples);

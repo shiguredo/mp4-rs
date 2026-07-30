@@ -1,8 +1,4 @@
-//! `VpccBox::encode` の codec_initialization_data 長境界に関する回帰テスト
-//!
-//! `codec_initialization_data.len()` を `as u16` で黙って切り捨てると、
-//! 長さフィールドと実データの不一致な壊れた vpcC が生成される。
-//! 修正後は `u16::try_from` で上限超過を拒否し、上限以内は正しくエンコードする。
+//! `VpccBox::encode` の `codec_initialization_data` 長境界に関する回帰テスト
 //!
 //! 境界（`u16::MAX` / `u16::MAX + 1`）を安定して当てる必要があるため、
 //! PBT ではなく単体テストとして置く。正常系のラウンドトリップは
@@ -26,7 +22,9 @@ fn make_vpcc(codec_initialization_data: Vec<u8>) -> VpccBox {
 }
 
 /// `codec_initialization_data.len() == u16::MAX` のとき encode が成功し、
-/// roundtrip でデータが一致すること
+/// roundtrip でデータが一致すること（PBT `arb_vpcc_box` が 0..50 バイトしか生成しないため、
+/// 上限値ちょうどを over-reject しないことをここで押さえる。修正前挙動の回帰検出は
+/// `..._exceeds_u16_max` が担う）
 #[test]
 fn vpcc_box_encode_codec_init_data_at_u16_max() {
     let data = vec![0xAB; usize::from(u16::MAX)];

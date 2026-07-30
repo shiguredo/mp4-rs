@@ -1218,7 +1218,6 @@ impl Encode for VpccBox {
         offset += self.colour_primaries.encode(&mut buf[offset..])?;
         offset += self.transfer_characteristics.encode(&mut buf[offset..])?;
         offset += self.matrix_coefficients.encode(&mut buf[offset..])?;
-        // vpcC の codec_initialization_data 長は仕様上 u16。黙って切り捨てると長さと実体が不一致になるため拒否する
         offset += u16::try_from(self.codec_initialization_data.len())
             .map_err(|_| Error::invalid_input("codec_initialization_data exceeds u16::MAX"))?
             .encode(&mut buf[offset..])?;

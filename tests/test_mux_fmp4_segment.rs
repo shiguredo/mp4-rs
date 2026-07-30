@@ -12,15 +12,19 @@
 //! 意図的なエラーパスと境界値は固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担う。
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU16, NonZeroU32};
 
 use shiguredo_mp4::{
-    Decode, TrackKind, Uint,
-    boxes::{Avc1Box, AvccBox, SampleEntry, SidxBox, VisualSampleEntryFields},
+    Decode, FixedPointNumber, TrackKind, Uint,
+    boxes::{
+        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry, SidxBox,
+        VisualSampleEntryFields,
+    },
     mux::{Fmp4SegmentMuxer, MuxError, Sample},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
+const AUDIO_TIMESCALE: u32 = 48_000;
 
 /// 指定解像度の `SampleEntry::Avc1` を組み立てる
 ///
@@ -70,6 +74,48 @@ fn video_sample_with_timing(
     Sample {
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration,
+        keyframe: true,
+        composition_time_offset,
+        data_offset,
+        data_size,
+    }
+}
+
+/// 最小限の Opus SampleEntry を組み立てる
+///
+/// マルチトラック混在テストで Audio サンプルに紐付けるためだけに使う。
+/// 値は `pbt/tests/prop_container_boxes.rs` の `minimal_opus_box` と揃える。
+fn create_opus_sample_entry() -> SampleEntry {
+    SampleEntry::Opus(OpusBox {
+        audio: AudioSampleEntryFields {
+            data_reference_index: NonZeroU16::new(1).expect("data_reference_index は非ゼロ"),
+            channelcount: 2,
+            samplesize: 16,
+            samplerate: FixedPointNumber::new(48000, 0),
+        },
+        dops_box: DopsBox {
+            output_channel_count: 2,
+            pre_skip: 312,
+            input_sample_rate: 48000,
+            output_gain: 0,
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// duration / CTO を指定できる音声サンプルを組み立てる
+fn audio_sample_with_timing(
+    sample_entry: SampleEntry,
+    duration: u32,
+    composition_time_offset: Option<i64>,
+    data_offset: u64,
+    data_size: usize,
+) -> Sample {
+    Sample {
+        track_kind: TrackKind::Audio,
+        timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(sample_entry),
         duration,
         keyframe: true,
@@ -275,5 +321,83 @@ fn sidx_ept_rejects_negative_pts() {
         matches!(result, Err(MuxError::Overflow)),
         "負 PTS では Overflow を期待したが {:?} だった",
         result
+    );
+}
+
+/// 参照トラック以外（Audio）のサンプルの CTO / duration が EPT の計算に混入しないこと
+///
+/// `samples[0].track_kind` である Video だけを filter して DTS / PTS を計算する契約を検証する。
+/// もし filter が壊れて Audio まで走査すると、Audio の (`dur` 大 + `CTO=-大`) が
+/// dts 累積と min PTS を汚染し EPT が変わる（極端な負値の場合は `Overflow` になる）。
+///
+/// resolve_segment_tracks は「同一トラック内での data_offset 連続配置」を要求するため、
+/// Video 2 サンプルを前半に、Audio 1 サンプルを後半に置いている。
+#[test]
+fn sidx_ept_ignores_non_reference_track_samples() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let video_entry = create_avc1_sample_entry(320, 240);
+    let audio_entry = create_opus_sample_entry();
+    let video_size = 16usize;
+    let audio_size = 8usize;
+    let samples = [
+        video_sample_with_timing(video_entry.clone(), 100, None, 0, video_size),
+        video_sample_with_timing(video_entry, 100, None, video_size as u64, video_size),
+        audio_sample_with_timing(
+            audio_entry,
+            999_999_999,
+            Some(-999_999_999),
+            (video_size * 2) as u64,
+            audio_size,
+        ),
+    ];
+
+    let segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("セグメントの生成に失敗した");
+    // Video 側 PTS は [0, 100]、Audio は filter で除外されるので EPT は 0
+    assert_eq!(
+        decode_sidx(&segment).earliest_presentation_time,
+        0,
+        "非参照トラックの CTO が EPT に混入していない場合、EPT は 0 であるべき"
+    );
+}
+
+/// 第 2 セグメントで複数サンプルを渡したとき、`decode_time` 起点の DTS 累積 + 各サンプルの CTO が
+/// すべて PTS に反映されること
+///
+/// 第 1 セグメントで `decode_time` を 1000 まで進める。
+/// 第 2 セグメントに `[(dur=100, cto=+50), (dur=100, cto=-70)]` を渡すと:
+///   PTS_0 = 1000 + 50 = 1050
+///   PTS_1 = (1000 + 100) - 70 = 1030 (2 サンプル目に dts 累積が反映される)
+/// EPT は最小値の 1030。単一サンプルテストでは通らないサンプル間の dts 累積経路と、
+/// セグメント跨ぎの decode_time 起点を同時に踏むケース。
+#[test]
+fn sidx_ept_across_segments_with_multiple_samples() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+
+    // 第 1 セグメント: decode_time を 1000 まで進める
+    muxer
+        .create_media_segment_metadata_with_sidx(&[video_sample_with_timing(
+            entry.clone(),
+            1000,
+            None,
+            0,
+            16,
+        )])
+        .expect("第 1 セグメントの生成に失敗した");
+
+    let sample_size = 16usize;
+    let samples = [
+        video_sample_with_timing(entry.clone(), 100, Some(50), 0, sample_size),
+        video_sample_with_timing(entry, 100, Some(-70), sample_size as u64, sample_size),
+    ];
+    let second_segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("第 2 セグメントの生成に失敗した");
+    assert_eq!(
+        decode_sidx(&second_segment).earliest_presentation_time,
+        1030,
+        "第 2 サンプルの PTS=(1000+100)-70=1030 が最小になるため EPT は 1030 であるべき"
     );
 }

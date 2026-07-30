@@ -2,7 +2,9 @@
 //!
 //! 対象は次の 3 バリアント:
 //! - `MuxError::EmptyTracks`（トラック未観測での `init_segment_bytes`）
-//! - `MuxError::EmptySamples`（空サンプル列での `create_media_segment_metadata`）
+//! - `MuxError::EmptySamples`（空サンプル列での `create_media_segment_metadata`
+//!   および `create_media_segment_metadata_with_sidx`。両者は独立した早期リターンを
+//!   持つため、それぞれ個別に検証する）
 //! - `MuxError::MixedSampleEntries`（同一セグメント・同一トラックでの sample entry 混在）
 //!
 //! 意図的なエラーパスは固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
@@ -79,12 +81,27 @@ fn empty_tracks_on_init_segment_bytes() {
 /// 空のサンプル列で `create_media_segment_metadata` すると `EmptySamples` になること
 ///
 /// `create_media_segment_metadata` は内部で `build_media_segment_bytes` を経由し、
-/// そこで空スライス検査に到達する。`create_media_segment_metadata_with_sidx` は
-/// 自身の入口に独立した空検査を持つが、それは本テストの対象外。
+/// そこの空スライス検査に到達する経路を検証する。
 #[test]
 fn empty_samples_on_create_media_segment() {
     let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
     let result = muxer.create_media_segment_metadata(&[]);
+    assert!(
+        matches!(result, Err(MuxError::EmptySamples)),
+        "EmptySamples を期待したが {:?} だった",
+        result
+    );
+}
+
+/// 空のサンプル列で `create_media_segment_metadata_with_sidx` すると `EmptySamples` になること
+///
+/// `create_media_segment_metadata_with_sidx` は自身の入口に独立した空スライス検査を持ち、
+/// そこで早期リターンする経路を検証する。内側の `build_media_segment_bytes` にある
+/// 同名検査に依存せずに、`samples[0]` へのアクセス手前で防御されていることを担保する。
+#[test]
+fn empty_samples_on_create_media_segment_with_sidx() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let result = muxer.create_media_segment_metadata_with_sidx(&[]);
     assert!(
         matches!(result, Err(MuxError::EmptySamples)),
         "EmptySamples を期待したが {:?} だった",

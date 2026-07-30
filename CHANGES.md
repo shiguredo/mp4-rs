@@ -89,6 +89,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `AvccBox::encode()` で PPS の上限を仕様どおり 255 に修正する
+  - ISO/IEC 14496-15 の `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）だが、SPS と同じ 31 で拒否していた
+  - これまでは PPS を 32〜255 個持つ合法な入力の `avcC` エンコードを誤って拒否していた
+  - @sile
 - [FIX] `Mp4FileMuxer::append_sample()` が `MuxError::Overflow` を返したあとも内部状態を不変に保つようにする
   - これまでは `self.tracks` への登録が残ったまま次の書き込み位置だけが未更新になり、同じ `data_offset` で再投入するとサンプルが二重登録されていた
   - `next_position` の加算オーバーフロー検査を `self.tracks` への副作用より前に移し、`MuxError::Overflow` でも内部状態が不変になるようにした

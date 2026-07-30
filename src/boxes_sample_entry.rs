@@ -437,10 +437,10 @@ impl Encode for AvccBox {
             offset += sps.encode(&mut buf[offset..])?;
         }
 
-        if self.pps_list.len() > 31 {
-            return Err(Error::invalid_input("Too many PPSs (max 31)"));
-        }
-        let pps_count = self.pps_list.len() as u8;
+        // ISO/IEC 14496-15 の numOfPictureParameterSets は unsigned int(8) のため最大 255。
+        // SPS 側の numOfSequenceParameterSets（unsigned int(5)、最大 31）と取り違えないこと。
+        let pps_count = u8::try_from(self.pps_list.len())
+            .map_err(|_| Error::invalid_input("Too many PPSs (max 255)"))?;
         offset += pps_count.encode(&mut buf[offset..])?;
         for pps in &self.pps_list {
             let size =

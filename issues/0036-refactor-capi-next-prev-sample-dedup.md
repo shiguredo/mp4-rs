@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: qwen3.8-max-preview
 - Branch: feature/refactor-capi-next-prev-sample-dedup
 - Polished: 2026-07-20
@@ -40,8 +40,6 @@ C API の `mp4_file_demuxer_next_sample()` と `mp4_file_demuxer_prev_sample()` 
 
 ## 解決方法
 
-共通の内部関数に抽出し、`next` / `prev` の違いは enum で吸収する。
+コード変更なしで closed にした。
 
-## CHANGES.md
-
-`[UPDATE]` で記載する（C API の内部リファクタリングであり、公開 API の変更はないため）。
+重複は実在するが、差は `inner.next_sample()` / `inner.prev_sample()` 呼び出しとエラーメッセージの関数名だけで、現状ドリフトもない。修正漏れの実害が出るまで先送りし、そのときに共通内部関数へ抽出すれば十分と判断した。

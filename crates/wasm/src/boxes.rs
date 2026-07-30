@@ -655,3 +655,45 @@ pub(crate) fn build_hevc_test_json(kind: &str, nalu_arrays_json: &str) -> String
         }}"#
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `nalu_counts == null && nalu_data != null` の非常態を渡しても panic せず、
+    /// `total_nalu_count == 0` として `free_array_list` が早期 return し、
+    /// 各ポインタと `nalu_array_count` がリセットされることを検証する。
+    ///
+    /// この非常態は `allocate_and_copy_array_list` の部分的な `mp4_alloc` 失敗でのみ
+    /// 発生する経路で、`nalu_data` / `nalu_sizes` のバッファが leak する挙動は
+    /// `free_hevc_sample_entry_fields` の実装コメントで既知として明文化されている
+    /// （本テストは leak 自体は観測しない）
+    #[test]
+    fn test_free_hevc_sample_entry_fields_survives_partial_alloc_failure_state() {
+        // 非 null のダミーポインタ。`free_array_list` が count=0 で早期 return するため
+        // これらが deref されることはない
+        let dummy_data_addr: usize = 0xdead_beef;
+        let dummy_sizes_addr: usize = 0xcafe_babe;
+
+        let mut nalu_array_count: u32 = 2;
+        let mut nalu_types: *const u8 = std::ptr::null();
+        let mut nalu_counts: *const u32 = std::ptr::null();
+        let mut nalu_data: *const *const u8 = dummy_data_addr as *const *const u8;
+        let mut nalu_sizes: *const u32 = dummy_sizes_addr as *const u32;
+
+        free_hevc_sample_entry_fields(
+            &mut nalu_array_count,
+            &mut nalu_types,
+            &mut nalu_counts,
+            &mut nalu_data,
+            &mut nalu_sizes,
+        );
+
+        // 非常態から panic せずに戻り、ポインタと個数がすべてリセットされている
+        assert_eq!(nalu_array_count, 0);
+        assert!(nalu_types.is_null());
+        assert!(nalu_counts.is_null());
+        assert!(nalu_data.is_null());
+        assert!(nalu_sizes.is_null());
+    }
+}

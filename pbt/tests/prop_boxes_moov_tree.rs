@@ -57,7 +57,7 @@ mod moov_tree_error_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
-            // 1 文字目が 5 ビット上限 (0x7F) を超える
+            // 1 文字目が 0x7F (= 0x60 + 31) を超え、char - 0x60 が 5 ビットに収まらない
             language: [0x80, 0x61, 0x61],
         };
         let result = mdhd.encode_to_vec();
@@ -72,7 +72,7 @@ mod moov_tree_error_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
-            // 2 文字目が 5 ビット上限 (0x7F) を超える
+            // 2 文字目が 0x7F (= 0x60 + 31) を超え、char - 0x60 が 5 ビットに収まらない
             language: [0x61, 0x80, 0x61],
         };
         let result = mdhd.encode_to_vec();
@@ -87,7 +87,7 @@ mod moov_tree_error_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
-            // 3 文字目が 5 ビット上限 (0x7F) を超える
+            // 3 文字目が 0x7F (= 0x60 + 31) を超え、char - 0x60 が 5 ビットに収まらない
             language: [0x61, 0x61, 0x80],
         };
         let result = mdhd.encode_to_vec();

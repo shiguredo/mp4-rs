@@ -843,11 +843,9 @@ fn compute_earliest_presentation_time(
         .filter(|sample| sample.track_kind == track_kind)
     {
         let cto = i128::from(sample.composition_time_offset.unwrap_or(0));
-        let pts = i128::from(dts).checked_add(cto).ok_or(MuxError::Overflow)?;
-        min_pts = Some(match min_pts {
-            Some(current) => current.min(pts),
-            None => pts,
-        });
+        // dts (u64) + cto (i64) は i128 の表現範囲を超え得ないため、単純加算でよい
+        let pts = i128::from(dts) + cto;
+        min_pts = Some(min_pts.map_or(pts, |current| current.min(pts)));
         dts = dts
             .checked_add(u64::from(sample.duration))
             .ok_or(MuxError::Overflow)?;

@@ -555,6 +555,13 @@ impl FullBox for TfdtBox {
 /// [ISO/IEC 14496-12] TrackRunBox class (親: [`TrafBox`])
 ///
 /// サンプルのリストを格納する。フラグによって存在するフィールドが異なる。
+///
+/// # 事前条件
+///
+/// [`TrunSample`] の各 per-sample フィールド (`duration` / `size` / `flags` /
+/// `composition_time_offset`) の [`Option`] 有無は run 全体で一致していなければならない
+/// （ISO/IEC 14496-12 8.8.8 の `tr_flags` は run 全体共通のため）。
+/// 不整合な入力に対して [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrunBox {
     /// この run 内サンプルの基準オフセット（[`TfhdBox`] で決まる基準位置からの相対バイト数）
@@ -598,8 +605,11 @@ impl TrunBox {
         if self.first_sample_flags.is_some() {
             flags |= Self::FLAG_FIRST_SAMPLE_FLAGS_PRESENT;
         }
-        // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）。
-        // サンプル間の Option 有無は encode 前に validate_sample_option_consistency で揃っている前提。
+        // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）のため先頭サンプルだけを見る。
+        // encode 経路は事前に validate_sample_option_consistency() を通すので不整合入力はここに来ない。
+        // FullBox::full_box_flags 経由で直接呼ばれた場合は validate されないため、
+        // 不整合な TrunBox に対しては先頭サンプル基準の値が返る点に注意
+        // （その値が実際にバイト列として書き出される encode 経路では冒頭で invalid_input として弾かれる）。
         if let Some(sample) = self.samples.first() {
             if sample.duration.is_some() {
                 flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
@@ -619,9 +629,9 @@ impl TrunBox {
 
     /// 各 per-sample フィールドの `Option` 有無が全サンプルで一致することを検証する
     ///
-    /// ISO/IEC 14496-12 の trun では duration / size / flags / composition_time_offset の
-    /// 有無フラグが run 全体で共通のため、サンプルごとに `Some` / `None` が混在する入力は
-    /// 表現できない。不整合なら `ErrorKind::InvalidInput` を返す。
+    /// ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の
+    /// 有無フラグ (`tr_flags`) が run 全体で共通のため、サンプルごとに `Some` / `None` が混在する
+    /// 入力は表現できない。不整合なら [`crate::ErrorKind::InvalidInput`] を返す。
     fn validate_sample_option_consistency(&self) -> Result<()> {
         let Some(first) = self.samples.first() else {
             return Ok(());
@@ -863,6 +873,9 @@ impl FullBox for TrunBox {
 }
 
 /// [`TrunBox`] のサンプル情報
+///
+/// per-sample フィールドの [`Option`] 有無は run 全体で一致していなければならない
+/// （詳細は [`TrunBox`] の「事前条件」を参照）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrunSample {
     /// このサンプルの尺（media timescale 単位）。省略時は

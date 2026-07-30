@@ -12,9 +12,6 @@ mod encode_variable_uint_insufficient_buffer {
     //! 本テストは、修正後に `ErrorKind::InsufficientBuffer` エラーが正しく返ることを、
     //! 3 呼び出し位置（`traf_number` / `trun_number` / `sample_number`）× `byte_count`
     //! 1〜3 の全 9 通りと、`byte_count = 4` を 1 ケース加えた計 10 ケースで検証する。
-    //!
-    //! 境界値のエラーパス検証は PBT では狙った境界（残バイト = `byte_count - 1`）を
-    //! 安定して当てにくく、目的（エラーパスの検証）とも合わないため単体テストとして置く。
 
     use shiguredo_mp4::{
         Encode, ErrorKind,
@@ -158,12 +155,13 @@ mod encode_variable_uint_insufficient_buffer {
 mod trun_sample_option_consistency {
     //! `TrunBox::encode` がサンプル間の per-sample `Option` 不整合を拒否することの回帰テスト
     //!
-    //! ISO/IEC 14496-12 の trun では duration / size / flags / composition_time_offset の
-    //! 有無フラグが run 全体共通のため、サンプルごとに `Some` / `None` が混在する入力は
-    //! 表現できない。以前は先頭サンプルだけでフラグを決め、後続の `Some` を黙って落としていた。
+    //! ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の
+    //! 有無フラグ (`tr_flags`) が run 全体共通のため、サンプルごとに `Some` / `None` が混在する
+    //! 入力は表現できない。以前は先頭サンプルだけでフラグを決め、後続の値を黙って落としていた
+    //! （先頭 `Some`・後続 `None` の逆方向は `unwrap_or(0)` で 0 を書き込んでいた）。
     //!
-    //! PBT の `arb_trun_box` は一貫性のあるサンプルだけを生成するため、このエラーパスは
-    //! 単体テストで固定する。整合入力の roundtrip は同 PBT が担う。
+    //! PBT (`pbt/tests/prop_fmp4_boxes.rs::arb_trun_box`) は一貫性のあるサンプルだけを生成する
+    //! ため、このエラーパスは本ファイルで固定する。
 
     use shiguredo_mp4::{
         Encode, ErrorKind, SampleFlags,

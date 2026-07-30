@@ -168,9 +168,11 @@
   - 参照トラック各サンプルの PTS（`DTS + composition_time_offset`、`None` は 0）の最小値を使うようにする
   - PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` に収まらない場合は `MuxError::Overflow` を返す
   - @sile
-- [FIX] `TrunBox::encode` がサンプル間で per-sample フィールドの `Option` 有無が不整合な入力を黙って潰していたのを修正する
-  - これまでは先頭サンプルだけでフラグを決めていたため、先頭が `None`・後続が `Some` だと後続値が落ちていた
+- [FIX] `TrunBox::encode` がサンプル間で per-sample フィールドの `Option` 有無が揃っていない入力を黙って潰していたのを修正する
+  - これまでは先頭サンプルだけでフラグを決めていたため、両方向で情報が落ちていた（先頭 `None`・後続 `Some` では後続値が捨てられ、先頭 `Some`・後続 `None` では `unwrap_or(0)` で 0 が書き込まれていた）
   - duration / size / flags / composition_time_offset のいずれかで有無が揃わない場合は `invalid_input` を返す
+  - `FullBox::full_box_flags()` を直接呼ぶ経路は encode を経由しないため、この修正の validate は走らない（不整合な入力に対しては先頭サンプル基準の値が返る。実際にバイト列を出す `encode` では冒頭で拒否される）
+  - `Fmp4SegmentMuxer` 内部の TrunBox 生成 (`mux_fmp4_segment.rs`) は常に整合サンプルを組み立てるため、この変更で新たにエラーになるケースはない
   - @sile
 
 ### misc

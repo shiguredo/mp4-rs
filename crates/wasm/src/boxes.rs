@@ -4,18 +4,22 @@ use std::alloc::Layout;
 
 use c_api::boxes::{Mp4SampleEntry, Mp4SampleEntryKind};
 
-/// 要素型 `T` のアライメントで領域を確保し、`data` をコピーする
+/// wasm ABI 越しに扱う POD 型（`u16` / `u32` / 生ポインタ等）の配列を、
+/// 要素型 `T` のアライメントで領域を確保して `data` をコピーする
 ///
 /// `mp4_alloc`（align 1）経由では `u16` / `u32` / ポインタ配列として読めないため、
-/// typed 配列の確保はこの関数（またはこれを使う公開ヘルパ）経由に限定する
+/// typed 配列の確保はこの関数（またはこれを使う公開ヘルパ）経由に限定する。
+/// 解放は必ず同じ型引数 `T` の [`free_aligned`] を通すこと（layout 不整合で UB）
 fn allocate_and_copy_aligned<T: Copy>(data: &[T]) -> (*const T, u32) {
     if data.is_empty() {
         return (std::ptr::null(), 0);
     }
 
     let byte_size = std::mem::size_of_val(data);
+    // Rust の `align_of::<T>()` は必ず power-of-two、`&[T]` の byte 長は必ず `isize::MAX` 以下
+    // なので Layout の構築は失敗しない
     let layout = Layout::from_size_align(byte_size, std::mem::align_of::<T>())
-        .expect("layout for Copy element type with power-of-two alignment should never fail");
+        .expect("Rust align is power-of-two and slice byte length fits isize::MAX");
     let allocated = unsafe { std::alloc::alloc(layout) };
     if allocated.is_null() {
         return (std::ptr::null(), 0);
@@ -26,14 +30,24 @@ fn allocate_and_copy_aligned<T: Copy>(data: &[T]) -> (*const T, u32) {
     (allocated.cast::<T>(), data.len() as u32)
 }
 
-/// `allocate_and_copy_aligned` で確保した領域を、同じ align で解放する
+/// [`allocate_and_copy_aligned`] で確保した領域を、同じ align で解放する
+///
+/// # Safety
+///
+/// - `ptr` は [`allocate_and_copy_aligned`] を **同じ型引数 `T`** で呼んで得たポインタでなければならない
+/// - `count` は確保時の要素数（[`allocate_and_copy_aligned`] の第 2 返り値）と一致していなければならない
+/// - 同じ `ptr` に対して二重に呼んではならない
+///
+/// これらを満たさない場合、layout 不整合で UB になる
 unsafe fn free_aligned<T>(ptr: *mut T, count: u32) {
     if ptr.is_null() || count == 0 {
         return;
     }
     let byte_size = count as usize * std::mem::size_of::<T>();
+    // Rust の `align_of::<T>()` は必ず power-of-two、`byte_size` は確保時と同じ計算式なので
+    // Layout の構築は失敗しない
     let layout = Layout::from_size_align(byte_size, std::mem::align_of::<T>())
-        .expect("layout for Copy element type with power-of-two alignment should never fail");
+        .expect("Rust align is power-of-two and byte_size matches allocation-time value");
     unsafe {
         std::alloc::dealloc(ptr.cast::<u8>(), layout);
     }
@@ -320,6 +334,12 @@ pub fn allocate_and_copy_u16_array(data: &[u16]) -> (*const u16, u32) {
 }
 
 /// `allocate_and_copy_u16_array()` で割り当てられたメモリを解放する
+///
+/// # Safety
+///
+/// - `ptr` は [`allocate_and_copy_u16_array`] で得たポインタでなければならない（`mp4_free` などで解放しないこと）
+/// - `count` は確保時の要素数と一致していなければならない
+/// - 同じ `ptr` に対して二重に呼んではならない
 pub unsafe fn free_u16_array(ptr: *mut u16, count: u32) {
     unsafe {
         free_aligned(ptr, count);
@@ -335,6 +355,12 @@ pub fn allocate_and_copy_u32_array(data: &[u32]) -> (*const u32, u32) {
 }
 
 /// `allocate_and_copy_u32_array()` で割り当てられたメモリを解放する
+///
+/// # Safety
+///
+/// - `ptr` は [`allocate_and_copy_u32_array`] で得たポインタでなければならない（`mp4_free` などで解放しないこと）
+/// - `count` は確保時の要素数と一致していなければならない
+/// - 同じ `ptr` に対して二重に呼んではならない
 pub unsafe fn free_u32_array(ptr: *mut u32, count: u32) {
     unsafe {
         free_aligned(ptr, count);

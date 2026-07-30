@@ -244,7 +244,6 @@ pub fn mp4_sample_entry_hvc1_free(entry: &mut Mp4SampleEntryHvc1) {
                     .expect("invariant broken: total nalu count exceeds u32::MAX");
             }
 
-            // 確保は allocate_and_copy_u32_array（u32 align）なので、対になる free を使う
             crate::boxes::free_u32_array(entry.nalu_counts.cast_mut(), entry.nalu_array_count);
         }
         entry.nalu_counts = std::ptr::null();
@@ -465,8 +464,8 @@ mod tests {
         // 「配列数」は 1、平坦化した「NALU 総数」は 2 になっている
         assert_eq!(sample_entry.nalu_array_count, 1);
 
-        // 回帰の網として parse → free を通す。UB の直接観測は保証しない
-        // （wasm クレートは fuzz 対象外で、miri もアラインメント UB により実行できない）
+        // 回帰の網として parse → free を通す。typed 配列を要素型 align で確保する
+        // 修正が入ったため、miri でも当該経路をアラインメント UB なしで観測できる
         mp4_sample_entry_hvc1_free(&mut sample_entry);
         assert_eq!(sample_entry.nalu_array_count, 0);
         assert!(sample_entry.nalu_types.is_null());
@@ -524,8 +523,9 @@ mod tests {
 
     /// 空 `naluArrays`（`nalu_array_count == 0`）の parse → free 境界値テスト
     ///
-    /// 3 つの `allocate_and_copy_bytes` / `allocate_and_copy_array_list` がすべて
-    /// `(null, 0)` を返し、free 側の 3 ブロックが `is_null()` で素通りする経路を検証する
+    /// 3 つの `allocate_and_copy_bytes` / `allocate_and_copy_u32_array` /
+    /// `allocate_and_copy_array_list` がすべて `(null, 0)` を返し、
+    /// free 側の 3 ブロックが `is_null()` で素通りする経路を検証する
     #[test]
     fn test_json_to_hvc1_free_empty_nalu_arrays() {
         let json_str = r#"{

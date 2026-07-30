@@ -381,7 +381,10 @@ impl Fmp4SegmentMuxer {
             .map(|track| track.payload_end)
             .max()
             .ok_or(MuxError::EmptySamples)?;
-        let mdat_box_size_value = BoxHeader::MIN_SIZE as u64 + mdat_payload_size;
+        // ヘッダー 8 バイト + payload が u64 を超えると不正なボックスサイズになるため検査する
+        let mdat_box_size_value = (BoxHeader::MIN_SIZE as u64)
+            .checked_add(mdat_payload_size)
+            .ok_or(MuxError::Overflow)?;
         let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u32::MAX as u64 {
             (
                 BoxSize::U32(mdat_box_size_value as u32),
@@ -389,7 +392,9 @@ impl Fmp4SegmentMuxer {
             )
         } else {
             // 拡張サイズが必要: ヘッダーが 16 バイトになるため合計値を再計算する
-            let extended_box_size = 16u64 + mdat_payload_size;
+            let extended_box_size = 16u64
+                .checked_add(mdat_payload_size)
+                .ok_or(MuxError::Overflow)?;
             (BoxSize::U64(extended_box_size), 16)
         };
         let mdat_header = BoxHeader::new(MdatBox::TYPE, mdat_box_size);
@@ -500,23 +505,26 @@ impl Fmp4SegmentMuxer {
             }
             let track = &self.tracks[ti];
 
-            // time / moof_offset が u32 に収まるか否かで version を決める
-            let needs_v1 = entries.iter().any(|e| {
-                let moof_offset = init_segment_size + e.moof_relative_offset;
-                e.time > u32::MAX as u64 || moof_offset > u32::MAX as u64
-            });
-            let version = if needs_v1 { 1 } else { 0 };
-
-            let tfra_entries: Vec<TfraEntry> = entries
-                .iter()
-                .map(|e| TfraEntry {
+            // time / moof_offset が u32 に収まるか否かで version を決める。
+            // moof_offset は init + relative の和なので、加算オーバーフローもここで検出する。
+            let mut needs_v1 = false;
+            let mut tfra_entries = Vec::new();
+            for e in entries {
+                let moof_offset = init_segment_size
+                    .checked_add(e.moof_relative_offset)
+                    .ok_or(MuxError::Overflow)?;
+                if e.time > u32::MAX as u64 || moof_offset > u32::MAX as u64 {
+                    needs_v1 = true;
+                }
+                tfra_entries.push(TfraEntry {
                     time: e.time,
-                    moof_offset: init_segment_size + e.moof_relative_offset,
+                    moof_offset,
                     traf_number: e.traf_number,
                     trun_number: 1,
                     sample_number: 1,
-                })
-                .collect();
+                });
+            }
+            let version = if needs_v1 { 1 } else { 0 };
 
             // traf_number の最大値に応じてフィールドサイズを決定する
             // ISO 14496-12: 0=1byte, 1=2bytes, 2=3bytes, 3=4bytes

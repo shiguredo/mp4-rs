@@ -89,6 +89,9 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `Fmp4SegmentMuxer` の `mdat` ボックスサイズ計算と `mfra` の `moof_offset` 計算で `u64` 加算がオーバーフローしたときにパニックや不正値にならず `MuxError::Overflow` を返すようにする
+  - これまでは debug ビルドで panic、release ビルドでラップアラウンドにより不正なボックスサイズやオフセットが生成され得た
+  - @sile
 - [FIX] `AvccBox::encode()` で PPS の上限を仕様どおり 255 に修正する
   - ISO/IEC 14496-15 の `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）だが、SPS と同じ 31 で拒否していた
   - これまでは PPS を 32〜255 個持つ合法な入力の `avcC` エンコードを誤って拒否していた

@@ -6,7 +6,7 @@
 use proptest::prelude::*;
 use proptest::strategy::BoxedStrategy;
 use shiguredo_mp4::{
-    Decode, Encode, SampleFlags,
+    Decode, Encode, ErrorKind, SampleFlags,
     boxes::{
         MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
         TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
@@ -195,6 +195,67 @@ fn arb_trun_box() -> impl Strategy<Value = TrunBox> {
                     first_sample_flags,
                     samples,
                 })
+            },
+        )
+}
+
+/// per-sample `Option` 有無を意図的に不整合にした `TrunBox` を生成する Strategy
+///
+/// `arb_trun_box` は run 全体で Option 有無を揃えるので、`TrunBox::encode` に追加された
+/// `validate_sample_option_consistency` 経路（ISO/IEC 14496-12 8.8.8 の `tr_flags` が
+/// run 全体共通であることに由来する不整合検出）を PBT で踏めない。本 strategy は
+/// 「サンプル数 2〜5、4 フィールド (duration / size / flags / composition_time_offset) の
+/// どれか 1 つで先頭サンプルと後続いずれか 1 サンプルの Option 有無を食い違わせる」入力を作る。
+///
+/// サンプル数 3 以上・反転位置が末尾 (index 2 以降) のケースも自然に探索されるので、
+/// `iter().skip(1)` の縮退バグ（先頭以外を index 1 だけしか見ないような誤修正）に対する
+/// 回帰網を張れる。
+fn arb_trun_box_inconsistent() -> impl Strategy<Value = TrunBox> {
+    // サンプル数 count・対象フィールド target_field・先頭サンプルの Option 有無 base_has を先に決めて、
+    // その後 count に依存する flip_index (1..count) と各フィールドの値を prop_flat_map で束ねる
+    (2usize..=5, 0usize..4, any::<bool>())
+        .prop_flat_map(|(count, target_field, base_has)| {
+            (
+                Just(count),
+                Just(target_field),
+                Just(base_has),
+                1usize..count,
+                any::<u32>(),
+                any::<u32>(),
+                arb_sample_flags(),
+                // composition_time_offset は version 0 の範囲に絞って cto 側の別 encode エラーを避ける
+                0i64..=(u32::MAX as i64),
+            )
+        })
+        .prop_map(
+            |(count, target_field, base_has, flip_index, dur, sz, flg, cto)| {
+                // 対象フィールドを Some/None どちらか付けたベースサンプルを作るヘルパー
+                let mk_sample = |has_target: bool| -> TrunSample {
+                    let mut s = TrunSample {
+                        duration: None,
+                        size: None,
+                        flags: None,
+                        composition_time_offset: None,
+                    };
+                    if has_target {
+                        match target_field {
+                            0 => s.duration = Some(dur),
+                            1 => s.size = Some(sz),
+                            2 => s.flags = Some(flg),
+                            _ => s.composition_time_offset = Some(cto),
+                        }
+                    }
+                    s
+                };
+                // flip_index のサンプルだけ Option 有無を反転させて不整合を作る
+                let samples: Vec<TrunSample> = (0..count)
+                    .map(|i| mk_sample(if i == flip_index { !base_has } else { base_has }))
+                    .collect();
+                TrunBox {
+                    data_offset: None,
+                    first_sample_flags: None,
+                    samples,
+                }
             },
         )
 }
@@ -514,6 +575,28 @@ proptest! {
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.data_offset, trun.data_offset);
         prop_assert_eq!(decoded.samples.len(), trun.samples.len());
+    }
+
+    /// TrunBox の per-sample Option 不整合入力は encode で InvalidInput になる
+    ///
+    /// ISO/IEC 14496-12 8.8.8 の `tr_flags` が run 全体共通であることに由来する制約で、
+    /// サンプル間で duration / size / flags / composition_time_offset の `Option` 有無が
+    /// 揃わない入力は表現できない。`arb_trun_box_inconsistent` はサンプル数 2〜5・
+    /// 反転位置 1〜(count-1) を探索するので、`tests/test_boxes_fmp4.rs` の単体テスト
+    /// （サンプル数 2 固定・反転位置 1 固定）ではカバーできない index 2 以降の
+    /// 不整合ケースも同じ property で検証できる。
+    #[test]
+    fn trun_box_inconsistent_option_is_invalid_input(trun in arb_trun_box_inconsistent()) {
+        let err = trun
+            .encode_to_vec()
+            .expect_err("per-sample Option 不整合な TrunBox は encode で必ず失敗する");
+        prop_assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別は InvalidInput のはず (実際は {:?}, reason={})",
+            err.kind,
+            err.reason,
+        );
     }
 
     // ===== TrafBox のテスト =====

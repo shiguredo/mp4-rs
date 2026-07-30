@@ -182,8 +182,29 @@ jobs:
           name: wasm
           path: artifacts/
 
+  miri:
+    name: Miri (wasm)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install nightly and miri
+        run: |
+          rustup toolchain install nightly --component miri
+          cargo +nightly miri setup
+
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ubuntu-24.04
+          toolchain: nightly
+
+      - name: Run miri on wasm crate
+        run: make miri
+
   slack_notify:
-    needs: [ci, test-wasm, build-c-api, build-wasm]
+    needs: [ci, test-wasm, build-c-api, build-wasm, miri]
     runs-on: ubuntu-slim
     if: ${{ always() }}
     permissions:

@@ -163,8 +163,8 @@
 ### misc
 
 - [ADD] CI で `crates/wasm` に対する miri を継続実行する
-  - `make miri`（`cargo +nightly miri test -p wasm`）と `.github/workflows/miri.yml` を追加する
-  - 毎日の cron と `ci: miri` ラベル付き PR で実行する（既存の `ci.yml` は変更しない）
+  - `make miri`（`cargo +nightly miri test -p wasm`）を追加し、`.github/workflows/ci.yml` の独立ジョブとして実行する
+  - 既存 CI と同じ `push` / 月–金 cron で回す（他ジョブと並列）
   - @sile
 - [UPDATE] WASM の `hev1` / `hvc1` サンプルエントリー JSON 変換の重複実装を共通ヘルパーへ抽出する
   - `parse` / `free` / `NaluArrays` シリアライズおよびテスト JSON 組み立ての重複を解消する

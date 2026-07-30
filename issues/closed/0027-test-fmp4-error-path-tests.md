@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: opencode-go glm-5.2
 - Branch: feature/add-fmp4-error-path-tests
 - Polished: 2026-07-30
@@ -90,12 +90,16 @@ if let Some(expected_index) = segment_sample_entry_index {
 
 ## 解決方法
 
-1. `tests/test_mux_fmp4_segment.rs` に以下を追加する
-   - `empty_tracks_on_init_segment_bytes`: サンプル未投入で `init_segment_bytes()` → `Err(MuxError::EmptyTracks)`
-   - `empty_samples_on_create_media_segment`: 空 `&[]` で `create_media_segment_metadata()` → `Err(MuxError::EmptySamples)`
-   - `mixed_sample_entries_in_segment`: 同一セグメント・同一トラックで異なる sample entry → `Err(MuxError::MixedSampleEntries)`
-2. `tests/test_demux_fmp4_segment.rs` に以下を追加する
-   - `invalid_state_double_init`: 別 muxer で得た正当な init を `handle_init_segment` に 2 回渡す → `Err(DemuxError::InvalidState)`
-   - `invalid_state_tracks_before_init`: 未初期化 demuxer で `tracks()` → `Err(DemuxError::InvalidState)`
-   - `invalid_state_media_before_init`: 別 muxer で得た正当な `moof` + `mdat` メディアセグメントを、未初期化 demuxer の `handle_media_segment` に渡す → `Err(DemuxError::InvalidState)`（空・不正バイト列では `DecodeError` になる点に注意）
-3. 各テストで `matches!(result, Err(variant))` でバリアントを assert する
+以下のテストを追加した。
+
+- `tests/test_mux_fmp4_segment.rs`
+  - `empty_tracks_on_init_segment_bytes`: サンプル未投入の muxer で `init_segment_bytes()` を呼び `Err(MuxError::EmptyTracks)` を検証
+  - `empty_samples_on_create_media_segment`: 空 `&[]` で `create_media_segment_metadata()` を呼び `Err(MuxError::EmptySamples)` を検証（`build_media_segment_bytes` 経由の公開経路）
+  - `empty_samples_on_create_media_segment_with_sidx`: 空 `&[]` で `create_media_segment_metadata_with_sidx()` を呼び `Err(MuxError::EmptySamples)` を検証。`_with_sidx` は自身の入口に独立した早期リターンを持つため、`create_media_segment_metadata` とは別経路として個別に検証する
+  - `mixed_sample_entries_in_segment`: 同一セグメント・同一 Video トラックへ幅違いの `Avc1` を並べて `Err(MuxError::MixedSampleEntries { track_kind: TrackKind::Video })` を検証
+- `tests/test_demux_fmp4_segment.rs`
+  - `invalid_state_double_init`: 別 muxer で得た正当な init を `handle_init_segment` に 2 回渡し `Err(DemuxError::InvalidState)` を検証
+  - `invalid_state_tracks_before_init`: 未初期化 demuxer で `tracks()` を呼び `Err(DemuxError::InvalidState)` を検証
+  - `invalid_state_media_before_init`: 別 muxer で得た正当な `moof` + `mdat` メディアセグメントを、未初期化 demuxer の `handle_media_segment` に渡し `Err(DemuxError::InvalidState)` を検証（空・不正バイト列では `DecodeError` になるため、`moof` + `mdat` 構文解析が成功した後の `InvalidState` 経路に到達させる必要がある）
+
+各テストは `matches!(result, Err(variant))` でバリアントを assert する。`MixedSampleEntries` は `..` を使わず `track_kind: TrackKind::Video` まで含めて完全一致で検証する。モック・スタブは使わず、実際の `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` の公開 API のみで発生させる。

@@ -89,6 +89,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `Mp4FileMuxer::build_stbl_box()` の `stsc` / `stss` 構築で `NonZeroU32::saturating_add` を使わずオーバーフロー時にエラーを返すようにする
+  - これまではチャンク数やサンプル数が `u32::MAX` を超えると値が飽和し、壊れた MP4 をエラーなく生成し得た
+  - `checked_add` と `u32::try_from()` で明示的に検査し、超過時は `MuxError::Overflow` / `MuxError::EncodeError` を返す
+  - @sile
 - [FIX] `MdhdBox::encode()` で言語コードの各バイトが 5 ビットに収まらない場合にエラーを返すようにする
   - ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を `unsigned int(5)` にパックする
   - これまでは `0x80` 以上のバイトも受け入れ、隣接ビットフィールドを破壊した不正な `mdhd` を生成し得た

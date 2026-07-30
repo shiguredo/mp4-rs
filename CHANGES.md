@@ -89,6 +89,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `Mp4FileDemuxer` で `ftyp` / `moov` の `box_size` を `usize` へ変換するときに `as` キャストではなく `usize::try_from` を使うようにする
+  - 32 bit ターゲット（wasm32 を含む）で `box_size` が `usize::MAX` を超えると暗黙に切り詰められていた
+  - 変換失敗時は `DemuxError::DecodeError` を返し、`box_size == 0` を EOF までとみなす従来の意味は維持する
+  - @sile
 - [FIX] `MdhdBox::encode()` で言語コードの各バイトが 5 ビットに収まらない場合にエラーを返すようにする
   - ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を `unsigned int(5)` にパックする
   - これまでは `0x80` 以上のバイトも受け入れ、隣接ビットフィールドを破壊した不正な `mdhd` を生成し得た

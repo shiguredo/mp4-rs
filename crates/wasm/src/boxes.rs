@@ -884,8 +884,8 @@ mod tests {
         let mut nalu_array_count: u32 = 2;
         let mut nalu_types: *const u8 = std::ptr::null();
         let mut nalu_counts: *const u32 = std::ptr::null();
-        let mut nalu_data: *const *const u8 = dummy_data_addr as *const *const u8;
-        let mut nalu_sizes: *const u32 = dummy_sizes_addr as *const u32;
+        let mut nalu_data: *const *const u8 = std::ptr::without_provenance(dummy_data_addr);
+        let mut nalu_sizes: *const u32 = std::ptr::without_provenance(dummy_sizes_addr);
 
         free_hevc_sample_entry_fields(
             &mut nalu_array_count,

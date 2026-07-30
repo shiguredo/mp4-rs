@@ -5,7 +5,7 @@
 - Completed: YYYY-MM-DD
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-mdhd-language-code-5bit-validation
-- Polished: 2026-07-20
+- Polished: 2026-07-30
 
 ## 目的
 
@@ -15,11 +15,11 @@ ISO/IEC 14496-12 の MediaHeaderBox における `language` フィールドは `
 
 ## 優先度根拠
 
-エンコード結果が仕様上不正なビットパターンになり得る。現実の MP4 ファイルで `0x80` 以上の言語コードバイトが使われることはほぼないが、`language` フィールドは `pub [u8; 3]` であり、ライブラリ利用者が直接任意の値を設定できる。内部使用箇所（`mux_mp4_file.rs:904,940`、`mux_fmp4_segment.rs:696`、`examples/transcode_wasm/src/mp4.rs:138`）は全て `MdhdBox::LANGUAGE_UNDEFINED`（`*b"und"` = `[0x75, 0x6E, 0x64]`）で安全だが、外部利用者が不正値を設定するリスクは排除できない。
+エンコード結果が仕様上不正なビットパターンになり得る。現実の MP4 ファイルで `0x80` 以上の言語コードバイトが使われることはほぼないが、`language` フィールドは `pub [u8; 3]` であり、ライブラリ利用者が直接任意の値を設定できる。内部使用箇所（`src/mux_mp4_file.rs` および `src/mux_fmp4_segment.rs` での `MdhdBox` 構築、`examples/transcode_wasm/src/mp4.rs` での同様の構築）は全て `MdhdBox::LANGUAGE_UNDEFINED`（`*b"und"` = `[0x75, 0x6E, 0x64]`）で安全だが、外部利用者が不正値を設定するリスクは排除できない。
 
 ## 現状
 
-`src/boxes_moov_tree.rs:810-816`:
+`src/boxes_moov_tree.rs` の `impl Encode for MdhdBox` 内の言語コードパック処理:
 
 ```rust
 let Some(code) = l.checked_sub(0x60) else {
@@ -37,7 +37,7 @@ language = (language << 5) | code as u16;
 
 溢れる文字位置によって挙動が異なる。なお、溢れビット（code=32 の bit 5）は隣接文字フィールドの LSB に OR されるため、隣接文字の code が奇数の場合 OR が冪等になり破壊が観測できない。以下の例は隣接文字の code を偶数にして破壊が観測されるケースを示す:
 
-- **1 文字目が溢れる場合**: 溢れたビットは 2 回の `<< 5` で bit 15 に到達する。decode 側の `& 0b11111` マスク（`boxes_moov_tree.rs:860-862`）で bit 15 は落ちるため、1 文字目だけが変化する（例: `[0x80, 0x61, 0x61]` → decode 後 `[0x60, 0x61, 0x61]`）
+- **1 文字目が溢れる場合**: 溢れたビットは 2 回の `<< 5` で bit 15 に到達する。`impl Decode for MdhdBox` 側の `& 0b11111` マスクで bit 15 は落ちるため、1 文字目だけが変化する（例: `[0x80, 0x61, 0x61]` → decode 後 `[0x60, 0x61, 0x61]`）
 - **2 文字目が溢れる場合**: 溢れたビットは 1 回の `<< 5` で bit 10 に到達し、1 文字目のフィールドを破壊し得る（例: `[0x62, 0x80, 0x61]` → decode 後 `[0x63, 0x60, 0x61]`、1 文字目 code 2→3）
 - **3 文字目が溢れる場合**: 溢れたビットは bit 5 に留まり、2 文字目のフィールドを破壊し得る（例: `[0x61, 0x62, 0x80]` → decode 後 `[0x61, 0x63, 0x60]`、2 文字目 code 2→3）
 
@@ -57,7 +57,7 @@ language = (language << 5) | code as u16;
 
 ## 設計方針
 
-encode 時のみ検証を追加し、decode 側の `& 0b11111` マスク（`boxes_moov_tree.rs:860-862`）は維持する。decode は外部入力を受け入れるため、マスクによる防御的読み取りを維持する方針。encode 側で厳密に検証することで、ライブラリが生成する MP4 ファイルの仕様適合性を担保する。
+encode 時のみ検証を追加し、`impl Decode for MdhdBox` 側の `& 0b11111` マスクは維持する。decode は外部入力を受け入れるため、マスクによる防御的読み取りを維持する方針。encode 側で厳密に検証することで、ライブラリが生成する MP4 ファイルの仕様適合性を担保する。
 
 エラーメッセージは既存の `checked_sub` 失敗時と同じ `"Invalid language code: {:?}"` を使用する。
 
@@ -74,9 +74,9 @@ encode 時のみ検証を追加し、decode 側の `& 0b11111` マスク（`boxe
 
 ## 解決方法
 
-`checked_sub` の後に `if code > 31 { return Err(...) }` を追加する。
+`src/boxes_moov_tree.rs` の `impl Encode for MdhdBox` で、`checked_sub` の後に `if code > 31 { return Err(...) }` を追加する。
 
-テストは `pbt/tests/prop_error_paths.rs` に追加する（既存の下限エラーパステスト `mdhd_box_invalid_language_code_low/middle/last` と同じファイル・同じパターン）。issue 0003（`prop_error_paths.rs` の分割）が先に実施された場合は、分割後の対応ファイルに追加する。
+テストは `pbt/tests/prop_boxes_moov_tree.rs` の `moov_tree_error_tests` に追加する（既存の下限エラーパステスト `mdhd_box_invalid_language_code_low/middle/last` と同じ mod・同じパターン）。
 
 ## 後方互換
 

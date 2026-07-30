@@ -2,6 +2,7 @@
 //!
 //! 対象:
 //! - 主要エラーパス（`EmptyTracks` / `EmptySamples` / `MixedSampleEntries`）
+//! - `mdat` ボックスサイズ計算の `Overflow` 契約（通常ヘッダー経路と拡張サイズ経路）
 //! - `create_media_segment_metadata_with_sidx` の `earliest_presentation_time` の
 //!   値・境界・`Overflow` 契約
 //!   - CTO=None 時に旧挙動と等価であること（後方互換性の回帰防止）

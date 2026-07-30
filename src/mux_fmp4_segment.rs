@@ -381,7 +381,7 @@ impl Fmp4SegmentMuxer {
             .map(|track| track.payload_end)
             .max()
             .ok_or(MuxError::EmptySamples)?;
-        // ヘッダー 8 バイト + payload が u64 を超えると不正なボックスサイズになるため検査する
+        // BoxHeader::MIN_SIZE + payload が u64 を超えると不正なボックスサイズになるため検査する
         let mdat_box_size_value = (BoxHeader::MIN_SIZE as u64)
             .checked_add(mdat_payload_size)
             .ok_or(MuxError::Overflow)?;
@@ -391,7 +391,9 @@ impl Fmp4SegmentMuxer {
                 BoxHeader::MIN_SIZE,
             )
         } else {
-            // 拡張サイズが必要: ヘッダーが 16 バイトになるため合計値を再計算する
+            // 拡張ヘッダー（largesize 含む 16 バイト）込みの合計を再計算する。
+            // MIN_SIZE + payload が成功しても、payload が [u64::MAX - 15, u64::MAX - 8]
+            // なら 16 + payload はオーバーフローし得るため、ここでも checked_add が必要。
             let extended_box_size = 16u64
                 .checked_add(mdat_payload_size)
                 .ok_or(MuxError::Overflow)?;

@@ -624,36 +624,65 @@ pub(crate) fn free_hevc_sample_entry_fields(
     *nalu_array_count = 0;
 }
 
+/// HEVC（hev1 / hvc1）テスト用 JSON の既定スカラーフィールド一覧
+///
+/// キー名は camelCase の JSON メンバー名、値は JSON 数値リテラル文字列。
+/// `build_hevc_test_json` / `build_hevc_test_json_omitting` の両者が参照し、
+/// フィールドの追加・値変更時にリテラルを 1 箇所に集約する
+#[cfg(test)]
+const HEVC_TEST_JSON_SCALAR_FIELDS: &[(&str, &str)] = &[
+    ("width", "1920"),
+    ("height", "1080"),
+    ("generalProfileSpace", "0"),
+    ("generalTierFlag", "0"),
+    ("generalProfileIdc", "2"),
+    ("generalProfileCompatibilityFlags", "1610612736"),
+    ("generalConstraintIndicatorFlags", "12682136550675546112"),
+    ("generalLevelIdc", "120"),
+    ("chromaFormatIdc", "1"),
+    ("bitDepthLumaMinus8", "0"),
+    ("bitDepthChromaMinus8", "0"),
+    ("minSpatialSegmentationIdc", "0"),
+    ("parallelismType", "0"),
+    ("avgFrameRate", "0"),
+    ("constantFrameRate", "0"),
+    ("numTemporalLayers", "1"),
+    ("temporalIdNested", "0"),
+    ("lengthSizeMinusOne", "3"),
+];
+
 /// HEVC（hev1 / hvc1）テスト用 JSON を組み立てる
 ///
 /// スカラーフィールドは回帰テストで共有する既定値を使い、差が出る `kind` と
 /// `naluArrays` だけを呼び出し側から差し替える
 #[cfg(test)]
 pub(crate) fn build_hevc_test_json(kind: &str, nalu_arrays_json: &str) -> String {
-    format!(
-        r#"{{
-            "kind": "{kind}",
-            "width": 1920,
-            "height": 1080,
-            "generalProfileSpace": 0,
-            "generalTierFlag": 0,
-            "generalProfileIdc": 2,
-            "generalProfileCompatibilityFlags": 1610612736,
-            "generalConstraintIndicatorFlags": 12682136550675546112,
-            "generalLevelIdc": 120,
-            "chromaFormatIdc": 1,
-            "bitDepthLumaMinus8": 0,
-            "bitDepthChromaMinus8": 0,
-            "minSpatialSegmentationIdc": 0,
-            "parallelismType": 0,
-            "avgFrameRate": 0,
-            "constantFrameRate": 0,
-            "numTemporalLayers": 1,
-            "temporalIdNested": 0,
-            "lengthSizeMinusOne": 3,
-            "naluArrays": {nalu_arrays_json}
-        }}"#
-    )
+    build_hevc_test_json_omitting(kind, nalu_arrays_json, None)
+}
+
+/// スカラーフィールドを 1 つ欠落させた HEVC テスト用 JSON を組み立てる
+///
+/// `parse_json_hevc_sample_entry_fields` の「必須フィールド欠落時にパース失敗する」
+/// 経路を検証するテスト用。文字列ベースの `.replace` はヘルパーの整形に依存して
+/// silent に no-op 化しうるため、`HEVC_TEST_JSON_SCALAR_FIELDS` のキー名を
+/// フィルタする構造化された欠落 API を提供する。
+///
+/// `omit_field` が `None` のとき、`build_hevc_test_json` と等価
+#[cfg(test)]
+pub(crate) fn build_hevc_test_json_omitting(
+    kind: &str,
+    nalu_arrays_json: &str,
+    omit_field: Option<&str>,
+) -> String {
+    // 一致するフィールド名を飛ばしてスカラー行を組み立てる
+    let body = HEVC_TEST_JSON_SCALAR_FIELDS
+        .iter()
+        .filter(|(name, _)| Some(*name) != omit_field)
+        .map(|(name, value)| format!("    \"{name}\": {value}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!("{{\n    \"kind\": \"{kind}\",\n{body},\n    \"naluArrays\": {nalu_arrays_json}\n}}")
 }
 
 #[cfg(test)]
@@ -695,5 +724,19 @@ mod tests {
         assert!(nalu_counts.is_null());
         assert!(nalu_data.is_null());
         assert!(nalu_sizes.is_null());
+    }
+
+    /// `build_hevc_test_json_omitting` が指定フィールドを実際に欠落させ、
+    /// 残りのフィールド行を保つことを検証する
+    #[test]
+    fn test_build_hevc_test_json_omitting_actually_omits_field() {
+        let with_width = build_hevc_test_json_omitting("hev1", "[]", None);
+        assert!(with_width.contains("\"width\": 1920"));
+
+        let without_width = build_hevc_test_json_omitting("hev1", "[]", Some("width"));
+        assert!(!without_width.contains("\"width\""));
+        // 他の必須フィールドは残る
+        assert!(without_width.contains("\"height\": 1080"));
+        assert!(without_width.contains("\"lengthSizeMinusOne\": 3"));
     }
 }

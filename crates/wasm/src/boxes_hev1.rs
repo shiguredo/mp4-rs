@@ -114,7 +114,7 @@ fn hevc_fields_to_hev1(fields: HevcSampleEntryFields) -> Mp4SampleEntryHev1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boxes::build_hevc_test_json;
+    use crate::boxes::{build_hevc_test_json, build_hevc_test_json_omitting};
 
     #[test]
     fn test_hev1_to_json() {
@@ -228,16 +228,15 @@ mod tests {
         // naluArrays は揃っているが後段の必須フィールド width が欠落している。
         // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
         // この失敗経路では確保処理に到達せず Err だけが返る
-        let json_str = build_hevc_test_json(
+        let json_str = build_hevc_test_json_omitting(
             "hev1",
             r#"[
                 {"naluType": 32, "units": [[64, 1, 12, 1]]},
                 {"naluType": 33, "units": [[66, 1, 1, 1]]},
                 {"naluType": 34, "units": [[68, 1, 0]]}
             ]"#,
-        )
-        // 既定 JSON から width 行だけを取り除いて欠落ケースを作る
-        .replace("            \"width\": 1920,\n", "");
+            Some("width"),
+        );
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let result = parse_json_mp4_sample_entry_hev1(json.value());

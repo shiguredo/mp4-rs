@@ -906,13 +906,13 @@ impl Encode for MdhdBox {
         for l in &self.language {
             let Some(code) = l.checked_sub(0x60) else {
                 return Err(Error::invalid_input(format!(
-                    "Invalid language code: {:?}",
+                    "Invalid language code: {:?} (each byte must be in 0x60..=0x7F)",
                     self.language
                 )));
             };
             if code > 31 {
                 return Err(Error::invalid_input(format!(
-                    "Invalid language code: {:?}",
+                    "Invalid language code: {:?} (each byte must be in 0x60..=0x7F)",
                     self.language
                 )));
             }

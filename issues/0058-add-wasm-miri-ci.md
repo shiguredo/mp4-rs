@@ -21,20 +21,20 @@
 - `.github/workflows/ci.yml` は stable Rust で `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz` を回す。wasm クレートは対象に含まれ、通常テストは走る（`cargo test -p wasm` で全 58 テストが pass する）
 - 既存ジョブ ID は `ci` / `test-wasm` / `build-c-api` / `build-wasm` / `slack_notify`
 - `ci.yml` の `on:` は `push`（`**.md` 除外）と `schedule`（`cron: "0 2 * * 1-5"`、月–金）
-- miri は CI にも `Makefile` にも設定されていない（実装前の状態。本 issue で追加する）
+- miri は CI にも `Makefile` にも設定されていない
 - fuzz は `Makefile` の `fuzzing` ターゲットに `cargo +nightly fuzz run` として定義されているが、CI からは呼ばれない（手動運用のみ）
 - `rust-toolchain.toml` は `channel = "stable"`。nightly は fuzz と同じ扱いで別途セットアップが必要
 - 失敗時 Slack 通知は `ci.yml` の `slack_notify` が `shiguredo/github-actions` の `slack-notify` を `failure_and_fixed` モード・`slack_channel: rust-oss` で使う
 
 ## 設計方針
 
-**スコープ**: `crates/wasm` のみ。まずここで miri の運用実績を積み、必要になれば他クレートへ広げる。主クレート（`shiguredo_mp4`）や `c-api` は本 issue では対象外。
+**スコープ**: `crates/wasm` のみ。まずここで miri の運用実績を積み、必要になれば他クレートへ広げる。主クレート（`shiguredo_mp4`）や `c-api` は本 issue では対象外。ただし wasm test から到達する c-api コード自体は miri で解釈されるため、そこに含まれる UB は間接的に検出される。
 
 **ワークフロー配置**: `.github/workflows/ci.yml` に独立ジョブ `miri` を追加する。既存ジョブ（`ci` / `test-wasm` / `build-c-api` / `build-wasm`）の手順は変えない。`slack_notify.needs` に `miri` を足す。
 
 **実行タイミング**: 既存 CI と同じ `on:`（`push` + 月–金 cron）で回す。ジョブは他と並列なので、miri が遅くてもワークフロー全体の wall time は「最長ジョブ」側に支配される。
 
-当初は「毎日 cron + `ci: miri` ラベル付き PR」の独立 `miri.yml` も検討したが、ローカル実測で `make miri` が数十秒程度だったため、まずは既存 CI と同じ条件に載せて運用し、CI 上の実測で遅すぎる場合に分離・間引きを再検討する。
+当初は「毎日 cron + `ci: miri` ラベル付き PR」の独立 `miri.yml` も検討したが、ローカル実測（aarch64-apple-darwin, 2026-07-30）で `make miri` の wall clock が約 27 秒だったため、まずは既存 CI と同じ条件に載せて運用し、CI 上の実測で遅すぎる場合に分離・間引きを再検討する。
 
 **Makefile 目標**: fuzz の `fuzzing` と同じ扱いで `miri` ターゲットを追加する（`cargo +nightly miri test -p wasm`）。ローカル手動実行と CI から共通で叩けるようにする。
 
@@ -49,7 +49,7 @@
 - `slack_notify.needs` に `miri` が含まれている
 - 既存ジョブ（`ci` / `test-wasm` / `build-c-api` / `build-wasm`）の手順は本 issue の変更で変わっていない
 - `Makefile` に `miri` ターゲットが追加され、ローカルでも `make miri` で同じコマンドが走る
-- wasm クレートの現行テストがすべて miri で pass する（`cargo test -p wasm` は 58 テスト。`cargo +nightly miri test -p wasm` も同数 pass することを実装着手時に再確認する）
+- wasm クレートの現行テストがすべて miri で pass する（`cargo test -p wasm` は 58 テスト。`cargo +nightly miri test -p wasm` も同数 pass することを CI 上で確認する）
 - miri 特有の失敗（FFI 境界の未サポート等）が出た場合の対処方針（skip か fix）が Makefile コメントまたは README に明記されている
 - 失敗時の通知経路が確立している（既存 `slack_notify` 経由）
 
@@ -58,8 +58,7 @@
 以下の順に対応する。前提確認で問題が判明した場合は設計方針に戻る:
 
 1. **前提確認（ローカルで実施）**: `cargo +nightly miri test -p wasm` を走らせ、以下を確認する
-   - 全テストが miri で pass する（実装着手時に再確認。現行ソースでは 58 件 pass を確認できる）
-   - 実行時間の実測（CI 同居の妥当性を判断する材料）
+   - 全テストが miri で pass する
    - FFI 境界（`mp4_alloc` / `mp4_free`）が miri で問題なく通ること
 2. `Makefile` に `miri` ターゲットを追加する（`.PHONY` に追記、`cargo +nightly miri test -p wasm` を実行するレシピ、失敗時の対処方針コメント）
 3. `.github/workflows/ci.yml` に `miri` ジョブを追加する

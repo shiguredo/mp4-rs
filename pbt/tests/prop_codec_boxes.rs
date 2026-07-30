@@ -494,6 +494,8 @@ mod boundary_tests {
     ///
     /// `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）であり、
     /// SPS の上限 31 と同じ値で拒否してはならないことを回帰として固定する。
+    /// 各 PPS のバイト列を index 由来にすることで、順序入れ替わりや隣接データの
+    /// 混線も検知できるようにする。
     #[test]
     fn avcc_box_pps_count_32() {
         let avcc = AvccBox {
@@ -502,7 +504,7 @@ mod boundary_tests {
             avc_level_indication: 30,
             length_size_minus_one: Uint::new(3),
             sps_list: vec![],
-            pps_list: (0..32).map(|_| vec![0u8; 10]).collect(),
+            pps_list: (0..32u8).map(|i| vec![i; 10]).collect(),
             chroma_format: None,
             bit_depth_luma_minus8: None,
             bit_depth_chroma_minus8: None,
@@ -513,7 +515,7 @@ mod boundary_tests {
             .expect("PPS 32 個は numOfPictureParameterSets の上限内なのでエンコードできる");
         let (decoded, _) = AvccBox::decode(&encoded)
             .expect("直前にエンコードした有効な AvccBox は必ずデコードできる");
-        assert_eq!(decoded.pps_list.len(), 32);
+        assert_eq!(decoded.pps_list, avcc.pps_list);
     }
 
     /// HvccBox: 空の NALU 配列

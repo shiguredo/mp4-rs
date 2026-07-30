@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-mdhd-language-code-5bit-validation
 - Polished: 2026-07-30
@@ -74,9 +74,24 @@ encode 時のみ検証を追加し、`impl Decode for MdhdBox` 側の `& 0b11111
 
 ## 解決方法
 
-`src/boxes_moov_tree.rs` の `impl Encode for MdhdBox` で、`checked_sub` の後に `if code > 31 { return Err(...) }` を追加する。
+### 実装
 
-テストは `pbt/tests/prop_boxes_moov_tree.rs` の `moov_tree_error_tests` に追加する（既存の下限エラーパステスト `mdhd_box_invalid_language_code_low/middle/last` と同じ mod・同じパターン）。
+`src/boxes_moov_tree.rs` の `impl Encode for MdhdBox` で、`checked_sub(0x60)` の後に `if code > 31` を追加し、超過時は既存と同じ `"Invalid language code: {:?}"` で `Error::invalid_input` を返すようにした。
+
+`MdhdBox::language` の doc comment に、encode 時の有効範囲が `0x60..=0x7F` である旨と、ISO/IEC 14496-12 の `unsigned int(5)[3]` パック根拠を追記した。
+
+`impl Decode for MdhdBox` 側の `& 0b11111` マスクは変更していない。
+
+### テスト
+
+`pbt/tests/prop_boxes_moov_tree.rs` の `moov_tree_error_tests` に以下を追加した:
+
+- `mdhd_box_invalid_language_code_high` / `high_middle` / `high_last`: 1・2・3 文字目が `0x80` のとき encode がエラーになること
+- `mdhd_box_language_code_5bit_boundaries`: 全 3 位置で `0x5F` はエラー、`0x60` / `0x7F` は成功、`0x80` はエラーであること
+
+### ドキュメント
+
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加した
 
 ## 後方互換
 

@@ -369,16 +369,24 @@ pub unsafe fn free_u32_array(ptr: *mut u32, count: u32) {
 
 /// `allocate_and_copy_array_list()` で割り当てられたメモリを解放する
 ///
-/// 各要素バイト列は `mp4_free`、ポインタ配列とサイズ配列は確保時と同じ align で `dealloc` する
-pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, count: u32) {
-    if count == 0 {
+/// 各要素バイト列は `mp4_free`、ポインタ配列とサイズ配列は確保時と同じ align で `dealloc` する。
+///
+/// # Safety
+///
+/// - `data_ptrs` / `sizes` は [`allocate_and_copy_array_list`] の返り値（同じ組）でなければならない
+/// - `element_count` は「ポインタ配列と size 配列に共通するスロット数」（＝解放対象のバイト列本数）で、
+///   [`allocate_and_copy_array_list`] の第 3 返り値と一致していなければならない。
+///   NALU 配列の「外側の配列個数」ではなく「全バイト列の総数」であることに注意
+/// - 同じ `data_ptrs` / `sizes` に対して二重に呼んではならない
+pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, element_count: u32) {
+    if element_count == 0 {
         return;
     }
 
     // 各バイト列のメモリを解放
     if !data_ptrs.is_null() && !sizes.is_null() {
-        let ptrs = unsafe { std::slice::from_raw_parts(data_ptrs, count as usize) };
-        let size_list = unsafe { std::slice::from_raw_parts(sizes, count as usize) };
+        let ptrs = unsafe { std::slice::from_raw_parts(data_ptrs, element_count as usize) };
+        let size_list = unsafe { std::slice::from_raw_parts(sizes, element_count as usize) };
 
         // 各バイト列を実際のサイズで解放（u8 用途なので mp4_free）
         for (ptr, size) in ptrs.iter().zip(size_list.iter()) {
@@ -391,14 +399,142 @@ pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, count: u
 
         // ポインタ配列自体を解放（確保時の *const u8 アライメントと対にする）
         unsafe {
-            free_aligned(data_ptrs.cast::<*const u8>(), count);
+            free_aligned(data_ptrs.cast::<*const u8>(), element_count);
         }
     }
 
     // サイズ配列を解放（確保時の u32 アライメントと対にする）
     if !sizes.is_null() {
         unsafe {
-            free_aligned(sizes, count);
+            free_aligned(sizes, element_count);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ポインタが要素型 `T` の align 境界に載っていることを検証する
+    fn assert_aligned<T>(ptr: *const T) {
+        assert_eq!(
+            ptr as usize % std::mem::align_of::<T>(),
+            0,
+            "確保されたポインタが align_of::<{}>() = {} の境界に載っていない",
+            std::any::type_name::<T>(),
+            std::mem::align_of::<T>(),
+        );
+    }
+
+    #[test]
+    fn test_allocate_and_copy_u16_array_empty_returns_null() {
+        // 空スライスは (null, 0) を返し、以後 free 側の early return と噛み合う
+        let (ptr, count) = allocate_and_copy_u16_array(&[]);
+        assert!(ptr.is_null());
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_allocate_and_copy_u16_array_roundtrip() {
+        // 非空スライスの alloc → 中身読み出し → align 検証 → free
+        let src: [u16; 4] = [0x0102, 0x0304, 0x0506, 0x0708];
+        let (ptr, count) = allocate_and_copy_u16_array(&src);
+        assert!(!ptr.is_null());
+        assert_eq!(count, 4);
+        assert_aligned(ptr);
+        // 各要素が元の値と一致することを read で確認する
+        for (i, expected) in src.iter().enumerate() {
+            assert_eq!(unsafe { *ptr.add(i) }, *expected);
+        }
+        unsafe { free_u16_array(ptr.cast_mut(), count) };
+    }
+
+    #[test]
+    fn test_allocate_and_copy_u32_array_empty_returns_null() {
+        // 空スライスは (null, 0) を返す
+        let (ptr, count) = allocate_and_copy_u32_array(&[]);
+        assert!(ptr.is_null());
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_allocate_and_copy_u32_array_roundtrip() {
+        // 非空スライスの alloc → 中身読み出し → align 検証 → free
+        let src: [u32; 3] = [0x0102_0304, 0x0506_0708, 0x090a_0b0c];
+        let (ptr, count) = allocate_and_copy_u32_array(&src);
+        assert!(!ptr.is_null());
+        assert_eq!(count, 3);
+        assert_aligned(ptr);
+        for (i, expected) in src.iter().enumerate() {
+            assert_eq!(unsafe { *ptr.add(i) }, *expected);
+        }
+        unsafe { free_u32_array(ptr.cast_mut(), count) };
+    }
+
+    #[test]
+    fn test_allocate_and_copy_array_list_empty_returns_all_null() {
+        // 空 arrays は (null, null, 0) を返し、free 側の分岐がすべて素通りする
+        let (data_ptr, sizes_ptr, count) = allocate_and_copy_array_list(&[]);
+        assert!(data_ptr.is_null());
+        assert!(sizes_ptr.is_null());
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_allocate_and_copy_array_list_roundtrip() {
+        // 複数バイト列の alloc → 各要素バイト列とサイズ配列の中身確認 →
+        // ポインタ配列とサイズ配列の align 検証 → free
+        let src = vec![vec![0x01_u8, 0x02], vec![0x03, 0x04, 0x05], vec![0x06]];
+        let (data_ptr, sizes_ptr, count) = allocate_and_copy_array_list(&src);
+        assert!(!data_ptr.is_null());
+        assert!(!sizes_ptr.is_null());
+        assert_eq!(count, 3);
+        // ポインタ配列とサイズ配列自体が要素型の align に載っていることが本 diff の主眼
+        assert_aligned(data_ptr);
+        assert_aligned(sizes_ptr);
+
+        // 各バイト列の内容とサイズが元の Vec と一致することを read で確認する
+        for (i, expected) in src.iter().enumerate() {
+            let element_ptr = unsafe { *data_ptr.add(i) };
+            let element_size = unsafe { *sizes_ptr.add(i) };
+            assert_eq!(element_size as usize, expected.len());
+            let element = unsafe { std::slice::from_raw_parts(element_ptr, element_size as usize) };
+            assert_eq!(element, expected.as_slice());
+        }
+
+        // 実際の呼び出し元（boxes_avc1 など）と同じキャストを通して free する
+        unsafe {
+            free_array_list(data_ptr as *mut *mut u8, sizes_ptr as *mut u32, count);
+        }
+    }
+
+    #[test]
+    fn test_free_u16_array_null_or_zero_is_noop() {
+        // null / count 0 の組み合わせがどれも panic せず素通りすることを確認する
+        unsafe {
+            free_u16_array(std::ptr::null_mut(), 0);
+            free_u16_array(std::ptr::null_mut(), 4);
+            let dummy_but_zero_count: [u16; 1] = [0];
+            free_u16_array(dummy_but_zero_count.as_ptr().cast_mut(), 0);
+        }
+    }
+
+    #[test]
+    fn test_free_u32_array_null_or_zero_is_noop() {
+        // null / count 0 の組み合わせがどれも panic せず素通りすることを確認する
+        unsafe {
+            free_u32_array(std::ptr::null_mut(), 0);
+            free_u32_array(std::ptr::null_mut(), 4);
+            let dummy_but_zero_count: [u32; 1] = [0];
+            free_u32_array(dummy_but_zero_count.as_ptr().cast_mut(), 0);
+        }
+    }
+
+    #[test]
+    fn test_free_array_list_zero_element_count_is_noop() {
+        // element_count = 0 は最外側の early return で素通りする（引数の null 有無に依らず）
+        unsafe {
+            free_array_list(std::ptr::null_mut(), std::ptr::null_mut(), 0);
         }
     }
 }

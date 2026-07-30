@@ -448,6 +448,9 @@ mod tests {
 
         // 「配列数」は 1、平坦化した「NALU 総数」は 2 になっている
         assert_eq!(sample_entry.nalu_array_count, 1);
+        // free 側の分岐（total_nalu_count 計算）が「1 配列に 2 NALU」経路を通ることを
+        // 実値で固定する。ここが 0 や 1 に化けても array_count 側の assert は素通りしてしまう
+        assert_eq!(unsafe { *sample_entry.nalu_counts.add(0) }, 2);
 
         // 回帰の網として parse → free を通す。typed 配列を要素型 align で確保する
         // 修正が入ったため、miri でも当該経路をアラインメント UB なしで観測できる
@@ -497,6 +500,10 @@ mod tests {
 
         // 「配列数」は 2、平坦化した「NALU 総数」は 1 になっている
         assert_eq!(sample_entry.nalu_array_count, 2);
+        // free 側の分岐（total_nalu_count 計算）が「2 配列で内訳 [1, 0]」経路を通ることを
+        // 実値で固定する
+        assert_eq!(unsafe { *sample_entry.nalu_counts.add(0) }, 1);
+        assert_eq!(unsafe { *sample_entry.nalu_counts.add(1) }, 0);
 
         mp4_sample_entry_hev1_free(&mut sample_entry);
         assert_eq!(sample_entry.nalu_array_count, 0);

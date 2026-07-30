@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-trun-compute-flags-first-only
 - Polished: 2026-07-30
@@ -60,7 +60,24 @@ closed `0014`（負値と `> i32::MAX` の CTO 混在を encode 時に拒否）�
 
 ## 解決方法
 
-1. `src/boxes_fmp4.rs` の `Encode for TrunBox` で、`FullBoxHeader` 書き込みより前に、各 per-sample フィールドの `Option` 有無が全サンプルで一致するか検証する。不整合なら `Error::invalid_input` を返す
-2. 整合入力では既存どおりフラグを立ててエンコードする（必要なら `compute_flags` を検証結果と整合する形に整理する）
-3. 不整合入力（先頭 `None`・後続 `Some`、および先頭 `Some`・後続 `None`）で `Err` になる単体テストを追加する
-4. 全サンプル `None` / 全サンプル `Some` の roundtrip が従来どおり通ることを確認する（既存 PBT・単体テストで足りなければ追加する）
+### 実装
+
+1. `src/boxes_fmp4.rs` の `Encode for TrunBox` に `validate_sample_option_consistency` を追加し、`FullBoxHeader` 書き込みより前に呼ぶ。duration / size / flags / composition_time_offset の `Option` 有無が全サンプルで一致するかを先頭サンプルと順次比較し、不整合ならサンプル index・フィールド名・両側の Option 有無を含む `Error::invalid_input` を返す
+2. `compute_flags` を `self.samples.first()` ベースから `self.samples.iter().any(...)` ベースに変更し、`uses_version_1` と流儀を揃える。これで `FullBox::full_box_flags()` を直接呼ばれても「どのサンプルかに Some があればフラグを立てる」決定論的な値を返す
+
+### テスト
+
+1. `tests/test_boxes_fmp4.rs` に `trun_sample_option_consistency` モジュールを追加し、先頭 `None`・後続 `Some` と先頭 `Some`・後続 `None` の 8 ケース（4 フィールド × 2 方向）で `InvalidInput` を検証する
+2. `pbt/tests/prop_fmp4_boxes.rs` に `arb_trun_box_inconsistent` strategy と `trun_box_inconsistent_option_is_invalid_input` を追加し、サンプル数 2〜5・反転位置 1〜(count-1) をランダマイズして `iter().skip(1)` の縮退バグ検出網を張る
+3. 単体・PBT の両方で `err.reason.contains("inconsistent Option presence")` を確認し、`TrunBox::encode` の別 `InvalidInput` 経路（cto 範囲外など）を「合格」と誤認するリスクを消す
+
+### ドキュメント
+
+- `TrunBox` の doc に「事前条件」節を追加し、per-sample `Option` 有無が run 全体で一致すべきこと・違反時は `Encode::encode` が `InvalidInput` を返すことを明記する
+- `TrunSample` の doc にその事前条件へのポインタを追加する
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加する（両方向の情報損失例・`Fmp4SegmentMuxer` 内部利用への影響なし・`compute_flags` の `iter().any()` 化を明記）
+
+### 残作業
+
+- `TrunBox` を直接組み立てる fuzz ターゲット（`fuzz_trun_box_encode` 相当）は未追加。既存 `fuzz_trun_box` は decode 起点で validate 経路に到達しない。必要になれば別 issue で対応する
+- テストヘルパー名 (`empty_sample` / `trun_with_inconsistent_field`) やモジュール名 (`encode_variable_uint_insufficient_buffer`) の命名・シグネチャは改善余地あり（実害なし）

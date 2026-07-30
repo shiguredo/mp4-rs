@@ -555,6 +555,13 @@ impl FullBox for TfdtBox {
 /// [ISO/IEC 14496-12] TrackRunBox class (親: [`TrafBox`])
 ///
 /// サンプルのリストを格納する。フラグによって存在するフィールドが異なる。
+///
+/// # 事前条件
+///
+/// [`TrunSample`] の各 per-sample フィールド (`duration` / `size` / `flags` /
+/// `composition_time_offset`) の [`Option`] 有無は run 全体で一致していなければならない
+/// （ISO/IEC 14496-12 8.8.8 の `tr_flags` は run 全体共通のため）。
+/// 不整合な入力に対して [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrunBox {
     /// この run 内サンプルの基準オフセット（[`TfhdBox`] で決まる基準位置からの相対バイト数）
@@ -598,21 +605,72 @@ impl TrunBox {
         if self.first_sample_flags.is_some() {
             flags |= Self::FLAG_FIRST_SAMPLE_FLAGS_PRESENT;
         }
-        if let Some(sample) = self.samples.first() {
-            if sample.duration.is_some() {
-                flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
-            }
-            if sample.size.is_some() {
-                flags |= Self::FLAG_SAMPLE_SIZE_PRESENT;
-            }
-            if sample.flags.is_some() {
-                flags |= Self::FLAG_SAMPLE_FLAGS_PRESENT;
-            }
-            if sample.composition_time_offset.is_some() {
-                flags |= Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT;
-            }
+        // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）。
+        // どのサンプルかに Some があればフラグを立てる（uses_version_1 と流儀を揃える）。
+        // これで FullBox::full_box_flags 経由で直接呼ばれても決定論的な値を返せる
+        // （不整合入力は Encode::encode 冒頭の validate_sample_option_consistency() が拒否する）。
+        if self.samples.iter().any(|s| s.duration.is_some()) {
+            flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
+        }
+        if self.samples.iter().any(|s| s.size.is_some()) {
+            flags |= Self::FLAG_SAMPLE_SIZE_PRESENT;
+        }
+        if self.samples.iter().any(|s| s.flags.is_some()) {
+            flags |= Self::FLAG_SAMPLE_FLAGS_PRESENT;
+        }
+        if self
+            .samples
+            .iter()
+            .any(|s| s.composition_time_offset.is_some())
+        {
+            flags |= Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT;
         }
         flags
+    }
+
+    /// 各 per-sample フィールドの `Option` 有無が全サンプルで一致することを検証する
+    ///
+    /// ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の
+    /// 有無フラグ (`tr_flags`) が run 全体で共通のため、サンプルごとに `Some` / `None` が混在する
+    /// 入力は表現できない。不整合なら [`crate::ErrorKind::InvalidInput`] を返す。
+    /// エラー文言には最初に不整合が検出されたサンプル index とフィールド名が含まれる。
+    fn validate_sample_option_consistency(&self) -> Result<()> {
+        let Some(first) = self.samples.first() else {
+            return Ok(());
+        };
+        let has_duration = first.duration.is_some();
+        let has_size = first.size.is_some();
+        let has_flags = first.flags.is_some();
+        let has_composition_time_offset = first.composition_time_offset.is_some();
+
+        // enumerate() の index は samples 全体（先頭を含む）を基準とする
+        for (index, sample) in self.samples.iter().enumerate().skip(1) {
+            // どのフィールドで最初に不整合を見つけたかを（先頭側 / 当該サンプル側の Some/None つきで）報告する
+            let mismatch = if sample.duration.is_some() != has_duration {
+                Some(("duration", has_duration, sample.duration.is_some()))
+            } else if sample.size.is_some() != has_size {
+                Some(("size", has_size, sample.size.is_some()))
+            } else if sample.flags.is_some() != has_flags {
+                Some(("flags", has_flags, sample.flags.is_some()))
+            } else if sample.composition_time_offset.is_some() != has_composition_time_offset {
+                Some((
+                    "composition_time_offset",
+                    has_composition_time_offset,
+                    sample.composition_time_offset.is_some(),
+                ))
+            } else {
+                None
+            };
+            if let Some((field, expected_some, got_some)) = mismatch {
+                let presence = |is_some: bool| if is_some { "Some" } else { "None" };
+                return Err(Error::invalid_input(format!(
+                    "TrunBox sample {index} has inconsistent Option presence for {field}: sample 0 is {}, sample {index} is {}",
+                    presence(expected_some),
+                    presence(got_some),
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// version 1 が必要かどうかを判定する
@@ -631,6 +689,10 @@ impl TrunBox {
 
 impl Encode for TrunBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // FullBoxHeader 書き込み時に compute_flags() が呼ばれるため、
+        // 不整合入力ではヘッダへ不正フラグを書く前に検証して拒否する。
+        self.validate_sample_option_consistency()?;
+
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
@@ -829,6 +891,9 @@ impl FullBox for TrunBox {
 }
 
 /// [`TrunBox`] のサンプル情報
+///
+/// per-sample フィールドの [`Option`] 有無は run 全体で一致していなければならない
+/// （詳細は [`TrunBox`] の「事前条件」を参照）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrunSample {
     /// このサンプルの尺（media timescale 単位）。省略時は

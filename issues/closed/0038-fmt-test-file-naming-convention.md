@@ -2,9 +2,9 @@
 
 - Priority: Low
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: qwen3.8-max-preview
-- Branch: feature/fmt-test-file-naming-convention
+- Branch: develop
 - Polished: 2026-07-20
 
 ## 目的
@@ -26,4 +26,6 @@
 
 ## 解決方法
 
-`git mv tests/decode_encode_test.rs tests/test_decode_encode.rs` でリネームする。
+1. `git mv tests/decode_encode_test.rs tests/test_decode_encode.rs` でリネームした
+2. `cargo test --test test_decode_encode` で既存 9 件のテストが通ることを確認した
+3. ユーザー指示により作業ブランチではなく `develop` 上で直接対応した

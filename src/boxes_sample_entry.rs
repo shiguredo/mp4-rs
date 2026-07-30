@@ -1218,7 +1218,9 @@ impl Encode for VpccBox {
         offset += self.colour_primaries.encode(&mut buf[offset..])?;
         offset += self.transfer_characteristics.encode(&mut buf[offset..])?;
         offset += self.matrix_coefficients.encode(&mut buf[offset..])?;
-        offset += (self.codec_initialization_data.len() as u16).encode(&mut buf[offset..])?;
+        offset += u16::try_from(self.codec_initialization_data.len())
+            .map_err(|_| Error::invalid_input("codec_initialization_data exceeds u16::MAX"))?
+            .encode(&mut buf[offset..])?;
         offset += self.codec_initialization_data.encode(&mut buf[offset..])?;
         header.finalize_box_size(&mut buf[..offset])?;
         Ok(offset)

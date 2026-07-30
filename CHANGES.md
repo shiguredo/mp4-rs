@@ -115,6 +115,10 @@
   - これまでは `u16` から `i16` への暗黙キャストで符号が反転し、`tkhd` の `width` / `height` が負の値になる可能性があった
   - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
   - @voluntas
+- [FIX] `VpccBox::encode()` で `codec_initialization_data` の長さが `u16::MAX` を超える場合にエラーを返すようにする
+  - これまでは `usize` から `u16` への暗黙キャストで長さフィールドだけ切り捨てられ、実データとの不一致な壊れた `vpcC` が生成される可能性があった
+  - `u16::try_from()` で明示的にチェックし、超過時は `ErrorKind::InvalidInput` を返すように変更した
+  - @sile
 - [FIX] `Fmp4SegmentMuxer::build_init_trak()` で `TrackKind::Video` に非映像系 `SampleEntry` が渡された場合の tkhd `volume` を修正する
   - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
   - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
@@ -158,6 +162,10 @@
 
 ### misc
 
+- [UPDATE] WASM の `hev1` / `hvc1` サンプルエントリー JSON 変換の重複実装を共通ヘルパーへ抽出する
+  - `parse` / `free` / `NaluArrays` シリアライズおよびテスト JSON 組み立ての重複を解消する
+  - 公開 API（`parse_json_mp4_sample_entry_*` / `mp4_sample_entry_*_free` / `fmt_json_mp4_sample_entry_*`）のシグネチャは変更しない
+  - @sile
 - [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する
   - ISO/IEC 14496-15 上で内部構造が同一の HEVC サンプルエントリー対について、エンコード / デコードおよび `to_sample_entry` の重複を解消する
   - 公開 API（Rust の構造体フィールド・C ABI）は変更しない

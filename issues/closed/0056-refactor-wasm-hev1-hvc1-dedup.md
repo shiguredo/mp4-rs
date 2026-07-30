@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-28
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: Opus 4.7
 - Branch: feature/refactor-wasm-hev1-hvc1-dedup
 - Polished: 2026-07-30
@@ -85,10 +85,31 @@ hev1 / hvc1 の 2 ファイルは合計 1147 行（`boxes_hev1.rs` 566 + `boxes_
 
 ## 解決方法
 
-案 B（トレイト不使用のヘルパー関数化）で対応する手順:
+`feature/refactor-wasm-hev1-hvc1-dedup` ブランチで案 B（トレイト不使用のヘルパー関数化）で対応した。
 
-1. `crates/wasm/src/boxes.rs` に共通ヘルパー `free_hevc_sample_entry_fields` を追加する
-2. `mp4_sample_entry_hev1_free` / `_hvc1_free` を薄いラッパに置き換える
-3. JSON パース本体を共通ヘルパーへ寄せ、`parse_json_mp4_sample_entry_hev1` / `_hvc1` は戻り値型の構築だけを担う薄いラッパにする（deferred allocate のフェーズ分割は維持する）
-4. `struct NaluArrays` と `impl nojson::DisplayJson for NaluArrays` を `crates/wasm/src/boxes.rs`（または新規モジュール）に集約し、両ファイルから `use` する
-5. テストヘルパー `build_hevc_test_json` を導入し、6 個の JSON リテラルからヘッダ部分を差し替え可能にする
+### 実施内容
+
+- 経路 1（解放関数）: `crates/wasm/src/boxes.rs` に `free_hevc_sample_entry_fields` を追加し、`mp4_sample_entry_hev1_free` / `_hvc1_free` はフィールド 5 本を渡すだけの薄いラッパにした
+- 経路 2（JSON パース）: `parse_json_hevc_sample_entry_fields` を共通ヘルパーとして追加。フェーズ 1（JSON → Rust 型）とフェーズ 2（`allocate_and_copy_*` × 3）の deferred allocate 順序は維持したまま共通化した。公開関数 `parse_json_mp4_sample_entry_hev1` / `_hvc1` は共通ヘルパーの結果を各 `#[repr(C)]` 型へ写し替えるだけの薄いラッパ（`hevc_fields_to_hev1` / `_hvc1`）になる
+- 経路 3（`NaluArrays::fmt`）: `struct NaluArrays` を `boxes.rs` に `HevcNaluArrays` として集約し、両ファイルから `use` する
+- 経路 4（テスト JSON リテラル）: `HEVC_TEST_JSON_SCALAR_FIELDS` 定数に既定値を集約し、`build_hevc_test_json` / `build_hevc_test_json_omitting` の 2 関数から参照する
+- 共通の中間表現は `HevcSampleEntryFields` として `boxes.rs` に集約した（`c-api::boxes::Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` と同型のフィールドを持つ）
+- 公開 API（`pub fn mp4_sample_entry_hev1_free` / `_hvc1_free` / `parse_json_mp4_sample_entry_hev1` / `_hvc1` / `fmt_json_mp4_sample_entry_hev1` / `_hvc1`）のシグネチャは変更していない
+- `CHANGES.md` の `## develop` の `### misc` に `[UPDATE]` を追記した
+
+### レビュー指摘への追加対応
+
+`/review-diff-code` の指摘を受け、以下も本 PR に含めた:
+
+- doc の英語混在「allocate 済み」を「割り当て済み」に置き換え、`HevcSampleEntryFields` の docstring に「一回限りの受け渡し用途」と「フェーズ 2 が panic しない前提」を明記した
+- `hevc_fields_to_hev1` / `_hvc1` にトレイト・マクロ禁止規約下での判断根拠を追記した
+- 中間型を `HevcSampleEntryAllocated` から `HevcSampleEntryFields` へ改名した（`Allocated` サフィックスの含意が曖昧だったため）
+- `test_json_to_hev1` / `_hvc1` のアサーションを 6 個から 19 個のスカラーフィールド全数に拡張し、`hevc_fields_to_*` 内のフィールド取り違えを検出できる網を張った
+- `free_hevc_sample_entry_fields` の部分 alloc 失敗経路（`nalu_counts == null && nalu_data != null` の非常態）に回帰テストを追加した
+- テスト JSON ヘルパーを構造化し、`.replace("            \"width\": 1920,\n", "")` の脆さを解消した（`build_hevc_test_json_omitting(kind, arrays, Some(field))`）
+- `parse_json_hevc_sample_entry_fields` のエラーパスを表駆動で網羅した（18 個のスカラー欠落 + `naluArrays` / `naluType` / `units` 欠落）
+
+### 検証
+
+- `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --all-targets -- -D warnings` / `cargo test -p wasm --lib` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` がすべて通ることを確認した
+- 元の 12 個のテスト（hev1 / hvc1 × 6）に加え、共通ヘルパーの直接テスト 5 個（改善 10 + 11 + `build_hevc_test_json_omitting` セルフテスト）を追加し、49 個の pass を確認した

@@ -54,9 +54,12 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
 /// 正当な init セグメントとメディアセグメント（`moof` + `mdat` payload 付き）を組み立てる
 ///
 /// demux 側の `InvalidState` 検証では、構文的に正しいバイト列が必要なため、
-/// 別 muxer の公開 API だけで生成する（モックは使わない）。
+/// 別 muxer の公開 API だけで生成する。
 fn build_init_and_media_segments() -> (Vec<u8>, Vec<u8>) {
     let sample_entry = create_avc1_sample_entry(320, 240);
+    // payload 長は demux 経路の検証（`InvalidState` への到達）には無関係の任意値。
+    // `mdat` header は payload サイズに応じて 8 / 16 バイトを選ぶため、
+    // `u32::MAX` を超えない範囲であれば境界の選択に影響しない。
     let payload = [0u8; 16];
     let sample = Sample {
         track_kind: TrackKind::Video,
@@ -113,9 +116,6 @@ fn invalid_state_tracks_before_init() {
 }
 
 /// init 前に正当なメディアセグメントを渡すと `InvalidState` になること
-///
-/// 空バイト列では `DecodeError` になるため、別 muxer で組み立てた
-/// `moof` + `mdat` を未初期化 demuxer に渡して検証する。
 #[test]
 fn invalid_state_media_before_init() {
     let (_, media_segment) = build_init_and_media_segments();

@@ -78,7 +78,9 @@ fn empty_tracks_on_init_segment_bytes() {
 
 /// 空のサンプル列で `create_media_segment_metadata` すると `EmptySamples` になること
 ///
-/// 公開経路は `build_media_segment_bytes` 経由であり、空スライス `&[]` で到達する。
+/// `create_media_segment_metadata` は内部で `build_media_segment_bytes` を経由し、
+/// そこで空スライス検査に到達する。`create_media_segment_metadata_with_sidx` は
+/// 自身の入口に独立した空検査を持つが、それは本テストの対象外。
 #[test]
 fn empty_samples_on_create_media_segment() {
     let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
@@ -95,7 +97,11 @@ fn empty_samples_on_create_media_segment() {
 fn mixed_sample_entries_in_segment() {
     let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
-    // 幅だけ異なる 2 つの Avc1 エントリを用意し、同一 Video トラックへ連続配置する
+    // 幅だけ異なる 2 つの Avc1 エントリを用意し、同一 Video トラックへ連続配置する。
+    // `data_offset` / `data_size` を連続に取っているのは、`resolve_segment_tracks` 内で
+    // sample entry 一致比較（`MixedSampleEntries` の判定源）よりも後段にある
+    // データ非連続検査（`sample data for the same track must be contiguous ...`）へ
+    // 誤って横滑りしないようにするため。
     let first_entry = create_avc1_sample_entry(320, 240);
     let second_entry = create_avc1_sample_entry(640, 480);
     let first_size = 16usize;

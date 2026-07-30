@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-mp4-demuxer-as-usize-cast
 - Polished: 2026-07-30
@@ -101,7 +101,12 @@ let box_size = box_size
 
 ## 解決方法
 
-設計方針の「書き換え後のコード」に従って `as usize` を `usize::try_from` に置き換える。
+設計方針どおり、`Mp4FileDemuxer::read_ftyp_box_header` と `read_moov_box_header`（moov 分岐）の `as usize` を `usize::try_from` に置き換えた。
+
+- ftyp: `box_size == 0` のとき `None`、それ以外は `try_from`。失敗時は `"ftyp box size exceeds usize::MAX"`
+- moov: 既存の `Option<u64>`（0 除外済み）を `map` + `transpose` で `Option<usize>` に変換。失敗時は `"moov box size exceeds usize::MAX"`
+- `Input::slice_range` の position offset 変換と `data_size() as usize` はスコープ外のまま未変更
+- `CHANGES.md` に `[FIX]` を追記した
 
 ## 後方互換
 

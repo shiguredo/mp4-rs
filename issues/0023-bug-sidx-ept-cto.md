@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-30
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-sidx-ept-cto
 - Polished: 2026-07-30
@@ -54,6 +54,29 @@ EPT の算出は `build_media_segment_bytes` より前に行われ、この時�
 
 ## 解決方法
 
+### 実装
+
 1. `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx` で EPT を計算するとき、`first_track_kind` に属する全サンプルを走査する
 2. 各サンプルについて `DTS_i = decode_time + Σ prior_duration`、`PTS_i = DTS_i + CTO_i`（`None`→0）を求め、`min PTS_i` を EPT にする。負 PTS / `u64` 変換失敗は `MuxError`
-3. CTO 付き（先頭以外が最小になるケースと負 CTO を含む）の sidx テストを `tests/test_mux_fmp4_segment.rs` に追加する
+3. EPT 計算は `build_media_segment_bytes` 呼び出し前に行い、エラー時は muxer の内部状態を変更しない
+4. `PTS_i` は `i128` の中間表現で扱う（`u64 + i64` は `i128` の表現範囲を超え得ないため、単純加算でよい）
+
+### テスト
+
+`tests/test_mux_fmp4_segment.rs` に以下の単体テストを追加:
+
+- CTO=None 時に旧挙動と等価であること（後方互換性の回帰防止）
+- 複数サンプルで PTS 最小値が先頭以外になるケース
+- セグメント跨ぎで負 CTO により先頭 DTS を下回るケース
+- 負 PTS で `MuxError::Overflow` を返すこと
+- 参照トラック以外（Audio）のサンプルが EPT/DTS 累積に混入しないこと
+- 第 2 セグメント × 複数サンプルで、`decode_time` 起点の DTS 累積 + 各サンプルの CTO が反映されること
+
+### ドキュメント
+
+- `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx` の doc に EPT の定義・Overflow 条件・エラー時副作用なしを明記
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加
+
+### 残作業
+
+- `starts_with_sap` / `sap_type` が「decode 順先頭の keyframe」を採る現行実装は、B フレームが presentation 順先頭になるケース（EPT サンプルが B フレーム）で仕様と齟齬が生じる。今回の EPT 修正で表面化しやすくなったため、別 issue として起票して継続対応する（隣接する `first_sample_is_keyframe` の `.find` 冗長も同 issue で拾う）。

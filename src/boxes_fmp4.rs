@@ -605,24 +605,25 @@ impl TrunBox {
         if self.first_sample_flags.is_some() {
             flags |= Self::FLAG_FIRST_SAMPLE_FLAGS_PRESENT;
         }
-        // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）のため先頭サンプルだけを見る。
-        // encode 経路は事前に validate_sample_option_consistency() を通すので不整合入力はここに来ない。
-        // FullBox::full_box_flags 経由で直接呼ばれた場合は validate されないため、
-        // 不整合な TrunBox に対しては先頭サンプル基準の値が返る点に注意
-        // （その値が実際にバイト列として書き出される encode 経路では冒頭で invalid_input として弾かれる）。
-        if let Some(sample) = self.samples.first() {
-            if sample.duration.is_some() {
-                flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
-            }
-            if sample.size.is_some() {
-                flags |= Self::FLAG_SAMPLE_SIZE_PRESENT;
-            }
-            if sample.flags.is_some() {
-                flags |= Self::FLAG_SAMPLE_FLAGS_PRESENT;
-            }
-            if sample.composition_time_offset.is_some() {
-                flags |= Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT;
-            }
+        // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）。
+        // どのサンプルかに Some があればフラグを立てる（uses_version_1 と流儀を揃える）。
+        // これで FullBox::full_box_flags 経由で直接呼ばれても決定論的な値を返せる
+        // （不整合入力は Encode::encode 冒頭の validate_sample_option_consistency() が拒否する）。
+        if self.samples.iter().any(|s| s.duration.is_some()) {
+            flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
+        }
+        if self.samples.iter().any(|s| s.size.is_some()) {
+            flags |= Self::FLAG_SAMPLE_SIZE_PRESENT;
+        }
+        if self.samples.iter().any(|s| s.flags.is_some()) {
+            flags |= Self::FLAG_SAMPLE_FLAGS_PRESENT;
+        }
+        if self
+            .samples
+            .iter()
+            .any(|s| s.composition_time_offset.is_some())
+        {
+            flags |= Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT;
         }
         flags
     }

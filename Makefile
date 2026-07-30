@@ -1,4 +1,4 @@
-.PHONY: test cover pbt pbt-cover fuzz fuzzing fuzzing-list miri check clippy fmt clean
+.PHONY: test cover pbt pbt-with-cover fuzzing fuzzing-list miri check clippy fmt clean
 
 # 全テストを実行する
 #

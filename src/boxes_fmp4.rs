@@ -598,6 +598,8 @@ impl TrunBox {
         if self.first_sample_flags.is_some() {
             flags |= Self::FLAG_FIRST_SAMPLE_FLAGS_PRESENT;
         }
+        // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）。
+        // サンプル間の Option 有無は encode 前に validate_sample_option_consistency で揃っている前提。
         if let Some(sample) = self.samples.first() {
             if sample.duration.is_some() {
                 flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
@@ -613,6 +615,34 @@ impl TrunBox {
             }
         }
         flags
+    }
+
+    /// 各 per-sample フィールドの `Option` 有無が全サンプルで一致することを検証する
+    ///
+    /// ISO/IEC 14496-12 の trun では duration / size / flags / composition_time_offset の
+    /// 有無フラグが run 全体で共通のため、サンプルごとに `Some` / `None` が混在する入力は
+    /// 表現できない。不整合なら `ErrorKind::InvalidInput` を返す。
+    fn validate_sample_option_consistency(&self) -> Result<()> {
+        let Some(first) = self.samples.first() else {
+            return Ok(());
+        };
+        let has_duration = first.duration.is_some();
+        let has_size = first.size.is_some();
+        let has_flags = first.flags.is_some();
+        let has_composition_time_offset = first.composition_time_offset.is_some();
+
+        for sample in self.samples.iter().skip(1) {
+            if sample.duration.is_some() != has_duration
+                || sample.size.is_some() != has_size
+                || sample.flags.is_some() != has_flags
+                || sample.composition_time_offset.is_some() != has_composition_time_offset
+            {
+                return Err(Error::invalid_input(
+                    "TrunBox samples must have consistent Option presence for duration, size, flags, and composition_time_offset",
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// version 1 が必要かどうかを判定する
@@ -631,6 +661,10 @@ impl TrunBox {
 
 impl Encode for TrunBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // FullBoxHeader 書き込み時に compute_flags() が呼ばれるため、
+        // 不整合入力ではヘッダへ不正フラグを書く前に検証して拒否する。
+        self.validate_sample_option_consistency()?;
+
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;

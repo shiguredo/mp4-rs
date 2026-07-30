@@ -168,6 +168,10 @@
   - 参照トラック各サンプルの PTS（`DTS + composition_time_offset`、`None` は 0）の最小値を使うようにする
   - PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` に収まらない場合は `MuxError::Overflow` を返す
   - @sile
+- [FIX] `TrunBox::encode` がサンプル間で per-sample フィールドの `Option` 有無が不整合な入力を黙って潰していたのを修正する
+  - これまでは先頭サンプルだけでフラグを決めていたため、先頭が `None`・後続が `Some` だと後続値が落ちていた
+  - duration / size / flags / composition_time_offset のいずれかで有無が揃わない場合は `invalid_input` を返す
+  - @sile
 
 ### misc
 

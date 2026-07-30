@@ -425,6 +425,8 @@ impl Encode for AvccBox {
         offset += self.avc_level_indication.encode(&mut buf[offset..])?;
         offset += (0b1111_1100 | self.length_size_minus_one.get()).encode(&mut buf[offset..])?;
 
+        // ISO/IEC 14496-15 の numOfSequenceParameterSets は unsigned int(5) のため最大 31。
+        // PPS 側の numOfPictureParameterSets（unsigned int(8)、最大 255）と取り違えないこと。
         if self.sps_list.len() > 31 {
             return Err(Error::invalid_input("Too many SPSs (max 31)"));
         }

@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-wasm-from-raw-parts-zero-size
 - Polished: 2026-07-31
@@ -94,7 +94,33 @@ unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
 
 ## 解決方法
 
-各箇所で `if size == 0 || ptr.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(ptr, size) } }` の分岐を追加する。`NaluList` / `HevcNaluArrays` は NALU 単位で同様のガードを追加する。hev1 / hvc1 個別ファイルへの同型パッチは不要（共通の `HevcNaluArrays` を直す）。
+### 実装
+
+JSON フォーマット経路の次の箇所で、`size == 0 || ptr.is_null()` のとき `&[]` を返し、それ以外だけ `from_raw_parts` するガードを入れた。
+
+- `crates/wasm/src/boxes_av01.rs` の `fmt_json_mp4_sample_entry_av01`
+- `crates/wasm/src/boxes_mp4a.rs` の `fmt_json_mp4_sample_entry_mp4a`
+- `crates/wasm/src/boxes_flac.rs` の `fmt_json_mp4_sample_entry_flac`
+- `crates/wasm/src/boxes_avc1.rs` の `NaluList::fmt`
+- `crates/wasm/src/boxes.rs` の `HevcNaluArrays::fmt`（hev1 / hvc1 の両方をカバー）
+- `crates/wasm/src/boxes_tx3g.rs` の `FtabList::fmt`（同種 UB のため本 issue で合わせて修正）
+
+フォーマット側はパース時に格納済みのポインタ／サイズを読むだけで、確保失敗をエラーにはしない（UB 回避の防御）。
+
+### テスト
+
+空データの JSON 往復テストを追加した。
+
+- `test_json_to_av01_empty_config_obus_roundtrip`
+- `test_json_to_mp4a_empty_dec_specific_info_roundtrip`
+- `test_json_to_flac_empty_streaminfo_roundtrip`
+- `test_json_to_avc1_empty_nalu_element_roundtrip`
+- `test_json_to_hev1_empty_nalu_element_roundtrip`
+- `test_tx3g_json_roundtrip_with_empty_font_name`
+
+### ドキュメント
+
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加した
 
 ## 後方互換
 

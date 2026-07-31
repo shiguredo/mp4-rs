@@ -845,6 +845,40 @@ proptest! {
         );
     }
 
+    /// CTO=None 入力では sidx の `starts_with_sap` / `sap_type` が
+    /// samples[0].keyframe と一致すること
+    ///
+    /// arb_video_sample は keyframe: bool をランダム化するが CTO=None のため PTS は
+    /// 単調非減少で samples[0] が最小 PTS を採る。したがって EPT サンプル == samples[0]
+    /// となり、`starts_with_sap == samples[0].keyframe` /
+    /// `sap_type == u8::from(samples[0].keyframe)` を任意入力で固定する。
+    /// `sap_delta_time` は現行の `0` のまま変更されない。
+    #[test]
+    fn sidx_starts_with_sap_matches_first_sample_keyframe(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        samples in prop::collection::vec(arb_video_sample(0), 1..5),
+    ) {
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        let fmp4_samples: Vec<Sample> = samples
+            .iter()
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
+            .collect();
+        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let segment_bytes =
+            build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
+
+        let (sidx_box, _) = SidxBox::decode(&segment_bytes).expect("sidx のデコードに失敗した");
+        prop_assert_eq!(sidx_box.references.len(), 1);
+
+        let expected_starts_with_sap = samples[0].keyframe;
+        prop_assert_eq!(sidx_box.references[0].starts_with_sap, expected_starts_with_sap);
+        prop_assert_eq!(sidx_box.references[0].sap_type, u8::from(expected_starts_with_sap));
+        prop_assert_eq!(sidx_box.references[0].sap_delta_time, 0);
+    }
+
     /// 最初のサンプルに `sample_entry` がない場合は
     /// `create_media_segment_metadata_with_sidx()` がエラーを返すことを確認する
     #[test]

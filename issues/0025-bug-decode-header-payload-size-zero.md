@@ -42,17 +42,39 @@ pub fn decode_header_and_payload(buf: &[u8]) -> Result<(Self, &[u8])> {
 
 ## 設計方針
 
-`box_size == 0` のとき `box_size < header_size` の判定をスキップし、`buf.len()` を使うよう条件順序を修正する。size=0 のときは `check_buffer_size` も `buf.len()` に対して行う。
+size=0 (32bit `size` フィールドが 0) の場合のみ「バッファ末尾まで」として扱い、`box_size < header_size` の判定をスキップして `buf.len()` を使う。
+一方、size=1 + largesize=0 (`BoxSize::U64(0)`) は ISO/IEC 14496-12 で意味が未定義であり、著名な実装 (FFmpeg / GPAC / Bento4 / mp4parse-rust) すべてがエラー扱いにしているため、従来どおり `box_size < header_size` でエラーにする。
+
+### 他実装での扱い
+
+| 実装 | size==0 (U32) | largesize==0 (U64) |
+| --- | --- | --- |
+| FFmpeg (`libavformat/mov.c` `mov_read_default`) | 親サイズ残りを設定 | `a.size = -8` で `break` |
+| GPAC (`src/isomedia/box_funcs.c` `gf_isom_parse_box_ex`) | root box のみ許可 | `size < hdr_size` でエラー |
+| Bento4 (`Source/C++/Core/Ap4AtomFactory.cpp` `CreateAtomFromStream`) | サポート (stream size まで) | `size < 16` でエラー |
+| mp4parse-rust (`mp4parse/src/lib.rs` `read_box_header`) | `MediaDataBox` のみ許可 | `offset > size` でエラー |
+
+ISO/IEC 14496-12 4.2 では size==0 のみ「box は file の最後まで拡張される」と明示され、largesize==0 は特別な意味が定義されていない。
+
+### 補足
+
+- `BoxSize::LARGE_VARIABLE_SIZE = U64(0)` は既存の定義として残っているが、`finalize_box_size` (`basic_types.rs:129-134`) が「U32 に収まらないとエラー」で弾く実装になっており、エンコード側では実質的に使えない。デコード側でも仕様準拠で扱わない方針とする。
+- size=0 の位置制限 (GPAC / mp4parse-rust のように「トップレベルのみ」「mdat のみ」など) は本 issue のスコープ外とし、必要なら別 issue で扱う。
 
 ## 完了条件
 
-- size=0 のボックスをデコードしたときバッファ全体をペイロードとして返すこと
+- size=0 (`BoxSize::U32(0)`) のボックスをデコードしたときバッファ全体をペイロードとして返すこと
+- largesize=0 (`BoxSize::U64(0)`) は従来どおりエラーを返すこと
 - ドキュメントと実装が一致すること
 - size > 0 で `box_size < header_size` の場合は従来どおりエラーを返すこと
 - `cargo test` / `cargo clippy` が通ること
 
 ## 解決方法
 
-1. `box_size == 0` の判定を `box_size < header_size` の前に移動する
-2. size=0 のとき `box_size = buf.len()` にしてから `check_buffer_size` を行う
-3. size=0 のデコードテストを追加する
+1. `matches!(header.box_size, BoxSize::U32(0))` の判定を `box_size < header_size` の前に移動し、真のとき `box_size = buf.len()` にする
+2. その後 `check_buffer_size(box_size, buf)?` を呼ぶ
+3. テストを追加する
+   - size=0 (`BoxSize::U32(0)`) のボックスをデコードしバッファ全体がペイロードとして得られること
+   - largesize=0 (`BoxSize::U64(0)`) のボックスはエラーになること
+   - size > 0 で `box_size < header_size` の場合はエラーになること (回帰防止)
+4. 必要に応じてドキュメント (`basic_types.rs:151-159`) の文言を「size=0 (32bit の場合のみ)」と明示化する

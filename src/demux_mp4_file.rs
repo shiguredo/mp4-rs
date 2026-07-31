@@ -446,14 +446,15 @@ impl Mp4FileDemuxer {
         let (header, _header_size) = BoxHeader::decode(data)?;
         header.box_type.expect(FtypBox::TYPE)?;
 
-        let raw_size = header.box_size.get();
-        let box_size = if raw_size == 0 {
-            None
-        } else {
-            Some(usize::try_from(raw_size).map_err(|_| {
-                DemuxError::DecodeError(Error::invalid_data("ftyp box size exceeds usize::MAX"))
-            })?)
-        };
+        // 合法な ftyp が usize::MAX を超えることは現実的にはないが、破損入力への防御として検査する
+        let box_size = Some(header.box_size.get())
+            .filter(|n| *n > 0)
+            .map(|n| {
+                usize::try_from(n).map_err(|_| {
+                    DemuxError::DecodeError(Error::invalid_data("ftyp box size exceeds usize::MAX"))
+                })
+            })
+            .transpose()?;
         self.phase = Phase::ReadFtypBox { box_size };
         self.handle_input_inner(input)
     }

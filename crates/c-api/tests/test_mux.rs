@@ -174,6 +174,8 @@ fn estimate_enables_faststart_for_interleaved_three_tracks() {
         let mut muxer = Mp4FileMuxer::with_options(options).expect("ミューサの作成に失敗した");
         let mut offset = muxer.initial_boxes_bytes().len() as u64;
 
+        // `Mp4FileMuxer::append_sample` は最初のサンプルにだけ `sample_entry` を要求し、
+        // 以降は `None` を渡す慣用に従うため、`Option::take` で 2 回目以降は自動的に `None` になるようにする
         let mut video_entry = Some(create_avc1_sample_entry(1920, 1080));
         let mut audio_entry = Some(create_opus_sample_entry());
         let mut subtitle_entry = Some(create_stpp_sample_entry());

@@ -285,30 +285,47 @@ impl Mp4FileMuxer {
 /// # 引数
 ///
 /// - `sample_counts`: トラックごとの予想サンプル数の配列
+///   - 配列内の要素の順序は任意（合計サンプル数と要素数だけを見積もりに使う）
+///   - `uint32_t` として整列されている必要がある（4 バイト境界）
 ///   - NULL の場合は `sample_counts_len` の値によらず `0` を返す（誤用扱い）
 /// - `sample_counts_len`: `sample_counts` の要素数
-///   - `sample_counts` が NULL でなく `0` の場合は空スライスとして扱い、
+///   - `sample_counts` が NULL でなく `sample_counts_len` が `0` の場合は空スライスとして扱い、
 ///     トラックなしの基本オーバーヘッド相当の値を返す
 ///
 /// # 戻り値
 ///
 /// moov ボックスに必要な最大バイト数を返す
 ///
+/// # NOTE
+///
+/// この関数は概算であり、以下の場合には見積もりが不足することがある:
+/// - サンプルエントリーが大きい場合（`stpp` の名前空間文字列が長い場合など）
+/// - サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合
+///
+/// 見積もりが不足しても生成される MP4 ファイル自体は正しく、
+/// faststart が無効になり moov ボックスがファイル末尾に配置されるだけで済む。
+/// ただし縮退したことを呼び出し側で検知する手段は無い。
+/// faststart を確実に有効にしたい場合は、余裕を持たせた値を
+/// `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定すること
+///
+/// # 関連関数
+///
+/// - `mp4_file_muxer_set_reserved_moov_box_size()`: 見積もった値を faststart 用の予約サイズとして指定する
+///
 /// # 使用例
 ///
 /// ```c
-/// // 音声 1000 サンプル、映像 3000 フレーム、字幕 100 サンプルの場合
+/// // 合計 3 トラック、4100 サンプルの場合（トラックの並び順は任意）
 /// uint32_t sample_counts[] = {1000, 3000, 100};
-/// uint32_t required_size = mp4_estimate_maximum_moov_box_size(
+/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
 ///     sample_counts, 3);
-/// mp4_file_muxer_set_reserved_moov_box_size(muxer, required_size);
+/// mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
 /// ```
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mp4_estimate_maximum_moov_box_size(
     sample_counts: *const u32,
     sample_counts_len: u32,
 ) -> u32 {
-    // NULL 判定を長さ判定より先に行い、NULL + len > 0 による UB を避ける
     if sample_counts.is_null() {
         return 0;
     }

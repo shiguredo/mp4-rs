@@ -140,13 +140,16 @@ async function createMP4WithOpus(outputPath) {
         try {
             // 推定される moov ボックスサイズを設定
             // 10秒間のOpus（48kHz）= 10秒 * 50フレーム/秒 = 500フレーム
+            // トラックごとのサンプル数配列を WASM メモリに書き込む
             const sampleCounts = new Uint32Array([500]);
             const sampleCountsPtr = mp4_alloc(sampleCounts.byteLength);
             new Uint32Array(memory.buffer, sampleCountsPtr, sampleCounts.length).set(sampleCounts);
+            // 見積もり関数を呼び出す
             const estimatedMoovSize = mp4_estimate_maximum_moov_box_size(
                 sampleCountsPtr,
                 sampleCounts.length,
             );
+            // 一時領域を解放する
             mp4_free(sampleCountsPtr, sampleCounts.byteLength);
             console.log(`Estimated moov box size: ${estimatedMoovSize} bytes`);
             mp4_file_muxer_set_reserved_moov_box_size(muxerPtr, estimatedMoovSize);

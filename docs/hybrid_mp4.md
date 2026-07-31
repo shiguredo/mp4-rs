@@ -85,14 +85,27 @@ fn mux_hybrid_mp4(
     };
     muxer.append_sample(&sample)?;
 
-    // フラグメントを繰り返す場合は、上記の
-    // 「非サンプル書き出し → advance_position → サンプル書き出し → append_sample」
-    // を必要な回数だけ繰り返す
+    // 実際のフラグメントは通常複数のサンプルを含む。
+    // その場合は「非サンプル書き出し 1 回 → advance_position 1 回 →
+    // (サンプル書き出し + append_sample) × N」を 1 単位として、
+    // フラグメント数分だけ繰り返す。
+    // 同一フラグメント内の 2 サンプル目以降は sample_entry: None にできる
+    // （直前のサンプルの sample_entry が引き継がれる）
 
     let finalized = muxer.finalize()?;
 
-    // finalize() 後のボックスを後書きする
-    // Hybrid MP4 特有の完成形への変換（先頭の mdat 化など）は利用側の追加処理
+    // finalize() 後のボックス（末尾配置の moov など）は
+    // これまでに書き出した output の末尾を超える位置にも配置されるため、
+    // 必要な長さまで output を伸長してから書き戻す
+    let final_len = finalized
+        .offset_and_bytes_pairs()
+        .map(|(offset, bytes)| offset as usize + bytes.len())
+        .max()
+        .unwrap_or(output.len());
+    if final_len > output.len() {
+        output.resize(final_len, 0);
+    }
+
     for (offset, bytes) in finalized.offset_and_bytes_pairs() {
         let offset = offset as usize;
         output[offset..offset + bytes.len()].copy_from_slice(bytes);

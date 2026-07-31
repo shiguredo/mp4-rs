@@ -26,10 +26,11 @@ pub fn fmt_json_mp4_sample_entry_av01(
                 data.initial_presentation_delay_minus_one,
             )?;
         }
-        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
-        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
-        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
-        let config_obus = if data.config_obus_size == 0 || data.config_obus.is_null() {
+        // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
+        // ここではその結果を読むだけだが、サイズ 0 を from_raw_parts に渡すと
+        // null ポインタ経由の UB になり得るのでガードし、その場合は空配列として出力する
+        // （フォーマット側ではエラーにはしない）
+        let config_obus = if data.config_obus_size == 0 {
             &[][..]
         } else {
             unsafe { std::slice::from_raw_parts(data.config_obus, data.config_obus_size as usize) }

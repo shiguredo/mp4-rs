@@ -167,11 +167,10 @@ impl nojson::DisplayJson for FtabList {
                 let name_ptr = unsafe { *self.font_name_ptrs.add(i) };
                 let name_size = unsafe { *self.font_name_sizes.add(i) } as usize;
                 // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
-                // 空要素は (null, 0)。allocate_and_copy_array_list はポインタに .0 だけ・
-                // サイズに array.len() を使うため、非空要素の確保失敗後は (null, 非ゼロ)
-                // も残り得る。いずれも from_raw_parts に null を渡すと UB なのでガードし、
+                // 空要素は (null, 0)。サイズ 0 を from_raw_parts に渡すと
+                // null ポインタ経由の UB になり得るのでガードし、
                 // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
-                let font_name = if name_size == 0 || name_ptr.is_null() {
+                let font_name = if name_size == 0 {
                     &[][..]
                 } else {
                     unsafe { std::slice::from_raw_parts(name_ptr, name_size) }

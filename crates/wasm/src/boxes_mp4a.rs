@@ -15,20 +15,20 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
         f.member("bufferSizeDb", data.buffer_size_db)?;
         f.member("maxBitrate", data.max_bitrate)?;
         f.member("avgBitrate", data.avg_bitrate)?;
-        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
-        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
-        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
-        let dec_specific_info =
-            if data.dec_specific_info_size == 0 || data.dec_specific_info.is_null() {
-                &[][..]
-            } else {
-                unsafe {
-                    std::slice::from_raw_parts(
-                        data.dec_specific_info,
-                        data.dec_specific_info_size as usize,
-                    )
-                }
-            };
+        // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
+        // ここではその結果を読むだけだが、サイズ 0 を from_raw_parts に渡すと
+        // null ポインタ経由の UB になり得るのでガードし、その場合は空配列として出力する
+        // （フォーマット側ではエラーにはしない）
+        let dec_specific_info = if data.dec_specific_info_size == 0 {
+            &[][..]
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(
+                    data.dec_specific_info,
+                    data.dec_specific_info_size as usize,
+                )
+            }
+        };
         f.member("decSpecificInfo", dec_specific_info)
     })
 }

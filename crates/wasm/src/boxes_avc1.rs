@@ -166,11 +166,10 @@ impl nojson::DisplayJson for NaluList {
                 let nalu_ptr = unsafe { *self.data_ptr.add(i) };
                 let nalu_size = unsafe { *self.sizes_ptr.add(i) } as usize;
                 // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
-                // 空要素は (null, 0)。allocate_and_copy_array_list はポインタに .0 だけ・
-                // サイズに array.len() を使うため、非空要素の確保失敗後は (null, 非ゼロ)
-                // も残り得る。いずれも from_raw_parts に null を渡すと UB なのでガードし、
+                // 空要素は (null, 0)。サイズ 0 を from_raw_parts に渡すと
+                // null ポインタ経由の UB になり得るのでガードし、
                 // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
-                let nalu = if nalu_size == 0 || nalu_ptr.is_null() {
+                let nalu = if nalu_size == 0 {
                     &[][..]
                 } else {
                     unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) }

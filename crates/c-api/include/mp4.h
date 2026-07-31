@@ -1208,10 +1208,11 @@ typedef struct Fmp4SegmentSample {
 /**
  * MP4 ファイルに追加（マルチプレックス）するメディアサンプルを表す構造体
  *
- * 字幕トラック（`MP4_TRACK_KIND_SUBTITLE`）の場合、以下の値の指定を推奨する。
+ * 音声・字幕トラックでは、各サンプルが独立してデコード可能なのが通例のため
+ * `keyframe` = `true` を指定するのが正規である。
  *
- * - `keyframe` = `true`（字幕サンプルは通常すべて独立サンプル）
- * - `has_composition_time_offset` = `false`
+ * 字幕トラック（`MP4_TRACK_KIND_SUBTITLE`）ではあわせて
+ * `has_composition_time_offset` = `false` を推奨する。
  *
  * # 使用例
  *
@@ -1257,10 +1258,16 @@ typedef struct Mp4MuxSample {
    */
   const struct Mp4SampleEntry *sample_entry;
   /**
-   * キーフレームであるかどうか
+   * キーフレーム（同期サンプル）であるかどうか
    *
-   * `true` の場合、このサンプルはキーフレームであり、
-   * このポイントから復号（再生）を開始できることを意味する
+   * 音声・字幕では `true` を指定するのが正規である。
+   *
+   * `Mp4FileMuxer` では `stss` の生成に使われる。
+   * 映像トラックの全サンプルが `false` の場合、`mp4_file_muxer_finalize` は
+   * `MP4_ERROR_INVALID_INPUT` を返す。
+   * 音声・字幕では同条件でも `stss` を省略して全サンプル同期として扱う。
+   *
+   * `Fmp4SegmentMuxer` では `trun` のサンプルフラグおよび `sidx` の SAP 判定に使われる。
    */
   bool keyframe;
   /**

@@ -179,12 +179,8 @@ impl FinalizedBoxes {
 
 /// MP4 ファイルに追加するメディアサンプル
 ///
-/// 音声・字幕トラックでは、各サンプルが独立してデコード可能なのが通例のため
-/// [`Self::keyframe`] = `true` を指定するのが正規である。
-///
-/// 字幕トラック（[`TrackKind::Subtitle`]）ではあわせて次も推奨する。
-///
-/// - [`Self::composition_time_offset`] = [`None`]
+/// 字幕トラック（[`TrackKind::Subtitle`]）では
+/// [`Self::composition_time_offset`] = [`None`] を推奨する。
 #[derive(Debug, Clone)]
 pub struct Sample {
     /// サンプルのトラック種別
@@ -198,15 +194,19 @@ pub struct Sample {
 
     /// キーフレーム（同期サンプル）かどうか
     ///
+    /// 音声・字幕では各サンプルが独立してデコード可能なのが通例のため、`true` を指定するのが正規である。
+    ///
     /// [`Mp4FileMuxer`] では、この値が `stss` ボックスの生成に使われる。
     ///
     /// - トラック内の全サンプルが `true` の場合、`stss` は省略される（全サンプルが同期サンプル）
     /// - 一部だけ `true` の場合、`true` のサンプル番号だけが `stss` に列挙される
     /// - 全サンプルが `false` の場合:
     ///   - 音声・字幕: `stss` を省略する（全サンプル同期として扱う）
-    ///   - 映像: [`MuxError::NoSyncSamples`] を返す
+    ///   - 映像: [`Mp4FileMuxer::finalize()`] が [`MuxError::NoSyncSamples`] を返す
     ///
-    /// 音声・字幕では各サンプルが独立してデコード可能なのが通例のため、`true` を指定するのが正規である。
+    /// [`crate::mux::Fmp4SegmentMuxer`] では `stss` は使わず、
+    /// `trun` の `SampleFlags` および `sidx` の SAP 判定に使われる。
+    /// 映像の全サンプルが `false` でも [`MuxError::NoSyncSamples`] にはならない。
     pub keyframe: bool,
 
     /// サンプルのタイムスケール（時間単位）
@@ -332,7 +332,7 @@ pub enum MuxError {
 
     /// トラックに同期サンプルが 1 つも存在しない
     ///
-    /// [`Mp4FileMuxer`] では、映像トラックの全サンプルが `keyframe = false` のときに返す。
+    /// [`Mp4FileMuxer::finalize()`] 時、映像トラックの全サンプルが `keyframe = false` のときに返す。
     /// エントリー 0 個の `stss`（同期サンプルなし）を出力する代わりに拒否する。
     /// 音声・字幕では同条件でも `stss` を省略して全サンプル同期として扱うため、このエラーにはならない
     NoSyncSamples {
@@ -728,6 +728,9 @@ impl Mp4FileMuxer {
     /// このメソッドが呼び出されると、[`Mp4FileMuxer`] はそれまでの情報を用いて、
     /// MP4 ファイルの再生に必要な修正やメタデータの構築を行う。
     ///
+    /// 映像トラックの全サンプルが `keyframe = false` の場合は
+    /// [`MuxError::NoSyncSamples`] を返す。
+    ///
     /// 利用側は、このメソッドが返した結果を、出力先に反映する必要がある。
     pub fn finalize(&mut self) -> Result<&FinalizedBoxes, MuxError> {
         if self.finalized_boxes.is_some() {
@@ -1105,7 +1108,7 @@ impl Mp4FileMuxer {
             })
         };
 
-        // 全サンプルがキーフレームなら stss は省略する（ISO/IEC 14496-12: 不在 = 全同期）
+        // ISO/IEC 14496-12: stss の不在は全サンプルが同期サンプルであることを意味する
         let is_all_keyframe = chunks.iter().all(|c| c.samples.iter().all(|s| s.keyframe));
         let stss_box = if is_all_keyframe {
             None
@@ -1130,9 +1133,7 @@ impl Mp4FileMuxer {
                 match track_kind {
                     TrackKind::Audio | TrackKind::Subtitle => None,
                     TrackKind::Video => {
-                        return Err(MuxError::NoSyncSamples {
-                            track_kind: TrackKind::Video,
-                        });
+                        return Err(MuxError::NoSyncSamples { track_kind });
                     }
                 }
             } else {
@@ -2060,7 +2061,6 @@ mod tests {
         let timescale = NonZeroU32::MIN.saturating_add(1000 - 1);
         let sample_size = 256usize;
 
-        // 正規は keyframe = true だが、誤って false を渡したときに空 stss を出さないことを検証する
         for i in 0..3 {
             muxer
                 .append_sample(&Sample {
@@ -2097,7 +2097,6 @@ mod tests {
         let timescale = NonZeroU32::MIN.saturating_add(1000 - 1);
         let sample_size = 128usize;
 
-        // 正規は keyframe = true だが、誤って false を渡したときに空 stss を出さないことを検証する
         for i in 0..3 {
             muxer
                 .append_sample(&Sample {

@@ -87,7 +87,9 @@ XML パーサ / WebVTT パーサ / tx3g modifier パーサはそれぞれ独立�
 - `keyframe`: `true`（字幕サンプルは通常すべて独立サンプル）
 - `composition_time_offset`: `None`
 
-`keyframe` に `false` を渡すと `stbl` に同期サンプルの一覧（`stss`）が生成される。トラック内の全サンプルが `false` の場合は「同期サンプルが 1 つも存在しないトラック」を意味する空の `stss` が出力されてしまうため、字幕トラックでは `true` を指定すること。
+`keyframe` に一部だけ `false` を渡すと `stbl` に同期サンプルの一覧（`stss`）が生成される。
+トラック内の全サンプルが `false` の場合は空の `stss` ではなく `stss` 自体が省略され、全サンプル同期として扱われる。
+正規は引き続き `true` を指定すること。
 
 `timescale` と `duration` の意味は音声・映像トラックと同じで、実時間の尺は `duration / timescale` 秒。
 

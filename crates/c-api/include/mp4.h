@@ -187,7 +187,11 @@ typedef struct Fmp4SegmentMuxer Fmp4SegmentMuxer;
  * while (true) {
  *     uint64_t required_pos;
  *     int32_t required_size;
- *     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     if (err != MP4_ERROR_OK) {
+ *         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+ *         break;
+ *     }
  *     if (required_size == 0) break;
  *
  *     // NOTE: 実際には `required_size == -1` の場合には、ファイル末尾までを読み込む必要がある
@@ -1471,7 +1475,11 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  * while (true) {
  *     uint64_t required_pos;
  *     int32_t required_size;
- *     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     if (err != MP4_ERROR_OK) {
+ *         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+ *         break;
+ *     }
  *     if (required_size == 0) break; // 初期化完了
  *
  *     // ファイルから必要なデータを読み込む

@@ -213,6 +213,8 @@
   - @sile
 - [UPDATE] examples と doc コメント内サンプルコードの日本語出力文字列を英語に置換する
   - @sile
+- [UPDATE] `SampleTableAccessorError` の Display メッセージの英語文法を直す
+  - @sile
 
 ## 2026.3.0
 

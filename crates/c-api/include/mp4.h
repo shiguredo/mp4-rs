@@ -2077,9 +2077,9 @@ enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *d
  * - `sample_counts`: トラックごとの予想サンプル数の配列
  *   - 配列内の要素の順序は任意（合計サンプル数と要素数だけを見積もりに使う）
  *   - `uint32_t` として整列されている必要がある（4 バイト境界）
- *   - NULL の場合は `sample_counts_len` の値によらず `0` を返す（誤用扱い）
- * - `sample_counts_len`: `sample_counts` の要素数
- *   - `sample_counts` が NULL でなく `sample_counts_len` が `0` の場合は空スライスとして扱い、
+ *   - NULL の場合は `track_count` の値によらず `0` を返す（誤用扱い）
+ * - `track_count`: `sample_counts` の要素数（トラック数）
+ *   - `sample_counts` が NULL でなく `track_count` が `0` の場合は空スライスとして扱い、
  *     トラックなしの基本オーバーヘッド相当の値を返す
  *
  * # 戻り値
@@ -2113,7 +2113,7 @@ enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *d
  * ```
  */
 uint32_t mp4_estimate_maximum_moov_box_size(const uint32_t *sample_counts,
-                                            uint32_t sample_counts_len);
+                                            uint32_t track_count);
 
 /**
  * 新しい `Mp4FileMuxer` インスタンスを作成して、それへのポインタを返す

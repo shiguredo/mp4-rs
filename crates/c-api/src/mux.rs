@@ -287,9 +287,9 @@ impl Mp4FileMuxer {
 /// - `sample_counts`: トラックごとの予想サンプル数の配列
 ///   - 配列内の要素の順序は任意（合計サンプル数と要素数だけを見積もりに使う）
 ///   - `uint32_t` として整列されている必要がある（4 バイト境界）
-///   - NULL の場合は `sample_counts_len` の値によらず `0` を返す（誤用扱い）
-/// - `sample_counts_len`: `sample_counts` の要素数
-///   - `sample_counts` が NULL でなく `sample_counts_len` が `0` の場合は空スライスとして扱い、
+///   - NULL の場合は `track_count` の値によらず `0` を返す（誤用扱い）
+/// - `track_count`: `sample_counts` の要素数（トラック数）
+///   - `sample_counts` が NULL でなく `track_count` が `0` の場合は空スライスとして扱い、
 ///     トラックなしの基本オーバーヘッド相当の値を返す
 ///
 /// # 戻り値
@@ -324,14 +324,14 @@ impl Mp4FileMuxer {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mp4_estimate_maximum_moov_box_size(
     sample_counts: *const u32,
-    sample_counts_len: u32,
+    track_count: u32,
 ) -> u32 {
     if sample_counts.is_null() {
         return 0;
     }
 
     let counts: Vec<usize> =
-        unsafe { std::slice::from_raw_parts(sample_counts, sample_counts_len as usize) }
+        unsafe { std::slice::from_raw_parts(sample_counts, track_count as usize) }
             .iter()
             .map(|&count| count as usize)
             .collect();

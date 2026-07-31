@@ -12,7 +12,7 @@
 ## develop
 
 - [CHANGE] C API の `mp4_estimate_maximum_moov_box_size()` を任意トラック数対応のシグネチャに変更する
-  - `(audio_sample_count, video_sample_count)` から `(sample_counts, sample_counts_len)` に置き換える
+  - `(audio_sample_count, video_sample_count)` から `(sample_counts, track_count)` に置き換える
   - 字幕を含む 3 トラック以上の構成でも faststart 用の予約サイズを見積もれるようにする
   - @sile
 - [CHANGE] wasm の OOM 方針を abort に統一する（`mp4_alloc` 失敗時は `handle_alloc_error` で abort）

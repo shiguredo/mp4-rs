@@ -4,8 +4,8 @@
 - Created: 2026-07-20
 - Completed: YYYY-MM-DD
 - Model: qwen3.8-max-preview
-- Branch: feature/fix-sample-table-accessor-error-grammar
-- Polished: 2026-07-20
+- Branch: develop
+- Polished: 2026-07-31
 
 ## 目的
 
@@ -17,19 +17,21 @@
 
 ## 現状
 
-`src/auxiliary.rs:311`（`FirstChunkIndexIsNotOne`）:
+`impl core::fmt::Display for SampleTableAccessorError` 内の次の 3 アーム:
+
+`FirstChunkIndexIsNotOne`:
 
 ```rust
 "First chunk index in `stsc` box is expected to 1, but got {actual_chunk_index}"
 ```
 
-`src/auxiliary.rs:320`（`LastChunkIndexIsTooLarge`）:
+`LastChunkIndexIsTooLarge`:
 
 ```rust
 "Last chunk index in `stsc` box is expected to `<= {max_chunk_index}`, but got {last_chunk_index}"
 ```
 
-`src/auxiliary.rs:336`（`ChunkIndicesNotMonotonicallyIncreasing`）:
+`ChunkIndicesNotMonotonicallyIncreasing`:
 
 ```rust
 "Chunk indices in `stsc` box is not monotonically increasing"
@@ -37,13 +39,19 @@
 
 ## 完了条件
 
-- 311 行目が `"is expected to be 1"` に修正されること
-- 320 行目が `"is expected to be `<= {max_chunk_index}`"` に修正されること
-- 336 行目が `"are not monotonically increasing"` に修正されること（主語 "Chunk indices" は複数）
+- `FirstChunkIndexIsNotOne` の Display が `"is expected to be 1"` になっていること
+- `LastChunkIndexIsTooLarge` の Display が `"is expected to be \`<= {max_chunk_index}\`"` になっていること
+- `ChunkIndicesNotMonotonicallyIncreasing` の Display が `"are not monotonically increasing"` になっていること（主語 "Chunk indices" は複数）
+- `CHANGES.md` の `## develop` の `### misc` に `[UPDATE]` エントリが追記されていること
 - 既存のテストが通ること
 
 ## 解決方法
 
-311 行目: `"is expected to 1"` → `"is expected to be 1"`
-320 行目: `"is expected to `<= ...`"` → `"is expected to be `<= ...`"`
-336 行目: `"is not"` → `"are not"`
+機能影響のないメッセージ修正のため、作業ブランチは切らず `develop` 上で直接対応する。
+
+1. `src/auxiliary.rs` の `impl core::fmt::Display for SampleTableAccessorError` で次を置換する
+   - `FirstChunkIndexIsNotOne`: `"is expected to 1"` → `"is expected to be 1"`
+   - `LastChunkIndexIsTooLarge`: `"is expected to \`<= ...\`"` → `"is expected to be \`<= ...\`"`
+   - `ChunkIndicesNotMonotonicallyIncreasing`: `"is not"` → `"are not"`
+2. `CHANGES.md` の `## develop` の `### misc` 末尾に、上記 Display 文法修正の `[UPDATE]` エントリを追記する
+3. 既存テスト（`pbt/tests/prop_auxiliary.rs` の `error_display_*` 等）が通ることを確認する

@@ -81,7 +81,8 @@ impl From<MuxError> for Mp4Error {
             | MuxError::PositionMismatch { .. }
             | MuxError::MissingSampleEntry { .. }
             | MuxError::TimescaleMismatch { .. }
-            | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
+            | MuxError::MixedSampleEntries { .. }
+            | MuxError::NoSyncSamples { .. } => Self::MP4_ERROR_INVALID_INPUT,
             _ => Self::MP4_ERROR_OTHER,
         }
     }

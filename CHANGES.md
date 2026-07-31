@@ -11,6 +11,10 @@
 
 ## develop
 
+- [CHANGE] `MuxError` に `NoSyncSamples` を追加し、同期サンプルを持たない映像トラックを `Mp4FileMuxer` が拒否するようにする
+  - 全サンプルが `keyframe = false` の映像トラックは `finalize()` 時に `MuxError::NoSyncSamples` を返す
+  - これまではエントリー 0 個の `stss`（同期サンプルなし）を出力していた
+  - @sile
 - [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
   - @voluntas
 - [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする
@@ -88,6 +92,10 @@
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
+  - @sile
+- [FIX] `Mp4FileMuxer` が全サンプル非キーフレームの音声・字幕トラックでエントリー 0 個の `stss` を出力しないようにする
+  - これまでは `keyframe = false` のみのトラックで空の `stss`（同期サンプルなし）を出力していた
+  - 音声・字幕では `stss` を省略し、全サンプル同期として扱う
   - @sile
 - [FIX] `Mp4FileDemuxer` で `ftyp` / `moov` の `box_size` を `usize` へ変換するときに `as` キャストではなく `usize::try_from` を使うようにする
   - 32 bit ターゲット（wasm32 を含む）で `box_size` が `usize::MAX` を超えると暗黙に切り詰められていた

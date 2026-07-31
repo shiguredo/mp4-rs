@@ -179,9 +179,11 @@ impl FinalizedBoxes {
 
 /// MP4 ファイルに追加するメディアサンプル
 ///
-/// 字幕トラック（[`TrackKind::Subtitle`]）の場合、以下の値の指定を推奨する。
+/// 音声・字幕トラックでは、各サンプルが独立してデコード可能なのが通例のため
+/// [`Self::keyframe`] = `true` を指定するのが正規である。
 ///
-/// - [`Self::keyframe`] = `true`（字幕サンプルは通常すべて独立サンプル）
+/// 字幕トラック（[`TrackKind::Subtitle`]）ではあわせて次も推奨する。
+///
 /// - [`Self::composition_time_offset`] = [`None`]
 #[derive(Debug, Clone)]
 pub struct Sample {
@@ -194,7 +196,17 @@ pub struct Sample {
     /// 省略した場合は前のサンプルと同じ sample_entry が使用される
     pub sample_entry: Option<SampleEntry>,
 
-    /// キーフレームかどうか
+    /// キーフレーム（同期サンプル）かどうか
+    ///
+    /// [`Mp4FileMuxer`] では、この値が `stss` ボックスの生成に使われる。
+    ///
+    /// - トラック内の全サンプルが `true` の場合、`stss` は省略される（全サンプルが同期サンプル）
+    /// - 一部だけ `true` の場合、`true` のサンプル番号だけが `stss` に列挙される
+    /// - 全サンプルが `false` の場合:
+    ///   - 音声・字幕: `stss` を省略する（全サンプル同期として扱う）
+    ///   - 映像: [`MuxError::NoSyncSamples`] を返す
+    ///
+    /// 音声・字幕では各サンプルが独立してデコード可能なのが通例のため、`true` を指定するのが正規である。
     pub keyframe: bool,
 
     /// サンプルのタイムスケール（時間単位）
@@ -318,6 +330,16 @@ pub enum MuxError {
         track_kind: TrackKind,
     },
 
+    /// トラックに同期サンプルが 1 つも存在しない
+    ///
+    /// [`Mp4FileMuxer`] では、映像トラックの全サンプルが `keyframe = false` のときに返す。
+    /// エントリー 0 個の `stss`（同期サンプルなし）を出力する代わりに拒否する。
+    /// 音声・字幕では同条件でも `stss` を省略して全サンプル同期として扱うため、このエラーにはならない
+    NoSyncSamples {
+        /// 同期サンプルが無いトラック種別
+        track_kind: TrackKind,
+    },
+
     /// マルチプレックス処理中の内部カウンタがオーバーフローした
     Overflow,
 }
@@ -369,6 +391,9 @@ impl core::fmt::Display for MuxError {
             }
             MuxError::MixedSampleEntries { track_kind } => {
                 write!(f, "{track_kind:?} track uses incompatible sample entries")
+            }
+            MuxError::NoSyncSamples { track_kind } => {
+                write!(f, "{track_kind:?} track has no sync samples")
             }
             MuxError::Overflow => write!(f, "Internal counter overflow"),
         }
@@ -992,7 +1017,7 @@ impl Mp4FileMuxer {
         let minf_box = MinfBox {
             media_header: Some(derived.media_header.clone()),
             dinf_box: DinfBox::LOCAL_FILE,
-            stbl_box: self.build_stbl_box(&entry.chunks)?,
+            stbl_box: self.build_stbl_box(entry.track_kind, &entry.chunks)?,
             unknown_boxes: Vec::new(),
         };
 
@@ -1004,7 +1029,7 @@ impl Mp4FileMuxer {
         })
     }
 
-    fn build_stbl_box(&self, chunks: &[Chunk]) -> Result<StblBox, MuxError> {
+    fn build_stbl_box(&self, track_kind: TrackKind, chunks: &[Chunk]) -> Result<StblBox, MuxError> {
         // [NOTE]
         // 典型的にはユニークなサンプルエントリーの数は高々数個なので、線形探索を行う
         // （`HashMap`は nostd 環境で使えず、`BTreeMap`には`Ord`実装が必要なので使用していない）
@@ -1080,27 +1105,39 @@ impl Mp4FileMuxer {
             })
         };
 
+        // 全サンプルがキーフレームなら stss は省略する（ISO/IEC 14496-12: 不在 = 全同期）
         let is_all_keyframe = chunks.iter().all(|c| c.samples.iter().all(|s| s.keyframe));
         let stss_box = if is_all_keyframe {
             None
         } else {
-            Some(StssBox {
-                // enumerate は filter 前のグローバル 0-based 番号を保持したまま 1-based へ変換する
-                sample_numbers: chunks
-                    .iter()
-                    .flat_map(|c| c.samples.iter())
-                    .enumerate()
-                    .filter(|&(_, s)| s.keyframe)
-                    .map(|(i, _)| {
-                        let i = u32::try_from(i).map_err(|_| {
-                            MuxError::EncodeError(Error::invalid_data(
-                                "sample index exceeds u32::MAX",
-                            ))
-                        })?;
-                        NonZeroU32::MIN.checked_add(i).ok_or(MuxError::Overflow)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            })
+            // enumerate は filter 前のグローバル 0-based 番号を保持したまま 1-based へ変換する
+            let sample_numbers = chunks
+                .iter()
+                .flat_map(|c| c.samples.iter())
+                .enumerate()
+                .filter(|&(_, s)| s.keyframe)
+                .map(|(i, _)| {
+                    let i = u32::try_from(i).map_err(|_| {
+                        MuxError::EncodeError(Error::invalid_data("sample index exceeds u32::MAX"))
+                    })?;
+                    NonZeroU32::MIN.checked_add(i).ok_or(MuxError::Overflow)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            if sample_numbers.is_empty() {
+                // entry_count = 0 の stss は「同期サンプルなし」を意味し、不在（全同期）と真逆である。
+                // 音声・字幕は本来すべて同期なので省略で救済し、映像は誤った宣言を出さず拒否する
+                match track_kind {
+                    TrackKind::Audio | TrackKind::Subtitle => None,
+                    TrackKind::Video => {
+                        return Err(MuxError::NoSyncSamples {
+                            track_kind: TrackKind::Video,
+                        });
+                    }
+                }
+            } else {
+                Some(StssBox { sample_numbers })
+            }
         };
 
         Ok(StblBox {
@@ -2013,6 +2050,118 @@ mod tests {
         assert_eq!(finalized.moov_box().trak_boxes.len(), 3);
         // next_track_id は最後に振った track_id の次の値になる
         assert_eq!(finalized.moov_box().mvhd_box.next_track_id, 4);
+    }
+
+    /// 全サンプルが非キーフレームの音声トラックでは空の `stss` を出さず省略すること
+    #[test]
+    fn test_audio_all_non_keyframe_omits_empty_stss() {
+        let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");
+        let mut offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::MIN.saturating_add(1000 - 1);
+        let sample_size = 256usize;
+
+        // 正規は keyframe = true だが、誤って false を渡したときに空 stss を出さないことを検証する
+        for i in 0..3 {
+            muxer
+                .append_sample(&Sample {
+                    track_kind: TrackKind::Audio,
+                    sample_entry: (i == 0).then(create_opus_sample_entry),
+                    keyframe: false,
+                    timescale,
+                    duration: 20,
+                    composition_time_offset: None,
+                    data_offset: offset,
+                    data_size: sample_size,
+                })
+                .expect("音声サンプルの追加に失敗した");
+            offset += sample_size as u64;
+        }
+
+        let finalized = muxer.finalize().expect("finalize に失敗した");
+        let stss = &finalized.moov_box().trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box
+            .stss_box;
+        assert!(
+            stss.is_none(),
+            "全非キーフレームの音声トラックで空の stss が出力された"
+        );
+    }
+
+    /// 全サンプルが非キーフレームの字幕トラックでは空の `stss` を出さず省略すること
+    #[test]
+    fn test_subtitle_all_non_keyframe_omits_empty_stss() {
+        let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");
+        let mut offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::MIN.saturating_add(1000 - 1);
+        let sample_size = 128usize;
+
+        // 正規は keyframe = true だが、誤って false を渡したときに空 stss を出さないことを検証する
+        for i in 0..3 {
+            muxer
+                .append_sample(&Sample {
+                    track_kind: TrackKind::Subtitle,
+                    sample_entry: (i == 0).then(create_stpp_sample_entry),
+                    keyframe: false,
+                    timescale,
+                    duration: 500,
+                    composition_time_offset: None,
+                    data_offset: offset,
+                    data_size: sample_size,
+                })
+                .expect("字幕サンプルの追加に失敗した");
+            offset += sample_size as u64;
+        }
+
+        let finalized = muxer.finalize().expect("finalize に失敗した");
+        let stss = &finalized.moov_box().trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box
+            .stss_box;
+        assert!(
+            stss.is_none(),
+            "全非キーフレームの字幕トラックで空の stss が出力された"
+        );
+    }
+
+    /// 全サンプルが非キーフレームの映像トラックは空の `stss` を出さずエラーにすること
+    #[test]
+    fn test_video_all_non_keyframe_rejects_empty_stss() {
+        let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");
+        let mut offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::MIN.saturating_add(30 - 1);
+        let sample_size = 1024usize;
+
+        for i in 0..3 {
+            muxer
+                .append_sample(&Sample {
+                    track_kind: TrackKind::Video,
+                    sample_entry: (i == 0).then(create_avc1_sample_entry),
+                    keyframe: false,
+                    timescale,
+                    duration: 1,
+                    composition_time_offset: None,
+                    data_offset: offset,
+                    data_size: sample_size,
+                })
+                .expect("映像サンプルの追加に失敗した");
+            offset += sample_size as u64;
+        }
+
+        let err = muxer
+            .finalize()
+            .expect_err("空 stss 相当の映像トラックを受け入れた");
+        assert!(
+            matches!(
+                err,
+                MuxError::NoSyncSamples {
+                    track_kind: TrackKind::Video
+                }
+            ),
+            "予期しないエラー: {err}"
+        );
     }
 
     /// 字幕トラック用の [`Sample`] を組み立てる

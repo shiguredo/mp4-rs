@@ -14,6 +14,7 @@
 //!   - EPT が B フレームのとき `starts_with_sap=false` / `sap_type=0`
 //!   - EPT が I フレームのとき `starts_with_sap=true` / `sap_type=1`
 //!   - 非参照トラックの `keyframe` に引きずられないこと
+//!   - PTS 同値時は samples[] 内で先出現のサンプルの `keyframe` が採られること
 //!
 //! 意図的なエラーパスと境界値は固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担う。
@@ -496,6 +497,10 @@ fn sidx_starts_with_sap_false_when_ept_sample_is_b_frame() {
         reference.sap_type, 0,
         "EPT サンプルが B フレームなら sap_type は 0 であるべき"
     );
+    assert_eq!(
+        reference.sap_delta_time, 0,
+        "sap_delta_time は現行の 0 のまま変更されないべき"
+    );
 }
 
 /// EPT サンプルが I フレームのとき `starts_with_sap=true` / `sap_type=1` になること
@@ -526,12 +531,16 @@ fn sidx_starts_with_sap_true_when_ept_sample_is_i_frame() {
         reference.sap_type, 1,
         "EPT サンプルが I フレームなら sap_type は 1 であるべき"
     );
+    assert_eq!(
+        reference.sap_delta_time, 0,
+        "sap_delta_time は現行の 0 のまま変更されないべき"
+    );
 }
 
 /// 非参照トラック（Audio）の `keyframe` が `starts_with_sap` に混入しないこと
 ///
 /// Video を `samples[0]` にして参照トラックとし、Video 群を前半・Audio 群を後半に
-/// `data_offset` 連続で配置する（`sidx_ept_ignores_non_reference_track_samples` と同じ配置）。
+/// `data_offset` 連続で配置する（`sidx_ept_ignores_non_reference_track_samples` と同じ配置パターン）。
 /// Audio は全て `keyframe=true` でも、Video の EPT サンプルが B フレームなら
 /// `starts_with_sap=false` になることを固定する。
 #[test]
@@ -567,5 +576,54 @@ fn sidx_starts_with_sap_ignores_non_reference_track_keyframes() {
     assert_eq!(
         reference.sap_type, 0,
         "非参照トラックの keyframe に引きずられず sap_type は 0 であるべき"
+    );
+    assert_eq!(
+        reference.sap_delta_time, 0,
+        "sap_delta_time は現行の 0 のまま変更されないべき"
+    );
+}
+
+/// PTS 同値時は samples[] 内で先出現のサンプルの `keyframe` が採られる（先勝ち）
+///
+/// `decode_time=0`, duration=100 固定で:
+///   samples[0]: I, keyframe=true,  CTO=+50 → PTS=50
+///   samples[1]: B, keyframe=false, CTO=-50 → PTS=50 (同値)
+///
+/// 実装は `compute_earliest_presentation_time` の `pts >= current` で更新をスキップするため、
+/// 先出現の samples[0] の keyframe=true が採られる契約。将来 `>` に書き換わると samples[1] の
+/// keyframe=false が採られて `starts_with_sap` が反転する脆弱性への回帰防止テスト。
+#[test]
+fn sidx_starts_with_sap_ties_prefer_first_occurrence() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    let size = 16usize;
+    let samples = [
+        video_sample_with_timing(entry.clone(), 100, Some(50), 0, size),
+        Sample {
+            keyframe: false,
+            ..video_sample_with_timing(entry, 100, Some(-50), size as u64, size)
+        },
+    ];
+
+    let segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("セグメントの生成に失敗した");
+    let sidx = decode_sidx(&segment);
+    assert_eq!(
+        sidx.earliest_presentation_time, 50,
+        "PTS 同値時の EPT は 50 であるべき"
+    );
+    let reference = &sidx.references[0];
+    assert!(
+        reference.starts_with_sap,
+        "PTS 同値時は先出現サンプルの keyframe=true が採られ starts_with_sap は true であるべき"
+    );
+    assert_eq!(
+        reference.sap_type, 1,
+        "PTS 同値時は先出現サンプルの keyframe=true が採られ sap_type は 1 であるべき"
+    );
+    assert_eq!(
+        reference.sap_delta_time, 0,
+        "sap_delta_time は現行の 0 のまま変更されないべき"
     );
 }

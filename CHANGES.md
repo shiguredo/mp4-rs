@@ -15,6 +15,10 @@
   - 全サンプルが `keyframe = false` の映像トラックは `finalize()` 時に `MuxError::NoSyncSamples` を返す
   - これまではエントリー 0 個の `stss`（同期サンプルなし）を出力していた
   - @sile
+- [CHANGE] `ErrorKind` / `MuxError` / `DemuxError` から `#[non_exhaustive]` を削除する
+  - 利用側で網羅 `match` が可能になり、将来のバリアント追加は破壊的変更として扱う
+  - C API の `Mp4Error` への数値マッピング（`InsufficientBuffer` → `MP4_ERROR_OTHER` 等）は変えない
+  - @sile
 - [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
   - @voluntas
 - [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする
@@ -96,6 +100,10 @@
 - [FIX] `Mp4FileMuxer` が全サンプル非キーフレームの音声・字幕トラックでエントリー 0 個の `stss` を出力しないようにする
   - これまでは `keyframe = false` のみのトラックで空の `stss`（同期サンプルなし）を出力していた
   - 音声・字幕では `stss` を省略し、全サンプル同期として扱う
+  - @sile
+- [FIX] WASM の JSON サンプルエントリー出力で、空バイト列を `from_raw_parts(null, 0)` に渡して未定義動作になっていたのを修正する
+  - `fmt_json_mp4_sample_entry_av01` / `_mp4a` / `_flac` では、パース時の `allocate_and_copy_bytes` が残し得る `(null, 0)` をサイズ 0 または null のとき `&[]` を返すガードで避ける
+  - `NaluList` / `HevcNaluArrays` / `FtabList` では加えて、パース時の `allocate_and_copy_array_list` が残し得る `(null, 非ゼロ)` も同じガードで避ける
   - @sile
 - [FIX] `Mp4FileDemuxer` で `ftyp` / `moov` の `box_size` を `usize` へ変換するときに `as` キャストではなく `usize::try_from` を使うようにする
   - 32 bit ターゲット（wasm32 を含む）で `box_size` が `usize::MAX` を超えると暗黙に切り詰められていた

@@ -166,7 +166,16 @@ impl nojson::DisplayJson for FtabList {
                 let font_id = unsafe { *self.font_ids.add(i) };
                 let name_ptr = unsafe { *self.font_name_ptrs.add(i) };
                 let name_size = unsafe { *self.font_name_sizes.add(i) } as usize;
-                let font_name = unsafe { std::slice::from_raw_parts(name_ptr, name_size) };
+                // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
+                // 空要素は (null, 0)。allocate_and_copy_array_list はポインタに .0 だけ・
+                // サイズに array.len() を使うため、非空要素の確保失敗後は (null, 非ゼロ)
+                // も残り得る。いずれも from_raw_parts に null を渡すと UB なのでガードし、
+                // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
+                let font_name = if name_size == 0 || name_ptr.is_null() {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(name_ptr, name_size) }
+                };
                 f.element(nojson::json(|f| {
                     f.object(|f| {
                         f.member("font_id", font_id)?;
@@ -304,6 +313,53 @@ mod tests {
         assert!(out_json.contains(r#""ftab":[]"#));
 
         mp4_sample_entry_tx3g_free(&mut sample_entry);
+    }
+
+    /// 空の font_name 要素を含む ftab を parse → JSON 再出力する往復テスト
+    ///
+    /// `allocate_and_copy_array_list` は空要素を `(null, 0)` にする。
+    /// `FtabList::fmt` が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列として再出力できることを検証する
+    #[test]
+    fn test_tx3g_json_roundtrip_with_empty_font_name() {
+        let json_str = r#"{
+            "kind": "tx3g",
+            "display_flags": 0,
+            "horizontal_justification": 0,
+            "vertical_justification": 0,
+            "background_color_rgba": [0, 0, 0, 0],
+            "default_text_box": [0, 0, 0, 0],
+            "default_style": {
+                "start_char": 0,
+                "end_char": 0,
+                "font_id": 1,
+                "face_style_flags": 0,
+                "font_size": 0,
+                "text_color_rgba": [0, 0, 0, 0]
+            },
+            "ftab": [
+                { "font_id": 1, "font_name": [] }
+            ]
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_tx3g(json.value()).expect("空 font_name の tx3g JSON");
+
+        assert_eq!(sample_entry.ftab_count, 1);
+        assert_eq!(unsafe { *sample_entry.ftab_font_name_sizes }, 0);
+        assert!(unsafe { (*sample_entry.ftab_font_name_ptrs).is_null() });
+
+        let out = nojson::json(|f| fmt_json_mp4_sample_entry_tx3g(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""font_name":[]"#),
+            "空 font_name が [] として再出力されること: {out}"
+        );
+
+        mp4_sample_entry_tx3g_free(&mut sample_entry);
+        assert_eq!(sample_entry.ftab_count, 0);
+        assert!(sample_entry.ftab_font_name_ptrs.is_null());
+        assert!(sample_entry.ftab_font_name_sizes.is_null());
     }
 
     #[test]

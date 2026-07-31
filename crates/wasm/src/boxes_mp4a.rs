@@ -15,9 +15,20 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
         f.member("bufferSizeDb", data.buffer_size_db)?;
         f.member("maxBitrate", data.max_bitrate)?;
         f.member("avgBitrate", data.avg_bitrate)?;
-        let dec_specific_info = unsafe {
-            std::slice::from_raw_parts(data.dec_specific_info, data.dec_specific_info_size as usize)
-        };
+        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
+        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
+        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
+        let dec_specific_info =
+            if data.dec_specific_info_size == 0 || data.dec_specific_info.is_null() {
+                &[][..]
+            } else {
+                unsafe {
+                    std::slice::from_raw_parts(
+                        data.dec_specific_info,
+                        data.dec_specific_info_size as usize,
+                    )
+                }
+            };
         f.member("decSpecificInfo", dec_specific_info)
     })
 }
@@ -138,6 +149,42 @@ mod tests {
         assert_eq!(data, &[1, 2]);
 
         // メモリ解放
+        mp4_sample_entry_mp4a_free(&mut sample_entry);
+        assert_eq!(sample_entry.dec_specific_info_size, 0);
+        assert!(sample_entry.dec_specific_info.is_null());
+    }
+
+    /// 空の decSpecificInfo を parse → JSON 再出力する往復テスト
+    ///
+    /// `allocate_and_copy_bytes` は空入力で `(null, 0)` を返す。
+    /// fmt 側が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列として再出力できることを検証する
+    #[test]
+    fn test_json_to_mp4a_empty_dec_specific_info_roundtrip() {
+        let json_str = r#"{
+            "kind": "mp4a",
+            "channelCount": 2,
+            "sampleRate": 44100,
+            "sampleSize": 16,
+            "bufferSizeDb": 0,
+            "maxBitrate": 128000,
+            "avgBitrate": 128000,
+            "decSpecificInfo": []
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let mut sample_entry = parse_json_mp4_sample_entry_mp4a(json.value())
+            .expect("空 decSpecificInfo の mp4a JSON");
+
+        assert_eq!(sample_entry.dec_specific_info_size, 0);
+        assert!(sample_entry.dec_specific_info.is_null());
+
+        let out = nojson::json(|f| fmt_json_mp4_sample_entry_mp4a(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""decSpecificInfo":[]"#),
+            "空 decSpecificInfo が [] として再出力されること: {out}"
+        );
+
         mp4_sample_entry_mp4a_free(&mut sample_entry);
         assert_eq!(sample_entry.dec_specific_info_size, 0);
         assert!(sample_entry.dec_specific_info.is_null());

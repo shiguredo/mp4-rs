@@ -276,7 +276,6 @@ pub struct Sample {
 }
 
 /// マルチプレックス処理中に発生するエラー
-#[non_exhaustive]
 pub enum MuxError {
     /// MP4 ボックスのエンコード処理中に発生したエラー
     EncodeError(Error),

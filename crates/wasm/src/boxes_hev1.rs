@@ -340,9 +340,9 @@ mod tests {
 
     /// 空 NALU 要素（`units: [[]]`）を parse → JSON 再出力する往復テスト
     ///
-    /// allocate_and_copy_array_list は空要素を (null, 0) にする。HevcNaluArrays::fmt が
-    /// from_raw_parts(null, 0) を呼ぶと UB になるため、ガード後も空配列要素として
-    /// 再出力できることを検証する
+    /// `allocate_and_copy_array_list` は空要素を `(null, 0)` にする。
+    /// `HevcNaluArrays::fmt` が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列要素として再出力できることを検証する
     #[test]
     fn test_json_to_hev1_empty_nalu_element_roundtrip() {
         let json_str = build_hevc_test_json(

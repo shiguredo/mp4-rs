@@ -12,8 +12,9 @@ pub fn fmt_json_mp4_sample_entry_flac(
         f.member("channelCount", data.channel_count)?;
         f.member("sampleRate", data.sample_rate)?;
         f.member("sampleSize", data.sample_size)?;
-        // 空データや確保失敗で (null, 0) になり得る。サイズ 0 でも null を
-        // from_raw_parts に渡すと Rust 仕様上 UB なのでガードする
+        // allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を返す。
+        // サイズ 0 または null を from_raw_parts に渡すと UB なのでガードし、
+        // その場合は空配列として出力する（エラーにはしない）
         let streaminfo = if data.streaminfo_size == 0 || data.streaminfo_data.is_null() {
             &[][..]
         } else {
@@ -118,9 +119,9 @@ mod tests {
 
     /// 空の streaminfoData を parse → JSON 再出力する往復テスト
     ///
-    /// allocate_and_copy_bytes は空入力で (null, 0) を返す。fmt 側が
-    /// from_raw_parts(null, 0) を呼ぶと UB になるため、ガード後も空配列として
-    /// 再出力できることを検証する
+    /// `allocate_and_copy_bytes` は空入力で `(null, 0)` を返す。
+    /// fmt 側が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列として再出力できることを検証する
     #[test]
     fn test_json_to_flac_empty_streaminfo_roundtrip() {
         let json_str = r#"{"kind": "flac", "channelCount": 2, "sampleRate": 44100, "sampleSize": 16, "streaminfoData": []}"#;

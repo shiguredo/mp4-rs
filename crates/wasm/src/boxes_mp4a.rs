@@ -15,8 +15,9 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
         f.member("bufferSizeDb", data.buffer_size_db)?;
         f.member("maxBitrate", data.max_bitrate)?;
         f.member("avgBitrate", data.avg_bitrate)?;
-        // 空データや確保失敗で (null, 0) になり得る。サイズ 0 でも null を
-        // from_raw_parts に渡すと Rust 仕様上 UB なのでガードする
+        // allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を返す。
+        // サイズ 0 または null を from_raw_parts に渡すと UB なのでガードし、
+        // その場合は空配列として出力する（エラーにはしない）
         let dec_specific_info =
             if data.dec_specific_info_size == 0 || data.dec_specific_info.is_null() {
                 &[][..]
@@ -155,9 +156,9 @@ mod tests {
 
     /// 空の decSpecificInfo を parse → JSON 再出力する往復テスト
     ///
-    /// allocate_and_copy_bytes は空入力で (null, 0) を返す。fmt 側が
-    /// from_raw_parts(null, 0) を呼ぶと UB になるため、ガード後も空配列として
-    /// 再出力できることを検証する
+    /// `allocate_and_copy_bytes` は空入力で `(null, 0)` を返す。
+    /// fmt 側が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列として再出力できることを検証する
     #[test]
     fn test_json_to_mp4a_empty_dec_specific_info_roundtrip() {
         let json_str = r#"{

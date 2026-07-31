@@ -165,9 +165,11 @@ impl nojson::DisplayJson for NaluList {
             for i in 0..self.count as usize {
                 let nalu_ptr = unsafe { *self.data_ptr.add(i) };
                 let nalu_size = unsafe { *self.sizes_ptr.add(i) } as usize;
-                // 空要素は allocate_and_copy_bytes 経由で (null, 0)、
-                // 非空の確保失敗では (null, 非ゼロ) になり得る。いずれも
-                // from_raw_parts に null を渡すと UB なのでガードする
+                // 空要素は allocate_and_copy_bytes 経由で (null, 0)。
+                // allocate_and_copy_array_list はポインタに .0 だけ、サイズに
+                // array.len() を使うため、非空要素の確保失敗では (null, 非ゼロ)
+                // になり得る。いずれも from_raw_parts に null を渡すと UB なので
+                // ガードし、その場合は空配列として出力する（エラーにはしない）
                 let nalu = if nalu_size == 0 || nalu_ptr.is_null() {
                     &[][..]
                 } else {
@@ -249,9 +251,9 @@ mod tests {
 
     /// 空の SPS / PPS 要素を含む JSON を parse → 再出力する往復テスト
     ///
-    /// allocate_and_copy_array_list は空要素を (null, 0) にする。NaluList::fmt が
-    /// from_raw_parts(null, 0) を呼ぶと UB になるため、ガード後も空配列要素として
-    /// 再出力できることを検証する
+    /// `allocate_and_copy_array_list` は空要素を `(null, 0)` にする。
+    /// `NaluList::fmt` が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列要素として再出力できることを検証する
     #[test]
     fn test_json_to_avc1_empty_nalu_element_roundtrip() {
         let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[]], "pps": [[]]}"#;
@@ -262,7 +264,6 @@ mod tests {
 
         assert_eq!(sample_entry.sps_count, 1);
         assert_eq!(sample_entry.pps_count, 1);
-        // 空要素のサイズは 0、ポインタは null
         assert_eq!(unsafe { *sample_entry.sps_sizes }, 0);
         assert!(unsafe { (*sample_entry.sps_data).is_null() });
         assert_eq!(unsafe { *sample_entry.pps_sizes }, 0);

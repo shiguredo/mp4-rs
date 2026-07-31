@@ -438,9 +438,11 @@ impl nojson::DisplayJson for HevcNaluArrays {
                                 let nalu_ptr = unsafe { *self.nalu_data.add(nalu_index as usize) };
                                 let nalu_size =
                                     unsafe { *self.nalu_sizes.add(nalu_index as usize) } as usize;
-                                // 空要素は allocate_and_copy_bytes 経由で (null, 0)、
-                                // 非空の確保失敗では (null, 非ゼロ) になり得る。いずれも
-                                // from_raw_parts に null を渡すと UB なのでガードする
+                                // 空要素は allocate_and_copy_bytes 経由で (null, 0)。
+                                // allocate_and_copy_array_list はポインタに .0 だけ、サイズに
+                                // array.len() を使うため、非空要素の確保失敗では (null, 非ゼロ)
+                                // になり得る。いずれも from_raw_parts に null を渡すと UB なので
+                                // ガードし、その場合は空配列として出力する（エラーにはしない）
                                 let nalu = if nalu_size == 0 || nalu_ptr.is_null() {
                                     &[][..]
                                 } else {

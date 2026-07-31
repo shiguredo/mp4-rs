@@ -26,8 +26,9 @@ pub fn fmt_json_mp4_sample_entry_av01(
                 data.initial_presentation_delay_minus_one,
             )?;
         }
-        // 空データや確保失敗で (null, 0) になり得る。サイズ 0 でも null を
-        // from_raw_parts に渡すと Rust 仕様上 UB なのでガードする
+        // allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を返す。
+        // サイズ 0 または null を from_raw_parts に渡すと UB なのでガードし、
+        // その場合は空配列として出力する（エラーにはしない）
         let config_obus = if data.config_obus_size == 0 || data.config_obus.is_null() {
             &[][..]
         } else {
@@ -184,9 +185,9 @@ mod tests {
 
     /// 空の configObus を parse → JSON 再出力する往復テスト
     ///
-    /// allocate_and_copy_bytes は空入力で (null, 0) を返す。fmt 側が
-    /// from_raw_parts(null, 0) を呼ぶと UB になるため、ガード後も空配列として
-    /// 再出力できることを検証する
+    /// `allocate_and_copy_bytes` は空入力で `(null, 0)` を返す。
+    /// fmt 側が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列として再出力できることを検証する
     #[test]
     fn test_json_to_av01_empty_config_obus_roundtrip() {
         let json_str = r#"{"kind": "av01", "width": 3840, "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "configObus": []}"#;
@@ -195,11 +196,9 @@ mod tests {
         let mut sample_entry =
             parse_json_mp4_sample_entry_av01(json.value()).expect("空 configObus の av01 JSON");
 
-        // 空データは (null, 0) として保持される
         assert_eq!(sample_entry.config_obus_size, 0);
         assert!(sample_entry.config_obus.is_null());
 
-        // 再出力で UB にならず空配列になること
         let out = nojson::json(|f| fmt_json_mp4_sample_entry_av01(f, &sample_entry)).to_string();
         assert!(
             out.contains(r#""configObus":[]"#),

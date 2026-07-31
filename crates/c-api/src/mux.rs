@@ -336,7 +336,10 @@ pub unsafe extern "C" fn mp4_estimate_maximum_moov_box_size(
             .map(|&count| count as usize)
             .collect();
 
-    shiguredo_mp4::mux::estimate_maximum_moov_box_size(&counts) as u32
+    // 64bit ホストで見積もり結果が u32::MAX を超えた場合、`as u32` では下位 32bit だけ残り
+    // 呼び出し側から見て「見積もりが実 moov より小さい」silent truncation になる。
+    // これを避けるため u32::MAX に飽和させる（それでも足りない場合は faststart を諦めるしかない）。
+    u32::try_from(shiguredo_mp4::mux::estimate_maximum_moov_box_size(&counts)).unwrap_or(u32::MAX)
 }
 
 /// 新しい `Mp4FileMuxer` インスタンスを作成して、それへのポインタを返す

@@ -2,7 +2,7 @@
 //!
 //! 正常系のラウンドトリップは `pbt/tests/prop_basic_types.rs` が担う。
 //! 本ファイルは PBT で安定して狙いにくい `decode_header_and_payload` の
-//! size=0 / largesize=0 / サイズ下限の挙動を固定する。
+//! size=0 / largesize=0 / サイズ下限 / バッファ不足の挙動を固定する。
 
 mod decode_header_and_payload_size_zero {
     use shiguredo_mp4::{BoxHeader, BoxSize, BoxType, ErrorKind};
@@ -25,6 +25,24 @@ mod decode_header_and_payload_size_zero {
             payload,
             &buf[8..],
             "ペイロードはヘッダー直後からバッファ末尾までであること"
+        );
+    }
+
+    /// size=0 でヘッダーのみのバッファなら、ペイロードは空になること
+    #[test]
+    fn u32_size_zero_with_header_only_returns_empty_payload() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(b"mdat");
+
+        let (header, payload) = BoxHeader::decode_header_and_payload(&buf)
+            .expect("VARIABLE_SIZE でヘッダーのみでもデコードできる");
+
+        assert_eq!(header.box_size, BoxSize::VARIABLE_SIZE);
+        assert!(
+            payload.is_empty(),
+            "ヘッダーのみのときペイロードは空であること: 実際の長さ {}",
+            payload.len()
         );
     }
 
@@ -63,5 +81,20 @@ mod decode_header_and_payload_size_zero {
         let err = BoxHeader::decode_header_and_payload(&buf)
             .expect_err("ヘッダーより小さい size はエラーになる");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+
+    /// size がバッファ長を超える場合は `InsufficientBuffer` になること
+    ///
+    /// `check_buffer_size` を size=0 / 下限判定の後に置く順序の回帰固定。
+    #[test]
+    fn size_exceeds_buffer_returns_insufficient_buffer() {
+        // size=16（ボックス全体 16 バイトを要求）だがバッファはヘッダー 8 バイトのみ
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&16u32.to_be_bytes());
+        buf.extend_from_slice(b"mdat");
+
+        let err = BoxHeader::decode_header_and_payload(&buf)
+            .expect_err("宣言サイズがバッファを超える場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
     }
 }

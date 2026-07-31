@@ -69,6 +69,10 @@
 - [CHANGE] `SttsBox::from_sample_deltas()` の戻り値を `Result<SttsBox, Error>` に変更する
   - 同一 `sample_delta` が連続して `u32::MAX` 回を超える異常な入力（通常のメディアでは到達しない境界）で、これまでは panic または不正な `stts` を出力していたのを、代わりに `InvalidData` を返すようにする
   - @sile
+- [CHANGE] `Mp4FileMuxerOptions` / `SegmentMuxerOptions` に `audio_track` / `video_track` / `subtitle_track` フィールドを追加する
+  - トラックの言語（`mdhd.language`）とトラック名（`hdlr.name`）を Options 経由で指定できる
+  - 既存のフィールド指定リテラルは `..Default::default()` を付けるか、追加フィールドを明示する必要がある
+  - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
   - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
   - `FtabBox` はフォントテーブル（`FontRecord` の可変長配列、各エントリーは `font_id` と Pascal-string `font_name`）を保持する
@@ -98,6 +102,15 @@
 - [ADD] 字幕トラックのマルチプレックス / デマルチプレックス経路を追加する
   - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両方で `TrackKind::Subtitle` を受け入れ、`stpp` / `wvtt` / `tx3g` を含む字幕トラックをマルチプレックスできる
   - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
+  - @sile
+- [ADD] `LanguageCode` 型を新設する
+  - `MdhdBox::language` 用の 3 文字言語コードで、各バイトが `0x60..=0x7F` の範囲に収まることを構築時に検証する
+  - @sile
+- [ADD] `TrackMetadata` 型を新設し `mux::` から公開する
+  - `language`（`LanguageCode`）と `name`（`Utf8String`）を持ち、両 muxer の Options から参照する
+  - @sile
+- [ADD] `Utf8String` に `Default` を実装する
+  - `Utf8String::default()` は空文字列（`Utf8String::EMPTY` と同値）を返す
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile

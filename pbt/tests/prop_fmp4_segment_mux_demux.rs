@@ -7,13 +7,13 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, TrackKind, Uint,
+    Decode, Encode, FixedPointNumber, LanguageCode, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MfraBox, MoofBox, MoovBox,
-        OpusBox, SampleEntry, SidxBox, VisualSampleEntryFields,
+        OpusBox, SampleEntry, SidxBox, TrakBox, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
-    mux::{Fmp4SegmentMuxer, Sample},
+    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions, TrackMetadata},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
@@ -295,8 +295,101 @@ fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
     rewritten
 }
 
+/// `LanguageCode` として有効な 3 バイト（各 `0x60..=0x7F`）を生成する
+fn arb_language_code() -> impl Strategy<Value = LanguageCode> {
+    prop::array::uniform3(0x60u8..=0x7F).prop_map(|bytes| {
+        LanguageCode::new(bytes).expect("Strategy が生成する値は常に有効な言語コードである")
+    })
+}
+
+/// null を含まない UTF-8 文字列から `Utf8String` を生成する
+fn arb_track_name() -> impl Strategy<Value = Utf8String> {
+    "[^\x00]{0,32}"
+        .prop_map(|s| Utf8String::new(&s).expect("Strategy が生成する文字列は null を含まない"))
+}
+
+/// トラックメタデータを生成する
+fn arb_track_metadata() -> impl Strategy<Value = TrackMetadata> {
+    (arb_language_code(), arb_track_name())
+        .prop_map(|(language, name)| TrackMetadata { language, name })
+}
+
+/// `mdhd.language` / `hdlr.name` が入力メタデータと一致することを確認する
+fn assert_track_metadata(
+    trak_box: &TrakBox,
+    expected: &TrackMetadata,
+) -> Result<(), TestCaseError> {
+    let actual_language = LanguageCode::new(trak_box.mdia_box.mdhd_box.language)
+        .expect("muxer が出力した language は再構築できる");
+    prop_assert_eq!(
+        actual_language,
+        expected.language,
+        "mdhd.language が入力と一致しない"
+    );
+    prop_assert_eq!(
+        &trak_box.mdia_box.hdlr_box.name,
+        &expected.name.clone().into_null_terminated_bytes(),
+        "hdlr.name が入力と一致しない"
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Options で指定した language / name が init セグメントの demux で復元される
+    #[test]
+    fn track_metadata_roundtrip(
+        video_meta in arb_track_metadata(),
+        audio_meta in arb_track_metadata(),
+    ) {
+        let options = SegmentMuxerOptions {
+            video_track: video_meta.clone(),
+            audio_track: audio_meta.clone(),
+            ..Default::default()
+        };
+        let mut muxer =
+            Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+        let video_entry = create_avc1_sample_entry(320, 240);
+        let audio_entry = create_opus_sample_entry();
+        let video = TestSample {
+            track_index: 0,
+            duration: 3000,
+            keyframe: true,
+            data: vec![0x11; 16],
+        };
+        let audio = TestSample {
+            track_index: 1,
+            duration: 960,
+            keyframe: true,
+            data: vec![0x22; 8],
+        };
+        let samples = [
+            video_segment_sample(&video_entry, &video, None),
+            audio_segment_sample(&audio_entry, &audio),
+        ];
+        let payloads: [&[u8]; 2] = [&video.data, &audio.data];
+        let _segment_bytes = build_complete_media_segment(&mut muxer, &samples, &payloads);
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+
+        let (ftyp_box, ftyp_size) =
+            FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
+        let _ = ftyp_box;
+        let (moov_box, _) =
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
+        prop_assert_eq!(moov_box.trak_boxes.len(), 2);
+        assert_track_metadata(&moov_box.trak_boxes[0], &video_meta)?;
+        assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta)?;
+
+        // demuxer でも init を受理できることを確認する
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
+        prop_assert_eq!(tracks.len(), 2);
+    }
 
     /// 単一映像トラックの init + メディアセグメント roundtrip
     #[test]

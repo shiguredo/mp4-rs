@@ -57,7 +57,7 @@ use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
     BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
-    TrackKind, Utf8String,
+    TrackKind,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SampleEntry,
@@ -65,7 +65,7 @@ use crate::{
         SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
         TrunSample, VmhdBox,
     },
-    mux_mp4_file::{MuxError, Sample},
+    mux_mp4_file::{MuxError, Sample, TrackMetadata, track_metadata},
 };
 
 /// [`Fmp4SegmentMuxer`] 用のオプション
@@ -75,12 +75,24 @@ pub struct SegmentMuxerOptions {
     ///
     /// デフォルト値は UNIX エポック（1970年1月1日 00:00:00 UTC）
     pub creation_timestamp: Duration,
+
+    /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    pub audio_track: TrackMetadata,
+
+    /// 映像トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    pub video_track: TrackMetadata,
+
+    /// 字幕トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    pub subtitle_track: TrackMetadata,
 }
 
 impl Default for SegmentMuxerOptions {
     fn default() -> Self {
         Self {
             creation_timestamp: Duration::ZERO,
+            audio_track: TrackMetadata::default(),
+            video_track: TrackMetadata::default(),
+            subtitle_track: TrackMetadata::default(),
         }
     }
 }
@@ -617,7 +629,7 @@ impl Fmp4SegmentMuxer {
         let trak_boxes: Result<Vec<_>, MuxError> = self
             .tracks
             .iter()
-            .map(|t| self.build_init_trak(t, creation_time))
+            .map(|t| self.build_init_trak(t, creation_time, &self.options))
             .collect();
         let trak_boxes = trak_boxes?;
 
@@ -665,6 +677,7 @@ impl Fmp4SegmentMuxer {
         &self,
         entry: &TrackEntry,
         creation_time: Mp4FileTime,
+        options: &SegmentMuxerOptions,
     ) -> Result<TrakBox, MuxError> {
         let sample_entry = entry
             .sample_entries
@@ -674,6 +687,12 @@ impl Fmp4SegmentMuxer {
             })?;
         // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
         let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
+        let metadata = track_metadata(
+            &options.audio_track,
+            &options.video_track,
+            &options.subtitle_track,
+            entry.track_kind,
+        );
 
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
@@ -694,7 +713,7 @@ impl Fmp4SegmentMuxer {
 
         let hdlr_box = HdlrBox {
             handler_type: derived.handler_type,
-            name: Utf8String::EMPTY.into_null_terminated_bytes(),
+            name: metadata.name.clone().into_null_terminated_bytes(),
         };
 
         let media_header = Some(derived.media_header);
@@ -727,7 +746,7 @@ impl Fmp4SegmentMuxer {
             modification_time: creation_time,
             timescale: entry.timescale,
             duration: 0,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: metadata.language.as_bytes(),
         };
 
         let minf_box = MinfBox {

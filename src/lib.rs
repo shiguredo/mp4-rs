@@ -24,7 +24,7 @@ mod mux_mp4_file;
 
 pub use basic_types::{
     BaseBox, BoxHeader, BoxSize, BoxType, Either, FixedPointNumber, FullBox, FullBoxFlags,
-    FullBoxHeader, Mp4File, Mp4FileTime, SampleFlags, TrackKind, Uint, Utf8String,
+    FullBoxHeader, LanguageCode, Mp4File, Mp4FileTime, SampleFlags, TrackKind, Uint, Utf8String,
 };
 pub use codec::{Decode, Encode, Error, ErrorKind, Result};
 

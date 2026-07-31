@@ -551,7 +551,7 @@ impl<I: Decode, F: Decode> Decode for FixedPointNumber<I, F> {
 }
 
 /// null 終端の UTF-8 文字列
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Utf8String(String);
 
 impl Utf8String {
@@ -709,6 +709,54 @@ where
 {
     fn from(value: bool) -> Self {
         Self::new(T::from(value))
+    }
+}
+
+/// [`crate::boxes::MdhdBox::language`] 用の 3 文字言語コード
+///
+/// 各バイトは `0x60..=0x7F` の範囲に収まる必要がある
+/// （ISO/IEC 14496-12 の `unsigned int(5)[3]` パック規約に由来）。
+/// ISO-639-2/T の文字集合（`a-z`）に絞る検証は行わない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LanguageCode([u8; 3]);
+
+impl LanguageCode {
+    /// 未定義言語（`*b"und"`）
+    pub const UNDEFINED: Self = Self(*b"und");
+
+    /// 3 バイト配列から作る
+    ///
+    /// 各バイトが `0x60..=0x7F` の範囲外なら [`None`] を返す
+    pub fn new(code: [u8; 3]) -> Option<Self> {
+        if code.iter().all(|&b| (0x60..=0x7F).contains(&b)) {
+            Some(Self(code))
+        } else {
+            None
+        }
+    }
+
+    /// 3 文字 ASCII 文字列から作る（例: `"eng"`, `"jpn"`）
+    ///
+    /// 受理するのは各バイトが `0x60..=0x7F` の範囲に収まる 3 バイトの文字列だけである。
+    /// バイト長が 3 でない場合や、大文字 `"ENG"` のように範囲外のバイトを含む場合は
+    /// [`None`] を返す。ASCII 全域を受理するわけではない。
+    pub fn from_ascii(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 3 {
+            return None;
+        }
+        Self::new([bytes[0], bytes[1], bytes[2]])
+    }
+
+    /// 内部の 3 バイト配列を返す
+    pub fn as_bytes(self) -> [u8; 3] {
+        self.0
+    }
+}
+
+impl Default for LanguageCode {
+    fn default() -> Self {
+        Self::UNDEFINED
     }
 }
 

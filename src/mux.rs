@@ -24,6 +24,6 @@
 //! ```
 pub use crate::mux_fmp4_segment::{Fmp4SegmentMuxer, SegmentMuxerOptions};
 pub use crate::mux_mp4_file::{
-    FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample,
+    FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample, TrackMetadata,
     estimate_maximum_moov_box_size,
 };

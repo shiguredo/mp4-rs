@@ -91,7 +91,7 @@
   - @sile
 - [FIX] `Mp4FileDemuxer` で `ftyp` / `moov` の `box_size` を `usize` へ変換するときに `as` キャストではなく `usize::try_from` を使うようにする
   - 32 bit ターゲット（wasm32 を含む）で `box_size` が `usize::MAX` を超えると暗黙に切り詰められていた
-  - 変換失敗時は `DemuxError::DecodeError` を返し、`box_size == 0` を EOF までとみなす従来の意味は維持する
+  - 合法なファイルでは現実的に起きないが、破損入力への防御として変換失敗時は `DemuxError::DecodeError` を返す
   - @sile
 - [FIX] `Mp4FileMuxer::build_stbl_box()` の `stsc` / `stss` 構築で `NonZeroU32::saturating_add` を使わずオーバーフロー時にエラーを返すようにする
   - これまではチャンク数やサンプル数が `u32::MAX` を超えると値が飽和し、壊れた MP4 をエラーなく生成し得た

@@ -338,6 +338,47 @@ mod tests {
         assert!(sample_entry.nalu_sizes.is_null());
     }
 
+    /// 「naluArrays に 1 要素以上／全 units が空」（`nalu_array_count > 0` かつ
+    /// `total_nalu_count == 0`）の parse → free 中間状態テスト
+    ///
+    /// この入力では `nalu_types` / `nalu_counts` は非 null になる一方、
+    /// `nalu_data` / `nalu_sizes` は `allocate_and_copy_array_list(&[])` 経由で
+    /// null になる。abort 統一で `free_hevc_sample_entry_fields` から
+    /// `if !nalu_data.is_null()` ガードを撤去したため、この中間状態では
+    /// `free_array_list(null, null, 0)` を無条件に呼ぶ経路を通る。
+    /// `element_count == 0` の早期 return が効いて panic せず、
+    /// すべてのポインタと個数がリセットされることを検証する
+    #[test]
+    fn test_json_to_hev1_free_all_units_empty() {
+        let json_str = build_hevc_test_json(
+            "hev1",
+            r#"[
+                {"naluType": 32, "units": []}
+            ]"#,
+        );
+
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_hev1(json.value()).expect("有効な hev1 JSON");
+
+        // 中間状態: 配列個数 1、types / counts 非 null、data / sizes は null
+        assert_eq!(sample_entry.nalu_array_count, 1);
+        assert!(!sample_entry.nalu_types.is_null());
+        assert!(!sample_entry.nalu_counts.is_null());
+        assert_eq!(unsafe { *sample_entry.nalu_counts.add(0) }, 0);
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
+
+        // free: `free_array_list(null, null, 0)` を無条件に呼ぶ経路を通り、
+        // panic せずに全ポインタと個数がリセットされる
+        mp4_sample_entry_hev1_free(&mut sample_entry);
+        assert_eq!(sample_entry.nalu_array_count, 0);
+        assert!(sample_entry.nalu_types.is_null());
+        assert!(sample_entry.nalu_counts.is_null());
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
+    }
+
     /// 空 NALU 要素（`units: [[]]`）を parse → JSON 再出力する往復テスト
     ///
     /// `allocate_and_copy_array_list` は空要素を `(null, 0)` にする。

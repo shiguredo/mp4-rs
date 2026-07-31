@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: develop
 - Polished: 2026-07-31
@@ -47,11 +47,11 @@
 
 ## 解決方法
 
-機能影響のないメッセージ修正のため、作業ブランチは切らず `develop` 上で直接対応する。
+機能影響のないメッセージ修正のため、作業ブランチは切らず `develop` 上で直接対応した。
 
-1. `src/auxiliary.rs` の `impl core::fmt::Display for SampleTableAccessorError` で次を置換する
+1. `src/auxiliary.rs` の `impl core::fmt::Display for SampleTableAccessorError` で次を置換した
    - `FirstChunkIndexIsNotOne`: `"is expected to 1"` → `"is expected to be 1"`
    - `LastChunkIndexIsTooLarge`: `"is expected to \`<= ...\`"` → `"is expected to be \`<= ...\`"`
    - `ChunkIndicesNotMonotonicallyIncreasing`: `"is not"` → `"are not"`
-2. `CHANGES.md` の `## develop` の `### misc` 末尾に、上記 Display 文法修正の `[UPDATE]` エントリを追記する
-3. 既存テスト（`pbt/tests/prop_auxiliary.rs` の `error_display_*` 等）が通ることを確認する
+2. `CHANGES.md` の `## develop` の `### misc` 末尾に `[UPDATE] \`SampleTableAccessorError\` の Display メッセージの英語文法を直す` を追記した
+3. `cargo test -p shiguredo_mp4 --lib auxiliary::` と `cargo test -p pbt --test prop_auxiliary error_display` が通ることを確認した

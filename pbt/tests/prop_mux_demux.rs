@@ -431,6 +431,7 @@ proptest! {
         let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
+        // 正規は keyframe = true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
         let mut sample_entry = Some(create_opus_sample_entry(channel_count));
         let mut expected_samples = Vec::new();
         let mut total_data_size = 0usize;
@@ -454,6 +455,15 @@ proptest! {
         // ファイナライズ
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("finalize に失敗した");
+        prop_assert!(
+            finalized.moov_box().trak_boxes[0]
+                .mdia_box
+                .minf_box
+                .stbl_box
+                .stss_box
+                .is_none(),
+            "全非キーフレームの音声トラックで空の stss が出力された"
+        );
 
         // ファイルデータを構築
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
@@ -470,8 +480,13 @@ proptest! {
         prop_assert!(matches!(tracks[0].kind, TrackKind::Audio));
 
         // サンプル数と属性を確認
+        // 入力は keyframe = false だが、stss 省略により demux ではすべて同期サンプルになる
         let mut actual_samples = Vec::new();
         while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
+            prop_assert!(
+                sample.keyframe,
+                "音声サンプルが同期サンプルとして復元されていない"
+            );
             actual_samples.push((sample.duration, sample.data_size));
         }
         prop_assert_eq!(actual_samples.len(), expected_samples.len());
@@ -694,6 +709,7 @@ proptest! {
         }
 
         // オーディオサンプルを追加
+        // 正規は keyframe = true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
         let mut audio_sample_entry = Some(create_opus_sample_entry(channel_count));
         for sample_info in &audio_samples {
             let sample = Sample {
@@ -715,6 +731,17 @@ proptest! {
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("finalize に失敗した");
 
+        // 音声トラック（2 本目）の stss が省略されていること
+        prop_assert!(
+            finalized.moov_box().trak_boxes[1]
+                .mdia_box
+                .minf_box
+                .stbl_box
+                .stss_box
+                .is_none(),
+            "全非キーフレームの音声トラックで空の stss が出力された"
+        );
+
         // ファイルデータを構築
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
 
@@ -729,12 +756,19 @@ proptest! {
         prop_assert_eq!(tracks.len(), 2);
 
         // サンプル数を確認
+        // 音声は入力 keyframe = false だが、stss 省略により demux では同期サンプルになる
         let mut video_count = 0;
         let mut audio_count = 0;
         while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
             match sample.track.kind {
                 TrackKind::Video => video_count += 1,
-                TrackKind::Audio => audio_count += 1,
+                TrackKind::Audio => {
+                    prop_assert!(
+                        sample.keyframe,
+                        "音声サンプルが同期サンプルとして復元されていない"
+                    );
+                    audio_count += 1;
+                }
                 // このテストは Audio / Video 系トラックのみを扱う。字幕が現れたらテスト条件外
                 TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外"),
             }
@@ -790,6 +824,7 @@ proptest! {
             let sample = Sample {
                 track_kind: TrackKind::Audio,
                 sample_entry: audio_sample_entry.take(),
+                // 正規は true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
                 keyframe: false,
                 timescale: audio_timescale,
                 duration: sample_info.duration,
@@ -822,6 +857,15 @@ proptest! {
         // ファイナライズ
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("finalize に失敗した");
+        prop_assert!(
+            finalized.moov_box().trak_boxes[1]
+                .mdia_box
+                .minf_box
+                .stbl_box
+                .stss_box
+                .is_none(),
+            "全非キーフレームの音声トラックで空の stss が出力された"
+        );
 
         // 3 トラックとも `timescale` が異なるため、少なくとも 2 つは換算を経る。
         // 特に音声（48000）は正規化した尺が映像（30）に届かず `mvhd` に採用されないので、
@@ -875,14 +919,27 @@ proptest! {
         prop_assert_eq!(tracks[2].timescale, subtitle_timescale);
 
         // サンプル数を確認
+        // 音声は入力 keyframe = false だが、stss 省略により demux では同期サンプルになる
         let mut video_count = 0;
         let mut audio_count = 0;
         let mut subtitle_count = 0;
         while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
             match sample.track.kind {
                 TrackKind::Video => video_count += 1,
-                TrackKind::Audio => audio_count += 1,
-                TrackKind::Subtitle => subtitle_count += 1,
+                TrackKind::Audio => {
+                    prop_assert!(
+                        sample.keyframe,
+                        "音声サンプルが同期サンプルとして復元されていない"
+                    );
+                    audio_count += 1;
+                }
+                TrackKind::Subtitle => {
+                    prop_assert!(
+                        sample.keyframe,
+                        "字幕サンプルが同期サンプルとして復元されていない"
+                    );
+                    subtitle_count += 1;
+                }
             }
         }
         prop_assert_eq!(video_count, video_samples.len());
@@ -1156,6 +1213,7 @@ proptest! {
                 let sample = Sample {
                     track_kind: TrackKind::Audio,
                     sample_entry: audio_entry.take(),
+                    // 正規は true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
                     keyframe: false,
                     timescale: audio_timescale,
                     duration: aus.duration,
@@ -1172,6 +1230,17 @@ proptest! {
 
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("finalize に失敗した");
+
+        // 映像が先に append されるため音声は 2 本目。全 false 入力でも stss は省略される
+        prop_assert!(
+            finalized.moov_box().trak_boxes[1]
+                .mdia_box
+                .minf_box
+                .stbl_box
+                .stss_box
+                .is_none(),
+            "全非キーフレームの音声トラックで空の stss が出力された"
+        );
 
         // 音声と映像の `timescale` を独立に生成するため、両者が食い違う入力が普通に現れる
         // （`expected_video` は (keyframe, duration, data_size)、`expected_audio` は (duration, data_size)）
@@ -1212,7 +1281,14 @@ proptest! {
                     actual_video.push((sample.keyframe, sample.duration, sample.data_size));
                     actual_video_ctos.push(sample.composition_time_offset);
                 }
-                TrackKind::Audio => actual_audio.push((sample.duration, sample.data_size)),
+                TrackKind::Audio => {
+                    // 入力は keyframe = false だが、stss 省略により demux では同期サンプルになる
+                    prop_assert!(
+                        sample.keyframe,
+                        "音声サンプルが同期サンプルとして復元されていない"
+                    );
+                    actual_audio.push((sample.duration, sample.data_size));
+                }
                 // このテストは Audio / Video 系トラックのみを扱う。字幕が現れたらテスト条件外
                 TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外"),
             }

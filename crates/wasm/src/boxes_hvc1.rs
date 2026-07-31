@@ -313,7 +313,7 @@ mod tests {
     ///
     /// 3 つの `allocate_and_copy_bytes` / `allocate_and_copy_u32_array` /
     /// `allocate_and_copy_array_list` がすべて `(null, 0)` を返し、
-    /// free 側の 3 ブロックが `is_null()` で素通りする経路を検証する
+    /// free 側の各ブロックが `is_null()` / `element_count == 0` で素通りする経路を検証する
     #[test]
     fn test_json_to_hvc1_free_empty_nalu_arrays() {
         let json_str = build_hevc_test_json("hvc1", "[]");
@@ -329,7 +329,7 @@ mod tests {
         assert!(sample_entry.nalu_data.is_null());
         assert!(sample_entry.nalu_sizes.is_null());
 
-        // free: 3 ブロックとも `is_null()` で素通りするだけ
+        // free: 各ブロックが素通りするだけ
         mp4_sample_entry_hvc1_free(&mut sample_entry);
         assert_eq!(sample_entry.nalu_array_count, 0);
         assert!(sample_entry.nalu_types.is_null());

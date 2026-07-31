@@ -29,7 +29,6 @@ pub fn fmt_json_mp4_sample_entry_av01(
         // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
         // `from_raw_parts` は size 0 でも非 null ポインタを要求するため、
         // size == 0 の枝を先に落として空配列として出力する
-        // （フォーマット側ではエラーにはしない）
         let config_obus = if data.config_obus_size == 0 {
             &[][..]
         } else {

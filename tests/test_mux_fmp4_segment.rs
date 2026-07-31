@@ -9,6 +9,11 @@
 //!   - 複数サンプルで PTS 最小値が採用されること
 //!   - セグメント跨ぎで負 CTO により先頭 DTS を下回るケース
 //!   - 負 PTS で `MuxError::Overflow` を返すこと
+//! - `create_media_segment_metadata_with_sidx` の `starts_with_sap` / `sap_type` が
+//!   EPT サンプルの `keyframe` と整合すること
+//!   - EPT が B フレームのとき `starts_with_sap=false` / `sap_type=0`
+//!   - EPT が I フレームのとき `starts_with_sap=true` / `sap_type=1`
+//!   - 非参照トラックの `keyframe` に引きずられないこと
 //!
 //! 意図的なエラーパスと境界値は固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担う。
@@ -445,5 +450,122 @@ fn sidx_ept_across_segments_with_multiple_samples() {
         decode_sidx(&second_segment).earliest_presentation_time,
         1030,
         "第 2 サンプルの PTS=(1000+100)-70=1030 が最小になるため EPT は 1030 であるべき"
+    );
+}
+
+/// EPT サンプルが B フレームのとき `starts_with_sap=false` / `sap_type=0` になること
+///
+/// `decode_time=0`, duration=100 固定で:
+///   samples[0]: I, keyframe=true,  CTO=+50  → PTS=50
+///   samples[1]: B, keyframe=false, CTO=-40  → PTS=60
+///   samples[2]: B, keyframe=false, CTO=-180 → PTS=20 (最小 = EPT)
+///
+/// samples[0] の keyframe を採ると虚偽の `starts_with_sap=true` になるため、
+/// EPT を採ったサンプル（samples[2]）の keyframe を使う契約を固定する。
+#[test]
+fn sidx_starts_with_sap_false_when_ept_sample_is_b_frame() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    let size = 16usize;
+    let samples = [
+        video_sample_with_timing(entry.clone(), 100, Some(50), 0, size),
+        Sample {
+            keyframe: false,
+            ..video_sample_with_timing(entry.clone(), 100, Some(-40), size as u64, size)
+        },
+        Sample {
+            keyframe: false,
+            ..video_sample_with_timing(entry, 100, Some(-180), (size * 2) as u64, size)
+        },
+    ];
+
+    let segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("セグメントの生成に失敗した");
+    let sidx = decode_sidx(&segment);
+    assert_eq!(
+        sidx.earliest_presentation_time, 20,
+        "EPT は samples[2] の PTS=20 であるべき"
+    );
+    let reference = &sidx.references[0];
+    assert!(
+        !reference.starts_with_sap,
+        "EPT サンプルが B フレームなら starts_with_sap は false であるべき"
+    );
+    assert_eq!(
+        reference.sap_type, 0,
+        "EPT サンプルが B フレームなら sap_type は 0 であるべき"
+    );
+}
+
+/// EPT サンプルが I フレームのとき `starts_with_sap=true` / `sap_type=1` になること
+///
+/// 従来ケース（EPT サンプル == samples[0] == I フレーム）の回帰防止。
+/// CTO なしの単一キーフレームでは EPT = DTS = 0 となり、そのサンプル自身が SAP。
+#[test]
+fn sidx_starts_with_sap_true_when_ept_sample_is_i_frame() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+
+    let segment = muxer
+        .create_media_segment_metadata_with_sidx(&[video_sample_with_timing(
+            entry, 100, None, 0, 16,
+        )])
+        .expect("セグメントの生成に失敗した");
+    let sidx = decode_sidx(&segment);
+    assert_eq!(
+        sidx.earliest_presentation_time, 0,
+        "CTO なしの単一サンプルでは EPT は 0 であるべき"
+    );
+    let reference = &sidx.references[0];
+    assert!(
+        reference.starts_with_sap,
+        "EPT サンプルが I フレームなら starts_with_sap は true であるべき"
+    );
+    assert_eq!(
+        reference.sap_type, 1,
+        "EPT サンプルが I フレームなら sap_type は 1 であるべき"
+    );
+}
+
+/// 非参照トラック（Audio）の `keyframe` が `starts_with_sap` に混入しないこと
+///
+/// Video を `samples[0]` にして参照トラックとし、Video 群を前半・Audio 群を後半に
+/// `data_offset` 連続で配置する（`sidx_ept_ignores_non_reference_track_samples` と同じ配置）。
+/// Audio は全て `keyframe=true` でも、Video の EPT サンプルが B フレームなら
+/// `starts_with_sap=false` になることを固定する。
+#[test]
+fn sidx_starts_with_sap_ignores_non_reference_track_keyframes() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let video_entry = create_avc1_sample_entry(320, 240);
+    let audio_entry = create_opus_sample_entry();
+    let video_size = 16usize;
+    let audio_size = 8usize;
+    // Video: I (PTS=50) → B (PTS=20 = EPT)。Audio は全て keyframe=true。
+    let samples = [
+        video_sample_with_timing(video_entry.clone(), 100, Some(50), 0, video_size),
+        Sample {
+            keyframe: false,
+            ..video_sample_with_timing(video_entry, 100, Some(-80), video_size as u64, video_size)
+        },
+        audio_sample_with_timing(audio_entry, 100, None, (video_size * 2) as u64, audio_size),
+    ];
+
+    let segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("セグメントの生成に失敗した");
+    let sidx = decode_sidx(&segment);
+    assert_eq!(
+        sidx.earliest_presentation_time, 20,
+        "Video の EPT は samples[1] の PTS=20 であるべき"
+    );
+    let reference = &sidx.references[0];
+    assert!(
+        !reference.starts_with_sap,
+        "非参照トラックの keyframe=true に引きずられず starts_with_sap は false であるべき"
+    );
+    assert_eq!(
+        reference.sap_type, 0,
+        "非参照トラックの keyframe に引きずられず sap_type は 0 であるべき"
     );
 }

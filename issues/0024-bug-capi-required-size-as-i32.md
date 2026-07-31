@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-capi-required-size-as-i32
 - Polished: 2026-07-31
@@ -61,12 +61,10 @@ API 仕様上、`out_required_input_size` の値は以下のとおり定義さ�
 
 ## 解決方法
 
-1. `crates/c-api/src/` 配下（`error.rs` の近傍が妥当）に `RequiredInput.size` を `Result<i32, ...>` に変換するヘルパー関数を追加する
-   - `None` → `Ok(-1)`
-   - `Some(n)` かつ `n <= i32::MAX` → `Ok(n as i32)`
-   - `Some(n)` かつ `n > i32::MAX` → `Err(...)`
-2. `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` の `n as i32` を上記ヘルパーの呼び出しに置換する
-   - ヘルパーが `Ok` のときだけ両 out を設定して `MP4_ERROR_OK` を返す
-   - `Err` の場合は両 out を更新せず、`set_last_error` して `MP4_ERROR_UNSUPPORTED` を返す
-3. `crates/c-api/include/mp4.h` の該当 2 関数のドキュメントコメントに、`MP4_ERROR_UNSUPPORTED` が返る条件（要求サイズが `i32::MAX` を超えた場合）を追記する
-4. ヘルパー関数に対する単体テストを追加し、上記完了条件の境界値をカバーする
+設計方針どおり `i32::try_from` + `MP4_ERROR_UNSUPPORTED` を採用した。
+
+- `crates/c-api/src/error.rs` に `required_input_size_to_i32` を追加し、`None` → `-1`、`Some(n)` は `i32::try_from`、超過時はエラーメッセージ付き `Err` とした
+- `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` でヘルパーを使い、`Ok` のときだけ両 out を設定、`Err` のときは out 未更新で `set_last_error` + `MP4_ERROR_UNSUPPORTED` を返すようにした
+- 境界値単体テスト（`None` / `0` / `1` / `i32::MAX` / `i32::MAX+1` / `usize::MAX`）を追加した
+- `mp4.h`（および rustdoc）に `MP4_ERROR_UNSUPPORTED` 条件と「非 OK 時は out を読まない」使用例を追記した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加した

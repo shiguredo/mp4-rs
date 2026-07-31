@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-wasm-fmp4-segment-demux-null-check
 - Polished: 2026-07-20
@@ -43,12 +43,8 @@ if !sample.track.is_null() {
 
 ## 解決方法
 
-`fmt_json_mp4_demux_sample()` と同様に `sample.track.is_null()` のガードを追加し、null 時は `track_id` メンバーを省略する。
+コード変更なしで closed にした。
 
-## 後方互換
+`fmt_json_demux_sample()` は private で、上流の `fmp4_segment_demuxer_handle_media_segment()` が track 未検出時にサンプルを一切返さずエラー終了するため、`sample.track` は非 null で到達し、`&*sample.track` の参照外しに UB は発生しない。
 
-`Mp4DemuxSample::new()` の実装上は常に非 null のため、正常系の JSON 出力は不変。null 時の `track_id` 省略は `demux.rs` と同じ挙動に統一される。
-
-## CHANGES.md
-
-`[FIX]` で記載する。
+対比先の `fmt_json_mp4_demux_sample()` は public C API `mp4_demux_sample_to_json()` 経由で外部から任意サンプルを受け取るため、そちらの null ガードには独立した意義がある。両者は呼び出し境界の性質が異なり、単純な「一貫性欠如」ではないため、防御的コードを追加する動機は薄いと判断した。

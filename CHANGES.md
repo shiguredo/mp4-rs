@@ -92,6 +92,10 @@
 - [FIX] `Fmp4SegmentMuxer` の `mdat` ボックスサイズ計算と `mfra` の `moof_offset` 計算で `u64` 加算がオーバーフローしたときにパニックや不正値にならず `MuxError::Overflow` を返すようにする
   - これまではパニック（debug ビルド）やラップアラウンド（release ビルド）により不正なボックスサイズやオフセットが生成され得た
   - @sile
+- [FIX] `MdhdBox::encode()` で言語コードの各バイトが 5 ビットに収まらない場合にエラーを返すようにする
+  - ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を `unsigned int(5)` にパックする
+  - これまでは `0x80` 以上のバイトも受け入れ、隣接ビットフィールドを破壊した不正な `mdhd` を生成し得た
+  - @sile
 - [FIX] `AvccBox::encode()` で PPS の上限を仕様どおり 255 に修正する
   - ISO/IEC 14496-15 の `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）だが、SPS と同じ 31 で拒否していた
   - これまでは PPS を 32〜255 個持つ合法な入力の `avcC` エンコードを誤って拒否していた
@@ -170,6 +174,12 @@
   - これまではセグメント先頭の累積 DTS（`track.decode_time`）をそのまま入れていた
   - 参照トラック各サンプルの PTS（`DTS + composition_time_offset`、`None` は 0）の最小値を使うようにする
   - PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` に収まらない場合は `MuxError::Overflow` を返す
+  - @sile
+- [FIX] `TrunBox::encode` がサンプル間で per-sample フィールドの `Option` 有無が揃っていない入力を黙って潰していたのを修正する
+  - これまでは先頭サンプルだけでフラグを決めていたため、両方向で情報が落ちていた（先頭 `None`・後続 `Some` では後続値が捨てられ、先頭 `Some`・後続 `None` では `unwrap_or(0)` で 0 が書き込まれていた）
+  - duration / size / flags / composition_time_offset のいずれかで有無が揃わない場合は `invalid_input` を返す
+  - あわせて `compute_flags` を `iter().any()` ベースに変更し、`FullBox::full_box_flags()` を直接呼び出しても「どのサンプルかに Some があればフラグを立てる」決定論的な値を返すようにする（`uses_version_1` と流儀を揃える）
+  - `Fmp4SegmentMuxer` 内部の TrunBox 生成 (`mux_fmp4_segment.rs`) は常に整合サンプルを組み立てるため、この変更で新たにエラーになるケースはない
   - @sile
 
 ### misc

@@ -9,7 +9,7 @@
 
 ## 目的
 
-WASM の `fmp4_segment_demux.rs` の `fmt_json_demux_sample()` 内で `sample.track` を null チェックなしで `&*sample.track` している。同じクレートの `demux.rs:59` では `sample.track` の null チェックを行っており一貫性がない。
+WASM の `crates/wasm/src/fmp4_segment_demux.rs` の `fmt_json_demux_sample()` 内で `sample.track` を null チェックなしで `&*sample.track` している。同じクレートの `crates/wasm/src/demux.rs` の `fmt_json_mp4_demux_sample()` では `sample.track` の null チェックを行っており一貫性がない。
 
 ## 優先度根拠
 
@@ -17,13 +17,13 @@ WASM の `fmp4_segment_demux.rs` の `fmt_json_demux_sample()` 内で `sample.tr
 
 ## 現状
 
-`crates/wasm/src/fmp4_segment_demux.rs:178`:
+`crates/wasm/src/fmp4_segment_demux.rs` の `fmt_json_demux_sample()`:
 
 ```rust
 let track = unsafe { &*sample.track }; // null チェックなし
 ```
 
-対比: `crates/wasm/src/demux.rs:59-60`:
+対比: `crates/wasm/src/demux.rs` の `fmt_json_mp4_demux_sample()`:
 
 ```rust
 if !sample.track.is_null() {
@@ -32,7 +32,7 @@ if !sample.track.is_null() {
 
 ## 設計方針
 
-`demux.rs` と同様に `sample.track.is_null()` のガードを追加する。null 時は `track_id` メンバーを省略する（`demux.rs` と同じ挙動）。
+`fmt_json_mp4_demux_sample()` と同様に `sample.track.is_null()` のガードを追加する。null 時は `track_id` メンバーを省略する（同関数と同じ挙動）。
 
 ## 完了条件
 
@@ -43,7 +43,7 @@ if !sample.track.is_null() {
 
 ## 解決方法
 
-`demux.rs` と同様に `sample.track.is_null()` のガードを追加し、null 時は `track_id` メンバーを省略する。
+`fmt_json_mp4_demux_sample()` と同様に `sample.track.is_null()` のガードを追加し、null 時は `track_id` メンバーを省略する。
 
 ## 後方互換
 

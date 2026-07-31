@@ -1032,13 +1032,26 @@ impl Mp4FileMuxer {
                 .iter()
                 .enumerate()
                 .map(|(i, c)| -> Result<StscEntry, MuxError> {
-                    let sample_description_index = sample_entries
+                    // sample_entries は直前のループで全 chunk の entry を収集済みなので必ず見つかる
+                    let idx = sample_entries
                         .iter()
                         .position(|entry| entry == &c.sample_entry)
-                        .map(|idx| NonZeroU32::MIN.saturating_add(idx as u32))
                         .expect("sample_entry should exist in sample_entries");
+                    // 0-based の position を 1-based の sample_description_index へ変換する
+                    let idx = u32::try_from(idx).map_err(|_| {
+                        MuxError::EncodeError(Error::invalid_data(
+                            "sample description index exceeds u32::MAX",
+                        ))
+                    })?;
+                    let sample_description_index =
+                        NonZeroU32::MIN.checked_add(idx).ok_or(MuxError::Overflow)?;
+
+                    // 0-based の列挙インデックスを 1-based の first_chunk へ変換する
+                    let i = u32::try_from(i).map_err(|_| {
+                        MuxError::EncodeError(Error::invalid_data("chunk index exceeds u32::MAX"))
+                    })?;
                     Ok(StscEntry {
-                        first_chunk: NonZeroU32::MIN.saturating_add(i as u32),
+                        first_chunk: NonZeroU32::MIN.checked_add(i).ok_or(MuxError::Overflow)?,
                         sample_per_chunk: u32::try_from(c.samples.len()).map_err(|_| {
                             MuxError::EncodeError(Error::invalid_data(
                                 "samples per chunk exceeds u32::MAX",
@@ -1072,15 +1085,21 @@ impl Mp4FileMuxer {
             None
         } else {
             Some(StssBox {
+                // enumerate は filter 前のグローバル 0-based 番号を保持したまま 1-based へ変換する
                 sample_numbers: chunks
                     .iter()
                     .flat_map(|c| c.samples.iter())
                     .enumerate()
-                    .filter_map(|(i, s)| {
-                        s.keyframe
-                            .then_some(NonZeroU32::MIN.saturating_add(i as u32))
+                    .filter(|&(_, s)| s.keyframe)
+                    .map(|(i, _)| {
+                        let i = u32::try_from(i).map_err(|_| {
+                            MuxError::EncodeError(Error::invalid_data(
+                                "sample index exceeds u32::MAX",
+                            ))
+                        })?;
+                        NonZeroU32::MIN.checked_add(i).ok_or(MuxError::Overflow)
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, _>>()?,
             })
         };
 
@@ -1699,6 +1718,118 @@ mod tests {
         assert!(
             matches!(err, MuxError::Overflow),
             "TimescaleMismatch より Overflow が先に返るべき: {err}"
+        );
+    }
+
+    /// `build_stbl_box` が使う 1-based 変換の算術境界を固定する
+    ///
+    /// `u32::MAX` 個のチャンクを実際に生成するのは非現実的なため、
+    /// 実装が依存する `NonZeroU32::MIN.checked_add` の戻り値だけを直接確認する。
+    /// `finalize()` 経由で `MuxError::Overflow` が返ることまでは検証しない。
+    #[test]
+    fn test_nonzero_u32_min_checked_add_overflows_at_u32_max() {
+        assert!(
+            NonZeroU32::MIN.checked_add(u32::MAX).is_none(),
+            "NonZeroU32::MIN + u32::MAX はオーバーフローするべき"
+        );
+        // 最大の合法な 0-based インデックス（u32::MAX - 1）では 1-based 値が u32::MAX になる
+        assert_eq!(
+            NonZeroU32::MIN.checked_add(u32::MAX - 1).map(|v| v.get()),
+            Some(u32::MAX),
+            "NonZeroU32::MIN + (u32::MAX - 1) は u32::MAX になるべき"
+        );
+    }
+
+    /// `finalize` 経路で stsc の first_chunk と stss の sample_numbers が 1-based になることを検証する
+    #[test]
+    fn test_build_stbl_box_one_based_indices_for_chunks_and_keyframes() {
+        let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");
+        let mut offset = muxer.initial_boxes_bytes().len() as u64;
+        let timescale = NonZeroU32::MIN.saturating_add(30 - 1);
+        let sample_size = 100usize;
+
+        // チャンク 1: キーフレーム
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: Some(create_avc1_sample_entry()),
+                keyframe: true,
+                timescale,
+                duration: 1,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: sample_size,
+            })
+            .expect("1 つ目のサンプルの追加に失敗した");
+        offset += sample_size as u64;
+
+        // 非サンプルデータを挟んで強制的に新チャンクを開始する
+        muxer
+            .advance_position(8)
+            .expect("書き込み位置の前進に失敗した");
+        offset += 8;
+
+        // チャンク 2: 非キーフレーム（stss を出させる）
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: None,
+                keyframe: false,
+                timescale,
+                duration: 1,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: sample_size,
+            })
+            .expect("2 つ目のサンプルの追加に失敗した");
+        offset += sample_size as u64;
+
+        muxer
+            .advance_position(8)
+            .expect("書き込み位置の前進に失敗した");
+        offset += 8;
+
+        // チャンク 3: キーフレーム
+        muxer
+            .append_sample(&Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: None,
+                keyframe: true,
+                timescale,
+                duration: 1,
+                composition_time_offset: None,
+                data_offset: offset,
+                data_size: sample_size,
+            })
+            .expect("3 つ目のサンプルの追加に失敗した");
+
+        let finalized = muxer.finalize().expect("finalize に失敗した");
+        let stbl = &finalized.moov_box().trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box;
+
+        let first_chunks: Vec<u32> = stbl
+            .stsc_box
+            .entries
+            .iter()
+            .map(|e| e.first_chunk.get())
+            .collect();
+        assert_eq!(
+            first_chunks.as_slice(),
+            &[1, 2, 3],
+            "first_chunk は 1-based の連番であるべき"
+        );
+
+        let stss = stbl
+            .stss_box
+            .as_ref()
+            .expect("混在キーフレームでは stss が出るべき");
+        let sample_numbers: Vec<u32> = stss.sample_numbers.iter().map(|n| n.get()).collect();
+        assert_eq!(
+            sample_numbers.as_slice(),
+            &[1, 3],
+            "sample_numbers はキーフレームの 1-based 番号であるべき"
         );
     }
 

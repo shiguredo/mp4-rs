@@ -93,6 +93,9 @@
   - これまではチャンク数やサンプル数が `u32::MAX` を超えると値が飽和し、壊れた MP4 をエラーなく生成し得た
   - `checked_add` と `u32::try_from()` で明示的に検査し、超過時は `MuxError::Overflow` / `MuxError::EncodeError` を返す
   - @sile
+- [FIX] `Fmp4SegmentMuxer` の `mdat` ボックスサイズ計算と `mfra` の `moof_offset` 計算で `u64` 加算がオーバーフローしたときにパニックや不正値にならず `MuxError::Overflow` を返すようにする
+  - これまではパニック（debug ビルド）やラップアラウンド（release ビルド）により不正なボックスサイズやオフセットが生成され得た
+  - @sile
 - [FIX] `MdhdBox::encode()` で言語コードの各バイトが 5 ビットに収まらない場合にエラーを返すようにする
   - ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を `unsigned int(5)` にパックする
   - これまでは `0x80` 以上のバイトも受け入れ、隣接ビットフィールドを破壊した不正な `mdhd` を生成し得た
@@ -213,6 +216,8 @@
 - [UPDATE] `pbt/tests/prop_error_paths.rs` を対応する各 PBT ファイル（`prop_boxes_moov_tree.rs` / `prop_boxes_sample_entry.rs` を新設）に再配置する
   - @sile
 - [UPDATE] examples と doc コメント内サンプルコードの日本語出力文字列を英語に置換する
+  - @sile
+- [UPDATE] `SampleTableAccessorError` の Display メッセージの英語文法を直す
   - @sile
 
 ## 2026.3.0

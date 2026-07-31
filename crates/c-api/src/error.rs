@@ -1,6 +1,8 @@
-//! shiguredo_mp4 のエラーをまとめて定義するためのモジュール
+//! C API 向けのエラー集約と、それに付随する変換ヘルパーを置くモジュール
 //!
-//! C API で細かくエラー型が分かれていると煩雑なので、ひとつに集約している
+//! エラー型が細かく分かれていると C API 側で煩雑になるため `Mp4Error` に集約する。
+//! あわせて、`RequiredInput.size` を `int32_t` 表現へ落とす変換もここに置く
+//! （変換失敗は `MP4_ERROR_UNSUPPORTED` として返す前提のため）。
 use shiguredo_mp4::{
     Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, mux::MuxError,
 };
@@ -113,13 +115,13 @@ mod tests {
         assert_eq!(required_input_size_to_i32(None), Ok(-1));
     }
 
-    /// 0 は「追加入力不要」と衝突しない正の境界（サイズ 0 バイト要求）として通す
+    /// Some(0) は i32 に収まる下限として Ok(0) になる（EOF の -1 とは別値）
     #[test]
     fn converts_zero() {
         assert_eq!(required_input_size_to_i32(Some(0)), Ok(0));
     }
 
-    /// 通常の正値をそのまま返す
+    /// i32 に収まる通常の正値はそのまま通す
     #[test]
     fn converts_one() {
         assert_eq!(required_input_size_to_i32(Some(1)), Ok(1));

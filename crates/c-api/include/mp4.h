@@ -1452,10 +1452,11 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  *     - 通常は、より大きな範囲のデータを一度に渡した方が効率がいい
  *   - 0 が設定された場合は、これ以上の入力データが不要であることを意味する
  *   - -1 が設定された場合は、ファイルの末尾までのデータが必要であることを意味する
+ *   - 要求サイズが `i32::MAX` を超える場合は更新されず、`MP4_ERROR_UNSUPPORTED` が返る
  *
  * # 戻り値
  *
- * - `MP4_ERROR_OK`: 正常に処理された
+ * - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
  * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
  * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
  *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
@@ -2021,10 +2022,14 @@ const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetect
  * ここで大きなサイズが要求されるのは実質的には `moov` ボックス本体であり、
  * `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
  * そのため、サイズ表現には `int32_t` を使っている。
- * 要求サイズが `i32::MAX`（約 2 GiB）を超えた場合は `MP4_ERROR_UNSUPPORTED` を返し、
- * そのときは `out_required_input_position` / `out_required_input_size` は更新されない。
  *
- * 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
+ * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+ *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
+ * - 判定器がエラー状態に遷移している場合は、上記以外のエラーを返す
  */
 enum Mp4Error mp4_file_kind_detector_get_required_input(struct Mp4FileKindDetector *detector,
                                                         uint64_t *out_required_input_position,

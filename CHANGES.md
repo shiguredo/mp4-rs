@@ -12,6 +12,8 @@
 ## develop
 
 - [CHANGE] `ErrorKind` / `MuxError` / `DemuxError` から `#[non_exhaustive]` を削除する
+  - 利用側で網羅 `match` が可能になり、将来のバリアント追加は破壊的変更として扱う
+  - C API の `Mp4Error` への数値マッピング（`InsufficientBuffer` → `MP4_ERROR_OTHER` 等）は変えない
   - @sile
 - [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
   - @voluntas

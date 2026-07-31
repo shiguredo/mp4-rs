@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-27
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: Opus 5
 - Branch: feature/fix-empty-stss-box
 - Polished: 2026-07-31
@@ -70,3 +70,12 @@ API 契約を次で固定する。音声・字幕の正規入力は `keyframe = 
 - 上記を検証するテストが追加されていること（音声トラックと字幕トラックの両方。設計方針 1 または 2 を採る場合は、映像トラックで空 `stss` 相当の入力がエラーになることも検証する）
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` が通ること
 - `Sample::keyframe` の doc に、指定した値が `stss` の生成にどう影響するか、および音声・字幕では `true` が正規であることが記載されていること
+
+## 解決方法
+
+設計方針 1（種別分岐）を採用した。
+
+- `Mp4FileMuxer::build_stbl_box` に `track_kind` を渡し、`sample_numbers` が空のとき Audio / Subtitle は `stss` を省略、Video は `MuxError::NoSyncSamples` を返すようにした
+- `Sample::keyframe` / `finalize` / C API の doc と `docs/subtitle.md` を実装に合わせて更新した
+- 単体テスト（音声・字幕の省略、映像の拒否）と音声系 PBT（`stss` 不在と demux 後の同期復元）を追加した
+- `CHANGES.md` に映像拒否の `[CHANGE]` と音声・字幕省略の `[FIX]` を追記した

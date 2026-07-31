@@ -165,7 +165,16 @@ impl nojson::DisplayJson for NaluList {
             for i in 0..self.count as usize {
                 let nalu_ptr = unsafe { *self.data_ptr.add(i) };
                 let nalu_size = unsafe { *self.sizes_ptr.add(i) } as usize;
-                let nalu = unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
+                // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
+                // 空要素は (null, 0)。allocate_and_copy_array_list はポインタに .0 だけ・
+                // サイズに array.len() を使うため、非空要素の確保失敗後は (null, 非ゼロ)
+                // も残り得る。いずれも from_raw_parts に null を渡すと UB なのでガードし、
+                // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
+                let nalu = if nalu_size == 0 || nalu_ptr.is_null() {
+                    &[][..]
+                } else {
+                    unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) }
+                };
                 f.element(nalu)?;
             }
             Ok(())
@@ -238,6 +247,41 @@ mod tests {
         // メモリ解放
         mp4_sample_entry_avc1_free(&mut sample_entry);
         assert_eq!(sample_entry.sps_count, 0);
+    }
+
+    /// 空の SPS / PPS 要素を含む JSON を parse → 再出力する往復テスト
+    ///
+    /// `allocate_and_copy_array_list` は空要素を `(null, 0)` にする。
+    /// `NaluList::fmt` が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列要素として再出力できることを検証する
+    #[test]
+    fn test_json_to_avc1_empty_nalu_element_roundtrip() {
+        let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[]], "pps": [[]]}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_avc1(json.value()).expect("空 NALU 要素の avc1 JSON");
+
+        assert_eq!(sample_entry.sps_count, 1);
+        assert_eq!(sample_entry.pps_count, 1);
+        assert_eq!(unsafe { *sample_entry.sps_sizes }, 0);
+        assert!(unsafe { (*sample_entry.sps_data).is_null() });
+        assert_eq!(unsafe { *sample_entry.pps_sizes }, 0);
+        assert!(unsafe { (*sample_entry.pps_data).is_null() });
+
+        let out = nojson::json(|f| fmt_json_mp4_sample_entry_avc1(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""sps":[[]]"#),
+            "空 SPS 要素が [[]] として再出力されること: {out}"
+        );
+        assert!(
+            out.contains(r#""pps":[[]]"#),
+            "空 PPS 要素が [[]] として再出力されること: {out}"
+        );
+
+        mp4_sample_entry_avc1_free(&mut sample_entry);
+        assert_eq!(sample_entry.sps_count, 0);
+        assert_eq!(sample_entry.pps_count, 0);
     }
 
     #[test]

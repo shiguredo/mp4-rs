@@ -12,8 +12,15 @@ pub fn fmt_json_mp4_sample_entry_flac(
         f.member("channelCount", data.channel_count)?;
         f.member("sampleRate", data.sample_rate)?;
         f.member("sampleSize", data.sample_size)?;
-        let streaminfo = unsafe {
-            std::slice::from_raw_parts(data.streaminfo_data, data.streaminfo_size as usize)
+        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
+        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
+        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
+        let streaminfo = if data.streaminfo_size == 0 || data.streaminfo_data.is_null() {
+            &[][..]
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(data.streaminfo_data, data.streaminfo_size as usize)
+            }
         };
         f.member("streaminfoData", streaminfo)
     })
@@ -105,6 +112,33 @@ mod tests {
         assert_eq!(data, &[0, 16, 0, 16]);
 
         // メモリ解放
+        mp4_sample_entry_flac_free(&mut sample_entry);
+        assert_eq!(sample_entry.streaminfo_size, 0);
+        assert!(sample_entry.streaminfo_data.is_null());
+    }
+
+    /// 空の streaminfoData を parse → JSON 再出力する往復テスト
+    ///
+    /// `allocate_and_copy_bytes` は空入力で `(null, 0)` を返す。
+    /// fmt 側が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列として再出力できることを検証する
+    #[test]
+    fn test_json_to_flac_empty_streaminfo_roundtrip() {
+        let json_str = r#"{"kind": "flac", "channelCount": 2, "sampleRate": 44100, "sampleSize": 16, "streaminfoData": []}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_flac(json.value()).expect("空 streaminfoData の flac JSON");
+
+        assert_eq!(sample_entry.streaminfo_size, 0);
+        assert!(sample_entry.streaminfo_data.is_null());
+
+        let out = nojson::json(|f| fmt_json_mp4_sample_entry_flac(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""streaminfoData":[]"#),
+            "空 streaminfoData が [] として再出力されること: {out}"
+        );
+
         mp4_sample_entry_flac_free(&mut sample_entry);
         assert_eq!(sample_entry.streaminfo_size, 0);
         assert!(sample_entry.streaminfo_data.is_null());

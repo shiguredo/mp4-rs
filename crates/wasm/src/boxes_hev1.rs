@@ -337,4 +337,39 @@ mod tests {
         assert!(sample_entry.nalu_data.is_null());
         assert!(sample_entry.nalu_sizes.is_null());
     }
+
+    /// 空 NALU 要素（`units: [[]]`）を parse → JSON 再出力する往復テスト
+    ///
+    /// `allocate_and_copy_array_list` は空要素を `(null, 0)` にする。
+    /// `HevcNaluArrays::fmt` が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
+    /// ガード後も空配列要素として再出力できることを検証する
+    #[test]
+    fn test_json_to_hev1_empty_nalu_element_roundtrip() {
+        let json_str = build_hevc_test_json(
+            "hev1",
+            r#"[
+                {"naluType": 32, "units": [[]]}
+            ]"#,
+        );
+
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_hev1(json.value()).expect("空 NALU 要素の hev1 JSON");
+
+        assert_eq!(sample_entry.nalu_array_count, 1);
+        assert_eq!(unsafe { *sample_entry.nalu_counts }, 1);
+        assert_eq!(unsafe { *sample_entry.nalu_sizes }, 0);
+        assert!(unsafe { (*sample_entry.nalu_data).is_null() });
+
+        let out = nojson::json(|f| fmt_json_mp4_sample_entry_hev1(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""units":[[]]"#),
+            "空 NALU 要素が units:[[]] として再出力されること: {out}"
+        );
+
+        mp4_sample_entry_hev1_free(&mut sample_entry);
+        assert_eq!(sample_entry.nalu_array_count, 0);
+        assert!(sample_entry.nalu_data.is_null());
+        assert!(sample_entry.nalu_sizes.is_null());
+    }
 }

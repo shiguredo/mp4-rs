@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-27
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: Opus 5
 - Branch: feature/change-capi-estimate-moov-box-size-tracks
 - Polished: 2026-07-31
@@ -101,3 +101,48 @@ Rust 側の `src/mux_mp4_file.rs` の `FinalizedBoxes::is_faststart_enabled` メ
 - `crates/c-api/tests/` に見積もり関数のテストが追加されていること
 - CHANGES.md に破壊的変更として追記されていること
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` / `cargo test -p c-api --lib` が通ること
+
+## 解決方法
+
+### C API シグネチャの破壊的置き換え
+
+`crates/c-api/src/mux.rs` の `mp4_estimate_maximum_moov_box_size` を、旧 2 引数固定 `(audio_sample_count, video_sample_count)` から任意トラック数を受ける `(sample_counts: *const u32, track_count: u32) -> u32` に破壊的に置き換えた。Rust 側 `shiguredo_mp4::mux::estimate_maximum_moov_box_size(&[usize])` をそのまま呼び出す形で、内部で `u32 → usize` に変換する。
+
+引数の扱いは以下で確定した:
+
+- `sample_counts` が NULL のときは `track_count` の値によらず `0` を返す（誤用扱い）
+- `sample_counts` が非 NULL で `track_count == 0` のときは空スライスとして扱い、トラックなしの基本オーバーヘッド相当を返す
+
+長さ引数は当初 `sample_counts_len` としていたが、レビュー指摘を反映して c-api 内の他関数の慣行（`sample_count` / `nalu_array_count` など）に合わせて `track_count` に変更した。
+
+### 数値の飽和処理
+
+- `src/mux_mp4_file.rs` の `estimate_maximum_moov_box_size` の加算・乗算を `saturating_*` に置き換え、wasm32 で `usize` が 32bit のときに起きる release wrap を防ぐ
+- C API 側の `as u32` を `u32::try_from(...).unwrap_or(u32::MAX)` に置き換え、見積もり結果が `u32::MAX` を超えたときの silent truncation を防ぐ
+
+### 呼び出し箇所の追従
+
+- `crates/c-api/tests/simple_mux_demux.c` を新シグネチャに書き換えた
+- `crates/wasm/examples/mux.js` を新シグネチャに書き換えた。`mp4_alloc` が align 1 契約であることを踏まえ、`Uint32Array` コンストラクタの `byteOffset` の 4 バイト境界要件を満たさない可能性を避けるため `DataView.setUint32` で書き込む
+- `crates/c-api/src/mux.rs` の doc コメント内使用例（`mp4_estimate_maximum_moov_box_size` と `mp4_file_muxer_set_reserved_moov_box_size`）を新シグネチャに揃えた
+
+### テスト追加
+
+`crates/c-api/tests/test_mux.rs` を新設し、以下 7 件のテストを追加した:
+
+- `estimate_returns_zero_for_null_pointer`: NULL 引数のとき `0` を返すこと
+- `estimate_returns_base_overhead_for_empty_slice`: 空スライスで基本オーバーヘッド相当を返すこと
+- `estimate_matches_formula_for_various_track_counts`: 1〜3 トラックで式と一致すること
+- `estimate_handles_zero_counts_mixed`: 要素値 0 混在で式と一致すること
+- `estimate_saturates_at_u32_max`: `u32::MAX` 要素で `u32::MAX` に飽和すること
+- `estimate_handles_many_tracks`: 16 トラックで式と一致すること
+- `estimate_enables_faststart_for_interleaved_three_tracks`: 実測 3 ケースで faststart が有効になることを実 `Mp4FileMuxer` を回して検証すること
+
+### ドキュメントと CHANGES.md
+
+- `crates/c-api/src/mux.rs` の doc コメントを補強した:
+    - 引数の順序が任意である旨、`uint32_t` の 4 バイト境界要件を明示
+    - `# NOTE` セクション（見積もりが不足しうる場合と、faststart 保証のための保険策）を追加
+    - `# 関連関数` セクションで `mp4_file_muxer_set_reserved_moov_box_size` への逆リンクを追加
+    - cbindgen で `crates/c-api/include/mp4.h` に反映
+- CHANGES.md に `[CHANGE]` エントリを追加した

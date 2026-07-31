@@ -1,6 +1,6 @@
 //! shiguredo_mp4 のエラーをまとめて定義するためのモジュール
 //!
-//! C API で細かくエラー方が分かれていると煩雑なので、ひとつに集約している
+//! C API で細かくエラー型が分かれていると煩雑なので、ひとつに集約している
 use shiguredo_mp4::{
     Error, ErrorKind, aux::SampleTableAccessorError, demux::DemuxError, mux::MuxError,
 };
@@ -47,7 +47,8 @@ impl From<Error> for Mp4Error {
             ErrorKind::InvalidInput => Self::MP4_ERROR_INVALID_INPUT,
             ErrorKind::InvalidData => Self::MP4_ERROR_INVALID_DATA,
             ErrorKind::Unsupported => Self::MP4_ERROR_UNSUPPORTED,
-            _ => Self::MP4_ERROR_OTHER,
+            // Mp4Error にバッファ不足用コードが無く、意味変更しないため OTHER にマップする
+            ErrorKind::InsufficientBuffer => Self::MP4_ERROR_OTHER,
         }
     }
 }
@@ -65,7 +66,6 @@ impl From<DemuxError> for Mp4Error {
             DemuxError::SampleTableError(e) => e.into(),
             DemuxError::InvalidState(_) => Self::MP4_ERROR_INVALID_STATE,
             DemuxError::InputRequired(_) => Self::MP4_ERROR_INPUT_REQUIRED,
-            _ => Self::MP4_ERROR_OTHER,
         }
     }
 }
@@ -82,7 +82,6 @@ impl From<MuxError> for Mp4Error {
             | MuxError::MissingSampleEntry { .. }
             | MuxError::TimescaleMismatch { .. }
             | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
-            _ => Self::MP4_ERROR_OTHER,
         }
     }
 }

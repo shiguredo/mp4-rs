@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: opencode-go glm-5.2
 - Branch: feature/change-remove-non-exhaustive
 - Polished: 2026-07-31
@@ -67,6 +67,9 @@ pub enum DemuxError {
 
 ## 解決方法
 
-1. `src/codec.rs` の `ErrorKind`、`src/mux_mp4_file.rs` の `MuxError`、`src/demux_mp4_file.rs` の `DemuxError` から `#[non_exhaustive]` を削除する
-2. `crates/c-api/src/error.rs` の 3 つの `match` から `_ =>` を削除し、既知 variant をすべて明示する（`ErrorKind::InsufficientBuffer => Self::MP4_ERROR_OTHER` を追加）
-3. `CHANGES.md` の `## develop` に `[CHANGE] ErrorKind / MuxError / DemuxError から #[non_exhaustive] を削除する` を追記する
+`feature/change-remove-non-exhaustive` ブランチで対応した。
+
+1. `src/codec.rs` の `ErrorKind`、`src/mux_mp4_file.rs` の `MuxError`、`src/demux_mp4_file.rs` の `DemuxError` から `#[non_exhaustive]` を削除した
+2. `crates/c-api/src/error.rs` の `From<Error>` / `From<DemuxError>` / `From<MuxError>` から `_ =>` を削除し、既知 variant をすべて明示した（`ErrorKind::InsufficientBuffer => Self::MP4_ERROR_OTHER` を追加）
+3. `CHANGES.md` の `## develop` に `[CHANGE]` エントリを追記し、利用側影響と C API マッピング不変を記載した
+4. `cargo test` / `cargo clippy` が通ることを確認した

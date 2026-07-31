@@ -64,7 +64,8 @@ int main(void) {
     }
 
     // faststart用に moov ボックスサイズを予約
-    uint32_t estimated_moov_size = mp4_estimate_maximum_moov_box_size(0, NUM_VIDEO_SAMPLES);
+    uint32_t sample_counts[] = {NUM_VIDEO_SAMPLES};
+    uint32_t estimated_moov_size = mp4_estimate_maximum_moov_box_size(sample_counts, 1);
     mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_moov_size);
 
     // マルチプレックス処理を初期化

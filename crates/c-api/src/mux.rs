@@ -284,42 +284,42 @@ impl Mp4FileMuxer {
 ///
 /// # 引数
 ///
-/// - `audio_sample_count`: 音声トラック内の予想サンプル数
-/// - `video_sample_count`: 映像トラック内の予想サンプル数
+/// - `sample_counts`: トラックごとの予想サンプル数の配列
+///   - NULL の場合は `sample_counts_len` の値によらず `0` を返す（誤用扱い）
+/// - `sample_counts_len`: `sample_counts` の要素数
+///   - `sample_counts` が NULL でなく `0` の場合は空スライスとして扱い、
+///     トラックなしの基本オーバーヘッド相当の値を返す
 ///
 /// # 戻り値
 ///
 /// moov ボックスに必要な最大バイト数を返す
 ///
-/// # NOTE
-///
-/// この関数は音声・映像の 2 トラック分しか見積もれない。
-/// 字幕トラックを含める場合や、サンプルエントリーが大きい場合
-/// （`stpp` の名前空間文字列が長い場合など）、
-/// サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合には
-/// 見積もりが不足することがある。
-/// その場合は faststart が無効になり moov ボックスがファイル末尾に配置されるだけで、
-/// 生成される MP4 ファイル自体は正しい。
-/// 見積もりが不足しても呼び出し側にはエラーとして通知されないため、
-/// faststart を確実に有効にしたい場合は余裕を持たせた値を
-/// `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定すること
-///
 /// # 使用例
 ///
 /// ```c
-/// // 音声 1000 サンプル、映像 3000 フレームの場合
-/// uint32_t required_size = mp4_estimate_maximum_moov_box_size(1000, 3000);
+/// // 音声 1000 サンプル、映像 3000 フレーム、字幕 100 サンプルの場合
+/// uint32_t sample_counts[] = {1000, 3000, 100};
+/// uint32_t required_size = mp4_estimate_maximum_moov_box_size(
+///     sample_counts, 3);
 /// mp4_file_muxer_set_reserved_moov_box_size(muxer, required_size);
 /// ```
 #[unsafe(no_mangle)]
-pub extern "C" fn mp4_estimate_maximum_moov_box_size(
-    audio_sample_count: u32,
-    video_sample_count: u32,
+pub unsafe extern "C" fn mp4_estimate_maximum_moov_box_size(
+    sample_counts: *const u32,
+    sample_counts_len: u32,
 ) -> u32 {
-    shiguredo_mp4::mux::estimate_maximum_moov_box_size(&[
-        audio_sample_count as usize,
-        video_sample_count as usize,
-    ]) as u32
+    // NULL 判定を長さ判定より先に行い、NULL + len > 0 による UB を避ける
+    if sample_counts.is_null() {
+        return 0;
+    }
+
+    let counts: Vec<usize> =
+        unsafe { std::slice::from_raw_parts(sample_counts, sample_counts_len as usize) }
+            .iter()
+            .map(|&count| count as usize)
+            .collect();
+
+    shiguredo_mp4::mux::estimate_maximum_moov_box_size(&counts) as u32
 }
 
 /// 新しい `Mp4FileMuxer` インスタンスを作成して、それへのポインタを返す
@@ -497,7 +497,9 @@ pub unsafe extern "C" fn mp4_file_muxer_get_last_error(
 /// Mp4FileMuxer *muxer = mp4_file_muxer_new();
 ///
 /// // 見積もり値を使用して moov ボックスサイズを設定
-/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(100, 3000);
+/// uint32_t sample_counts[] = {100, 3000};
+/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+///     sample_counts, 2);
 /// mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
 ///
 /// // マルチプレックス処理を初期化

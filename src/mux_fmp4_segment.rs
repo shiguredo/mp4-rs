@@ -381,7 +381,8 @@ impl Fmp4SegmentMuxer {
             .map(|track| track.payload_end)
             .max()
             .ok_or(MuxError::EmptySamples)?;
-        // BoxHeader::MIN_SIZE + payload が u64 を超えると不正なボックスサイズになるため検査する
+        // 現実のメディアで payload が u64::MAX 近傍になることはまずない。
+        // それでも病理的な data_size なら公開 API から到達し得るため、防御的に検査する。
         let mdat_box_size_value = (BoxHeader::MIN_SIZE as u64)
             .checked_add(mdat_payload_size)
             .ok_or(MuxError::Overflow)?;

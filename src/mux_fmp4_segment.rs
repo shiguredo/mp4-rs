@@ -318,7 +318,7 @@ impl Fmp4SegmentMuxer {
                 referenced_size,
                 subsegment_duration: subsegment_duration_u32,
                 starts_with_sap: sap_at_ept,
-                sap_type: if sap_at_ept { 1 } else { 0 },
+                sap_type: u8::from(sap_at_ept),
                 sap_delta_time: 0,
             }],
         };

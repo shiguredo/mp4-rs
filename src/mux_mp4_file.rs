@@ -1037,7 +1037,7 @@ impl Mp4FileMuxer {
                         .iter()
                         .position(|entry| entry == &c.sample_entry)
                         .expect("sample_entry should exist in sample_entries");
-                    // 1-based の sample_description_index へ変換する（オーバーフローは拒否する）
+                    // 0-based の position を 1-based の sample_description_index へ変換する
                     let idx = u32::try_from(idx).map_err(|_| {
                         MuxError::EncodeError(Error::invalid_data(
                             "sample description index exceeds u32::MAX",
@@ -1085,7 +1085,7 @@ impl Mp4FileMuxer {
             None
         } else {
             Some(StssBox {
-                // キーフレームだけを 1-based の sample_number に変換する
+                // enumerate は filter 前のグローバル 0-based 番号を保持したまま 1-based へ変換する
                 sample_numbers: chunks
                     .iter()
                     .flat_map(|c| c.samples.iter())
@@ -1721,11 +1721,11 @@ mod tests {
         );
     }
 
-    /// `build_stbl_box` が依存する 1-based 変換の境界で `checked_add` が失敗することを検証する
+    /// `build_stbl_box` が使う 1-based 変換の算術境界を固定する
     ///
     /// `u32::MAX` 個のチャンクを実際に生成するのは非現実的なため、
-    /// `NonZeroU32::MIN.checked_add(u32::MAX)` が `None` になることを直接確認する。
-    /// この境界で Overflow を返すことが、旧 `saturating_add` の暗黙飽和を防ぐ根拠になる。
+    /// 実装が依存する `NonZeroU32::MIN.checked_add` の戻り値だけを直接確認する。
+    /// `finalize()` 経由で `MuxError::Overflow` が返ることまでは検証しない。
     #[test]
     fn test_nonzero_u32_min_checked_add_overflows_at_u32_max() {
         assert!(
@@ -1740,7 +1740,7 @@ mod tests {
         );
     }
 
-    /// `build_stbl_box` が複数チャンクと混在キーフレームで正しい 1-based 値を出すことを検証する
+    /// `finalize` 経路で stsc の first_chunk と stss の sample_numbers が 1-based になることを検証する
     #[test]
     fn test_build_stbl_box_one_based_indices_for_chunks_and_keyframes() {
         let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");

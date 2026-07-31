@@ -26,13 +26,13 @@ const PER_TRACK_OVERHEAD: u32 = 1024;
 /// サンプルあたりの概算バイト数
 const BYTES_PER_SAMPLE: u32 = 16;
 
-/// 指定解像度の `SampleEntry::Avc1` を組み立てる
-fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
+/// テスト用の最小限の `SampleEntry::Avc1` を組み立てる
+fn create_avc1_sample_entry() -> SampleEntry {
     SampleEntry::Avc1(Avc1Box {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-            width,
-            height,
+            width: 1920,
+            height: 1080,
             horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
             vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
             frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
@@ -85,11 +85,21 @@ fn create_stpp_sample_entry() -> SampleEntry {
     })
 }
 
-/// 見積もり式と同じ計算結果を返す（テスト期待値用）
+/// 見積もり式と同じ計算結果を返す（テスト期待値用）。
+///
+/// 中間計算を `u64` で行い、`u32` に収まらない場合は `u32::MAX` で飽和させる。
+/// C API 実装側と揃った saturating 挙動を持たせることで、
+/// 極端に大きい入力を渡す境界値テストでも期待値が overflow で壊れないようにする。
 fn expected_estimate(sample_counts: &[u32]) -> u32 {
-    BASE_MOOV_OVERHEAD
-        + (sample_counts.len() as u32) * PER_TRACK_OVERHEAD
-        + sample_counts.iter().sum::<u32>() * BYTES_PER_SAMPLE
+    let track_overhead = (sample_counts.len() as u64).saturating_mul(PER_TRACK_OVERHEAD as u64);
+    let sample_overhead = sample_counts
+        .iter()
+        .fold(0u64, |acc, &n| acc.saturating_add(n as u64))
+        .saturating_mul(BYTES_PER_SAMPLE as u64);
+    let estimate = (BASE_MOOV_OVERHEAD as u64)
+        .saturating_add(track_overhead)
+        .saturating_add(sample_overhead);
+    u32::try_from(estimate).unwrap_or(u32::MAX)
 }
 
 /// `sample_counts` が NULL のときは長さによらず `0` を返す
@@ -133,23 +143,39 @@ fn estimate_matches_formula_for_various_track_counts() {
     assert_eq!(result, expected_estimate(&three_tracks));
 }
 
-/// 実測ケースの 3 トラック見積もり値が期待どおりであること
+/// 要素値 0 が混在するケース（`sample_counts` が非 NULL かつ一部要素が 0）
+///
+/// 空スライスとは別経路（`from_raw_parts` の外側ループに入る）を通ることを確認する。
 #[test]
-fn estimate_matches_measured_three_track_cases() {
-    // v=10 a=10 s=100 → 5504
-    let counts = [10u32, 10, 100];
-    let result = unsafe { mp4_estimate_maximum_moov_box_size(counts.as_ptr(), 3) };
-    assert_eq!(result, 5504);
+fn estimate_handles_zero_counts_mixed() {
+    let counts = [0u32, 10, 0, 100, 0];
+    let result = unsafe { mp4_estimate_maximum_moov_box_size(counts.as_ptr(), 5) };
+    // 期待値: 512 + 5*1024 + 110*16 = 7392
+    assert_eq!(result, expected_estimate(&counts));
+}
 
-    // v=50 a=50 s=300 → 9984
-    let counts = [50u32, 50, 300];
-    let result = unsafe { mp4_estimate_maximum_moov_box_size(counts.as_ptr(), 3) };
-    assert_eq!(result, 9984);
+/// 単一要素が `u32::MAX` のとき、u32 に収まらない見積もりは `u32::MAX` に飽和すること
+///
+/// `sum * BYTES_PER_SAMPLE = u32::MAX * 16` が `u32` を大きく超えるため
+/// C API 側の saturating キャストが働くことを確認する。
+#[test]
+fn estimate_saturates_at_u32_max() {
+    let counts = [u32::MAX];
+    let result = unsafe { mp4_estimate_maximum_moov_box_size(counts.as_ptr(), 1) };
+    assert_eq!(
+        result,
+        u32::MAX,
+        "u32 に収まらない見積もりは u32::MAX に飽和すること"
+    );
+}
 
-    // v=1 a=1 s=1000 → 19616
-    let counts = [1u32, 1, 1000];
-    let result = unsafe { mp4_estimate_maximum_moov_box_size(counts.as_ptr(), 3) };
-    assert_eq!(result, 19616);
+/// 大量トラック（16 個）でも式どおりに見積もれること
+#[test]
+fn estimate_handles_many_tracks() {
+    let counts = [1000u32; 16];
+    let result = unsafe { mp4_estimate_maximum_moov_box_size(counts.as_ptr(), 16) };
+    // 期待値: 512 + 16*1024 + 16000*16 = 272896
+    assert_eq!(result, expected_estimate(&counts));
 }
 
 /// 映像・音声・字幕を交互に追加した構成で、3 トラック見積もりにより faststart が有効になること
@@ -176,7 +202,7 @@ fn estimate_enables_faststart_for_interleaved_three_tracks() {
 
         // `Mp4FileMuxer::append_sample` は最初のサンプルにだけ `sample_entry` を要求し、
         // 以降は `None` を渡す慣用に従うため、`Option::take` で 2 回目以降は自動的に `None` になるようにする
-        let mut video_entry = Some(create_avc1_sample_entry(1920, 1080));
+        let mut video_entry = Some(create_avc1_sample_entry());
         let mut audio_entry = Some(create_opus_sample_entry());
         let mut subtitle_entry = Some(create_stpp_sample_entry());
         let mut remaining_video = video_count;

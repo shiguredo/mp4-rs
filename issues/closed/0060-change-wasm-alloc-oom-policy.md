@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-31
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Branch: feature/change-wasm-alloc-oom-policy
 - Polished: 2026-07-31
 
@@ -86,6 +86,24 @@ abort 後も空入力は `(null, 0)` のままなので、空要素判定の `si
 
 - 「wasm の OOM 方針を abort に統一（`mp4_alloc` 失敗時は `handle_alloc_error` で abort）」の主旨で 1 エントリ追加する
 - `mp4_alloc` の契約変更（サイズ非 0 では null を返さなくなる）に触れる
+
+### 7. レビュー時に加わった整理
+
+差分レビューを通じて、abort 方針の一貫性向上に直結する追加対応を反映する。
+
+- doc / コメント文言の精緻化:
+  - `mp4_alloc` doc の「必ず有効なポインタを返す」と abort の字面矛盾を解消する
+  - `HevcSampleEntryFields` doc の二重表現と浮いた「(null, 0) 契約」記述を整理する
+  - `allocate_and_copy_aligned` の abort コメントを「同じ方針で」に修正する
+  - `allocate_and_copy_bytes` doc の「呼び出し側で null を検査する必要はない」の字面矛盾を解消する
+  - fmt ガードコメント 6 か所（`HevcNaluArrays::fmt` / `NaluList::fmt` / `FtabList::fmt` / av01 / flac / mp4a）の因果順を「`from_raw_parts` は size 0 でも非 null ポインタを要求する」に修正する
+  - `CHANGES.md` の表現を実装（`allocate_and_copy_bytes` は撤去 / `allocate_and_copy_aligned` は `handle_alloc_error` に置換）に合わせて厳密化する
+- 冗長ガードの撤去:
+  - `raw_bytes_as_str`（`crates/wasm/src/boxes.rs`）の `data.is_null()` 分岐を撤去し、fmt 側 6 か所と対称化する
+  - `free_hevc_sample_entry_fields` の `if !nalu_data.is_null()` ガードを撤去し、`allocate_and_copy_array_list` による「data と sizes は同時 null／同時非 null」invariant をコメントに明記する
+  - `mp4_sample_entry_*_free`（av01 / flac / mp4a / stpp / wvtt）の `!is_null() && size > 0` 二重ガードを撤去し、`mp4_free` の null / size 0 に対する noop 挙動に委ねる
+- 回帰テストの追加:
+  - `boxes_hev1.rs` に `test_json_to_hev1_free_all_units_empty` を追加する。`naluArrays` に 1 要素・全 units 空という中間状態（`nalu_types` / `nalu_counts` 非 null かつ `nalu_data` / `nalu_sizes` null）で `free_array_list(null, null, 0)` を無条件に呼ぶ経路を回帰保護する
 
 ## 完了条件
 

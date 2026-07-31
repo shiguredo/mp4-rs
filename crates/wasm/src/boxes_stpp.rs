@@ -79,33 +79,26 @@ pub fn parse_json_mp4_sample_entry_stpp(
 ///
 /// [`parse_json_mp4_sample_entry_stpp()`] で割り当てられたバッファを解放する
 pub fn mp4_sample_entry_stpp_free(entry: &mut Mp4SampleEntryStpp) {
-    if !entry.namespace_data.is_null() && entry.namespace_size > 0 {
-        unsafe {
-            crate::mp4_free(entry.namespace_data.cast_mut(), entry.namespace_size);
-        }
-        entry.namespace_data = std::ptr::null();
-        entry.namespace_size = 0;
+    // 3 本の文字列フィールドは `allocate_and_copy_bytes` の契約により
+    // `(null, 0)` か `(非 null, 非 0)` の対になる。`mp4_free` は
+    // null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(entry.namespace_data.cast_mut(), entry.namespace_size);
+        crate::mp4_free(
+            entry.schema_location_data.cast_mut(),
+            entry.schema_location_size,
+        );
+        crate::mp4_free(
+            entry.auxiliary_mime_types_data.cast_mut(),
+            entry.auxiliary_mime_types_size,
+        );
     }
-    if !entry.schema_location_data.is_null() && entry.schema_location_size > 0 {
-        unsafe {
-            crate::mp4_free(
-                entry.schema_location_data.cast_mut(),
-                entry.schema_location_size,
-            );
-        }
-        entry.schema_location_data = std::ptr::null();
-        entry.schema_location_size = 0;
-    }
-    if !entry.auxiliary_mime_types_data.is_null() && entry.auxiliary_mime_types_size > 0 {
-        unsafe {
-            crate::mp4_free(
-                entry.auxiliary_mime_types_data.cast_mut(),
-                entry.auxiliary_mime_types_size,
-            );
-        }
-        entry.auxiliary_mime_types_data = std::ptr::null();
-        entry.auxiliary_mime_types_size = 0;
-    }
+    entry.namespace_data = std::ptr::null();
+    entry.namespace_size = 0;
+    entry.schema_location_data = std::ptr::null();
+    entry.schema_location_size = 0;
+    entry.auxiliary_mime_types_data = std::ptr::null();
+    entry.auxiliary_mime_types_size = 0;
 }
 
 #[cfg(test)]

@@ -11,6 +11,10 @@
 
 ## develop
 
+- [CHANGE] wasm の OOM 方針を abort に統一する（`mp4_alloc` 失敗時は `handle_alloc_error` で abort）
+  - `mp4_alloc` はサイズ非 0 では null を返さなくなり、確保失敗時はプロセスを abort する
+  - `allocate_and_copy_bytes` から OOM 時 null 返却分岐を撤去し、`allocate_and_copy_aligned` は `handle_alloc_error` に置き換える
+  - @sile
 - [CHANGE] `MuxError` に `NoSyncSamples` を追加し、同期サンプルを持たない映像トラックを `Mp4FileMuxer` が拒否するようにする
   - 全サンプルが `keyframe = false` の映像トラックは `finalize()` 時に `MuxError::NoSyncSamples` を返す
   - これまではエントリー 0 個の `stss`（同期サンプルなし）を出力していた

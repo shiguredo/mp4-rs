@@ -15,20 +15,19 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
         f.member("bufferSizeDb", data.buffer_size_db)?;
         f.member("maxBitrate", data.max_bitrate)?;
         f.member("avgBitrate", data.avg_bitrate)?;
-        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
-        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
-        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
-        let dec_specific_info =
-            if data.dec_specific_info_size == 0 || data.dec_specific_info.is_null() {
-                &[][..]
-            } else {
-                unsafe {
-                    std::slice::from_raw_parts(
-                        data.dec_specific_info,
-                        data.dec_specific_info_size as usize,
-                    )
-                }
-            };
+        // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
+        // `from_raw_parts` は size 0 でも非 null ポインタを要求するため、
+        // size == 0 の枝を先に落として空配列として出力する
+        let dec_specific_info = if data.dec_specific_info_size == 0 {
+            &[][..]
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(
+                    data.dec_specific_info,
+                    data.dec_specific_info_size as usize,
+                )
+            }
+        };
         f.member("decSpecificInfo", dec_specific_info)
     })
 }
@@ -71,16 +70,16 @@ pub fn parse_json_mp4_sample_entry_mp4a(
 ///
 /// `parse_json_mp4_sample_entry_mp4a()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_mp4a_free(entry: &mut Mp4SampleEntryMp4a) {
-    if !entry.dec_specific_info.is_null() && entry.dec_specific_info_size > 0 {
-        unsafe {
-            crate::mp4_free(
-                entry.dec_specific_info.cast_mut(),
-                entry.dec_specific_info_size,
-            );
-        }
-        entry.dec_specific_info = std::ptr::null();
-        entry.dec_specific_info_size = 0;
+    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
+    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(
+            entry.dec_specific_info.cast_mut(),
+            entry.dec_specific_info_size,
+        );
     }
+    entry.dec_specific_info = std::ptr::null();
+    entry.dec_specific_info_size = 0;
 }
 
 #[cfg(test)]

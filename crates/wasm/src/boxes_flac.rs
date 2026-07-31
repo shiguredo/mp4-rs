@@ -12,10 +12,10 @@ pub fn fmt_json_mp4_sample_entry_flac(
         f.member("channelCount", data.channel_count)?;
         f.member("sampleRate", data.sample_rate)?;
         f.member("sampleSize", data.sample_size)?;
-        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
-        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
-        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
-        let streaminfo = if data.streaminfo_size == 0 || data.streaminfo_data.is_null() {
+        // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
+        // `from_raw_parts` は size 0 でも非 null ポインタを要求するため、
+        // size == 0 の枝を先に落として空配列として出力する
+        let streaminfo = if data.streaminfo_size == 0 {
             &[][..]
         } else {
             unsafe {
@@ -57,13 +57,13 @@ pub fn parse_json_mp4_sample_entry_flac(
 ///
 /// `parse_json_mp4_sample_entry_flac()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_flac_free(entry: &mut Mp4SampleEntryFlac) {
-    if !entry.streaminfo_data.is_null() && entry.streaminfo_size > 0 {
-        unsafe {
-            crate::mp4_free(entry.streaminfo_data.cast_mut(), entry.streaminfo_size);
-        }
-        entry.streaminfo_data = std::ptr::null();
-        entry.streaminfo_size = 0;
+    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
+    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(entry.streaminfo_data.cast_mut(), entry.streaminfo_size);
     }
+    entry.streaminfo_data = std::ptr::null();
+    entry.streaminfo_size = 0;
 }
 
 #[cfg(test)]

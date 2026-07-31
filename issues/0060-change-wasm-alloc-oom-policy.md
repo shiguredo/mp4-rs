@@ -26,32 +26,63 @@ wasm 全体で OOM（`mp4_alloc` 失敗）の扱いを **abort に寄せるか�
 
 ## 設計方針
 
-次のいずれか **1 つ** に wasm 全体を揃える。パース経路だけ `Err` にする部分対応は採らない。
+wasm 全体を **abort に寄せる** で確定する（案 A）。パース経路だけ `Err` にする部分対応は採らない。
 
-### 案 A: abort に寄せる
+### abort を採る理由
 
-- `mp4_alloc` 失敗時に panic / `handle_alloc_error` 相当で落とす
-- 呼び出し側の null チェックや「失敗を空データとして抱える」経路を整理する
-- 通常の Rust の OOM 方針に近い
+- **標準 Rust の慣行と一致する**。`Vec` / `Box` などは OOM で abort する。`parse_json_mp4_sample_entry_*` は内部で `Vec<Vec<u8>>` を構築するため、そもそも `mp4_alloc` を `Result` 化しても `Vec` 経路の OOM は abort する。「全 OOM を `Result` で観測可能にする」は原理的に達成できない
+- **コードが単純化される**。`mp4_alloc` を `handle_alloc_error` で落とせば、`allocate_and_copy_bytes` / `allocate_and_copy_aligned` の `null` 返却分岐、`allocate_and_copy_array_list` の「非空要素側の確保失敗で `(null, 非ゼロ)` が並ぶ」非常態、closed issue 0034 で入れた `HevcNaluArrays::fmt` の null ガードや `mp4_sample_entry_hevc_fields_free` の「`nalu_counts == null && nalu_data != null`」経路の脚注がまるごと不要になる
+- **JS 側の観測性は失われない**。wasm での abort は trap になり、JS 側では `RuntimeError` として throw される。「壊れたポインタを載せた `Ok`」を silent に返すより明確な失敗になる
+- **OOM 頻度が低いため `Err` 回復要件が弱い**。優先度根拠で確認済み
 
-### 案 B: `Result` で一貫伝播する
+### `Result` 伝播（案 B）を採らない理由
 
-- `allocate_and_copy_*` および `parse_json_*` 等の確保経路を失敗時 `Err` にする
-- 部分確保後の巻き戻し（free）を設計する
-- JS / 呼び出し側が観測できる失敗にする
-
-実装着手前に A / B を確定する。確定後の変更範囲は `mp4_alloc` 利用者を grep して洗い出す。
-
-## 完了条件
-
-- OOM 方針が abort または `Result` 伝播のどちらかに文書化・実装として確定していること
-- 方針に反する「null を抱えたまま `Ok`」経路が、対象とした wasm 確保経路から除去されていること（または abort 方針なら失敗時に確実に落ちること）
-- 既存のテストおよび `cargo clippy` が通ること
-- `CHANGES.md` に方針に応じたエントリがあること
+- `Vec` などの標準 API 経路の OOM が abort する以上、部分的 `Err` 化しか達成できず「一貫伝播」の看板と実態が乖離する
+- `allocate_and_copy_array_list` の途中失敗ロールバック（先行確保分の `mp4_free`）を新規で書く必要があり、追加 unsafe と invariant を持ち込む
+- API 破壊が大きい（`allocate_and_copy_*` / `parse_json_*` の呼び出し 70 箇所前後を全修正）
 
 ## 解決方法
 
-（方針確定後に記載する）
+### 1. `mp4_alloc` を abort 側に寄せる
+
+- `crates/wasm/src/lib.rs` の `mp4_alloc` を、`std::alloc::alloc` が null を返したときに `std::alloc::handle_alloc_error(layout)` を呼び出すよう変更する
+- `size == 0` は従来通り null を返す（「空入力は null」の呼び出し規約は維持）
+- doc コメントの契約を「サイズ 0 以外では必ず有効ポインタを返す」に更新する
+
+### 2. `allocate_and_copy_*` から OOM 分岐を撤去する
+
+- `allocate_and_copy_bytes`（`crates/wasm/src/boxes.rs`）: `mp4_alloc` 直後の `is_null()` 分岐を削除する。「空入力 → `(null, 0)`」は残す
+- `allocate_and_copy_aligned`（同）: `std::alloc::alloc` を直接呼ぶ経路のため、null 分岐を `handle_alloc_error(layout)` に置き換える。「空入力 → `(null, 0)`」は残す
+- `allocate_and_copy_array_list`（同）: 上記変更により部分失敗の非常態自体が消えるので、追加のロジック変更は不要。コメントを更新する
+
+### 3. closed issue 0034 由来の防御的ガード・脚注を整理する
+
+- `HevcNaluArrays::fmt`（`crates/wasm/src/boxes.rs`）の `nalu_size == 0 || nalu_ptr.is_null()` ガードから `nalu_ptr.is_null()` を落とし、`nalu_size == 0` のみで空要素判定にする。コメントの「`(null, 非ゼロ)` も残り得る」記述を削除する
+- `HevcSampleEntryFields` の doc コメントにある「失敗時に `(null, 0)` を返す前提に依存」の記述を「abort 前提」に更新する
+- `mp4_sample_entry_hevc_fields_free` の「`nalu_counts == null && nalu_data != null` は非常態」コメントを削除する（発生し得なくなるため）
+
+### 4. フリー側 API の null 安全性は据え置く
+
+- `free_array_list` の「要素 ptr が null なら skip」など、空入力用途で意味を持つガードは維持する
+- `mp4_free` は JS 側から null が渡り得るため null 安全のまま
+
+### 5. テスト
+
+- 既存の空入力 null テスト（`test_allocate_and_copy_u16_array_empty_returns_null` など）は据え置く
+- OOM abort を単体テストで再現するのは現実的でないため、新規テストは追加しない
+- 既存テスト・`cargo clippy` が通ることを確認する
+
+### 6. CHANGES.md
+
+- 「wasm の OOM 方針を abort に統一（`mp4_alloc` 失敗時は `handle_alloc_error` で abort）」の主旨で 1 エントリ追加する
+- `mp4_alloc` の契約変更（サイズ非 0 では null を返さなくなる）に触れる
+
+## 完了条件
+
+- `mp4_alloc` および `allocate_and_copy_*` の内部 OOM 分岐が撤去され、失敗時に `handle_alloc_error` で abort することがコードで確認できる
+- closed issue 0034 で入れた「壊れたポインタでも UB にならない」ガードのうち、abort 前提で不要になった分が整理されている
+- 既存のテストおよび `cargo clippy` が通ること
+- `CHANGES.md` に方針変更のエントリがあること
 
 ## 関連
 

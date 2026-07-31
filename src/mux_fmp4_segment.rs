@@ -242,8 +242,9 @@ impl Fmp4SegmentMuxer {
     ///
     /// `sidx` の `starts_with_sap` / `sap_type` は、EPT を採ったサンプル（参照トラックで
     /// PTS が最小のサンプル。同値時は samples[] 内で先に出現したもの）の `keyframe` を基準にする。
-    /// `sap_type` は `keyframe` なら `1`、さもなければ `0` とする近似であり、
-    /// ISO/IEC 14496-12 が定義する SAP type 1〜6 の厳密判定は行わない。
+    /// `sap_type` はキーフレームを一律 `1`（SAP type 1 相当）、非キーフレームを `0` として扱う近似であり、
+    /// ISO/IEC 14496-12 が定義する SAP type 1〜6 の区別（open GoP の I フレームは本来 type 3 相当 等）は
+    /// 行わない。
     ///
     /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
@@ -271,7 +272,6 @@ impl Fmp4SegmentMuxer {
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
-        // EPT を採ったサンプルの keyframe を starts_with_sap に使う。
         // ISO/IEC 14496-12 8.16.3.3 の starts_with_SAP は「参照される subsegment が
         // SAP から始まる」の意味であり、EPT に対応するアクセスユニットが SAP かどうかが問われる。
         let (earliest_presentation_time, sap_at_ept) =
@@ -318,8 +318,6 @@ impl Fmp4SegmentMuxer {
                 referenced_size,
                 subsegment_duration: subsegment_duration_u32,
                 starts_with_sap: sap_at_ept,
-                // sap_type は keyframe → 1 / 非 keyframe → 0 の近似。
-                // SAP type 1〜6 の厳密判定（open GoP 等）は行わない。
                 sap_type: if sap_at_ept { 1 } else { 0 },
                 sap_delta_time: 0,
             }],
@@ -855,8 +853,7 @@ fn compute_earliest_presentation_time(
     decode_time: u64,
 ) -> Result<(u64, bool), MuxError> {
     let mut dts = decode_time;
-    // (min_pts, keyframe)。PTS 同値時は先出現の keyframe を残すため、
-    // 更新条件は厳密減少 (`pts < current`) に限定する。
+    // (min_pts, EPT サンプルの keyframe) を追跡する
     let mut min_pts: Option<(i128, bool)> = None;
 
     for sample in samples

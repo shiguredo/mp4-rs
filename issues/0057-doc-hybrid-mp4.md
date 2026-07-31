@@ -2,9 +2,10 @@
 
 - Priority: Medium
 - Created: 2026-07-28
+- Completed: YYYY-MM-DD
 - Model: Opus 4.7
 - Branch: feature/add-hybrid-mp4-doc
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-07-31
 - Reporter: @tohta
 
 ## 目的
@@ -29,10 +30,10 @@ Medium。既存の API (`Mp4FileMuxer::advance_position()`) は 2026.3.0 で追�
 
 ## 現状
 
-- `src/mux_mp4_file.rs:520` の `Mp4FileMuxer::advance_position()` に、Hybrid MP4 を意図した用途である旨のコメントがある
+- `src/mux_mp4_file.rs` の `Mp4FileMuxer::advance_position()` に、Hybrid MP4 を意図した用途である旨の doc コメントがある
 - 同等の API が C API にも公開されている
-  - `crates/c-api/src/mux.rs:827`（`mp4_file_muxer_advance_position()`）
-  - `crates/c-api/include/mp4.h:2430`
+  - `crates/c-api/src/mux.rs` の `mp4_file_muxer_advance_position()`
+  - `crates/c-api/include/mp4.h` の `mp4_file_muxer_advance_position()` 宣言
 - `CHANGES.md` の 2026.3.0 に `[ADD] Mp4FileMuxer::advance_position() メソッドを追加する` のエントリがあり、Hybrid MP4 対応が動機であることが記載されている
 - 一方、`docs/` 配下には Hybrid MP4 の説明が無く、既存の補足ドキュメントは `docs/subtitle.md` のみ
 - `src/docs.rs` は `docs/*.md` を `include_str!` で取り込み `pub mod` として公開する index になっており、Rust コード例は doctest で検証される仕組み
@@ -42,9 +43,9 @@ Medium。既存の API (`Mp4FileMuxer::advance_position()`) は 2026.3.0 で追�
 - `docs/hybrid_mp4.md` を新規追加する
 - `src/docs.rs` に `pub mod hybrid_mp4 {}` を追加し、`#[doc = include_str!("../docs/hybrid_mp4.md")]` で取り込む
   - 取り込み方法は `subtitle.md` と同じ
-  - Rust コード例は doctest として検証されるため、`cargo test --doc` が通る形で書く
+- **Rust コード例の書き方は `docs/subtitle.md` に揃える**。すなわち、コード例本体は関数定義だけを書き、その関数を呼び出さない形にする（`docs/subtitle.md` の `fn mux_subtitle() -> Result<Vec<u8>, MuxError>` の流儀）。doctest はデフォルトの `fn main() {}` に包まれ、コンパイルは検証されるが実行はされない。これにより「moof の実バイトを組み立てないまま骨格を書ける」という要件と「`cargo test --doc` が通る」という要件を同時に満たせる。`no_run` / `ignore` 属性は使わない
 - **粒度は `docs/subtitle.md` に揃えない**。subtitle.md は本 crate 内で完結する 3 形式（stpp / wvtt / tx3g）の詳細説明で情報密度が高いが、Hybrid MP4 に関して本 crate が実際に担当する処理は「位置管理・チャンク切り替え」に留まるため、書ける内容は subtitle.md より本質的に少ない。無理に埋めて情報を薄めない
-- 骨格コードは「動くコード」ではなく **呼び出し順序と責任分界を示す最小の doctest** に留める。moof の構築、`trun.data_offset` の計算、mdat ヘッダの書き出しといった詳細は本 crate の範囲外なので、これらは hisui 実装への外部リンクに委譲する
+- 骨格コードは呼び出し順序と責任分界を示す最小の関数定義に留める。moof の構築、`trun.data_offset` の計算、mdat ヘッダの書き出しといった詳細は本 crate の範囲外なので、これらは hisui 実装への外部リンクに委譲する
 - C API の呼び出し例は Rust の doctest では扱えないので、文中で C API 側の対応関数名（`mp4_file_muxer_advance_position()`）を参照するだけに留める
 - OBS のブログ記事および hisui の実装への参考リンクを本文末尾に置く
 
@@ -53,7 +54,7 @@ Medium。既存の API (`Mp4FileMuxer::advance_position()`) は 2026.3.0 で追�
 - Hybrid MP4 とは（形式の定義。上位実装からの参照先になる部分。1〜2 段落で簡潔に）
 - 標準 MP4 / fMP4 との違い（moof/mdat 構造を moov の後段に併存させる、といった構造レベルの差を短く）
 - 本 crate の対応方針と責任分界（**中心となる節**。crate 側 = 位置管理・チャンク切り替え・`data_offset` 整合検査 / 利用側 = moof 構築・`trun.data_offset` 計算・mdat ヘッダ書き出し・書き込み位置の同期、を明示）
-- 書き出しの呼び出し順序（`initial_boxes_bytes()` → 利用側の書き込み → `append_sample()` / `advance_position()` → `finalize()` の骨格を doctest で示す。moof 内部の詳細は省略）
+- 書き出しの呼び出し順序（`Mp4FileMuxer::new()` → `initial_boxes_bytes()` → 利用側の書き込み → `append_sample()` / `advance_position()` → `finalize()` → `FinalizedBoxes::offset_and_bytes_pairs()` による後書き、の骨格を doctest で示す。`finalize()` 後の後書きは crate の使用フロー（`src/mux_mp4_file.rs` のクレートレベル doc 例）に揃える。moof 内部の詳細は省略）
 - 注意事項（`advance_position()` を呼んだ直後の次サンプルは強制的に新規チャンク開始になる、`data_offset` は crate 内部の書き込み位置と一致させる必要がある、など既存 API doc の制約を利用者視点で整理）
 - 参考リンク
 
@@ -71,7 +72,8 @@ Medium。既存の API (`Mp4FileMuxer::advance_position()`) は 2026.3.0 で追�
 
 - `docs/hybrid_mp4.md` を新規作成する
   - 「設計方針」節の想定構成を叩き台にしつつ、OBS ブログと hisui `hybrid_writer.rs` を読んで正確な説明を書く
-  - Rust コード例は `Mp4FileMuxer::new()` → `initial_boxes_bytes()` → サンプル書き出しループ（`advance_position()` を挟みつつ `append_sample()`）→ `finalize()` の骨格を示す
+  - Rust コード例は `Mp4FileMuxer::new()` → `initial_boxes_bytes()` → サンプル書き出しループ（`advance_position()` を挟みつつ `append_sample()`）→ `finalize()` → `FinalizedBoxes::offset_and_bytes_pairs()` による後書き、の骨格を示す
+  - コード例は関数定義だけを書き、`no_run` / `ignore` を使わずデフォルトの `fn main() {}` にコンパイルだけ検証させる（`docs/subtitle.md` の書き方に揃える）
 - `src/docs.rs` に `pub mod hybrid_mp4 {}` を追加し、`#[doc = include_str!("../docs/hybrid_mp4.md")]` で取り込む
 - 検証
   - `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps`
@@ -82,5 +84,5 @@ Medium。既存の API (`Mp4FileMuxer::advance_position()`) は 2026.3.0 で追�
 
 - OBS Studio Hybrid MP4 の解説: <https://obsproject.com/blog/obs-studio-hybrid-mp4>
 - hisui の Hybrid MP4 ライター実装: <https://github.com/shiguredo/hisui/blob/516339747ad8083b6ddb61e88546ce128cafe586/src/mp4/hybrid_writer.rs#L84>
-- 既存 API の doc コメント: `src/mux_mp4_file.rs:520`（`Mp4FileMuxer::advance_position()`）
+- 既存 API の doc コメント: `Mp4FileMuxer::advance_position()`（`src/mux_mp4_file.rs`）および `mp4_file_muxer_advance_position()`（`crates/c-api/src/mux.rs` / `crates/c-api/include/mp4.h`）
 - 既存の補足ドキュメント参考例: `docs/subtitle.md`

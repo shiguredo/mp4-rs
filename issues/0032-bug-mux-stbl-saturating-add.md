@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-mux-stbl-saturating-add
 - Polished: 2026-07-30
@@ -73,7 +73,28 @@ s.keyframe
 
 ## 解決方法
 
-設計方針に従って `saturating_add` → `checked_add`、`as u32` → `u32::try_from()` に置き換える。
+### 実装
+
+`src/mux_mp4_file.rs` の `Mp4FileMuxer::build_stbl_box` で、次の 3 箇所の `NonZeroU32::MIN.saturating_add(... as u32)` を `u32::try_from` + `checked_add` に置き換えた。
+
+- `StscEntry::sample_description_index`
+- `StscEntry::first_chunk`
+- `StssBox::sample_numbers`
+
+`u32::try_from` 失敗時は `MuxError::EncodeError`、`checked_add` 失敗時は `MuxError::Overflow` を返す。
+
+`stss` の構築は、clippy（`filter_map_bool_then`）に合わせて `filter` + `map` + `collect::<Result<Vec<_>, _>>()` にした。キーフレーム以外を落としたあとも `enumerate` のグローバル 0-based 番号は保持される。
+
+### テスト
+
+`src/mux_mp4_file.rs` の `#[cfg(test)]` に以下を追加した。
+
+- `test_nonzero_u32_min_checked_add_overflows_at_u32_max`: 実装が依存する `NonZeroU32::MIN.checked_add` の算術境界を直接確認する（`u32::MAX` 個のチャンク生成は非現実的なため）
+- `test_build_stbl_box_one_based_indices_for_chunks_and_keyframes`: `finalize` 経路で `first_chunk` が `[1, 2, 3]`、`stss.sample_numbers` が `[1, 3]` になることを検証する
+
+### ドキュメント
+
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加した
 
 ## 後方互換
 

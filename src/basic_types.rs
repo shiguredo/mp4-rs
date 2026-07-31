@@ -551,11 +551,18 @@ impl<I: Decode, F: Decode> Decode for FixedPointNumber<I, F> {
 }
 
 /// null 終端の UTF-8 文字列
+///
+/// [`Default`] の実装は空文字列を返し、[`Self::EMPTY`] と同値になる
+/// （内部 [`String::default()`] が `String::new()` を返す性質に依存する）。
+/// 明示指定と派生 default のどちらでも同じ空文字列になる。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Utf8String(String);
 
 impl Utf8String {
     /// 空文字列
+    ///
+    /// [`Self::default()`] と同値。const 文脈でも参照できるように
+    /// [`Default`] とは別に定数として提供する
     pub const EMPTY: Self = Utf8String(String::new());
 
     /// 終端の null を含まない文字列を受け取って [`Utf8String`] インスタンスを作成する
@@ -716,12 +723,30 @@ where
 ///
 /// 各バイトは `0x60..=0x7F` の範囲に収まる必要がある
 /// （ISO/IEC 14496-12 の `unsigned int(5)[3]` パック規約に由来）。
-/// ISO-639-2/T の文字集合（`a-z`）に絞る検証は行わない。
+/// この規約は「各文字を `char - 0x60` した値を 5 ビットにパックする」と定めており、
+/// `0x60..=0x7F` の外側の値を受理してしまうと encode 時に隣接ビットを破壊するため
+/// [`Self::new`] / [`Self::from_ascii`] で入り口で弾く。
+///
+/// 一方、ISO-639-2/T が定義する文字集合（`a-z`）まで絞る厳格化は行わない。
+/// `0x7B..=0x7F`（`{|}~<DEL>`）などは 5 ビット的には有効に符号化できるため、
+/// エンコーダとして書ける MP4 は受理する。プレイヤーが表示できるかは呼び出し側の責任。
+///
+/// なお本ライブラリの [`crate::boxes::MdhdBox::decode`] は 5 ビットマスクで
+/// 防御的に読み取るため、decode 直後の値は必ず `0x60..=0x7F` に収まる。
+/// したがって decode 側の値を [`Self::new`] に通す経路は理論上必ず `Some` を返す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LanguageCode([u8; 3]);
 
 impl LanguageCode {
     /// 未定義言語（`*b"und"`）
+    ///
+    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] と同値。
+    /// ISO 639-2 で「未定義」を意味する 3 文字コード。
+    ///
+    /// なお本型は「未指定」と「利用者が明示的に `und` を指定」を型上で区別しない。
+    /// 両者は同じ値になる。将来この区別が必要になった場合は
+    /// [`crate::mux::TrackMetadata::language`] の型を `Option<LanguageCode>` に変える
+    /// 破壊的変更を伴うため、その時点で改めて設計する
     pub const UNDEFINED: Self = Self(*b"und");
 
     /// 3 バイト配列から作る
@@ -735,11 +760,15 @@ impl LanguageCode {
         }
     }
 
-    /// 3 文字 ASCII 文字列から作る（例: `"eng"`, `"jpn"`）
+    /// 3 バイトの文字列から作る（例: `"eng"`, `"jpn"`）
     ///
     /// 受理するのは各バイトが `0x60..=0x7F` の範囲に収まる 3 バイトの文字列だけである。
-    /// バイト長が 3 でない場合や、大文字 `"ENG"` のように範囲外のバイトを含む場合は
-    /// [`None`] を返す。ASCII 全域を受理するわけではない。
+    /// ASCII 全域を受理するわけではない（大文字 `"ENG"` のように範囲外のバイトを含む場合は
+    /// [`None`] を返す）。バイト長が 3 でない場合（マルチバイト UTF-8 の 1 文字などを含む）も
+    /// [`None`] を返す。
+    ///
+    /// 命名は「ISO/IEC 14496-12 の unsigned int(5)\[3\] パック用の ASCII サブセット」の意で、
+    /// ASCII 全域受理を意味しない。
     pub fn from_ascii(s: &str) -> Option<Self> {
         let bytes = s.as_bytes();
         if bytes.len() != 3 {

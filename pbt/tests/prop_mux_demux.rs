@@ -7,18 +7,19 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, LanguageCode, TrackKind, Uint, Utf8String,
+    Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, FtypBox,
-        HdlrBox, Hev1Box, Hvc1Box, HvccBox, MoovBox, OpusBox, SampleEntry, StppBox, TrakBox,
+        HdlrBox, Hev1Box, Hvc1Box, HvccBox, MoovBox, OpusBox, SampleEntry, StppBox,
         VisualSampleEntryFields,
     },
     demux::{Input, Mp4FileDemuxer},
     mux::{
-        FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, Sample, TrackMetadata,
-        estimate_maximum_moov_box_size,
+        FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, Sample, estimate_maximum_moov_box_size,
     },
 };
+
+mod common;
 
 /// テスト用の H.264 SampleEntry を作成
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -347,54 +348,15 @@ fn assert_moov_duration_invariants(
     Ok(())
 }
 
-/// `LanguageCode` として有効な 3 バイト（各 `0x60..=0x7F`）を生成する
-fn arb_language_code() -> impl Strategy<Value = LanguageCode> {
-    prop::array::uniform3(0x60u8..=0x7F).prop_map(|bytes| {
-        LanguageCode::new(bytes).expect("Strategy が生成する値は常に有効な言語コードである")
-    })
-}
-
-/// null を含まない UTF-8 文字列から `Utf8String` を生成する
-fn arb_track_name() -> impl Strategy<Value = Utf8String> {
-    "[^\x00]{0,32}"
-        .prop_map(|s| Utf8String::new(&s).expect("Strategy が生成する文字列は null を含まない"))
-}
-
-/// トラックメタデータを生成する
-fn arb_track_metadata() -> impl Strategy<Value = TrackMetadata> {
-    (arb_language_code(), arb_track_name())
-        .prop_map(|(language, name)| TrackMetadata { language, name })
-}
-
-/// `mdhd.language` / `hdlr.name` が入力メタデータと一致することを確認する
-fn assert_track_metadata(
-    trak_box: &TrakBox,
-    expected: &TrackMetadata,
-) -> Result<(), TestCaseError> {
-    let actual_language = LanguageCode::new(trak_box.mdia_box.mdhd_box.language)
-        .expect("muxer が出力した language は再構築できる");
-    prop_assert_eq!(
-        actual_language,
-        expected.language,
-        "mdhd.language が入力と一致しない"
-    );
-    prop_assert_eq!(
-        &trak_box.mdia_box.hdlr_box.name,
-        &expected.name.clone().into_null_terminated_bytes(),
-        "hdlr.name が入力と一致しない"
-    );
-    Ok(())
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
 
     /// Options で指定した language / name が mux → demux で復元される
     #[test]
     fn track_metadata_roundtrip(
-        video_meta in arb_track_metadata(),
-        audio_meta in arb_track_metadata(),
-        subtitle_meta in arb_track_metadata(),
+        video_meta in common::arb_track_metadata(),
+        audio_meta in common::arb_track_metadata(),
+        subtitle_meta in common::arb_track_metadata(),
     ) {
         let options = Mp4FileMuxerOptions {
             video_track: video_meta.clone(),
@@ -464,9 +426,9 @@ proptest! {
         let (decoded_moov, _) =
             MoovBox::decode(&moov_bytes).expect("エンコードした moov はデコードできる");
         prop_assert_eq!(decoded_moov.trak_boxes.len(), 3);
-        assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta)?;
-        assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta)?;
-        assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta)?;
+        common::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta)?;
+        common::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta)?;
+        common::assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta)?;
 
         // ファイルとしても demux できることを確認する
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);

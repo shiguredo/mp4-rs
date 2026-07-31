@@ -77,12 +77,20 @@ pub struct SegmentMuxerOptions {
     pub creation_timestamp: Duration,
 
     /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される
+    /// （同一 `TrackKind` に複数トラックを追加した場合、両方に同じメタデータが刺さる）。
+    /// トラックごとの個別指定は将来の対応
     pub audio_track: TrackMetadata,
 
     /// 映像トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
     pub video_track: TrackMetadata,
 
     /// 字幕トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
     pub subtitle_track: TrackMetadata,
 }
 
@@ -629,7 +637,7 @@ impl Fmp4SegmentMuxer {
         let trak_boxes: Result<Vec<_>, MuxError> = self
             .tracks
             .iter()
-            .map(|t| self.build_init_trak(t, creation_time, &self.options))
+            .map(|t| self.build_init_trak(t, creation_time))
             .collect();
         let trak_boxes = trak_boxes?;
 
@@ -677,7 +685,6 @@ impl Fmp4SegmentMuxer {
         &self,
         entry: &TrackEntry,
         creation_time: Mp4FileTime,
-        options: &SegmentMuxerOptions,
     ) -> Result<TrakBox, MuxError> {
         let sample_entry = entry
             .sample_entries
@@ -688,9 +695,9 @@ impl Fmp4SegmentMuxer {
         // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
         let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
         let metadata = track_metadata(
-            &options.audio_track,
-            &options.video_track,
-            &options.subtitle_track,
+            &self.options.audio_track,
+            &self.options.video_track,
+            &self.options.subtitle_track,
             entry.track_kind,
         );
 

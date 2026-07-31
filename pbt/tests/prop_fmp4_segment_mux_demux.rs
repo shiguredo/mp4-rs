@@ -7,17 +7,20 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, LanguageCode, TrackKind, Uint, Utf8String,
+    Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MfraBox, MoofBox, MoovBox,
-        OpusBox, SampleEntry, SidxBox, TrakBox, VisualSampleEntryFields,
+        OpusBox, SampleEntry, SidxBox, StppBox, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
-    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions, TrackMetadata},
+    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
+
+mod common;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 const AUDIO_TIMESCALE: u32 = 48_000;
+const SUBTITLE_TIMESCALE: u32 = 1_000;
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
     SampleEntry::Avc1(Avc1Box {
@@ -61,6 +64,17 @@ fn create_opus_sample_entry() -> SampleEntry {
             input_sample_rate: 48000,
             output_gain: 0,
         },
+        unknown_boxes: vec![],
+    })
+}
+
+/// テスト用の Stpp（TTML）SampleEntry を作成
+fn create_stpp_sample_entry() -> SampleEntry {
+    SampleEntry::Stpp(StppBox {
+        data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+        namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+        schema_location: Utf8String::EMPTY,
+        auxiliary_mime_types: Utf8String::EMPTY,
         unknown_boxes: vec![],
     })
 }
@@ -129,6 +143,19 @@ fn audio_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Samp
     Sample {
         track_kind: TrackKind::Audio,
         timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("非ゼロである"),
+        sample_entry: Some(sample_entry.clone()),
+        duration: sample.duration,
+        keyframe: sample.keyframe,
+        composition_time_offset: None,
+        data_offset: 0,
+        data_size: sample.data.len(),
+    }
+}
+
+fn subtitle_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Sample {
+    Sample {
+        track_kind: TrackKind::Subtitle,
+        timescale: NonZeroU32::new(SUBTITLE_TIMESCALE).expect("非ゼロである"),
         sample_entry: Some(sample_entry.clone()),
         duration: sample.duration,
         keyframe: sample.keyframe,
@@ -295,57 +322,22 @@ fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
     rewritten
 }
 
-/// `LanguageCode` として有効な 3 バイト（各 `0x60..=0x7F`）を生成する
-fn arb_language_code() -> impl Strategy<Value = LanguageCode> {
-    prop::array::uniform3(0x60u8..=0x7F).prop_map(|bytes| {
-        LanguageCode::new(bytes).expect("Strategy が生成する値は常に有効な言語コードである")
-    })
-}
-
-/// null を含まない UTF-8 文字列から `Utf8String` を生成する
-fn arb_track_name() -> impl Strategy<Value = Utf8String> {
-    "[^\x00]{0,32}"
-        .prop_map(|s| Utf8String::new(&s).expect("Strategy が生成する文字列は null を含まない"))
-}
-
-/// トラックメタデータを生成する
-fn arb_track_metadata() -> impl Strategy<Value = TrackMetadata> {
-    (arb_language_code(), arb_track_name())
-        .prop_map(|(language, name)| TrackMetadata { language, name })
-}
-
-/// `mdhd.language` / `hdlr.name` が入力メタデータと一致することを確認する
-fn assert_track_metadata(
-    trak_box: &TrakBox,
-    expected: &TrackMetadata,
-) -> Result<(), TestCaseError> {
-    let actual_language = LanguageCode::new(trak_box.mdia_box.mdhd_box.language)
-        .expect("muxer が出力した language は再構築できる");
-    prop_assert_eq!(
-        actual_language,
-        expected.language,
-        "mdhd.language が入力と一致しない"
-    );
-    prop_assert_eq!(
-        &trak_box.mdia_box.hdlr_box.name,
-        &expected.name.clone().into_null_terminated_bytes(),
-        "hdlr.name が入力と一致しない"
-    );
-    Ok(())
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     /// Options で指定した language / name が init セグメントの demux で復元される
+    ///
+    /// 3 kind（映像・音声・字幕）すべてで反映されることを固定する
     #[test]
     fn track_metadata_roundtrip(
-        video_meta in arb_track_metadata(),
-        audio_meta in arb_track_metadata(),
+        video_meta in common::arb_track_metadata(),
+        audio_meta in common::arb_track_metadata(),
+        subtitle_meta in common::arb_track_metadata(),
     ) {
         let options = SegmentMuxerOptions {
             video_track: video_meta.clone(),
             audio_track: audio_meta.clone(),
+            subtitle_track: subtitle_meta.clone(),
             ..Default::default()
         };
         let mut muxer =
@@ -353,6 +345,7 @@ proptest! {
 
         let video_entry = create_avc1_sample_entry(320, 240);
         let audio_entry = create_opus_sample_entry();
+        let subtitle_entry = create_stpp_sample_entry();
         let video = TestSample {
             track_index: 0,
             duration: 3000,
@@ -365,11 +358,18 @@ proptest! {
             keyframe: true,
             data: vec![0x22; 8],
         };
+        let subtitle = TestSample {
+            track_index: 2,
+            duration: 1000,
+            keyframe: true,
+            data: vec![0x33; 4],
+        };
         let samples = [
             video_segment_sample(&video_entry, &video, None),
             audio_segment_sample(&audio_entry, &audio),
+            subtitle_segment_sample(&subtitle_entry, &subtitle),
         ];
-        let payloads: [&[u8]; 2] = [&video.data, &audio.data];
+        let payloads: [&[u8]; 3] = [&video.data, &audio.data, &subtitle.data];
         let _segment_bytes = build_complete_media_segment(&mut muxer, &samples, &payloads);
         let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
@@ -378,9 +378,10 @@ proptest! {
         let _ = ftyp_box;
         let (moov_box, _) =
             MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
-        prop_assert_eq!(moov_box.trak_boxes.len(), 2);
-        assert_track_metadata(&moov_box.trak_boxes[0], &video_meta)?;
-        assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta)?;
+        prop_assert_eq!(moov_box.trak_boxes.len(), 3);
+        common::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta)?;
+        common::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta)?;
+        common::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta)?;
 
         // demuxer でも init を受理できることを確認する
         let mut demuxer = Fmp4SegmentDemuxer::new();
@@ -388,7 +389,7 @@ proptest! {
             .handle_init_segment(&init_bytes)
             .expect("init セグメントの処理に失敗した");
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 2);
+        prop_assert_eq!(tracks.len(), 3);
     }
 
     /// 単一映像トラックの init + メディアセグメント roundtrip

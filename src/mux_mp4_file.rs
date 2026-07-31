@@ -101,13 +101,26 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
         + (sample_count_per_track.iter().sum::<usize>() * BYTES_PER_SAMPLE)
 }
 
-/// トラック単位の任意メタデータ（`mdhd.language` / `hdlr.name`）
+/// トラック単位のメタデータ（`mdhd.language` / `hdlr.name`）
+///
+/// プレイヤーが複数トラックの一覧をユーザーに提示して選択させる際の
+/// 主要な表示情報になる（特に字幕トラックで意味を持つ）。
+///
+/// [`Mp4FileMuxerOptions`] と [`crate::mux::SegmentMuxerOptions`] の両方から
+/// 参照される共有型。両 muxer 共通の型だが、既存の [`Sample`] / [`MuxError`] と
+/// 同じく `mux_mp4_file` に定義し、[`crate::mux::Fmp4SegmentMuxer`] 側は
+/// `use` で取り込む先例に倣う。
+///
+/// [`Default`] は「未指定相当」の値（`und` + 空文字列）を返し、
+/// 生成される MP4 のバイト列は本フィールド追加前と一致する
 #[derive(Debug, Clone, Default)]
 pub struct TrackMetadata {
     /// 未指定時は [`LanguageCode::UNDEFINED`]（`*b"und"`）
     pub language: LanguageCode,
 
     /// 未指定時は空文字列
+    ///
+    /// muxer は `HdlrBox::name` に「末尾 null 1 バイト付き UTF-8」として書き出す
     pub name: Utf8String,
 }
 
@@ -152,12 +165,20 @@ pub struct Mp4FileMuxerOptions {
     pub creation_timestamp: Duration,
 
     /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される
+    /// （同一 `TrackKind` に複数トラックを追加した場合、両方に同じメタデータが刺さる）。
+    /// トラックごとの個別指定は将来の対応
     pub audio_track: TrackMetadata,
 
     /// 映像トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
     pub video_track: TrackMetadata,
 
     /// 字幕トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
     pub subtitle_track: TrackMetadata,
 }
 
@@ -1359,6 +1380,29 @@ mod tests {
         let muxer =
             Mp4FileMuxer::with_options(options).expect("failed to create muxer with options");
         assert!(!muxer.initial_boxes_bytes().is_empty());
+    }
+
+    /// `TrackMetadata::default()` が生成する `mdhd.language` / `hdlr.name` のバイト列は
+    /// フィールド追加前の muxer 出力（`MdhdBox::LANGUAGE_UNDEFINED` および
+    /// null 終端 1 バイトの空文字列）と完全一致する
+    ///
+    /// 完了条件「Options のフィールドを指定しなかった場合、生成される MP4 のバイト列が
+    /// 現行と完全一致すること」を回帰防止として固定する。
+    /// あわせて [`crate::LanguageCode::UNDEFINED`] と
+    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] が同値であることも担保する
+    #[test]
+    fn test_default_track_metadata_bytes() {
+        let metadata = TrackMetadata::default();
+
+        // mdhd.language は `*b"und"`
+        assert_eq!(metadata.language.as_bytes(), MdhdBox::LANGUAGE_UNDEFINED);
+        assert_eq!(
+            LanguageCode::UNDEFINED.as_bytes(),
+            MdhdBox::LANGUAGE_UNDEFINED
+        );
+
+        // hdlr.name は末尾 null 1 バイトのみ
+        assert_eq!(metadata.name.into_null_terminated_bytes(), vec![0u8]);
     }
 
     /// サンプル追加とファイナライズの基本的なワークフローテスト

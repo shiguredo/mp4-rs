@@ -166,11 +166,11 @@ impl nojson::DisplayJson for FtabList {
                 let font_id = unsafe { *self.font_ids.add(i) };
                 let name_ptr = unsafe { *self.font_name_ptrs.add(i) };
                 let name_size = unsafe { *self.font_name_sizes.add(i) } as usize;
-                // 空要素は allocate_and_copy_bytes 経由で (null, 0)。
-                // allocate_and_copy_array_list はポインタに .0 だけ、サイズに
-                // array.len() を使うため、非空要素の確保失敗では (null, 非ゼロ)
-                // になり得る。いずれも from_raw_parts に null を渡すと UB なので
-                // ガードし、その場合は空配列として出力する（エラーにはしない）
+                // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
+                // 空要素は (null, 0)。allocate_and_copy_array_list はポインタに .0 だけ・
+                // サイズに array.len() を使うため、非空要素の確保失敗後は (null, 非ゼロ)
+                // も残り得る。いずれも from_raw_parts に null を渡すと UB なのでガードし、
+                // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
                 let font_name = if name_size == 0 || name_ptr.is_null() {
                     &[][..]
                 } else {

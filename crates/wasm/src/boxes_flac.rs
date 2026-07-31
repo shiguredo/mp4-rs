@@ -12,9 +12,9 @@ pub fn fmt_json_mp4_sample_entry_flac(
         f.member("channelCount", data.channel_count)?;
         f.member("sampleRate", data.sample_rate)?;
         f.member("sampleSize", data.sample_size)?;
-        // allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を返す。
-        // サイズ 0 または null を from_raw_parts に渡すと UB なのでガードし、
-        // その場合は空配列として出力する（エラーにはしない）
+        // パース時の allocate_and_copy_bytes は空入力・確保失敗で (null, 0) を格納し得る。
+        // ここではその結果を読むだけだが、サイズ 0 または null を from_raw_parts に
+        // 渡すと UB なのでガードし、その場合は空配列として出力する（フォーマット側ではエラーにはしない）
         let streaminfo = if data.streaminfo_size == 0 || data.streaminfo_data.is_null() {
             &[][..]
         } else {

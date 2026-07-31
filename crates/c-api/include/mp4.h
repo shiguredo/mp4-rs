@@ -1457,6 +1457,8 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  *
  * - `MP4_ERROR_OK`: 正常に処理された
  * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+ *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
  *
  * # 使用例
  *
@@ -2019,6 +2021,8 @@ const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetect
  * ここで大きなサイズが要求されるのは実質的には `moov` ボックス本体であり、
  * `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
  * そのため、サイズ表現には `int32_t` を使っている。
+ * 要求サイズが `i32::MAX`（約 2 GiB）を超えた場合は `MP4_ERROR_UNSUPPORTED` を返し、
+ * そのときは `out_required_input_position` / `out_required_input_size` は更新されない。
  *
  * 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
  */

@@ -6,7 +6,7 @@ use shiguredo_mp4::BaseBox;
 use crate::{
     basic_types::Mp4TrackKind,
     boxes::{Mp4SampleEntry, Mp4SampleEntryOwned},
-    error::Mp4Error,
+    error::{Mp4Error, required_input_size_to_i32},
 };
 
 /// MP4 デマルチプレックス処理中に抽出されたメディアトラックの情報を表す構造体
@@ -333,6 +333,8 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_last_error(
 ///
 /// - `MP4_ERROR_OK`: 正常に処理された
 /// - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+/// - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+///   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
 ///
 /// # 使用例
 ///
@@ -384,8 +386,16 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_required_input(
 
     unsafe {
         if let Some(required) = demuxer.inner.required_input() {
+            // サイズ変換に失敗したら両 out を更新せずに返す（-1 / EOF との衝突を防ぐ）
+            let size = match required_input_size_to_i32(required.size) {
+                Ok(size) => size,
+                Err(msg) => {
+                    demuxer.set_last_error(&format!("[mp4_file_demuxer_get_required_input] {msg}"));
+                    return Mp4Error::MP4_ERROR_UNSUPPORTED;
+                }
+            };
             *out_required_input_position = required.position;
-            *out_required_input_size = required.size.map(|n| n as i32).unwrap_or(-1);
+            *out_required_input_size = size;
         } else {
             *out_required_input_position = 0;
             *out_required_input_size = 0;

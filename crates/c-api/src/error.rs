@@ -86,3 +86,71 @@ impl From<MuxError> for Mp4Error {
         }
     }
 }
+
+/// `RequiredInput.size` (`Option<usize>`) を C API の `out_required_input_size` (`i32`) に変換する
+///
+/// - `None` → `Ok(-1)`（ファイル末尾まで必要）
+/// - `Some(n)` かつ `n <= i32::MAX` → `Ok(n as i32)`
+/// - `Some(n)` かつ `n > i32::MAX` → `Err`（要求サイズが `i32` に収まらない）
+///
+/// C API は `int32_t` でサイズを返す設計のため、それを超える要求はサポート外としてエラーにする。
+/// `as i32` による切り捨てだと `-1`（EOF）と衝突するため、`try_from` で明示的に失敗させる。
+pub(crate) fn required_input_size_to_i32(size: Option<usize>) -> Result<i32, String> {
+    match size {
+        None => Ok(-1),
+        Some(n) => i32::try_from(n)
+            .map_err(|_| format!("required input size ({n}) exceeds i32::MAX ({})", i32::MAX)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::required_input_size_to_i32;
+
+    /// None は API 上の -1（EOF まで必要）に対応する
+    #[test]
+    fn converts_none_to_minus_one() {
+        assert_eq!(required_input_size_to_i32(None), Ok(-1));
+    }
+
+    /// 0 は「追加入力不要」と衝突しない正の境界（サイズ 0 バイト要求）として通す
+    #[test]
+    fn converts_zero() {
+        assert_eq!(required_input_size_to_i32(Some(0)), Ok(0));
+    }
+
+    /// 通常の正値をそのまま返す
+    #[test]
+    fn converts_one() {
+        assert_eq!(required_input_size_to_i32(Some(1)), Ok(1));
+    }
+
+    /// i32::MAX ちょうどは表現可能な上限として成功する
+    #[test]
+    fn converts_i32_max() {
+        assert_eq!(
+            required_input_size_to_i32(Some(i32::MAX as usize)),
+            Ok(i32::MAX)
+        );
+    }
+
+    /// i32::MAX + 1 は as i32 だと i32::MIN になるため、エラーにする
+    #[test]
+    fn rejects_i32_max_plus_one() {
+        let err = required_input_size_to_i32(Some(i32::MAX as usize + 1)).unwrap_err();
+        assert!(
+            err.contains("exceeds i32::MAX"),
+            "エラーメッセージに超過である旨が含まれること: {err}"
+        );
+    }
+
+    /// usize::MAX は as i32 だと -1（EOF）と衝突するため、エラーにする
+    #[test]
+    fn rejects_usize_max() {
+        let err = required_input_size_to_i32(Some(usize::MAX)).unwrap_err();
+        assert!(
+            err.contains("exceeds i32::MAX"),
+            "エラーメッセージに超過である旨が含まれること: {err}"
+        );
+    }
+}

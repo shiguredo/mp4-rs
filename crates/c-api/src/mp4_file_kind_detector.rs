@@ -2,7 +2,7 @@ use std::ffi::{CString, c_char};
 
 use shiguredo_mp4::demux::{Input, Mp4FileKindDetector as RustMp4FileKindDetector};
 
-use crate::error::Mp4Error;
+use crate::error::{Mp4Error, required_input_size_to_i32};
 
 #[repr(C)]
 #[expect(non_camel_case_types)]
@@ -79,6 +79,8 @@ pub unsafe extern "C" fn mp4_file_kind_detector_get_last_error(
 /// ここで大きなサイズが要求されるのは実質的には `moov` ボックス本体であり、
 /// `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
 /// そのため、サイズ表現には `int32_t` を使っている。
+/// 要求サイズが `i32::MAX`（約 2 GiB）を超えた場合は `MP4_ERROR_UNSUPPORTED` を返し、
+/// そのときは `out_required_input_position` / `out_required_input_size` は更新されない。
 ///
 /// 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
 #[unsafe(no_mangle)]
@@ -112,8 +114,18 @@ pub unsafe extern "C" fn mp4_file_kind_detector_get_required_input(
 
     unsafe {
         if let Some(required) = detector.inner.required_input() {
+            // サイズ変換に失敗したら両 out を更新せずに返す（-1 / EOF との衝突を防ぐ）
+            let size = match required_input_size_to_i32(required.size) {
+                Ok(size) => size,
+                Err(msg) => {
+                    detector.set_last_error(&format!(
+                        "[mp4_file_kind_detector_get_required_input] {msg}"
+                    ));
+                    return Mp4Error::MP4_ERROR_UNSUPPORTED;
+                }
+            };
             *out_required_input_position = required.position;
-            *out_required_input_size = required.size.map(|n| n as i32).unwrap_or(-1);
+            *out_required_input_size = size;
         } else {
             *out_required_input_position = 0;
             *out_required_input_size = 0;

@@ -446,7 +446,6 @@ impl Mp4FileDemuxer {
         let (header, _header_size) = BoxHeader::decode(data)?;
         header.box_type.expect(FtypBox::TYPE)?;
 
-        // u64 → usize の切り詰めを避け、0 は EOF までのサイズ未指定として扱う
         let raw_size = header.box_size.get();
         let box_size = if raw_size == 0 {
             None
@@ -498,7 +497,6 @@ impl Mp4FileDemuxer {
             })?;
             self.phase = Phase::ReadMoovBoxHeader { offset };
         } else {
-            // u64 → usize の切り詰めを避け、0（None）は EOF までのサイズ未指定のまま残す
             let box_size = box_size
                 .map(|n| {
                     usize::try_from(n).map_err(|_| {

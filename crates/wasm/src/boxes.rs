@@ -22,7 +22,7 @@ fn allocate_and_copy_aligned<T: Copy>(data: &[T]) -> (*const T, u32) {
         .expect("Rust align is power-of-two and slice byte length fits isize::MAX");
     let allocated = unsafe { std::alloc::alloc(layout) };
     if allocated.is_null() {
-        // `mp4_alloc` と同様、確保失敗は abort に寄せる（死なない OOM を残さない）
+        // `mp4_alloc` と同じ方針で、確保失敗は abort に寄せる（死なない OOM を残さない）
         std::alloc::handle_alloc_error(layout);
     }
     unsafe {
@@ -284,8 +284,9 @@ pub(crate) fn raw_bytes_as_str<T>(_bound: &T, data: *const u8, size: u32) -> &st
 
 /// バイト配列を mp4_alloc で確保してコピーするユーティリティ関数
 ///
-/// 空入力は `(null, 0)` を返す。非空入力では `mp4_alloc` が有効ポインタを返す
-/// （確保失敗時は abort）ため、呼び出し側で null を検査する必要はない
+/// 返り値は「空入力 → `(null, 0)`」または「非空入力 → `(非 null, 非 0)`」の二択で、
+/// `size == 0` のチェックがそのまま null チェックを兼ねる
+/// （確保失敗時は `mp4_alloc` が abort するため `(null, 非 0)` は生産されない）
 pub fn allocate_and_copy_bytes(data: &[u8]) -> (*const u8, u32) {
     if data.is_empty() {
         return (std::ptr::null(), 0);
@@ -442,9 +443,9 @@ impl nojson::DisplayJson for HevcNaluArrays {
                                 let nalu_size =
                                     unsafe { *self.nalu_sizes.add(nalu_index as usize) } as usize;
                                 // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
-                                // 空要素は (null, 0)。サイズ 0 を from_raw_parts に渡すと
-                                // null ポインタ経由の UB になり得るのでガードし、
-                                // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
+                                // 空要素は (null, 0)。`from_raw_parts` は size 0 でも非 null ポインタを
+                                // 要求するため、size == 0 の枝を先に落として空配列として出力する
+                                // （フォーマット側ではエラーにはしない）
                                 let nalu = if nalu_size == 0 {
                                     &[][..]
                                 } else {
@@ -474,10 +475,10 @@ impl nojson::DisplayJson for HevcNaluArrays {
 /// フィールドの部分書き換えは行わないこと。生ポインタと個数の invariant を
 /// 局所コードで壊さないため。
 ///
-/// `Drop` を実装していないが、`parse_json_hevc_sample_entry_fields` の
-/// フェーズ 2 の確保失敗は `handle_alloc_error` でプロセス abort するため、
-/// OOM 途中の部分確保を `Drop` で回収する設計にはしていない。
-/// 空入力の `(null, 0)` 契約は維持する。所有権設計を変える場合は別途見直すこと
+/// `parse_json_hevc_sample_entry_fields` のフェーズ 2 の確保失敗は
+/// `handle_alloc_error` でプロセス abort するため、OOM 途中の部分確保を
+/// `Drop` で回収する必要はなく、本構造体は `Drop` を実装していない。
+/// 所有権設計を変える場合は別途見直すこと
 pub(crate) struct HevcSampleEntryFields {
     pub(crate) width: u16,
     pub(crate) height: u16,

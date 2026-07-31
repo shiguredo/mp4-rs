@@ -36,7 +36,8 @@ use std::alloc::Layout;
 ///
 /// 確保したメモリの先頭アドレス。
 /// `size == 0` のときは null を返す。
-/// `size != 0` のときは必ず有効なポインタを返す（確保失敗時は `handle_alloc_error` で abort する）
+/// `size != 0` のときは、確保成功時に有効なポインタを返し、
+/// 確保失敗時は `handle_alloc_error` によりプロセスを abort する（本関数から null は返らない）
 #[unsafe(no_mangle)]
 pub extern "C" fn mp4_alloc(size: u32) -> *mut u8 {
     if size == 0 {

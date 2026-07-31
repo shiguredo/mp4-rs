@@ -16,8 +16,8 @@ pub fn fmt_json_mp4_sample_entry_mp4a(
         f.member("maxBitrate", data.max_bitrate)?;
         f.member("avgBitrate", data.avg_bitrate)?;
         // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
-        // ここではその結果を読むだけだが、サイズ 0 を from_raw_parts に渡すと
-        // null ポインタ経由の UB になり得るのでガードし、その場合は空配列として出力する
+        // `from_raw_parts` は size 0 でも非 null ポインタを要求するため、
+        // size == 0 の枝を先に落として空配列として出力する
         // （フォーマット側ではエラーにはしない）
         let dec_specific_info = if data.dec_specific_info_size == 0 {
             &[][..]

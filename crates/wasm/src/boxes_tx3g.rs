@@ -167,9 +167,9 @@ impl nojson::DisplayJson for FtabList {
                 let name_ptr = unsafe { *self.font_name_ptrs.add(i) };
                 let name_size = unsafe { *self.font_name_sizes.add(i) } as usize;
                 // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
-                // 空要素は (null, 0)。サイズ 0 を from_raw_parts に渡すと
-                // null ポインタ経由の UB になり得るのでガードし、
-                // その場合は空配列として出力する（フォーマット側ではエラーにはしない）
+                // 空要素は (null, 0)。`from_raw_parts` は size 0 でも非 null ポインタを
+                // 要求するため、size == 0 の枝を先に落として空配列として出力する
+                // （フォーマット側ではエラーにはしない）
                 let font_name = if name_size == 0 {
                     &[][..]
                 } else {

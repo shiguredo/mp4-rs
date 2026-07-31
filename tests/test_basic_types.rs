@@ -5,11 +5,9 @@
 //! size=0 / largesize=0 / サイズ下限の挙動を固定する。
 
 mod decode_header_and_payload_size_zero {
-    //! `BoxHeader::decode_header_and_payload` の size=0 扱い
-
     use shiguredo_mp4::{BoxHeader, BoxSize, BoxType, ErrorKind};
 
-    /// size=0（`BoxSize::U32(0)`）のとき、ペイロードはヘッダー直後からバッファ末尾までになること
+    /// size=0（`BoxSize::VARIABLE_SIZE`）のとき、ペイロードはヘッダー直後からバッファ末尾までになること
     #[test]
     fn u32_size_zero_uses_buffer_tail_as_payload() {
         // size=0 (4) + type "mdat" (4) + ペイロード 3 バイト
@@ -19,16 +17,15 @@ mod decode_header_and_payload_size_zero {
         buf.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
 
         let (header, payload) = BoxHeader::decode_header_and_payload(&buf)
-            .expect("U32(0) はバッファ末尾までをボックスとしてデコードできる");
+            .expect("VARIABLE_SIZE はバッファ末尾までをボックスとしてデコードできる");
 
         assert_eq!(header.box_type, BoxType::Normal(*b"mdat"));
-        assert_eq!(header.box_size, BoxSize::U32(0));
+        assert_eq!(header.box_size, BoxSize::VARIABLE_SIZE);
         assert_eq!(
             payload,
             &buf[8..],
             "ペイロードはヘッダー直後からバッファ末尾までであること"
         );
-        assert_eq!(payload, &[0xAA, 0xBB, 0xCC]);
     }
 
     /// largesize=0（`BoxSize::U64(0)`）は仕様未定義のためエラーになること

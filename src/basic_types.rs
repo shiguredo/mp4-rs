@@ -150,16 +150,20 @@ impl BoxHeader {
     ///
     /// # ボックスサイズ 0 の扱いについて
     ///
-    /// MP4 の仕様（ISO/IEC 14496-12）では、32bit の `size` フィールドが 0 の場合は
-    /// 「ファイルの最後まで」を意味する。本実装では、渡されたバッファの末尾までを
+    /// MP4 の仕様（ISO/IEC 14496-12）では、32-bit の `size` フィールドが 0 の場合は
+    /// 「ファイルの最後まで」を意味する。本実装では、渡された `buf` の末尾までを
     /// ボックス全体として扱い、ヘッダー直後からバッファ末尾までをペイロードとして返す。
     ///
     /// この扱いは [`BoxSize::VARIABLE_SIZE`]（`BoxSize::U32(0)`）に限る。
     /// `size==1` + `largesize==0`（[`BoxSize::LARGE_VARIABLE_SIZE`] / `BoxSize::U64(0)`）は
-    /// 仕様上意味が未定義のためエラーとする。
+    /// 仕様上意味が未定義のため、サイズ下限検査（`box_size < header_size`）でエラーとする。
+    ///
+    /// 親ボックスのペイロード残り（`&payload[offset..]` 等）を `buf` に渡した場合も、
+    /// 「末尾」は渡したスライスの末尾を指す。ネストした `size==0` は後続の兄弟ボックスを
+    /// 飲み込んで成功し得るため、呼び出し側はファイル末尾のボックスに限って使うこと。
     ///
     /// 前提:
-    /// - `buf` がファイル末尾を含む完全なデータである
+    /// - `buf` がファイル末尾を含む完全なデータである（またはその前提を呼び出し側が保証する）
     /// - ストリーミングやチャンク読み込みには非対応
     ///
     /// ストリーミング対応が必要な場合は、呼び出し側で別途サイズ管理が必要となる。
@@ -169,11 +173,10 @@ impl BoxHeader {
         let mut box_size = usize::try_from(header.box_size.get())
             .map_err(|_| Error::invalid_data("too large box size"))?;
 
-        // 32bit の size=0 のみバッファ末尾までをボックス全体として扱う
-        // （ISO/IEC 14496-12。largesize=0 は仕様未定義のため後続の下限検査でエラーにする）
-        if matches!(header.box_size, BoxSize::U32(0)) {
+        if header.box_size == BoxSize::VARIABLE_SIZE {
             box_size = buf.len();
         } else if box_size < header_size {
+            // `BoxSize::U64(0)`（largesize=0）もここに落ちる（可変長としては扱わない）
             return Err(Error::invalid_data("box size is smaller than header size"));
         }
 
@@ -363,7 +366,10 @@ impl Decode for FullBoxFlags {
 /// [`BaseBox`] のサイズ
 ///
 /// ボックスのサイズは原則として、ヘッダー部分とペイロード部分のサイズを足した値となる。
-/// ただし、MP4 ファイルの末尾にあるボックスについてはサイズを 0 とすることで、ペイロードが可変長（追記可能）なボックスとして扱うことが可能となっている。
+/// ただし、MP4 ファイルの末尾にあるボックスについては 32-bit の `size` を 0
+/// （[`BoxSize::VARIABLE_SIZE`]）とすることで、ペイロードが可変長（追記可能）なボックスとして
+/// 扱うことが可能となっている。デコード時の末尾拡張は [`BoxHeader::decode_header_and_payload`]
+/// が行い、`size==1` + `largesize==0`（[`BoxSize::LARGE_VARIABLE_SIZE`]）は可変長としては扱わない。
 ///
 /// 仕様上、ボックスヘッダーの `size` フィールドが 1 のときは 32-bit サイズを 64-bit の
 /// `largesize` フィールドで拡張表現する（`aligned(8) class Box { unsigned int(32) size;
@@ -379,17 +385,16 @@ pub enum BoxSize {
 }
 
 impl BoxSize {
-    /// ファイル末尾に位置する可変長のボックスを表すための特別な値（32bit `size==0`）
+    /// ファイル末尾に位置する可変長のボックスを表すための特別な値（32-bit `size==0`）
     ///
-    /// デコード時（[`BoxHeader::decode_header_and_payload`]）はバッファ末尾までをボックス全体として扱う。
+    /// [`BoxHeader`] の `Decode` は値として許容するだけであり、バッファ末尾までの拡張は
+    /// [`BoxHeader::decode_header_and_payload`] が行う。
     pub const VARIABLE_SIZE: Self = Self::U32(0);
 
-    /// エンコード時に 4GB 超の可変長ボックスを表すための特別な値（`size==1` + `largesize==0`）
+    /// エンコード用の特別な値（`size==1` + `largesize==0`）。64-bit サイズ符号化でヘッダー幅を確保する
     ///
-    /// [`BoxSize::VARIABLE_SIZE`] と同様にサイズ値は 0 だが、64 ビットサイズエンコーディングを使う。
-    /// デコード時（[`BoxHeader::decode_header_and_payload`]）では ISO/IEC 14496-12 に合わせ、
-    /// `largesize==0` を可変長としては扱わずエラーにする。可変長として扱うのは 32bit の
-    /// [`BoxSize::VARIABLE_SIZE`] のみである。
+    /// デコードでは [`BoxHeader::decode_header_and_payload`] が可変長としては扱わずエラーにする
+    /// （詳細は同関数のドキュメントを参照）。
     pub const LARGE_VARIABLE_SIZE: Self = Self::U64(0);
 
     /// ボックス種別とペイロードサイズを受け取って、対応する [`BoxSize`] インスタンスを作成する

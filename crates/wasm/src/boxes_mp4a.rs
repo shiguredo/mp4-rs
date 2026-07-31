@@ -71,16 +71,16 @@ pub fn parse_json_mp4_sample_entry_mp4a(
 ///
 /// `parse_json_mp4_sample_entry_mp4a()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_mp4a_free(entry: &mut Mp4SampleEntryMp4a) {
-    if !entry.dec_specific_info.is_null() && entry.dec_specific_info_size > 0 {
-        unsafe {
-            crate::mp4_free(
-                entry.dec_specific_info.cast_mut(),
-                entry.dec_specific_info_size,
-            );
-        }
-        entry.dec_specific_info = std::ptr::null();
-        entry.dec_specific_info_size = 0;
+    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
+    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(
+            entry.dec_specific_info.cast_mut(),
+            entry.dec_specific_info_size,
+        );
     }
+    entry.dec_specific_info = std::ptr::null();
+    entry.dec_specific_info_size = 0;
 }
 
 #[cfg(test)]

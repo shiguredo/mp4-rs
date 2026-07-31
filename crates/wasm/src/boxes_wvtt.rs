@@ -44,13 +44,13 @@ pub fn parse_json_mp4_sample_entry_wvtt(
 ///
 /// [`parse_json_mp4_sample_entry_wvtt()`] で割り当てられたバッファを解放する
 pub fn mp4_sample_entry_wvtt_free(entry: &mut Mp4SampleEntryWvtt) {
-    if !entry.config_data.is_null() && entry.config_size > 0 {
-        unsafe {
-            crate::mp4_free(entry.config_data.cast_mut(), entry.config_size);
-        }
-        entry.config_data = std::ptr::null();
-        entry.config_size = 0;
+    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
+    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(entry.config_data.cast_mut(), entry.config_size);
     }
+    entry.config_data = std::ptr::null();
+    entry.config_size = 0;
 }
 
 #[cfg(test)]

@@ -275,7 +275,10 @@ pub unsafe fn mp4_sample_entry_free(sample_entry: *mut Mp4SampleEntry) {
 /// 第 1 引数 `_bound` は返り値 `&str` のライフタイムを借用に紐付けるためだけに存在し、
 /// 関数本体では未使用。呼び出し側はバッファを所有する struct への借用を渡す
 pub(crate) fn raw_bytes_as_str<T>(_bound: &T, data: *const u8, size: u32) -> &str {
-    if size == 0 || data.is_null() {
+    // 空入力（parse 経路の `(null, 0)`、c-api demux 経路の `(非 null ダングリング, 0)`）は
+    // いずれも `size == 0` で捕捉できる。`from_raw_parts` は size 0 でも非 null ポインタを
+    // 要求するため、size == 0 の枝を先に落として空文字を返す
+    if size == 0 {
         return "";
     }
     let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
@@ -670,17 +673,19 @@ pub(crate) fn free_hevc_sample_entry_fields(
         *nalu_counts = std::ptr::null();
     }
 
-    if !nalu_data.is_null() {
-        unsafe {
-            free_array_list(
-                *nalu_data as *mut *mut u8,
-                *nalu_sizes as *mut u32,
-                total_nalu_count,
-            );
-            *nalu_data = std::ptr::null();
-            *nalu_sizes = std::ptr::null();
-        }
+    // `allocate_and_copy_array_list` により `nalu_data` と `nalu_sizes` は
+    // 同時 null／同時非 null になる（`(null, null, 0)` か `(非 null, 非 null, 非 0)`）。
+    // `free_array_list` は `element_count == 0` および `data_ptrs` / `sizes` の null で
+    // 早期 return するため、無条件に呼んでよい
+    unsafe {
+        free_array_list(
+            *nalu_data as *mut *mut u8,
+            *nalu_sizes as *mut u32,
+            total_nalu_count,
+        );
     }
+    *nalu_data = std::ptr::null();
+    *nalu_sizes = std::ptr::null();
 
     *nalu_array_count = 0;
 }

@@ -104,13 +104,13 @@ pub fn parse_json_mp4_sample_entry_av01(
 ///
 /// `parse_json_mp4_sample_entry_av01()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_av01_free(entry: &mut Mp4SampleEntryAv01) {
-    if !entry.config_obus.is_null() && entry.config_obus_size > 0 {
-        unsafe {
-            crate::mp4_free(entry.config_obus.cast_mut(), entry.config_obus_size);
-        }
-        entry.config_obus = std::ptr::null();
-        entry.config_obus_size = 0;
+    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
+    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(entry.config_obus.cast_mut(), entry.config_obus_size);
     }
+    entry.config_obus = std::ptr::null();
+    entry.config_obus_size = 0;
 }
 
 #[cfg(test)]

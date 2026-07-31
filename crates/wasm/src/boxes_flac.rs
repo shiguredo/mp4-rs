@@ -58,13 +58,13 @@ pub fn parse_json_mp4_sample_entry_flac(
 ///
 /// `parse_json_mp4_sample_entry_flac()` で割り当てられたメモリを解放する
 pub fn mp4_sample_entry_flac_free(entry: &mut Mp4SampleEntryFlac) {
-    if !entry.streaminfo_data.is_null() && entry.streaminfo_size > 0 {
-        unsafe {
-            crate::mp4_free(entry.streaminfo_data.cast_mut(), entry.streaminfo_size);
-        }
-        entry.streaminfo_data = std::ptr::null();
-        entry.streaminfo_size = 0;
+    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
+    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
+    unsafe {
+        crate::mp4_free(entry.streaminfo_data.cast_mut(), entry.streaminfo_size);
     }
+    entry.streaminfo_data = std::ptr::null();
+    entry.streaminfo_size = 0;
 }
 
 #[cfg(test)]

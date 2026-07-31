@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-15
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-decode-header-payload-size-zero
 - Polished: 2026-07-31
@@ -78,10 +78,9 @@ ISO/IEC 14496-12 4.2 では size==0 のみ「box は file の最後まで拡張�
 
 ## 解決方法
 
-1. `matches!(header.box_size, BoxSize::U32(0))` の判定を `box_size < header_size` の前に移動し、真のとき `box_size = buf.len()` にする
-2. 既存の `Error::check_buffer_size(box_size, buf)?` を、size=0 分岐と `box_size < header_size` 判定の後（スライス返却の直前）に置く。size=0 で `box_size = buf.len()` にした後は常に通るが、非 0 経路のバッファ不足検査は維持する
-3. テストを追加する
-   - size=0（`BoxSize::U32(0)`）のボックスをデコードし、ペイロードが `&buf[header_size..]`（バッファ末尾まで）であること
-   - largesize=0（`BoxSize::U64(0)`）のボックスはエラーになること
-   - size > 0 で `box_size < header_size` の場合はエラーになること（回帰防止）
-4. `decode_header_and_payload` のドキュメントを「size=0（32bit の場合のみ）」と明示する。あわせて `BoxSize::LARGE_VARIABLE_SIZE` のドキュメントを、エンコード用でありデコードでは `VARIABLE_SIZE` と同義ではない旨に更新する
+設計方針どおり、`BoxSize::VARIABLE_SIZE`（`U32(0)`）のみバッファ末尾扱いとし、`U64(0)` は下限検査でエラー継続とした。
+
+- `BoxHeader::decode_header_and_payload`（`src/basic_types.rs`）で `VARIABLE_SIZE` 判定を `box_size < header_size` の前に置き、真のとき `box_size = buf.len()` にするようにした。`check_buffer_size` はその後に残した
+- `BoxSize` / `VARIABLE_SIZE` / `LARGE_VARIABLE_SIZE` / `decode_header_and_payload` のドキュメントを、デコードの可変長は 32-bit のみであることと整合するよう更新した
+- `tests/test_basic_types.rs` に回帰テストを追加した（`VARIABLE_SIZE` 成功・空ペイロード・`U64(0)` エラー・size < header・`InsufficientBuffer`）
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加した

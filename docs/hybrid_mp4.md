@@ -102,7 +102,7 @@ fn mux_hybrid_mp4(
 }
 ```
 
-実際の Hybrid MP4 ライターでは、`Fmp4SegmentMuxer` でフラグメント用メタデータを生成しつつ、同じサンプル列を `Mp4FileMuxer` にも登録する二系統の構成になることが多い。詳細は末尾の hisui 実装を参照する。
+実際の Hybrid MP4 ライターでは、`Fmp4SegmentMuxer` でフラグメント用メタデータを生成しつつ、同じサンプル列を `Mp4FileMuxer` にも登録する二系統の構成になることが多い。
 
 ## 注意事項
 
@@ -116,4 +116,3 @@ fn mux_hybrid_mp4(
 ## 参考リンク
 
 - OBS Studio Hybrid MP4 の解説: <https://obsproject.com/blog/obs-studio-hybrid-mp4>
-- hisui の Hybrid MP4 ライター実装: <https://github.com/shiguredo/hisui/blob/516339747ad8083b6ddb61e88546ce128cafe586/src/mp4/hybrid_writer.rs#L84>

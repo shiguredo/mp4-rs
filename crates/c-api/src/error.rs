@@ -47,7 +47,8 @@ impl From<Error> for Mp4Error {
             ErrorKind::InvalidInput => Self::MP4_ERROR_INVALID_INPUT,
             ErrorKind::InvalidData => Self::MP4_ERROR_INVALID_DATA,
             ErrorKind::Unsupported => Self::MP4_ERROR_UNSUPPORTED,
-            _ => Self::MP4_ERROR_OTHER,
+            // 既存どおり専用コードは持たず OTHER に寄せる
+            ErrorKind::InsufficientBuffer => Self::MP4_ERROR_OTHER,
         }
     }
 }
@@ -65,7 +66,6 @@ impl From<DemuxError> for Mp4Error {
             DemuxError::SampleTableError(e) => e.into(),
             DemuxError::InvalidState(_) => Self::MP4_ERROR_INVALID_STATE,
             DemuxError::InputRequired(_) => Self::MP4_ERROR_INPUT_REQUIRED,
-            _ => Self::MP4_ERROR_OTHER,
         }
     }
 }
@@ -82,7 +82,6 @@ impl From<MuxError> for Mp4Error {
             | MuxError::MissingSampleEntry { .. }
             | MuxError::TimescaleMismatch { .. }
             | MuxError::MixedSampleEntries { .. } => Self::MP4_ERROR_INVALID_INPUT,
-            _ => Self::MP4_ERROR_OTHER,
         }
     }
 }

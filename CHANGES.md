@@ -11,6 +11,8 @@
 
 ## develop
 
+- [CHANGE] `ErrorKind` / `MuxError` / `DemuxError` から `#[non_exhaustive]` を削除する
+  - @sile
 - [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
   - @voluntas
 - [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする

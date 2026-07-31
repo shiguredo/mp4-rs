@@ -1,11 +1,11 @@
-# wasm の boxes_av01 / boxes_mp4a / boxes_flac / boxes_avc1 / boxes_hev1 / boxes_hvc1 で from_raw_parts にサイズ 0 時に null ポインタを渡し UB になる
+# wasm の JSON フォーマット経路で from_raw_parts にサイズ 0 時の null ポインタを渡し UB になる
 
 - Priority: Medium
 - Created: 2026-07-20
 - Completed: YYYY-MM-DD
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-wasm-from-raw-parts-zero-size
-- Polished: 2026-07-20
+- Polished: 2026-07-31
 
 ## 目的
 
@@ -13,11 +13,11 @@ WASM の JSON フォーマット処理で `std::slice::from_raw_parts(ptr, 0)` �
 
 ## 優先度根拠
 
-UB であるが、wasm32 ターゲットでは実際にはクラッシュしない可能性が高い。ただし Rust の仕様上は UB であり修正すべき。
+UB であるが、wasm32 ターゲットでは実際にはクラッシュしない可能性が高い。ただし Rust の仕様上は UB であり修正すべき。closed issue 0048（アラインメント UB）と同水準として扱う。
 
 ## 現状
 
-`allocate_and_copy_bytes`（`crates/wasm/src/boxes.rs:175-177`）は空データに `(null, 0)` を返す:
+`allocate_and_copy_bytes`（`crates/wasm/src/boxes.rs`）は空データに `(null, 0)` を返す:
 
 ```rust
 if data.is_empty() {
@@ -25,16 +25,22 @@ if data.is_empty() {
 }
 ```
 
-以下の 6 ファイルで `from_raw_parts` に null ポインタを渡し得る:
+確保失敗時も `(null, 0)` を返す。いずれの場合も呼び出し側がサイズガードなしで `from_raw_parts` すると UB になる。
 
-**1. `crates/wasm/src/boxes_av01.rs:29-30`**:
+加えて `allocate_and_copy_array_list`（同ファイル）は、各要素ポインタに `allocate_and_copy_bytes(array).0` だけを使い、サイズ配列は `array.len()` から別途作る。そのため非空要素の確保失敗では **ポインタ null・サイズ非ゼロ** が並び得る。NALU 系の fmt はサイズだけ見ていても null を避けられない。
+
+対比として、文字列用の `raw_bytes_as_str`（同ファイル）は既に `size == 0 || data.is_null()` のとき `""` を返すガードを持っており、`boxes_stpp` / `boxes_wvtt` の fmt 経路はこの helper 経由で安全である。
+
+以下の呼び出しが、空データ（`(null, 0)`）や NALU 要素の確保失敗（`(null, 非ゼロ)`）で null ポインタを渡し得る:
+
+**1. `crates/wasm/src/boxes_av01.rs` の `fmt_json_mp4_sample_entry_av01`**:
 
 ```rust
 let config_obus =
     unsafe { std::slice::from_raw_parts(data.config_obus, data.config_obus_size as usize) };
 ```
 
-**2. `crates/wasm/src/boxes_mp4a.rs:18-20`**:
+**2. `crates/wasm/src/boxes_mp4a.rs` の `fmt_json_mp4_sample_entry_mp4a`**:
 
 ```rust
 let dec_specific_info = unsafe {
@@ -42,7 +48,7 @@ let dec_specific_info = unsafe {
 };
 ```
 
-**3. `crates/wasm/src/boxes_flac.rs:15-17`**:
+**3. `crates/wasm/src/boxes_flac.rs` の `fmt_json_mp4_sample_entry_flac`**:
 
 ```rust
 let streaminfo = unsafe {
@@ -50,38 +56,45 @@ let streaminfo = unsafe {
 };
 ```
 
-**4. `crates/wasm/src/boxes_avc1.rs:154`**（NaluList 内）:
+**4. `crates/wasm/src/boxes_avc1.rs` の `NaluList`（`DisplayJson::fmt` 内）**:
 
 ```rust
 let nalu = unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
 ```
 
-**5. `crates/wasm/src/boxes_hev1.rs:80`**（NaluArrays 内）:
+空の SPS/PPS 要素は `allocate_and_copy_array_list` 経由で要素ごとに `allocate_and_copy_bytes` されるため、要素ポインタが null・サイズ 0 になり得る。
+
+**5. `crates/wasm/src/boxes.rs` の `HevcNaluArrays`（`DisplayJson::fmt` 内）**:
 
 ```rust
 unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
 ```
 
-**6. `crates/wasm/src/boxes_hvc1.rs:80`**（NaluArrays 内）:
-
-```rust
-unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
-```
+`boxes_hev1.rs` の `fmt_json_mp4_sample_entry_hev1` と `boxes_hvc1.rs` の `fmt_json_mp4_sample_entry_hvc1` は、いずれもこの共通構造体に委譲するだけである（closed issue 0056 で `NaluArrays` を `HevcNaluArrays` として `boxes.rs` に集約済み）。hev1 / hvc1 側モジュール自体に `from_raw_parts` は無い。
 
 ## 設計方針
 
-サイズ 0 の場合に `&[]` を使う分岐を追加する。av01/mp4a/flac は単純な `if size == 0 { &[] } else { ... }` 分岐。avc1/hev1/hvc1 の NaluList/NaluArrays も各 NALU 単位で同様のサイズ 0 チェックを追加する。
+`raw_bytes_as_str` と同型の「サイズ 0 **または** null なら空スライス」ガードを入れる。サイズ 0 だけでは、`allocate_and_copy_array_list` 経由の NALU 要素確保失敗（`(null, 非ゼロ)`）を防げない。
+
+- av01 / mp4a / flac: 各 `fmt_json_mp4_sample_entry_*` で `if size == 0 || ptr.is_null() { &[] } else { unsafe { from_raw_parts(...) } }`
+- avc1: `NaluList::fmt` 内の各 NALU 単位で同様のガード
+- hev1 / hvc1: `HevcNaluArrays::fmt`（`boxes.rs`）内の各 NALU 単位で同様のガード。hev1 / hvc1 モジュール自体は変更不要（共通実装を直せば両方に効く）
 
 ## 完了条件
 
-- 6 ファイルすべての `from_raw_parts` 呼び出しで、サイズ 0 時に null ポインタを渡さない分岐が追加されること
-- 空データ（サイズ 0）の JSON 往復テストが追加されること（例: `configObus: []` の JSON を parse して再度 JSON に変換するテスト）
+- 次の 5 箇所すべての `from_raw_parts` 呼び出しで、サイズ 0 またはポインタ null のときに null ポインタを渡さない分岐が追加されること
+  - `boxes_av01.rs` の `fmt_json_mp4_sample_entry_av01`
+  - `boxes_mp4a.rs` の `fmt_json_mp4_sample_entry_mp4a`
+  - `boxes_flac.rs` の `fmt_json_mp4_sample_entry_flac`
+  - `boxes_avc1.rs` の `NaluList::fmt`
+  - `boxes.rs` の `HevcNaluArrays::fmt`（hev1 / hvc1 の両方の JSON 出力経路をカバー）
+- 空データ（サイズ 0）の JSON 往復テストが追加されること（例: `configObus: []` の JSON を parse して再度 JSON に変換するテスト。NALU 要素が空のケースも含める）
 - 既存のテストが通ること
 - `cargo clippy` が通ること
 
 ## 解決方法
 
-各箇所で `if size == 0 { &[] } else { unsafe { std::slice::from_raw_parts(ptr, size) } }` の分岐を追加する。avc1/hev1/hvc1 の NALU 単位でも同様のガードを追加する。
+各箇所で `if size == 0 || ptr.is_null() { &[] } else { unsafe { std::slice::from_raw_parts(ptr, size) } }` の分岐を追加する。`NaluList` / `HevcNaluArrays` は NALU 単位で同様のガードを追加する。hev1 / hvc1 個別ファイルへの同型パッチは不要（共通の `HevcNaluArrays` を直す）。
 
 ## 後方互換
 

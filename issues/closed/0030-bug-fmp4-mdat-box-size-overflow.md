@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-20
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: qwen3.8-max-preview
 - Branch: feature/fix-fmp4-segment-size-overflow
 - Polished: 2026-07-30
@@ -98,9 +98,24 @@ moof_offset: init_segment_size + e.moof_relative_offset,
 
 ## 解決方法
 
-1. `BoxHeader::MIN_SIZE as u64 + mdat_payload_size` を `(BoxHeader::MIN_SIZE as u64).checked_add(mdat_payload_size).ok_or(MuxError::Overflow)?` に、`16u64 + mdat_payload_size` を同様に `checked_add` に置き換える。
-2. `mfra_bytes` で `init_segment_size.checked_add(e.moof_relative_offset).ok_or(MuxError::Overflow)?` を使い、version 判定は `.any()` から失敗を伝播できるループ（または同等）へ変更する。
-3. 既存の `tests/test_mux_fmp4_segment.rs` に mdat オーバーフローケースを追記する（ファイルは既に存在するため新規作成しない）。
+### 実装
+
+`src/mux_fmp4_segment.rs` の `build_media_segment_bytes` で、`mdat_box_size_value`（`BoxHeader::MIN_SIZE + payload`）と `extended_box_size`（`16 + payload`）を `checked_add` に置き換え、失敗時は `MuxError::Overflow` を返すようにした。
+
+`mfra_bytes` では `init_segment_size + e.moof_relative_offset` の未チェック加算をやめ、version 判定と `TfraEntry` 組み立てを 1 つのループにまとめて `checked_add` → `MuxError::Overflow` にした。
+
+### テスト
+
+`tests/test_mux_fmp4_segment.rs` に以下を追加した（いずれも 64-bit 専用）:
+
+- `mdat_box_size_overflow_returns_overflow`: `data_size = u64::MAX - 7` で通常ヘッダー経路（`8 + payload`）の Overflow
+- `mdat_extended_box_size_overflow_returns_overflow`: `data_size = u64::MAX - 15` で拡張サイズ経路（`16 + payload`）の Overflow
+
+mfra 側の Overflow 再現テストは、公開 API では実質到達不能なため追加していない。
+
+### ドキュメント
+
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追加した
 
 ## 後方互換
 

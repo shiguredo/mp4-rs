@@ -363,7 +363,7 @@ impl core::fmt::Display for SampleTableAccessorError {
             SampleTableAccessorError::FirstChunkIndexIsNotOne { actual_chunk_index } => {
                 write!(
                     f,
-                    "First chunk index in `stsc` box is expected to 1, but got {actual_chunk_index}"
+                    "First chunk index in `stsc` box is expected to be 1, but got {actual_chunk_index}"
                 )
             }
             SampleTableAccessorError::LastChunkIndexIsTooLarge {
@@ -372,7 +372,7 @@ impl core::fmt::Display for SampleTableAccessorError {
             } => {
                 write!(
                     f,
-                    "Last chunk index in `stsc` box is expected to `<= {max_chunk_index}`, but got {last_chunk_index}"
+                    "Last chunk index in `stsc` box is expected to be `<= {max_chunk_index}`, but got {last_chunk_index}"
                 )
             }
             SampleTableAccessorError::MissingSampleEntry {
@@ -388,7 +388,7 @@ impl core::fmt::Display for SampleTableAccessorError {
             SampleTableAccessorError::ChunkIndicesNotMonotonicallyIncreasing => {
                 write!(
                     f,
-                    "Chunk indices in `stsc` box is not monotonically increasing"
+                    "Chunk indices in `stsc` box are not monotonically increasing"
                 )
             }
             SampleTableAccessorError::ChunksExistButNoSamples { chunk_count } => {

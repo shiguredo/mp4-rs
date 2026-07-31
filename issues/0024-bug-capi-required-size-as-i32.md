@@ -5,7 +5,7 @@
 - Completed: YYYY-MM-DD
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-capi-required-size-as-i32
-- Polished: YYYY-MM-DD
+- Polished: 2026-07-31
 
 ## 目的
 
@@ -41,15 +41,19 @@ API 仕様上、`out_required_input_size` の値は以下のとおり定義さ�
 
 `i32::try_from(n)` で変換し、変換失敗時は `MP4_ERROR_UNSUPPORTED` を返して `last_error` に詳細を記録する。
 
-- **飽和は採用しない**: `i32::MAX` にクランプすると呼び出し側は要求を満たしたつもりで入力を渡すが、内部の `RequiredInput::is_satisfied_by()` が `false` を返して demuxer / detector が `InvalidState` に落ちる。結果として呼び出し側には「サイズは提示どおり供給したのに `MP4_ERROR_INVALID_STATE` になった」という不透明な失敗になり UX が悪化する。エラーを即返した方が「> 2 GiB moov は非対応」と明確に伝わる。
+- **飽和は採用しない**: `i32::MAX` にクランプすると、呼び出し側は提示サイズどおりの入力を渡したつもりでも、内部の `RequiredInput` は実サイズ（`> i32::MAX`）のままなので要求を満たせない。その結果の観測は次のとおりで、いずれも「サイズは提示どおり供給したのに別の失敗になった」という不透明な UX になる。エラーを即返した方が「> 2 GiB moov は非対応」と明確に伝わる。
+  - **demuxer** (`Mp4FileDemuxer::handle_input`): `RequiredInput::is_satisfied_by()` が `false` になり、`DemuxError::DecodeError(Error::invalid_input(...))` を記録する。C API の `mp4_file_demuxer_handle_input` は常に `MP4_ERROR_OK` を返すため、直後の `mp4_file_demuxer_get_required_input` は `required_input() == None` により `out_required_input_size = 0`（完了に見える）を返し、表面化するのは後続 API（`get_tracks` 等）での `MP4_ERROR_INVALID_INPUT` になる。
+  - **kind detector** (`Mp4FileKindDetector::handle_input`): 位置一致かつ短すぎる入力は `input_is_acceptable` で受理され、`available_bytes` が `Error::invalid_data` を返す。C API の `mp4_file_kind_detector_handle_input` はその場で `MP4_ERROR_INVALID_DATA` を返す。
 - **`int64_t` への拡張は採用しない**: ABI 破壊になる。加えて `mp4.h` のドキュメントコメントで「`int32_t` を使う」と設計意図が明示されているため、その前提を維持する。
 - **エラーコードに `MP4_ERROR_UNSUPPORTED` を選ぶ理由**: ヘッダで「`int32_t` を前提とし巨大ペイロードは想定しない」と設計上の制約を明示している以上、それを超えるサイズは「API がサポートしていない」に該当する。`MP4_ERROR_OTHER` は「上記以外」で意味が弱く、`MP4_ERROR_INVALID_DATA` はデータ破損を含意するため不適。
 - **内部状態は変えない**: この関数はまだ入力を受け取っておらず状態遷移を伴わないため、demuxer / detector を error 状態にはせず、戻り値と `last_error` だけで通知する。
+- **エラー時は両 out を更新しない**: `MP4_ERROR_UNSUPPORTED` を返すときは `out_required_input_position` / `out_required_input_size` を書き込まない。既存の NULL ポインタ経路（および kind detector のエラー状態経路）と同じ契約にし、位置だけ書いてから失敗する・切り捨て値を書いてから `UNSUPPORTED` を返す、といった再発経路を防ぐ。成功時（`MP4_ERROR_OK`）にのみ両 out を設定する。
 - **変換ロジックの共通化**: 同一の変換が 2 関数に重複しているため、`RequiredInput.size`（`Option<usize>`）を `Result<i32, ...>` に変換する小さなヘルパー関数として切り出し、両呼び出し箇所から使う。切り出すことで純粋関数として単体テスト可能になる（CLAUDE.md でモック禁止のため、実 MP4 ではなくヘルパー単体でテストする方針を採る）。
 
 ## 完了条件
 
 - `required.size > i32::MAX` の場合に `-1` と衝突せず、`MP4_ERROR_UNSUPPORTED` が返ること
+- そのとき `out_required_input_position` / `out_required_input_size` が更新されていないこと（呼び出し前の値が残ること）
 - `last_error` に「要求サイズが `i32::MAX` を超えた」旨の情報が記録されること
 - `crates/c-api/include/mp4.h` の `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` のドキュメントコメントに、「`MP4_ERROR_UNSUPPORTED` が返る条件」として本ケースが記載されていること
 - 変換ヘルパー関数に対する単体テストが追加されていること（`None` / `0` / `1` / `i32::MAX as usize` / `i32::MAX as usize + 1` / `usize::MAX` を含む境界値）
@@ -61,6 +65,8 @@ API 仕様上、`out_required_input_size` の値は以下のとおり定義さ�
    - `None` → `Ok(-1)`
    - `Some(n)` かつ `n <= i32::MAX` → `Ok(n as i32)`
    - `Some(n)` かつ `n > i32::MAX` → `Err(...)`
-2. `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` の `n as i32` を上記ヘルパーの呼び出しに置換し、`Err` の場合は `set_last_error` して `MP4_ERROR_UNSUPPORTED` を返す
+2. `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` の `n as i32` を上記ヘルパーの呼び出しに置換する
+   - ヘルパーが `Ok` のときだけ両 out を設定して `MP4_ERROR_OK` を返す
+   - `Err` の場合は両 out を更新せず、`set_last_error` して `MP4_ERROR_UNSUPPORTED` を返す
 3. `crates/c-api/include/mp4.h` の該当 2 関数のドキュメントコメントに、`MP4_ERROR_UNSUPPORTED` が返る条件（要求サイズが `i32::MAX` を超えた場合）を追記する
 4. ヘルパー関数に対する単体テストを追加し、上記完了条件の境界値をカバーする

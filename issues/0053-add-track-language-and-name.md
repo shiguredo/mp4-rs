@@ -36,17 +36,82 @@ Low。現時点で具体的な要求は無く、バグ由来でもない。音�
 
 ## 設計方針
 
-以下を決める必要がある。
+3 論点を以下で確定する。
 
-1. **設定を持たせる場所**: トラック単位の属性なので `Sample` ではなく Options 側が素直だが、`Options` は現状トラック種別に依存しない構成になっている。`TrackKind` ごとの設定を持つ形にするか、別の入り口を用意するかを決める
-2. **`hdlr.name` の扱い**: `HdlrBox::name` は null 終端バイト列（`Utf8String::into_null_terminated_bytes()`）である。利用側には `&str` ないし `Utf8String` を受け取り、内部で変換する形が望ましい
-3. **言語コードの検証**: `mdhd.language` は ISO-639-2/T の 3 文字を 5 ビットずつパックする。5 ビットに収まらない入力の扱いは 0029 と重なるため、方針を揃える
+同一 `TrackKind` の複数トラック対応（0049）で必要になる指定インタフェース（トラックインデックス指定など）は本 issue の範囲外とし、当面「1 kind = 1 メタデータ」を前提に設計する。0049 が着手されるタイミングで、必要に応じて破壊的な API 変更を行うことを許容する。
 
-### 0049（同一 `TrackKind` の複数トラック許容）との関係
+### 1. 設定を持たせる場所: `Options` に `TrackKind` 別フィールドを追加する
 
-pending の 0049 でも「5. 言語情報の扱い」として `mdhd.language` を指定可能にするかが検討事項に挙がっている。ただし 0049 は同一 kind の複数トラック対応が主題で、`alternate_group` の扱いなど設計判断が固まるまで pending になっている。
+`Sample` 側に持たせるのは不適。トラック単位の属性を毎サンプルに運ばせるのは冗長で、「どのサンプルの値が採用されるか」も曖昧になる。muxer は最初のサンプルから暗黙にトラックを起こす設計のため、値の取り違えが起きやすい。
 
-本 issue が扱うのは「**トラックが 1 本しかなくても言語とトラック名を宣言できない**」という範囲であり、複数トラック対応を待たずに解決できる。多言語トラックの出し分けそのものは 0049 の範囲であり、本 issue には含めない。
+現行 `Options` はトラック種別非依存だが、`Mp4FileMuxerOptions` / `SegmentMuxerOptions` は既に「muxer 全体の設定」の入れ場所として確立している。ここに `TrackKind` ごとのフィールドを追加するのが最小侵襲。`HashMap<TrackKind, _>` ではなく静的な kind 別フィールドにすることで、typo を型で防ぐ。
+
+具体形:
+
+```rust
+/// トラック単位の任意メタデータ（`mdhd.language` / `hdlr.name`）
+#[derive(Debug, Clone, Default)]
+pub struct TrackMetadata {
+    /// 未指定時は `LanguageCode::UNDEFINED`（`*b"und"`）
+    pub language: LanguageCode,
+    /// 未指定時は空文字列
+    pub name: Utf8String,
+}
+```
+
+`Mp4FileMuxerOptions` / `SegmentMuxerOptions` の両方に以下 3 フィールドを追加する:
+
+```rust
+pub audio_track: TrackMetadata,
+pub video_track: TrackMetadata,
+pub subtitle_track: TrackMetadata,
+```
+
+`Default` は全て `TrackMetadata::default()`（`LANGUAGE_UNDEFINED` + 空文字列）となり、現行挙動と完全一致する。
+
+`TrackMetadata` は両 muxer で共有するため、既存の `Sample` / `MuxError` と同様に `mux_mp4_file` に定義し、`mux_fmp4_segment` から use する。
+
+### 2. `hdlr.name` の型: `Utf8String`
+
+`HdlrBox::name` は null 終端バイト列だが、リポジトリでは既に `Utf8String` が「null 文字を含まない UTF-8」の正規表現として使われている（`boxes_sample_entry.rs` の `namespace` など）。`Utf8String::new(&str) -> Option<Self>` が null 禁止を API 境界で強制するため、`Utf8String` を受け取れば `HdlrBox::name` へ流し込む段階では検証済み。
+
+`Utf8String` に `Default` 実装を追加し、`Utf8String::EMPTY` を返すようにする。デフォルト時は現行どおり `Utf8String::EMPTY.into_null_terminated_bytes()` を書き込む。
+
+### 3. `mdhd.language` の型: `LanguageCode` newtype を新設
+
+生 `[u8; 3]` を受けると、0029 の encode 時 5 ビット検証で「finalize 段階でのエラー」という遅い失敗になる。Options 構築時点で弾けたほうが UX が良いため、newtype で入力側の検証を行う。
+
+検証範囲は 0029 と揃え、各バイトを `0x60..=0x7F` に限る。ISO-639-2/T の文字集合（`a-z`）まで絞る厳格化は 0029 と同じ理由で本 issue の範囲外とする。
+
+```rust
+/// `MdhdBox::language` 用の 3 文字言語コード
+///
+/// 各バイトは `0x60..=0x7F` の範囲に収まる必要がある
+/// （ISO/IEC 14496-12 の `unsigned int(5)[3]` パック規約に由来）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LanguageCode([u8; 3]);
+
+impl LanguageCode {
+    /// 未定義言語（`*b"und"`）
+    pub const UNDEFINED: Self = Self(*b"und");
+
+    /// 3 バイト配列から作る。各バイトが `0x60..=0x7F` の範囲外なら `None`
+    pub fn new(code: [u8; 3]) -> Option<Self> { ... }
+
+    /// 3 文字 ASCII 文字列から作る（例: `"eng"`, `"jpn"`）
+    pub fn from_str(s: &str) -> Option<Self> { ... }
+
+    pub fn as_bytes(&self) -> [u8; 3] { self.0 }
+}
+
+impl Default for LanguageCode {
+    fn default() -> Self { Self::UNDEFINED }
+}
+```
+
+`MdhdBox::language` の型（`pub [u8; 3]`）は変更しない。muxer 経由の利用者には newtype 経由の型安全なインタフェースを、直接 `MdhdBox` を組み立てる利用者には生バイト列を、それぞれ提供する棲み分けとなる。
+
+`LanguageCode` は `Utf8String` と同様の位置付けなので `basic_types.rs` に配置し、`lib.rs` から re-export する。
 
 ## 完了条件
 

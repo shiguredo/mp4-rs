@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-28
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: Opus 4.7
 - Branch: feature/add-hybrid-mp4-doc
 - Polished: 2026-07-31
@@ -70,15 +70,19 @@ Medium。既存の API (`Mp4FileMuxer::advance_position()`) は 2026.3.0 で追�
 
 ## 解決方法
 
-- `docs/hybrid_mp4.md` を新規作成する
-  - 「設計方針」節の想定構成を叩き台にしつつ、OBS ブログと hisui `hybrid_writer.rs` を読んで正確な説明を書く
-  - Rust コード例は `Mp4FileMuxer::new()` → `initial_boxes_bytes()` → サンプル書き出しループ（`advance_position()` を挟みつつ `append_sample()`）→ `finalize()` → `FinalizedBoxes::offset_and_bytes_pairs()` による後書き、の骨格を示す
-  - コード例は関数定義だけを書き、`no_run` / `ignore` を使わずデフォルトの `fn main() {}` にコンパイルだけ検証させる（`docs/subtitle.md` の書き方に揃える）
-- `src/docs.rs` に `pub mod hybrid_mp4 {}` を追加し、`#[doc = include_str!("../docs/hybrid_mp4.md")]` で取り込む
+- `docs/hybrid_mp4.md` を新規作成した
+  - 節構成: 「Hybrid MP4 とは」「標準 MP4 / fMP4 との違い」「本 crate の対応方針と責任分界」「書き出しの呼び出し順序」「注意事項」「参考リンク」
+  - Rust コード例は関数定義のみを書き、`no_run` / `ignore` を使わずデフォルトの `fn main() {}` でコンパイルを検証する形（`docs/subtitle.md` に揃えた）
+- `src/docs.rs` に `pub mod hybrid_mp4 {}` を追加し、`#[doc = include_str!("../docs/hybrid_mp4.md")]` で取り込んだ
+- `CHANGES.md` に `[ADD] Hybrid MP4 の取り扱いについての補足ドキュメントを追加する` を追加した
+- レビュー指摘に基づく修正
+  - `finalize()` 後の書き戻しループで、`output` の長さを超える位置に配置される moov に対して `copy_from_slice` が範囲外書き込みを起こす問題を、事前 `output.resize()` で解消した
+  - 「フラグメントを繰り返す場合」のコメントを、1 フラグメント内に複数サンプルが入る前提の「非サンプル書き出し 1 回 → advance_position 1 回 →（サンプル書き出し + append_sample） × N」表現に書き直した
+  - 比較表の「録画中の構造」列と標準 MP4 行の時制齟齬、および「完成後の見え方」列の情報量ゼロを解消（列名を「完成後の構造」に変え、finalize 後のレイアウトを明示）。fMP4 の「不完全な `moov`」を「サンプルテーブル無しの `moov`」に修正
+  - C API 参照の 1 段落を削除し、ドキュメントを Rust API に閉じさせた
 - 検証
-  - `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps`
-  - `cargo test --doc`
-- `CHANGES.md` に `[ADD] Hybrid MP4 の取り扱いについての補足ドキュメントを追加する` のエントリを追加する
+  - `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` 警告なし
+  - `cargo test --doc` pass
 
 ## 参考
 

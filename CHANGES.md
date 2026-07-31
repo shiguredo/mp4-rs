@@ -208,6 +208,8 @@
 
 ### misc
 
+- [ADD] Hybrid MP4 の取り扱いについての補足ドキュメントを追加する
+  - @sile
 - [ADD] CI に `crates/wasm` の miri 実行ジョブを追加する
   - `make miri`（`cargo +nightly miri test -p wasm`）を追加し、`.github/workflows/ci.yml` の CI ジョブとして実行する
   - 既存 CI と同じ `push` / 月–金 cron で回す（他ジョブと並列）

@@ -91,7 +91,7 @@
   - @sile
 - [FIX] WASM の JSON サンプルエントリー出力で、空バイト列を `from_raw_parts(null, 0)` に渡して未定義動作になっていたのを修正する
   - `fmt_json_mp4_sample_entry_av01` / `_mp4a` / `_flac` では、`allocate_and_copy_bytes` の空・確保失敗による `(null, 0)` をサイズ 0 または null のとき `&[]` を返すガードで避ける
-  - `NaluList` / `HevcNaluArrays` では加えて、`allocate_and_copy_array_list` が要素確保失敗時に作り得る `(null, 非ゼロ)` も同じガードで避ける
+  - `NaluList` / `HevcNaluArrays` / `FtabList` では加えて、`allocate_and_copy_array_list` が要素確保失敗時に作り得る `(null, 非ゼロ)` も同じガードで避ける
   - @sile
 - [FIX] `Mp4FileDemuxer` で `ftyp` / `moov` の `box_size` を `usize` へ変換するときに `as` キャストではなく `usize::try_from` を使うようにする
   - 32 bit ターゲット（wasm32 を含む）で `box_size` が `usize::MAX` を超えると暗黙に切り詰められていた

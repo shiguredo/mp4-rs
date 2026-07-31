@@ -4,8 +4,8 @@
 - Created: 2026-07-27
 - Completed: YYYY-MM-DD
 - Model: Opus 5
-- Branch: feature/fix-capi-estimate-moov-box-size-tracks
-- Polished: YYYY-MM-DD
+- Branch: feature/change-capi-estimate-moov-box-size-tracks
+- Polished: 2026-07-31
 
 ## 目的
 
@@ -21,7 +21,7 @@ Medium。生成される MP4 が壊れるわけではなく、faststart が黙�
 
 ### 見積もり関数が 2 トラック固定
 
-`crates/c-api/src/mux.rs:306-317`:
+`crates/c-api/src/mux.rs` の `mp4_estimate_maximum_moov_box_size` 関数:
 
 ```rust
 pub extern "C" fn mp4_estimate_maximum_moov_box_size(
@@ -35,7 +35,7 @@ pub extern "C" fn mp4_estimate_maximum_moov_box_size(
 }
 ```
 
-Rust 本体の `estimate_maximum_moov_box_size()`（`src/mux_mp4_file.rs:82`）は `&[usize]` で任意トラック数を受けられるため、制約は C API 側の引数だけにある。
+Rust 本体の `src/mux_mp4_file.rs` の `estimate_maximum_moov_box_size` 関数は `&[usize]` で任意トラック数を受けられるため、制約は C API 側の引数だけにある。
 
 ### 実測
 
@@ -51,7 +51,7 @@ v=   1 a=   1 s=1000 | 2track 見積= 2592 faststart=false 実 moov=16047 | 3tra
 
 ### 縮退を検知する手段が無い
 
-Rust 側の `FinalizedBoxes::is_faststart_enabled()`（`src/mux_mp4_file.rs:153`）は C API に公開されていない。`crates/c-api/src/mux.rs` の公開関数一覧にも faststart の成否を問い合わせるものは無いため、C API 利用者は見積もりが不足したことを知る方法がない。
+Rust 側の `src/mux_mp4_file.rs` の `FinalizedBoxes::is_faststart_enabled` メソッドは C API に公開されていない。`crates/c-api/src/mux.rs` の公開関数一覧にも faststart の成否を問い合わせるものは無いため、C API 利用者は見積もりが不足したことを知る方法がない。
 
 ## 設計方針
 
@@ -63,7 +63,9 @@ Rust 側の `FinalizedBoxes::is_faststart_enabled()`（`src/mux_mp4_file.rs:153`
 
 - 変更後: `mp4_estimate_maximum_moov_box_size(const uint32_t *sample_counts, uint32_t sample_counts_len) -> uint32_t`
 - Rust 側 `shiguredo_mp4::mux::estimate_maximum_moov_box_size(&[usize])` と 1:1 で対応する形。トラック種別は Rust 側の見積もり式が使わないため C 側でも受けない。
-- `sample_counts` が NULL の場合の扱いは実装時に決める（他の C API 関数と揃えて、NULL には 0 を返す、または NULL の場合は 0 として扱うなど、安全側で処理する）。
+- 引数の扱いは以下で確定する（`sample_counts_len > 0` かつ `sample_counts` が NULL の組み合わせによる UB を避けるため、NULL 判定を長さ判定より先に行う）:
+    - `sample_counts` が NULL の場合は `sample_counts_len` の値によらず `0` を返す（誤用扱い。他の C API 関数が NULL 引数に対して空文字や `MP4_ERROR_NULL_POINTER` を返すのと同じ方針で、戻り値が `u32` のため `0` を返す）。
+    - `sample_counts` が NULL でなく `sample_counts_len == 0` の場合は空スライスとして Rust 側の `estimate_maximum_moov_box_size(&[])` を呼び、`BASE_MOOV_OVERHEAD` 相当（現状 512）を返す。
 
 ### 既存 2 引数版の扱い
 
@@ -74,6 +76,8 @@ Rust 側の `FinalizedBoxes::is_faststart_enabled()`（`src/mux_mp4_file.rs:153`
 - 既存の呼び出し箇所も新シグネチャに書き換える:
     - `crates/c-api/tests/simple_mux_demux.c` の `main` 内 `mp4_estimate_maximum_moov_box_size` 呼び出し
     - `crates/wasm/examples/mux.js` の `mp4_estimate_maximum_moov_box_size` 呼び出し
+    - `crates/c-api/src/mux.rs` の `mp4_estimate_maximum_moov_box_size` 関数直上の doc コメント内使用例（`# 使用例` ブロックの C コード）と、同ファイルの `mp4_file_muxer_set_reserved_moov_box_size` 関数の doc コメント内使用例。cbindgen が `crates/c-api/include/mp4.h` にそのまま反映するため、doc コメントを新シグネチャに揃えないと公開ヘッダーに旧シグネチャの使用例が残る。
+    - `crates/c-api/src/mux.rs` の `mp4_estimate_maximum_moov_box_size` 関数直上の `# NOTE` セクション（「この関数は音声・映像の 2 トラック分しか見積もれない」）は削除する。任意トラック数対応後は事実と食い違うため。
 
 ### faststart 成否の問い合わせ関数
 
@@ -92,8 +96,8 @@ Rust 側の `FinalizedBoxes::is_faststart_enabled()`（`src/mux_mp4_file.rs:153`
 
 - `mp4_estimate_maximum_moov_box_size()` が任意トラック数を受け取れる（配列 + 長さ）シグネチャに置き換わっていること
 - C API から字幕トラックを含む 3 トラック以上の構成の `moov` サイズを見積もれること
-- 上記実測の 6 ケースで faststart が有効になること
-- 既存の呼び出し箇所（`crates/c-api/tests/simple_mux_demux.c`、`crates/wasm/examples/mux.js`）が新シグネチャに追従していること
+- 「### 実測」節の表に示した 3 ケース（`v=10 a=10 s=100` / `v=50 a=50 s=300` / `v=1 a=1 s=1000`）で、3 トラック見積もりを使った場合に faststart が有効になること
+- 既存の呼び出し箇所（`crates/c-api/tests/simple_mux_demux.c`、`crates/wasm/examples/mux.js`、および `crates/c-api/src/mux.rs` の doc コメント内使用例と `# NOTE`）が新シグネチャに追従していること
 - `crates/c-api/tests/` に見積もり関数のテストが追加されていること
 - CHANGES.md に破壊的変更として追記されていること
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` / `cargo test -p c-api --lib` が通ること

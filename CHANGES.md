@@ -97,6 +97,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] c-api の `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` で要求サイズが `i32::MAX` を超えたときに `-1`（EOF）と衝突しないようにする
+  - これまで `usize as i32` で切り捨てており、不正または破損した入力（`box_size` が極端に大きい等）で負値（特に `-1`）になり得た
+  - 合法なファイルで `moov` 等が 2 GiB を超えることは現実的ではないが、破損入力への防御として `i32::try_from` で変換し、超過時は `MP4_ERROR_UNSUPPORTED` を返す（出力引数は更新しない）
+  - @sile
 - [FIX] `Mp4FileMuxer` が全サンプル非キーフレームの音声・字幕トラックでエントリー 0 個の `stss` を出力しないようにする
   - これまでは `keyframe = false` のみのトラックで空の `stss`（同期サンプルなし）を出力していた
   - 音声・字幕では `stss` を省略し、全サンプル同期として扱う

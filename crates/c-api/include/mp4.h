@@ -187,7 +187,11 @@ typedef struct Fmp4SegmentMuxer Fmp4SegmentMuxer;
  * while (true) {
  *     uint64_t required_pos;
  *     int32_t required_size;
- *     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     if (err != MP4_ERROR_OK) {
+ *         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+ *         break;
+ *     }
  *     if (required_size == 0) break;
  *
  *     // NOTE: 実際には `required_size == -1` の場合には、ファイル末尾までを読み込む必要がある
@@ -1452,11 +1456,14 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  *     - 通常は、より大きな範囲のデータを一度に渡した方が効率がいい
  *   - 0 が設定された場合は、これ以上の入力データが不要であることを意味する
  *   - -1 が設定された場合は、ファイルの末尾までのデータが必要であることを意味する
+ *   - 要求サイズが `i32::MAX` を超える場合は更新されず、`MP4_ERROR_UNSUPPORTED` が返る
  *
  * # 戻り値
  *
- * - `MP4_ERROR_OK`: 正常に処理された
+ * - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
  * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+ *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
  *
  * # 使用例
  *
@@ -1468,7 +1475,11 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  * while (true) {
  *     uint64_t required_pos;
  *     int32_t required_size;
- *     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     if (err != MP4_ERROR_OK) {
+ *         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+ *         break;
+ *     }
  *     if (required_size == 0) break; // 初期化完了
  *
  *     // ファイルから必要なデータを読み込む
@@ -2020,7 +2031,13 @@ const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetect
  * `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
  * そのため、サイズ表現には `int32_t` を使っている。
  *
- * 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
+ * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+ *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
+ * - 判定器がエラー状態に遷移している場合は、上記以外のエラーを返す
  */
 enum Mp4Error mp4_file_kind_detector_get_required_input(struct Mp4FileKindDetector *detector,
                                                         uint64_t *out_required_input_position,

@@ -6,7 +6,7 @@ use shiguredo_mp4::BaseBox;
 use crate::{
     basic_types::Mp4TrackKind,
     boxes::{Mp4SampleEntry, Mp4SampleEntryOwned},
-    error::Mp4Error,
+    error::{Mp4Error, required_input_size_to_i32},
 };
 
 /// MP4 デマルチプレックス処理中に抽出されたメディアトラックの情報を表す構造体
@@ -157,7 +157,11 @@ impl Mp4DemuxSample {
 /// while (true) {
 ///     uint64_t required_pos;
 ///     int32_t required_size;
-///     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+///     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+///     if (err != MP4_ERROR_OK) {
+///         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+///         break;
+///     }
 ///     if (required_size == 0) break;
 ///
 ///     // NOTE: 実際には `required_size == -1` の場合には、ファイル末尾までを読み込む必要がある
@@ -328,11 +332,14 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_last_error(
 ///     - 通常は、より大きな範囲のデータを一度に渡した方が効率がいい
 ///   - 0 が設定された場合は、これ以上の入力データが不要であることを意味する
 ///   - -1 が設定された場合は、ファイルの末尾までのデータが必要であることを意味する
+///   - 要求サイズが `i32::MAX` を超える場合は更新されず、`MP4_ERROR_UNSUPPORTED` が返る
 ///
 /// # 戻り値
 ///
-/// - `MP4_ERROR_OK`: 正常に処理された
+/// - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
 /// - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+/// - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+///   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
 ///
 /// # 使用例
 ///
@@ -344,7 +351,11 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_last_error(
 /// while (true) {
 ///     uint64_t required_pos;
 ///     int32_t required_size;
-///     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+///     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+///     if (err != MP4_ERROR_OK) {
+///         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+///         break;
+///     }
 ///     if (required_size == 0) break; // 初期化完了
 ///
 ///     // ファイルから必要なデータを読み込む
@@ -384,8 +395,15 @@ pub unsafe extern "C" fn mp4_file_demuxer_get_required_input(
 
     unsafe {
         if let Some(required) = demuxer.inner.required_input() {
+            let size = match required_input_size_to_i32(required.size) {
+                Ok(size) => size,
+                Err(msg) => {
+                    demuxer.set_last_error(&format!("[mp4_file_demuxer_get_required_input] {msg}"));
+                    return Mp4Error::MP4_ERROR_UNSUPPORTED;
+                }
+            };
             *out_required_input_position = required.position;
-            *out_required_input_size = required.size.map(|n| n as i32).unwrap_or(-1);
+            *out_required_input_size = size;
         } else {
             *out_required_input_position = 0;
             *out_required_input_size = 0;

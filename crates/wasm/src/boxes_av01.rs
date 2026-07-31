@@ -26,8 +26,13 @@ pub fn fmt_json_mp4_sample_entry_av01(
                 data.initial_presentation_delay_minus_one,
             )?;
         }
-        let config_obus =
-            unsafe { std::slice::from_raw_parts(data.config_obus, data.config_obus_size as usize) };
+        // 空データや確保失敗で (null, 0) になり得る。サイズ 0 でも null を
+        // from_raw_parts に渡すと Rust 仕様上 UB なのでガードする
+        let config_obus = if data.config_obus_size == 0 || data.config_obus.is_null() {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(data.config_obus, data.config_obus_size as usize) }
+        };
         f.member("configObus", config_obus)
     })
 }
@@ -172,6 +177,35 @@ mod tests {
         assert_eq!(data, &[10, 11, 0, 0]);
 
         // メモリ解放
+        mp4_sample_entry_av01_free(&mut sample_entry);
+        assert_eq!(sample_entry.config_obus_size, 0);
+        assert!(sample_entry.config_obus.is_null());
+    }
+
+    /// 空の configObus を parse → JSON 再出力する往復テスト
+    ///
+    /// allocate_and_copy_bytes は空入力で (null, 0) を返す。fmt 側が
+    /// from_raw_parts(null, 0) を呼ぶと UB になるため、ガード後も空配列として
+    /// 再出力できることを検証する
+    #[test]
+    fn test_json_to_av01_empty_config_obus_roundtrip() {
+        let json_str = r#"{"kind": "av01", "width": 3840, "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "configObus": []}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let mut sample_entry =
+            parse_json_mp4_sample_entry_av01(json.value()).expect("空 configObus の av01 JSON");
+
+        // 空データは (null, 0) として保持される
+        assert_eq!(sample_entry.config_obus_size, 0);
+        assert!(sample_entry.config_obus.is_null());
+
+        // 再出力で UB にならず空配列になること
+        let out = nojson::json(|f| fmt_json_mp4_sample_entry_av01(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""configObus":[]"#),
+            "空 configObus が [] として再出力されること: {out}"
+        );
+
         mp4_sample_entry_av01_free(&mut sample_entry);
         assert_eq!(sample_entry.config_obus_size, 0);
         assert!(sample_entry.config_obus.is_null());

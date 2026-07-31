@@ -438,8 +438,14 @@ impl nojson::DisplayJson for HevcNaluArrays {
                                 let nalu_ptr = unsafe { *self.nalu_data.add(nalu_index as usize) };
                                 let nalu_size =
                                     unsafe { *self.nalu_sizes.add(nalu_index as usize) } as usize;
-                                let nalu =
-                                    unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) };
+                                // 空要素は allocate_and_copy_bytes 経由で (null, 0)、
+                                // 非空の確保失敗では (null, 非ゼロ) になり得る。いずれも
+                                // from_raw_parts に null を渡すと UB なのでガードする
+                                let nalu = if nalu_size == 0 || nalu_ptr.is_null() {
+                                    &[][..]
+                                } else {
+                                    unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) }
+                                };
                                 f.element(nalu)?;
                             }
                             Ok(())

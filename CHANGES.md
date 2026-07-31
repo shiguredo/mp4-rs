@@ -89,6 +89,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] WASM の JSON サンプルエントリー出力で、空バイト列を `from_raw_parts(null, 0)` に渡して未定義動作になっていたのを修正する
+  - `allocate_and_copy_bytes` が空データに `(null, 0)` を返す経路と、`allocate_and_copy_array_list` の要素確保失敗で `(null, 非ゼロ)` になり得る経路の両方で、サイズ 0 または null のとき `&[]` を返すガードを入れる
+  - 対象は `fmt_json_mp4_sample_entry_av01` / `_mp4a` / `_flac`、および `NaluList` / `HevcNaluArrays` の JSON 出力
+  - @sile
 - [FIX] `Fmp4SegmentMuxer` の `mdat` ボックスサイズ計算と `mfra` の `moof_offset` 計算で `u64` 加算がオーバーフローしたときにパニックや不正値にならず `MuxError::Overflow` を返すようにする
   - これまではパニック（debug ビルド）やラップアラウンド（release ビルド）により不正なボックスサイズやオフセットが生成され得た
   - @sile

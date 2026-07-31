@@ -1,16 +1,16 @@
-# wasm の mp4_alloc 失敗（OOM）時の方針を abort か Result かに揃える
+# wasm の mp4_alloc 失敗（OOM）時の方針を abort に統一する
 
 - Priority: Medium
 - Created: 2026-07-31
 - Completed: YYYY-MM-DD
 - Branch: feature/change-wasm-alloc-oom-policy
-- Polished: YYYY-MM-DD
+- Polished: 2026-07-31
 
 ## 目的
 
 `crates/wasm` では `mp4_alloc` が確保失敗時に null を返し得る一方、呼び出し側の多くは失敗を明示エラーにせず、`(null, 0)` や `(null, 非ゼロ)` を構造体に載せたまま `Ok` を返す。通常の Rust では OOM 時にプロセスが abort することが多く、ここだけ中途半端に「死なない OOM」を抱えると、フォーマット経路での防御的ガードや、パース経路だけ `Err` 化するような部分対応では方針がぶれる。
 
-wasm 全体で OOM（`mp4_alloc` 失敗）の扱いを **abort に寄せるか、一貫して `Result` で伝播するか** を決め、実装を揃える。
+wasm 全体で OOM（`mp4_alloc` 失敗）の扱いを **abort に統一** し、実装を揃える。
 
 ## 優先度根拠
 
@@ -31,7 +31,7 @@ wasm 全体を **abort に寄せる** で確定する（案 A）。パース経�
 ### abort を採る理由
 
 - **標準 Rust の慣行と一致する**。`Vec` / `Box` などは OOM で abort する。`parse_json_mp4_sample_entry_*` は内部で `Vec<Vec<u8>>` を構築するため、そもそも `mp4_alloc` を `Result` 化しても `Vec` 経路の OOM は abort する。「全 OOM を `Result` で観測可能にする」は原理的に達成できない
-- **コードが単純化される**。`mp4_alloc` を `handle_alloc_error` で落とせば、`allocate_and_copy_bytes` / `allocate_and_copy_aligned` の `null` 返却分岐、`allocate_and_copy_array_list` の「非空要素側の確保失敗で `(null, 非ゼロ)` が並ぶ」非常態、closed issue 0034 で入れた `HevcNaluArrays::fmt` の null ガードや `mp4_sample_entry_hevc_fields_free` の「`nalu_counts == null && nalu_data != null`」経路の脚注がまるごと不要になる
+- **コードが単純化される**。`mp4_alloc` を `handle_alloc_error` で落とせば、`allocate_and_copy_bytes` / `allocate_and_copy_aligned` の `null` 返却分岐、`allocate_and_copy_array_list` の「非空要素側の確保失敗で `(null, 非ゼロ)` が並ぶ」非常態、closed issue 0034 で入れた fmt 側の null ガードや `free_hevc_sample_entry_fields` の「`nalu_counts == null && nalu_data != null`」経路の脚注がまるごと不要になる
 - **JS 側の観測性は失われない**。wasm での abort は trap になり、JS 側では `RuntimeError` として throw される。「壊れたポインタを載せた `Ok`」を silent に返すより明確な失敗になる
 - **OOM 頻度が低いため `Err` 回復要件が弱い**。優先度根拠で確認済み
 
@@ -57,9 +57,18 @@ wasm 全体を **abort に寄せる** で確定する（案 A）。パース経�
 
 ### 3. closed issue 0034 由来の防御的ガード・脚注を整理する
 
-- `HevcNaluArrays::fmt`（`crates/wasm/src/boxes.rs`）の `nalu_size == 0 || nalu_ptr.is_null()` ガードから `nalu_ptr.is_null()` を落とし、`nalu_size == 0` のみで空要素判定にする。コメントの「`(null, 非ゼロ)` も残り得る」記述を削除する
-- `HevcSampleEntryFields` の doc コメントにある「失敗時に `(null, 0)` を返す前提に依存」の記述を「abort 前提」に更新する
-- `mp4_sample_entry_hevc_fields_free` の「`nalu_counts == null && nalu_data != null` は非常態」コメントを削除する（発生し得なくなるため）
+abort 後も空入力は `(null, 0)` のままなので、空要素判定の `size == 0` ガードは残す。OOM 由来の `(null, 非ゼロ)` と「確保失敗」前提だけを消す。方針は次で統一する。
+
+- **配列要素系**（`size == 0 || ptr.is_null()` → `size == 0` のみ、`(null, 非ゼロ)` コメント削除）:
+  - `HevcNaluArrays::fmt`（`crates/wasm/src/boxes.rs`）
+  - `NaluList::fmt`（`crates/wasm/src/boxes_avc1.rs`）
+  - `FtabList::fmt`（`crates/wasm/src/boxes_tx3g.rs`）
+- **単一バッファ系**（`size == 0 || ptr.is_null()` → `size == 0` のみ、「空入力・確保失敗」コメントを「空入力で `(null, 0)`」に更新）:
+  - `fmt_json_mp4_sample_entry_av01`（`crates/wasm/src/boxes_av01.rs`）
+  - `fmt_json_mp4_sample_entry_mp4a`（`crates/wasm/src/boxes_mp4a.rs`）
+  - `fmt_json_mp4_sample_entry_flac`（`crates/wasm/src/boxes_flac.rs`）
+- `HevcSampleEntryFields`（`crates/wasm/src/boxes.rs`）の doc を更新する。フェーズ 2 の確保失敗は `handle_alloc_error` でプロセス abort するため、OOM 途中の部分確保を `Drop` で回収する設計にはしない（空入力の `(null, 0)` 契約は維持）。所有権の再設計は本 issue の対象外とする
+- `free_hevc_sample_entry_fields` の「`nalu_counts == null && nalu_data != null` は非常態」コメントを削除する（生産パスでは発生し得なくなるため）
 
 ### 4. フリー側 API の null 安全性は据え置く
 
@@ -69,6 +78,7 @@ wasm 全体を **abort に寄せる** で確定する（案 A）。パース経�
 ### 5. テスト
 
 - 既存の空入力 null テスト（`test_allocate_and_copy_u16_array_empty_returns_null` など）は据え置く
+- `test_free_hevc_sample_entry_fields_survives_partial_alloc_failure_state`（`crates/wasm/src/boxes.rs`）は削除する。前提としている「`allocate_and_copy_array_list` の部分的な `mp4_alloc` 失敗でのみ発生する非常態」が生産パスから消えるため
 - OOM abort を単体テストで再現するのは現実的でないため、新規テストは追加しない
 - 既存テスト・`cargo clippy` が通ることを確認する
 
@@ -80,7 +90,8 @@ wasm 全体を **abort に寄せる** で確定する（案 A）。パース経�
 ## 完了条件
 
 - `mp4_alloc` および `allocate_and_copy_*` の内部 OOM 分岐が撤去され、失敗時に `handle_alloc_error` で abort することがコードで確認できる
-- closed issue 0034 で入れた「壊れたポインタでも UB にならない」ガードのうち、abort 前提で不要になった分が整理されている
+- closed issue 0034 で入れた「壊れたポインタでも UB にならない」ガードのうち、abort 前提で不要になった分（Hevc / avc1 / tx3g / av01 / mp4a / flac の fmt 側）が整理されている
+- `test_free_hevc_sample_entry_fields_survives_partial_alloc_failure_state` が削除されていること
 - 既存のテストおよび `cargo clippy` が通ること
 - `CHANGES.md` に方針変更のエントリがあること
 

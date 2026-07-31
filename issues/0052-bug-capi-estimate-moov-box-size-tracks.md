@@ -55,16 +55,45 @@ Rust 側の `FinalizedBoxes::is_faststart_enabled()`（`src/mux_mp4_file.rs:153`
 
 ## 設計方針
 
-- 任意トラック数を受け取れる関数を追加する。C の呼び出し規約に合わせ、配列とその長さを取る形（例: `const uint32_t *sample_counts, uint32_t sample_counts_len`）を検討する
-- 既存の `mp4_estimate_maximum_moov_box_size()` の扱いを決める。C API の後方互換を壊さないなら残したうえで doc に制約を明記する（制約の注記自体は 0046 の対応時に追記済み）
-- faststart の成否を問い合わせる関数を C API に追加するかを判断する。追加する場合は `mp4_file_muxer_finalize()` の後に呼ぶ想定になる
+以下の方針で実装する（3 つの主要な設計判断は決定済み）。
 
-なお `crates/c-api/include/mp4.h` は `crates/c-api/build.rs` の cbindgen が毎ビルド再生成するため、ヘッダーを手で編集する必要はない。
+### 見積もり関数のシグネチャ
+
+`mp4_estimate_maximum_moov_box_size()` を、任意トラック数を受け取れる配列 + 長さのシグネチャに変更する。
+
+- 変更後: `mp4_estimate_maximum_moov_box_size(const uint32_t *sample_counts, uint32_t sample_counts_len) -> uint32_t`
+- Rust 側 `shiguredo_mp4::mux::estimate_maximum_moov_box_size(&[usize])` と 1:1 で対応する形。トラック種別は Rust 側の見積もり式が使わないため C 側でも受けない。
+- `sample_counts` が NULL の場合の扱いは実装時に決める（他の C API 関数と揃えて、NULL には 0 を返す、または NULL の場合は 0 として扱うなど、安全側で処理する）。
+
+### 既存 2 引数版の扱い
+
+既存の `(audio_sample_count, video_sample_count)` 版は破壊的に置き換える（deprecated として残さない）。
+
+- `c-api` クレートは 0.1.0 のためメジャーバージョン到達前で破壊的変更は許容範囲。
+- CHANGES.md に破壊的変更として記録する（`shiguredo-changelog` に従う）。
+- 既存の呼び出し箇所も新シグネチャに書き換える:
+    - `crates/c-api/tests/simple_mux_demux.c` の `main` 内 `mp4_estimate_maximum_moov_box_size` 呼び出し
+    - `crates/wasm/examples/mux.js` の `mp4_estimate_maximum_moov_box_size` 呼び出し
+
+### faststart 成否の問い合わせ関数
+
+今回は追加しない。
+
+- Rust 側の `FinalizedBoxes::is_faststart_enabled()` を C API に公開する対応は行わない。
+- 見積もり関数が任意トラック数に対応することで、上記実測 6 ケースを含む通常構成では faststart が有効になることが期待できる。
+- faststart を確実に有効にしたい利用者は、余裕を持たせて `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定する従来の運用で対応可能。
+- 「## 現状」の「縮退を検知する手段が無い」は今回のスコープ外として残す（必要になった時点で別 issue を起票する）。
+
+### その他
+
+`crates/c-api/include/mp4.h` は `crates/c-api/build.rs` の cbindgen が毎ビルド再生成するため、ヘッダーを手で編集する必要はない。
 
 ## 完了条件
 
+- `mp4_estimate_maximum_moov_box_size()` が任意トラック数を受け取れる（配列 + 長さ）シグネチャに置き換わっていること
 - C API から字幕トラックを含む 3 トラック以上の構成の `moov` サイズを見積もれること
 - 上記実測の 6 ケースで faststart が有効になること
-- C API 経由で faststart の成否を判定できること（追加する方針を採る場合）
+- 既存の呼び出し箇所（`crates/c-api/tests/simple_mux_demux.c`、`crates/wasm/examples/mux.js`）が新シグネチャに追従していること
 - `crates/c-api/tests/` に見積もり関数のテストが追加されていること
+- CHANGES.md に破壊的変更として追記されていること
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` / `cargo test -p c-api --lib` が通ること

@@ -2,6 +2,7 @@
 //!
 //! 対象:
 //! - 主要エラーパス（`EmptyTracks` / `EmptySamples` / `MixedSampleEntries`）
+//! - `mdat` ボックスサイズ計算の `Overflow` 契約（通常ヘッダー経路と拡張サイズ経路）
 //! - `create_media_segment_metadata_with_sidx` の `earliest_presentation_time` の
 //!   値・境界・`Overflow` 契約
 //!   - CTO=None 時に旧挙動と等価であること（後方互換性の回帰防止）
@@ -149,6 +150,56 @@ fn empty_samples_on_create_media_segment() {
     assert!(
         matches!(result, Err(MuxError::EmptySamples)),
         "EmptySamples を期待したが {:?} だった",
+        result
+    );
+}
+
+/// `mdat` ボックスサイズ計算が `u64` を超えるとき `MuxError::Overflow` になること
+///
+/// 先頭トラックは `data_offset = 0` から連続配置される必要がある。
+/// `data_size` を `u64::MAX - 7` にすると `payload_end = u64::MAX - 7` となり、
+/// `BoxHeader::MIN_SIZE (8) + payload` がオーバーフローする。
+/// `build_moof` の `u32::try_from(data_size)` より前にサイズ計算があるため、
+/// `data_size > u32::MAX` でもこの経路に到達できる。
+///
+/// 64-bit 専用: 32-bit の `usize` ではこの `data_size` を表現できない。
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn mdat_box_size_overflow_returns_overflow() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    // 8 + (u64::MAX - 7) が u64 を超える境界
+    let data_size = usize::try_from(u64::MAX - 7).expect("64-bit では usize に収まる");
+    let samples = [video_sample_with_timing(entry, 3000, None, 0, data_size)];
+
+    let result = muxer.create_media_segment_metadata(&samples);
+    assert!(
+        matches!(result, Err(MuxError::Overflow)),
+        "Overflow を期待したが {:?} だった",
+        result
+    );
+}
+
+/// 拡張サイズ（16 バイトヘッダー）再計算が `u64` を超えるとき `MuxError::Overflow` になること
+///
+/// `data_size = u64::MAX - 15` では `8 + payload` は成功して U64 分岐に入り、
+/// `16 + payload` の再計算だけがオーバーフローする。
+/// `mdat_box_size_overflow_returns_overflow` が踏まない第 2 系統の `checked_add` を固定する。
+///
+/// 64-bit 専用: 32-bit の `usize` ではこの `data_size` を表現できない。
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn mdat_extended_box_size_overflow_returns_overflow() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    // 8 + (u64::MAX - 15) は成功し、16 + (u64::MAX - 15) がオーバーフローする
+    let data_size = usize::try_from(u64::MAX - 15).expect("64-bit では usize に収まる");
+    let samples = [video_sample_with_timing(entry, 3000, None, 0, data_size)];
+
+    let result = muxer.create_media_segment_metadata(&samples);
+    assert!(
+        matches!(result, Err(MuxError::Overflow)),
+        "Overflow を期待したが {:?} だった",
         result
     );
 }

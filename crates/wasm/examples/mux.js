@@ -140,17 +140,21 @@ async function createMP4WithOpus(outputPath) {
         try {
             // 推定される moov ボックスサイズを設定
             // 10秒間のOpus（48kHz）= 10秒 * 50フレーム/秒 = 500フレーム
-            // トラックごとのサンプル数配列を WASM メモリに書き込む
-            const sampleCounts = new Uint32Array([500]);
-            const sampleCountsPtr = mp4_alloc(sampleCounts.byteLength);
-            new Uint32Array(memory.buffer, sampleCountsPtr, sampleCounts.length).set(sampleCounts);
+            // mp4_alloc は align 1 契約のため、Uint32Array コンストラクタの
+            // byteOffset の 4 バイト境界要件を満たせず RangeError になり得る。
+            // 一方 DataView は byteOffset の align 制約が無いのでこちらを使う。
+            const NUM_TRACKS = 1;
+            const SAMPLE_COUNTS_BYTES = NUM_TRACKS * 4;
+            const sampleCountsPtr = mp4_alloc(SAMPLE_COUNTS_BYTES);
+            // トラックごとのサンプル数配列を WASM メモリに書き込む（little endian）
+            new DataView(memory.buffer, sampleCountsPtr, SAMPLE_COUNTS_BYTES).setUint32(0, 500, true);
             // 見積もり関数を呼び出す
             const estimatedMoovSize = mp4_estimate_maximum_moov_box_size(
                 sampleCountsPtr,
-                sampleCounts.length,
+                NUM_TRACKS,
             );
             // 一時領域を解放する
-            mp4_free(sampleCountsPtr, sampleCounts.byteLength);
+            mp4_free(sampleCountsPtr, SAMPLE_COUNTS_BYTES);
             console.log(`Estimated moov box size: ${estimatedMoovSize} bytes`);
             mp4_file_muxer_set_reserved_moov_box_size(muxerPtr, estimatedMoovSize);
 

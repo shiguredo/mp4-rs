@@ -89,6 +89,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `Mp4FileMuxer::build_stbl_box()` の `stsc` / `stss` 構築で `NonZeroU32::saturating_add` を使わずオーバーフロー時にエラーを返すようにする
+  - これまではチャンク数やサンプル数が `u32::MAX` を超えると値が飽和し、壊れた MP4 をエラーなく生成し得た
+  - `checked_add` と `u32::try_from()` で明示的に検査し、超過時は `MuxError::Overflow` / `MuxError::EncodeError` を返す
+  - @sile
 - [FIX] `Fmp4SegmentMuxer` の `mdat` ボックスサイズ計算と `mfra` の `moof_offset` 計算で `u64` 加算がオーバーフローしたときにパニックや不正値にならず `MuxError::Overflow` を返すようにする
   - これまではパニック（debug ビルド）やラップアラウンド（release ビルド）により不正なボックスサイズやオフセットが生成され得た
   - @sile

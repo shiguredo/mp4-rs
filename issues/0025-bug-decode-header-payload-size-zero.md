@@ -5,7 +5,7 @@
 - Completed: YYYY-MM-DD
 - Model: opencode-go glm-5.2
 - Branch: feature/fix-decode-header-payload-size-zero
-- Polished: YYYY-MM-DD
+- Polished: 2026-07-31
 
 ## 目的
 
@@ -17,8 +17,9 @@ size=0 ボックス（ファイル末尾の可変長ボックス）をデコー�
 
 ## 現状
 
+`BoxHeader::decode_header_and_payload`（`src/basic_types.rs`）の現行実装は次の順序である。
+
 ```rust
-// src/basic_types.rs:161-177
 pub fn decode_header_and_payload(buf: &[u8]) -> Result<(Self, &[u8])> {
     let (header, header_size) = Self::decode(buf)?;
 
@@ -27,6 +28,8 @@ pub fn decode_header_and_payload(buf: &[u8]) -> Result<(Self, &[u8])> {
     if box_size < header_size {
         return Err(Error::invalid_data("box size is smaller than header size"));
     }
+    Error::check_buffer_size(box_size, buf)?;
+
     // サイズが0の場合は、バッファ全体を使用する（ファイル末尾の可変長ボックスと想定）
     if box_size == 0 {
         box_size = buf.len();
@@ -36,14 +39,15 @@ pub fn decode_header_and_payload(buf: &[u8]) -> Result<(Self, &[u8])> {
 }
 ```
 
-`box_size == 0` のとき `box_size < header_size`（`0 < 8`）が常に真でエラーになり、size=0 の特別処理（172-174 行）には到達しない。`header_size` は通常 8（uuid+large なら 16 以上）。
+`box_size == 0` のとき `box_size < header_size`（`0 < 8` 等）が常に真でエラーになり、その後の `check_buffer_size` と size=0 の特別処理には到達しない。`header_size` は通常 8（`BoxType::Uuid` や `BoxSize::U64` なら 16 以上。最小は `BoxHeader::MIN_SIZE`）。
 
-一方 `BoxHeader::decode` は `get() != 0` のときだけサイズ下限を検査しており、size=0 自体は decode では許容される。ドキュメント（151-159 行）も「バッファ全体をペイロードとして扱う」と書いているが実装は矛盾。
+一方 `Decode for BoxHeader` は `box_size.get() != 0` のときだけサイズ下限を検査しており、size=0 自体は decode では許容される。`decode_header_and_payload` のドキュメントも size=0 を「渡されたバッファ全体をペイロードとして扱う」と書いているが、実装は常にエラーで矛盾している。
 
 ## 設計方針
 
-size=0 (32bit `size` フィールドが 0) の場合のみ「バッファ末尾まで」として扱い、`box_size < header_size` の判定をスキップして `buf.len()` を使う。
-一方、size=1 + largesize=0 (`BoxSize::U64(0)`) は ISO/IEC 14496-12 で意味が未定義であり、著名な実装 (FFmpeg / GPAC / Bento4 / mp4parse-rust) すべてがエラー扱いにしているため、従来どおり `box_size < header_size` でエラーにする。
+size=0（32bit `size` フィールドが 0、つまり `BoxSize::U32(0)` / `BoxSize::VARIABLE_SIZE`）の場合のみ「ボックスがバッファ末尾まで延びる」として扱い、`box_size < header_size` の判定をスキップして `box_size = buf.len()` にする。戻り値のペイロードは従来どおり `&buf[header_size..box_size]`（ヘッダー直後からバッファ末尾）とする。
+
+一方、size=1 + largesize=0（`BoxSize::U64(0)` / `BoxSize::LARGE_VARIABLE_SIZE`）は ISO/IEC 14496-12 で意味が未定義であり、著名な実装（FFmpeg / GPAC / Bento4 / mp4parse-rust）すべてがエラー扱いにしているため、従来どおり `box_size < header_size` でエラーにする。
 
 ### 他実装での扱い
 
@@ -58,23 +62,26 @@ ISO/IEC 14496-12 4.2 では size==0 のみ「box は file の最後まで拡張�
 
 ### 補足
 
-- `BoxSize::LARGE_VARIABLE_SIZE = U64(0)` は既存の定義として残っているが、`finalize_box_size` (`basic_types.rs:129-134`) が「U32 に収まらないとエラー」で弾く実装になっており、エンコード側では実質的に使えない。デコード側でも仕様準拠で扱わない方針とする。
-- size=0 の位置制限 (GPAC / mp4parse-rust のように「トップレベルのみ」「mdat のみ」など) は本 issue のスコープ外とし、必要なら別 issue で扱う。
+- `BoxSize::LARGE_VARIABLE_SIZE = U64(0)` はエンコード用途として残る。`Mp4FileMuxer`（`src/mux_mp4_file.rs`）が `mdat` ヘッダー初期化で `BoxHeader::new(MdatBox::TYPE, BoxSize::LARGE_VARIABLE_SIZE)` を使っており、「エンコード側で使えない」わけではない。`finalize_box_size` は結果が `BoxSize::U32` 以外ならエラーにするが、mux の経路は `finalize_box_size` を経由しない。デコード側で `U64(0)` を可変長として扱わないのは、上記の仕様・他実装に合わせた方針であり、エンコード可否とは独立である。
+- 本修正後、`BoxSize::LARGE_VARIABLE_SIZE` の既存ドキュメント（「基本的には `VARIABLE_SIZE` と同じ」）はデコード上の意味としては偽になるため、エンコード用の特別値である旨が分かるように更新する。
+- demux 系（`src/demux_*.rs`）は `BoxHeader::decode` のあと `box_size.get() == 0` で U32/U64 を区別せず末尾扱いしており、本件の `decode_header_and_payload`（U32(0) のみ末尾）とは別レイヤである。demux 側の変更はスコープ外とする。
+- size=0 の位置制限（GPAC / mp4parse-rust のように「トップレベルのみ」「mdat のみ」など）は本 issue のスコープ外とし、必要なら別 issue で扱う。
 
 ## 完了条件
 
-- size=0 (`BoxSize::U32(0)`) のボックスをデコードしたときバッファ全体をペイロードとして返すこと
-- largesize=0 (`BoxSize::U64(0)`) は従来どおりエラーを返すこと
-- ドキュメントと実装が一致すること
+- size=0（`BoxSize::U32(0)`）のボックスを `decode_header_and_payload` でデコードしたとき、ボックスがバッファ末尾まで延び、ペイロードとして `&buf[header_size..]`（ヘッダー直後からバッファ末尾）が返ること
+- largesize=0（`BoxSize::U64(0)`）は従来どおりエラーを返すこと
+- `decode_header_and_payload` のドキュメントと実装が一致すること（size=0 は 32bit の場合のみバッファ末尾扱いであること）
+- `BoxSize::LARGE_VARIABLE_SIZE` のドキュメントが、デコードでは `VARIABLE_SIZE` と同義ではないこと（エンコード用の特別値であること）と矛盾しないこと
 - size > 0 で `box_size < header_size` の場合は従来どおりエラーを返すこと
 - `cargo test` / `cargo clippy` が通ること
 
 ## 解決方法
 
 1. `matches!(header.box_size, BoxSize::U32(0))` の判定を `box_size < header_size` の前に移動し、真のとき `box_size = buf.len()` にする
-2. その後 `check_buffer_size(box_size, buf)?` を呼ぶ
+2. 既存の `Error::check_buffer_size(box_size, buf)?` を、size=0 分岐と `box_size < header_size` 判定の後（スライス返却の直前）に置く。size=0 で `box_size = buf.len()` にした後は常に通るが、非 0 経路のバッファ不足検査は維持する
 3. テストを追加する
-   - size=0 (`BoxSize::U32(0)`) のボックスをデコードしバッファ全体がペイロードとして得られること
-   - largesize=0 (`BoxSize::U64(0)`) のボックスはエラーになること
-   - size > 0 で `box_size < header_size` の場合はエラーになること (回帰防止)
-4. 必要に応じてドキュメント (`basic_types.rs:151-159`) の文言を「size=0 (32bit の場合のみ)」と明示化する
+   - size=0（`BoxSize::U32(0)`）のボックスをデコードし、ペイロードが `&buf[header_size..]`（バッファ末尾まで）であること
+   - largesize=0（`BoxSize::U64(0)`）のボックスはエラーになること
+   - size > 0 で `box_size < header_size` の場合はエラーになること（回帰防止）
+4. `decode_header_and_payload` のドキュメントを「size=0（32bit の場合のみ）」と明示する。あわせて `BoxSize::LARGE_VARIABLE_SIZE` のドキュメントを、エンコード用でありデコードでは `VARIABLE_SIZE` と同義ではない旨に更新する

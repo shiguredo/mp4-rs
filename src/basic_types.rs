@@ -150,10 +150,15 @@ impl BoxHeader {
     ///
     /// # ボックスサイズ 0 の扱いについて
     ///
-    /// MP4 の仕様では、ボックスサイズが 0 の場合は「ファイルの最後まで」を意味するが、
-    /// 本実装では、渡されたバッファ全体をペイロードとして扱う。
+    /// MP4 の仕様（ISO/IEC 14496-12）では、32bit の `size` フィールドが 0 の場合は
+    /// 「ファイルの最後まで」を意味する。本実装では、渡されたバッファの末尾までを
+    /// ボックス全体として扱い、ヘッダー直後からバッファ末尾までをペイロードとして返す。
     ///
-    /// この挙動には以下の条件を前提がある：
+    /// この扱いは [`BoxSize::VARIABLE_SIZE`]（`BoxSize::U32(0)`）に限る。
+    /// `size==1` + `largesize==0`（[`BoxSize::LARGE_VARIABLE_SIZE`] / `BoxSize::U64(0)`）は
+    /// 仕様上意味が未定義のためエラーとする。
+    ///
+    /// 前提:
     /// - `buf` がファイル末尾を含む完全なデータである
     /// - ストリーミングやチャンク読み込みには非対応
     ///
@@ -163,15 +168,16 @@ impl BoxHeader {
 
         let mut box_size = usize::try_from(header.box_size.get())
             .map_err(|_| Error::invalid_data("too large box size"))?;
-        if box_size < header_size {
+
+        // 32bit の size=0 のみバッファ末尾までをボックス全体として扱う
+        // （ISO/IEC 14496-12。largesize=0 は仕様未定義のため後続の下限検査でエラーにする）
+        if matches!(header.box_size, BoxSize::U32(0)) {
+            box_size = buf.len();
+        } else if box_size < header_size {
             return Err(Error::invalid_data("box size is smaller than header size"));
         }
-        Error::check_buffer_size(box_size, buf)?;
 
-        // サイズが0の場合は、バッファ全体を使用する（ファイル末尾の可変長ボックスと想定）
-        if box_size == 0 {
-            box_size = buf.len();
-        }
+        Error::check_buffer_size(box_size, buf)?;
 
         Ok((header, &buf[header_size..box_size]))
     }
@@ -373,12 +379,17 @@ pub enum BoxSize {
 }
 
 impl BoxSize {
-    /// ファイル末尾に位置する可変長のボックスを表すための特別な値
+    /// ファイル末尾に位置する可変長のボックスを表すための特別な値（32bit `size==0`）
+    ///
+    /// デコード時（[`BoxHeader::decode_header_and_payload`]）はバッファ末尾までをボックス全体として扱う。
     pub const VARIABLE_SIZE: Self = Self::U32(0);
 
-    /// ファイル末尾に位置する可変長のボックスを表すための特別な値
+    /// エンコード時に 4GB 超の可変長ボックスを表すための特別な値（`size==1` + `largesize==0`）
     ///
-    /// 基本的には [`BoxSize::VARIABLE_SIZE`] と同じだが、4GB を超えるボックスに備えて、こちらは 64 ビットサイズエンコーディングを使用する
+    /// [`BoxSize::VARIABLE_SIZE`] と同様にサイズ値は 0 だが、64 ビットサイズエンコーディングを使う。
+    /// デコード時（[`BoxHeader::decode_header_and_payload`]）では ISO/IEC 14496-12 に合わせ、
+    /// `largesize==0` を可変長としては扱わずエラーにする。可変長として扱うのは 32bit の
+    /// [`BoxSize::VARIABLE_SIZE`] のみである。
     pub const LARGE_VARIABLE_SIZE: Self = Self::U64(0);
 
     /// ボックス種別とペイロードサイズを受け取って、対応する [`BoxSize`] インスタンスを作成する

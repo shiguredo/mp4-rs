@@ -97,6 +97,10 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
+- [FIX] `BoxHeader::decode_header_and_payload` で 32bit の size=0（`BoxSize::VARIABLE_SIZE`）をバッファ末尾までの可変長ボックスとして扱えるようにする
+  - これまで `box_size < header_size` 判定が先に走り、size=0 の特別処理に到達できず常に `InvalidData` になっていた
+  - `BoxSize::U64(0)`（`LARGE_VARIABLE_SIZE`）は仕様未定義のため従来どおりエラーのままとする
+  - @sile
 - [FIX] c-api の `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` で要求サイズが `i32::MAX` を超えたときに `-1`（EOF）と衝突しないようにする
   - これまで `usize as i32` で切り捨てており、不正または破損した入力（`box_size` が極端に大きい等）で負値（特に `-1`）になり得た
   - 合法なファイルで `moov` 等が 2 GiB を超えることは現実的ではないが、破損入力への防御として `i32::try_from` で変換し、超過時は `MP4_ERROR_UNSUPPORTED` を返す（出力引数は更新しない）

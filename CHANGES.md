@@ -101,9 +101,9 @@
   - @sile
 - [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
   - @sile
-- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` の `sidx.starts_with_sap` / `sap_type` が EPT サンプルの実際の SAP 状態を反映するようにする
+- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` の `sidx.references[0].starts_with_sap` / `sap_type` が EPT サンプルの実際の SAP 状態を反映するようにする
   - これまでは samples[] 内で参照トラックに該当する最初のサンプル（実質 `samples[0]`）の `keyframe` を採っていた
-  - 負 CTO を持つ B フレームが presentation 順先頭になる入力では、EPT サンプルの SAP 状態と食い違っていた
+  - 負 CTO を持つ B フレームが表示順先頭になる入力では、EPT サンプルの SAP 状態と食い違っていた
   - @sile
 - [FIX] `BoxHeader::decode_header_and_payload` で 32bit の size=0（`BoxSize::VARIABLE_SIZE`）をバッファ末尾までの可変長ボックスとして扱えるようにする
   - これまで `box_size < header_size` 判定が先に走り、size=0 の特別処理に到達できず常に `InvalidData` になっていた

@@ -65,11 +65,11 @@ use crate::{
         SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
         TrunSample, VmhdBox,
     },
-    mux_mp4_file::{MuxError, Sample, TrackMetadata, track_metadata},
+    mux_mp4_file::{MuxError, Sample, TrackMetadata},
 };
 
 /// [`Fmp4SegmentMuxer`] 用のオプション
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SegmentMuxerOptions {
     /// ファイル作成時刻（構築される fMP4 内のメタデータとして使われる）
     ///
@@ -94,13 +94,13 @@ pub struct SegmentMuxerOptions {
     pub subtitle_track: TrackMetadata,
 }
 
-impl Default for SegmentMuxerOptions {
-    fn default() -> Self {
-        Self {
-            creation_timestamp: Duration::ZERO,
-            audio_track: TrackMetadata::default(),
-            video_track: TrackMetadata::default(),
-            subtitle_track: TrackMetadata::default(),
+impl SegmentMuxerOptions {
+    /// [`TrackKind`] に対応するトラックメタデータを返す
+    pub(crate) fn track_metadata(&self, kind: TrackKind) -> &TrackMetadata {
+        match kind {
+            TrackKind::Audio => &self.audio_track,
+            TrackKind::Video => &self.video_track,
+            TrackKind::Subtitle => &self.subtitle_track,
         }
     }
 }
@@ -694,12 +694,7 @@ impl Fmp4SegmentMuxer {
             })?;
         // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
         let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
-        let metadata = track_metadata(
-            &self.options.audio_track,
-            &self.options.video_track,
-            &self.options.subtitle_track,
-            entry.track_kind,
-        );
+        let metadata = self.options.track_metadata(entry.track_kind);
 
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,

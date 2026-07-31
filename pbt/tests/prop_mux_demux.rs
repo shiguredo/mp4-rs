@@ -423,8 +423,13 @@ proptest! {
             .moov_box()
             .encode_to_vec()
             .expect("moov のエンコードに失敗した");
-        let (decoded_moov, _) =
+        let (decoded_moov, decoded_size) =
             MoovBox::decode(&moov_bytes).expect("エンコードした moov はデコードできる");
+        prop_assert_eq!(
+            decoded_size,
+            moov_bytes.len(),
+            "moov の decode サイズがバイト列長と一致しない"
+        );
         prop_assert_eq!(decoded_moov.trak_boxes.len(), 3);
         common::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta)?;
         common::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta)?;

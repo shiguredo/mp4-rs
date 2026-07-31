@@ -376,8 +376,14 @@ proptest! {
         let (ftyp_box, ftyp_size) =
             FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
         let _ = ftyp_box;
-        let (moov_box, _) =
-            MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
+        let moov_bytes = &init_bytes[ftyp_size..];
+        let (moov_box, moov_size) =
+            MoovBox::decode(moov_bytes).expect("moov のデコードに失敗した");
+        prop_assert_eq!(
+            moov_size,
+            moov_bytes.len(),
+            "moov の decode サイズがバイト列長と一致しない"
+        );
         prop_assert_eq!(moov_box.trak_boxes.len(), 3);
         common::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta)?;
         common::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta)?;

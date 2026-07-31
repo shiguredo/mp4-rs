@@ -124,22 +124,8 @@ pub struct TrackMetadata {
     pub name: Utf8String,
 }
 
-/// [`TrackKind`] に対応するトラックメタデータを取り出す
-pub(crate) fn track_metadata<'a>(
-    audio_track: &'a TrackMetadata,
-    video_track: &'a TrackMetadata,
-    subtitle_track: &'a TrackMetadata,
-    kind: TrackKind,
-) -> &'a TrackMetadata {
-    match kind {
-        TrackKind::Audio => audio_track,
-        TrackKind::Video => video_track,
-        TrackKind::Subtitle => subtitle_track,
-    }
-}
-
 /// [`Mp4FileMuxer`] 用のオプション
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Mp4FileMuxerOptions {
     /// faststart 形式用に事前に確保する moov ボックスのサイズ（バイト単位）
     ///
@@ -182,14 +168,13 @@ pub struct Mp4FileMuxerOptions {
     pub subtitle_track: TrackMetadata,
 }
 
-impl Default for Mp4FileMuxerOptions {
-    fn default() -> Self {
-        Self {
-            reserved_moov_box_size: 0,
-            creation_timestamp: Duration::ZERO,
-            audio_track: TrackMetadata::default(),
-            video_track: TrackMetadata::default(),
-            subtitle_track: TrackMetadata::default(),
+impl Mp4FileMuxerOptions {
+    /// [`TrackKind`] に対応するトラックメタデータを返す
+    pub(crate) fn track_metadata(&self, kind: TrackKind) -> &TrackMetadata {
+        match kind {
+            TrackKind::Audio => &self.audio_track,
+            TrackKind::Video => &self.video_track,
+            TrackKind::Subtitle => &self.subtitle_track,
         }
     }
 }
@@ -1058,12 +1043,7 @@ impl Mp4FileMuxer {
         derived: &TrakDerivation,
     ) -> Result<MdiaBox, MuxError> {
         let total_duration = total_sample_duration(entry);
-        let metadata = track_metadata(
-            &self.options.audio_track,
-            &self.options.video_track,
-            &self.options.subtitle_track,
-            entry.track_kind,
-        );
+        let metadata = self.options.track_metadata(entry.track_kind);
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let mdhd_box = MdhdBox {

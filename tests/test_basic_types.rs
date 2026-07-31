@@ -134,19 +134,29 @@ mod language_code {
     }
 
     /// 受理範囲の外側（`0x5F` / `0x80`）を 1 バイトでも含むと拒否すること
+    ///
+    /// 位置ごとの網羅（1 バイト目・2 バイト目・3 バイト目の単独違反）を確認する
     #[test]
     fn new_rejects_out_of_range_bytes() {
         assert!(
             LanguageCode::new([0x5F, b'n', b'd']).is_none(),
-            "0x5F は範囲外なので拒否される"
+            "1 バイト目が 0x5F（範囲外）なので拒否される"
         );
         assert!(
             LanguageCode::new([b'u', 0x80, b'd']).is_none(),
-            "0x80 は範囲外なので拒否される"
+            "2 バイト目が 0x80（範囲外）なので拒否される"
+        );
+        assert!(
+            LanguageCode::new([b'u', b'n', 0x5F]).is_none(),
+            "3 バイト目が 0x5F（範囲外）なので拒否される"
+        );
+        assert!(
+            LanguageCode::new([b'u', b'n', 0x80]).is_none(),
+            "3 バイト目が 0x80（範囲外）なので拒否される"
         );
         assert!(
             LanguageCode::new([0x00, 0x00, 0x00]).is_none(),
-            "0x00 は範囲外なので拒否される"
+            "全バイトが 0x00（範囲外）なので拒否される"
         );
     }
 
@@ -183,6 +193,11 @@ mod language_code {
         assert!(
             LanguageCode::from_ascii("ENG").is_none(),
             "大文字は 0x60..=0x7F の外なので拒否される"
+        );
+        // 「あ」は 3 バイト UTF-8。バイト長は 3 だが個々のバイトが 0x60..=0x7F の外に落ちる
+        assert!(
+            LanguageCode::from_ascii("あ").is_none(),
+            "非 ASCII マルチバイト文字はバイト範囲外として拒否される"
         );
     }
 }

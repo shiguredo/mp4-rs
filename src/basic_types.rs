@@ -734,7 +734,7 @@ where
 /// なお本ライブラリの [`crate::boxes::MdhdBox::decode`] は 5 ビットマスクで
 /// 防御的に読み取るため、decode 直後の値は必ず `0x60..=0x7F` に収まる。
 /// したがって decode 側の値を [`Self::new`] に通す経路は理論上必ず `Some` を返す。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LanguageCode([u8; 3]);
 
 impl LanguageCode {
@@ -786,6 +786,27 @@ impl LanguageCode {
 impl Default for LanguageCode {
     fn default() -> Self {
         Self::UNDEFINED
+    }
+}
+
+impl core::fmt::Debug for LanguageCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // 内部の 3 バイトは常に `0x60..=0x7F`（ASCII サブセット）に収まるため
+        // `from_utf8` は基本的に成功する。防御的に失敗時はバイト列で表示する
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            f.debug_tuple("LanguageCode").field(&s).finish()
+        } else {
+            f.debug_tuple("LanguageCode").field(&self.0).finish()
+        }
+    }
+}
+
+impl core::fmt::Display for LanguageCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            return write!(f, "{s}");
+        }
+        write!(f, "{:?}", self.0)
     }
 }
 

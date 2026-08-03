@@ -277,6 +277,10 @@
   - @sile
 - [UPDATE] `SampleTableAccessorError` の Display メッセージの英語文法を直す
   - @sile
+- [UPDATE] `pbt/Cargo.toml` の `proptest` の指定を `1.9` から `1.11` に更新する
+  - @sile
+- [UPDATE] `fuzz` の `libfuzzer-sys` を 0.4.10 から 0.4.13 に更新する
+  - @sile
 
 ## 2026.3.0
 

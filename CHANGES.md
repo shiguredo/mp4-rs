@@ -71,7 +71,6 @@
   - @sile
 - [CHANGE] `Mp4FileMuxerOptions` / `SegmentMuxerOptions` に `audio_track` / `video_track` / `subtitle_track` フィールドを追加する
   - トラックの言語（`mdhd.language`）とトラック名（`hdlr.name`）を Options 経由で指定できる
-  - 既存のフィールド指定リテラルは `..Default::default()` を付けるか、追加フィールドを明示する必要がある
   - C API / WASM 経由の利用者は本フィールドを指定する手段を持たず、デフォルト値（`und` + 空文字列）に固定される。バインディング拡張は必要になった時点で別途対応する
   - @sile
 - [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する

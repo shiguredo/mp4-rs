@@ -250,6 +250,12 @@
   - `make miri`（`cargo +nightly miri test -p wasm`）を追加し、`.github/workflows/ci.yml` の CI ジョブとして実行する
   - 既存 CI と同じ `push` / 月–金 cron で回す（他ジョブと並列）
   - @sile
+- [ADD] `Mp4FileMuxer` の fuzz ターゲット (`fuzz_mp4_file_mux`) を追加する
+  - demux → mux パターンで任意バイト列に対するパニック安全性を検証する
+  - @voluntas
+- [ADD] `SampleTableAccessor` の fuzz ターゲット (`fuzz_sample_table_accessor`) を追加する
+  - `StblBox::decode()` から直接構築し、全アクセサメソッドのパニック安全性を検証する
+  - @voluntas
 - [UPDATE] WASM の `hev1` / `hvc1` サンプルエントリー JSON 変換の重複実装を共通ヘルパーへ抽出する
   - `parse` / `free` / `NaluArrays` シリアライズおよびテスト JSON 組み立ての重複を解消する
   - 公開 API（`parse_json_mp4_sample_entry_*` / `mp4_sample_entry_*_free` / `fmt_json_mp4_sample_entry_*`）のシグネチャは変更しない
@@ -263,12 +269,6 @@
   - `MvhdBox::duration` / `MdhdBox::duration` / `TkhdBox::duration` / `ElstEntry::edit_duration` / `ElstEntry::media_time` の doc に、値がどの timescale 単位で表されるかを明記する（過去に `tkhd` の duration の単位を取り違える不具合を出しているための再発防止）
   - あわせて `CttsBox` / `CslgBox` / `MdhdBox::language` の既存英語 doc を日本語化し、`SidxReference::subsegment_duration` などに単位表記を追記する
   - @sile
-- [ADD] `Mp4FileMuxer` の fuzz ターゲット (`fuzz_mp4_file_mux`) を追加する
-  - demux → mux パターンで任意バイト列に対するパニック安全性を検証する
-  - @voluntas
-- [ADD] `SampleTableAccessor` の fuzz ターゲット (`fuzz_sample_table_accessor`) を追加する
-  - `StblBox::decode()` から直接構築し、全アクセサメソッドのパニック安全性を検証する
-  - @voluntas
 - [UPDATE] `fuzz_basic_types` に `SampleFlags` の decode/encode を追加する
   - @voluntas
 - [UPDATE] `pbt/tests/prop_error_paths.rs` を対応する各 PBT ファイル（`prop_boxes_moov_tree.rs` / `prop_boxes_sample_entry.rs` を新設）に再配置する

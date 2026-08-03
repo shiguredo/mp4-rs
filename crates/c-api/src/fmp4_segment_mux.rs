@@ -42,8 +42,11 @@ pub struct Fmp4SegmentSample {
     /// コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
     ///
     /// demux API と合わせて `i64` で公開している。
-    /// ただし fMP4 の `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲だけであり、
-    /// 範囲外の値を指定すると mux 関数はエラーを返す。
+    /// ただし fMP4 の `trun` に書けるのは ISO/IEC 14496-12 8.8.8 の制約により
+    /// version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲に限られる。
+    /// また、負値と `> i32::MAX` の値がひとつの `trun` に混在する場合は
+    /// どちらの版でも表現できないためエラーになる。
+    /// これらの制約を満たさない値を指定すると mux 関数はエラーを返す。
     pub composition_time_offset: i64,
 
     /// セグメント内の `mdat` payload 領域先頭から見たサンプルデータの相対オフセット
@@ -121,6 +124,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_new_with_options(
         let options = unsafe { &*options };
         SegmentMuxerOptions {
             creation_timestamp: Duration::from_secs(options.creation_timestamp_secs),
+            ..Default::default()
         }
     };
 
@@ -337,13 +341,15 @@ unsafe fn write_media_segment_impl(
 
     let fmp4_samples = match unsafe { convert_samples(samples_slice) } {
         Ok(samples) => samples,
-        Err(message) => {
+        Err(e) => {
             unsafe {
                 *out_data = std::ptr::null_mut();
                 *out_size = 0;
             }
-            muxer.set_last_error(&format!("[write_media_segment_impl] {message}"));
-            return Mp4Error::MP4_ERROR_INVALID_INPUT;
+            muxer.set_last_error(&format!(
+                "[write_media_segment_impl] convert_samples failed: {e:?}"
+            ));
+            return e;
         }
     };
 
@@ -410,21 +416,20 @@ unsafe fn write_bytes_result(
 }
 
 /// `Fmp4SegmentSample` のスライスを [`Sample`] の `Vec` に変換するヘルパー
-unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, &'static str> {
+///
+/// エラー時は `Mp4Error` をそのまま返し、C 呼び出し側が
+/// null ポインタか不正な入力かを判別できるようにする
+unsafe fn convert_samples(samples: &[Fmp4SegmentSample]) -> Result<Vec<Sample>, Mp4Error> {
     samples
         .iter()
         .map(|s| {
             let Some(timescale) = NonZeroU32::new(s.timescale) else {
-                return Err("timescale must be non-zero");
+                return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
             };
             let sample_entry = if s.sample_entry.is_null() {
                 None
             } else {
-                Some(unsafe {
-                    (&*s.sample_entry)
-                        .to_sample_entry()
-                        .map_err(|_| "sample_entry is invalid")?
-                })
+                Some(unsafe { (&*s.sample_entry).to_sample_entry()? })
             };
             Ok(Sample {
                 track_kind: s.track_kind.into(),

@@ -5,7 +5,7 @@ on:
     paths-ignore:
       - "**.md"
   schedule:
-    # JST 11:00 (UTC 02:00), 月-金
+    # JST 11:00 (UTC 02:00), 月–金
     - cron: "0 2 * * 1-5"
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Windows の場合には MSVC 系ではなく MinGW 系を使うようにする
         if: contains(matrix.os, 'windows')
@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - run: rustup update stable
       - run: rustup target add wasm32-unknown-unknown
@@ -69,7 +69,7 @@ jobs:
           toolchain: stable
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
 
@@ -107,7 +107,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - run: rustup update stable
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
@@ -136,7 +136,7 @@ jobs:
           Copy-Item -Path "crates/c-api/include/mp4.h" -Destination "artifacts/include/"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: c-api-${{ matrix.artifact-name }}
           path: artifacts/
@@ -147,7 +147,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - run: rustup update stable
       - run: rustup target add wasm32-unknown-unknown
@@ -177,13 +177,29 @@ jobs:
           cp target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm artifacts/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wasm
           path: artifacts/
 
+  miri:
+    name: Miri (WebAssembly)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - run: rustup toolchain install nightly --component miri
+      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
+        with:
+          os: ubuntu-24.04
+          toolchain: nightly
+
+      - run: make miri
+
   slack_notify:
-    needs: [ci, test-wasm, build-c-api, build-wasm]
+    needs: [ci, test-wasm, build-c-api, build-wasm, miri]
     runs-on: ubuntu-slim
     if: ${{ always() }}
     permissions:

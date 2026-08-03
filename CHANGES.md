@@ -11,6 +11,279 @@
 
 ## develop
 
+## 2026.4.0
+
+- [CHANGE] `MdhdBox::language` の型を `[u8; 3]` から `LanguageCode` に置き換える
+  - `MdhdBox::LANGUAGE_UNDEFINED` を削除し、`LanguageCode::UNDEFINED` に集約する
+  - @sile
+- [CHANGE] C API の `mp4_estimate_maximum_moov_box_size()` を任意トラック数対応のシグネチャに変更する
+  - `(audio_sample_count, video_sample_count)` から `(sample_counts, track_count)` に置き換える
+  - 字幕を含む 3 トラック以上の構成でも faststart 用の予約サイズを見積もれるようにする
+  - @sile
+- [CHANGE] wasm の OOM 方針を abort に統一する（`mp4_alloc` 失敗時は `handle_alloc_error` で abort）
+  - `mp4_alloc` はサイズ非 0 では null を返さなくなり、確保失敗時はプロセスを abort する
+  - `allocate_and_copy_bytes` から OOM 時 null 返却分岐を撤去し、`allocate_and_copy_aligned` は `handle_alloc_error` に置き換える
+  - @sile
+- [CHANGE] `MuxError` に `NoSyncSamples` を追加し、同期サンプルを持たない映像トラックを `Mp4FileMuxer` が拒否するようにする
+  - 全サンプルが `keyframe = false` の映像トラックは `finalize()` 時に `MuxError::NoSyncSamples` を返す
+  - これまではエントリー 0 個の `stss`（同期サンプルなし）を出力していた
+  - @sile
+- [CHANGE] `ErrorKind` / `MuxError` / `DemuxError` から `#[non_exhaustive]` を削除する
+  - 利用側で網羅 `match` が可能になり、将来のバリアント追加は破壊的変更として扱う
+  - C API の `Mp4Error` への数値マッピング（`InsufficientBuffer` → `MP4_ERROR_OTHER` 等）は変えない
+  - @sile
+- [CHANGE] 最小サポート Rust バージョンを 1.93 に上げる
+  - @voluntas
+- [CHANGE] `Mp4FileMuxer` が字幕トラック内のサンプルエントリーの混在を拒否するようにする
+  - `hdlr` と `media_header` の組が異なる形式（`stpp` と `tx3g` 等）を 1 本の字幕トラックに混ぜると `MuxError::MixedSampleEntries` を返す
+  - これまでは受け入れていたが、`stsd` とトラック側の属性が食い違う MP4 が生成されていた
+  - 組が同じサンプルエントリー同士（`namespace` 違いの `stpp` 等）の混在と、映像トラックの複数サンプルエントリーは引き続き受け入れる
+  - @sile
+- [CHANGE] `Mp4FileMuxer::finalize()` が生成する `moov` ボックスのトラック順と `mvhd` の値を変える
+  - `trak` ボックスの出力順が「音声 → 映像」の固定順から `append_sample()` の呼び出し順（先に登場した `TrackKind` が先）に変わる
+  - あわせて `tkhd` の `track_id` の割り当ても変わる（これまでは音声トラックが常に 1 だった）
+  - 正規化した尺が同着のトラックが複数ある場合に `mvhd` の `timescale` と `duration` へ採用されるトラックが変わる（これまでは常に音声だった）
+  - @sile
+- [CHANGE] `SampleEntry` に `Tx3g` バリアントを追加する
+  - `tx3g` サンプルエントリー（3GPP TS 26.245 `TextSampleEntry`）を型付きで扱えるようにする
+  - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_TX3G` を追加し、`Mp4SampleEntryTx3g` 構造体を新設する
+  - WASM の JSON API で `{ "kind": "tx3g", ... }` の入出力に対応する
+  - @sile
+- [CHANGE] `SampleEntry` に `Wvtt` バリアントを追加する
+  - `wvtt` サンプルエントリー（ISO/IEC 14496-30 `WVTTSampleEntry`）を型付きで扱えるようにする
+  - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_WVTT` を追加し、`Mp4SampleEntryWvtt` 構造体を新設する
+  - WASM の JSON API で `{ "kind": "wvtt", ... }` の入出力に対応する
+  - @sile
+- [CHANGE] `SampleEntry` に `Stpp` バリアントを追加する
+  - `stpp` サンプルエントリー（ISO/IEC 14496-30 `XMLSubtitleSampleEntry`）を型付きで扱えるようにする
+  - C API `Mp4SampleEntryKind` に `MP4_SAMPLE_ENTRY_KIND_STPP` を追加し、`Mp4SampleEntryStpp` 構造体を新設する
+  - WASM の JSON API で `{ "kind": "stpp", ... }` の入出力に対応する
+  - @sile
+- [CHANGE] `TrackKind` に `Subtitle` バリアントを追加する
+  - C API `Mp4TrackKind` に `MP4_TRACK_KIND_SUBTITLE = 2` を追加する
+  - WASM の JSON API で `"subtitle"` の入出力に対応する
+  - @sile
+- [CHANGE] `MinfBox` の `smhd_or_vmhd_box` フィールドを `media_header` に置き換える
+  - `Option<Either<SmhdBox, VmhdBox>>` から `Option<MediaHeader>` に型が変わる
+  - @sile
+- [CHANGE] `SampleTableAccessorError` に `SampleCountOverflow` と `SampleDataOffsetOverflow` を追加する
+  - `SampleTableAccessor::new()` がオーバーフローを検出したときに返すエラーバリアント
+  - @sile
+- [CHANGE] `TrunSample.composition_time_offset` の型を `Option<i32>` から `Option<i64>` に変更する
+  - これまで `trun` version 0 の unsigned 32-bit 値を `as i32` で格納しており、`> i32::MAX` の値が負値に化けていた
+  - version 0 は `0..=u32::MAX`、version 1 は `i32::MIN..=i32::MAX` を保持できるようになる（`CttsEntry.sample_offset` と表現力を揃える）
+  - あわせて `Fmp4SegmentMuxer` および C API `fmp4_segment_muxer_write_media_segment_metadata()` で、これまでエラーだった `> i32::MAX` の `composition_time_offset` を受け付けるようになる
+  - ただし同一 `trun` 内に負値と `> i32::MAX` の値が混在する場合は encode 時に `invalid_input` エラーとなる
+  - @sile
+- [CHANGE] `SttsBox::from_sample_deltas()` の戻り値を `Result<SttsBox, Error>` に変更する
+  - 同一 `sample_delta` が連続して `u32::MAX` 回を超える異常な入力（通常のメディアでは到達しない境界）で、これまでは panic または不正な `stts` を出力していたのを、代わりに `InvalidData` を返すようにする
+  - @sile
+- [CHANGE] `Mp4FileMuxerOptions` / `SegmentMuxerOptions` に `audio_track` / `video_track` / `subtitle_track` フィールドを追加する
+  - トラックの言語（`mdhd.language`）とトラック名（`hdlr.name`）を Options 経由で指定できる
+  - C API / WASM 経由の利用者は本フィールドを指定する手段を持たず、デフォルト値（`und` + 空文字列）に固定される。バインディング拡張は必要になった時点で別途対応する
+  - @sile
+- [ADD] 3GPP TS 26.245 の `Tx3gBox` (`tx3g`) と `FtabBox` (`ftab`) を追加する
+  - `Tx3gBox` は必須子 `FtabBox` と本体固定 30 バイト（`displayFlags` / `horizontal_justification` / `vertical_justification` / `background_color_rgba` / `BoxRecord` / `StyleRecord`）を持つ
+  - `FtabBox` はフォントテーブル（`FontRecord` の可変長配列、各エントリーは `font_id` と Pascal-string `font_name`）を保持する
+  - 補助型 `BoxRecord`（`i16` × 4）と `StyleRecord`（12 バイト固定）を追加する
+  - サンプルデータは 3GPP TS 26.245 §5.17 の `text_length: u16` (BE) + テキスト + 任意 modifier boxes を生バイト列として扱う
+  - @sile
+- [ADD] ISO/IEC 14496-30 の `WvttBox` (`wvtt`) と `VttCBox` (`vttC`) を追加する
+  - `WvttBox` は必須子 `VttCBox` を持つ
+  - `VttCBox` は WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列。null 終端なし、box payload 全体）を保持する
+  - サンプルデータは WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）を生バイト列として扱う
+  - @sile
+- [ADD] ISO/IEC 14496-30 の `StppBox` (`stpp`) を追加する
+  - `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールド（`Utf8String`）と任意子ボックスを持つ
+  - サンプルデータは XML ドキュメント（TTML / IMSC 等）を生バイト列として扱う
+  - @sile
+- [ADD] ISO/IEC 14496-12 の `SthdBox` (`sthd`) と `NmhdBox` (`nmhd`) を追加する
+  - 字幕トラック等で使われるメディアヘッダーボックス
+  - @sile
+- [ADD] `MediaHeader` enum を追加する
+  - `MinfBox::media_header` フィールドで利用する
+  - `Smhd` / `Vmhd` / `Sthd` / `Nmhd` の 4 バリアントを持つ
+  - @sile
+- [ADD] `HdlrBox` に字幕用ハンドラー種別定数を追加する
+  - `HANDLER_TYPE_SUBT` (`subt`、stpp 用)
+  - `HANDLER_TYPE_TEXT` (`text`、wvtt / tx3g 用)
+  - @sile
+- [ADD] 字幕トラックのマルチプレックス / デマルチプレックス経路を追加する
+  - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両方で `TrackKind::Subtitle` を受け入れ、`stpp` / `wvtt` / `tx3g` を含む字幕トラックをマルチプレックスできる
+  - `Mp4FileDemuxer` / `Fmp4FileDemuxer` / `Fmp4SegmentDemuxer` の 3 経路で字幕トラックをスキップせず取り出せるようにする
+  - @sile
+- [ADD] `LanguageCode` 型を新設する
+  - `MdhdBox::language` 用の 3 文字言語コードで、各バイトが `0x60..=0x7F` の範囲に収まることを構築時に検証する
+  - @sile
+- [ADD] `TrackMetadata` 型を新設し `mux::` から公開する
+  - `language`（`LanguageCode`）と `name`（`Utf8String`）を持ち、両 muxer の Options から参照する
+  - @sile
+- [ADD] `Utf8String` に `Default` を実装する
+  - `Utf8String::default()` は空文字列（`Utf8String::EMPTY` と同値）を返す
+  - @sile
+- [UPDATE] ビルド依存の `cbindgen` を `0.29.4` に更新する
+  - @sile
+- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` の `sidx.references[0].starts_with_sap` / `sap_type` が EPT サンプルの実際の SAP 状態を反映するようにする
+  - これまでは samples[] 内で参照トラックに該当する最初のサンプル（実質 `samples[0]`）の `keyframe` を採っていた
+  - 負 CTO を持つ B フレームが表示順先頭になる入力では、EPT サンプルの SAP 状態と食い違っていた
+  - @sile
+- [FIX] `BoxHeader::decode_header_and_payload` で 32bit の size=0（`BoxSize::VARIABLE_SIZE`）をバッファ末尾までの可変長ボックスとして扱えるようにする
+  - これまで `box_size < header_size` 判定が先に走り、size=0 の特別処理に到達できず常に `InvalidData` になっていた
+  - `BoxSize::U64(0)`（`LARGE_VARIABLE_SIZE`）は仕様未定義のため従来どおりエラーのままとする
+  - @sile
+- [FIX] c-api の `mp4_file_demuxer_get_required_input` / `mp4_file_kind_detector_get_required_input` で要求サイズが `i32::MAX` を超えたときに `-1`（EOF）と衝突しないようにする
+  - これまで `usize as i32` で切り捨てており、不正または破損した入力（`box_size` が極端に大きい等）で負値（特に `-1`）になり得た
+  - 合法なファイルで `moov` 等が 2 GiB を超えることは現実的ではないが、破損入力への防御として `i32::try_from` で変換し、超過時は `MP4_ERROR_UNSUPPORTED` を返す（出力引数は更新しない）
+  - @sile
+- [FIX] `Mp4FileMuxer` が全サンプル非キーフレームの音声・字幕トラックでエントリー 0 個の `stss` を出力しないようにする
+  - これまでは `keyframe = false` のみのトラックで空の `stss`（同期サンプルなし）を出力していた
+  - 音声・字幕では `stss` を省略し、全サンプル同期として扱う
+  - @sile
+- [FIX] WASM の JSON サンプルエントリー出力で、空バイト列を `from_raw_parts(null, 0)` に渡して未定義動作になっていたのを修正する
+  - `fmt_json_mp4_sample_entry_av01` / `_mp4a` / `_flac` では、パース時の `allocate_and_copy_bytes` が残し得る `(null, 0)` をサイズ 0 または null のとき `&[]` を返すガードで避ける
+  - `NaluList` / `HevcNaluArrays` / `FtabList` では加えて、パース時の `allocate_and_copy_array_list` が残し得る `(null, 非ゼロ)` も同じガードで避ける
+  - @sile
+- [FIX] `Mp4FileDemuxer` で `ftyp` / `moov` の `box_size` を `usize` へ変換するときに `as` キャストではなく `usize::try_from` を使うようにする
+  - 32 bit ターゲット（wasm32 を含む）で `box_size` が `usize::MAX` を超えると暗黙に切り詰められていた
+  - 合法なファイルでは現実的に起きないが、破損入力への防御として変換失敗時は `DemuxError::DecodeError` を返す
+  - @sile
+- [FIX] `Mp4FileMuxer::build_stbl_box()` の `stsc` / `stss` 構築で `NonZeroU32::saturating_add` を使わずオーバーフロー時にエラーを返すようにする
+  - これまではチャンク数やサンプル数が `u32::MAX` を超えると値が飽和し、壊れた MP4 をエラーなく生成し得た
+  - `checked_add` と `u32::try_from()` で明示的に検査し、超過時は `MuxError::Overflow` / `MuxError::EncodeError` を返す
+  - @sile
+- [FIX] `Fmp4SegmentMuxer` の `mdat` ボックスサイズ計算と `mfra` の `moof_offset` 計算で `u64` 加算がオーバーフローしたときにパニックや不正値にならず `MuxError::Overflow` を返すようにする
+  - これまではパニック（debug ビルド）やラップアラウンド（release ビルド）により不正なボックスサイズやオフセットが生成され得た
+  - @sile
+- [FIX] `MdhdBox::encode()` で言語コードの各バイトが 5 ビットに収まらない場合にエラーを返すようにする
+  - ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を `unsigned int(5)` にパックする
+  - これまでは `0x80` 以上のバイトも受け入れ、隣接ビットフィールドを破壊した不正な `mdhd` を生成し得た
+  - @sile
+- [FIX] `AvccBox::encode()` で PPS の上限を仕様どおり 255 に修正する
+  - ISO/IEC 14496-15 の `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）だが、SPS と同じ 31 で拒否していた
+  - これまでは PPS を 32〜255 個持つ合法な入力の `avcC` エンコードを誤って拒否していた
+  - @sile
+- [FIX] `Mp4FileMuxer::append_sample()` が `MuxError::Overflow` を返したあとも内部状態を不変に保つようにする
+  - これまでは `self.tracks` への登録が残ったまま次の書き込み位置だけが未更新になり、同じ `data_offset` で再投入するとサンプルが二重登録されていた
+  - `next_position` の加算オーバーフロー検査を `self.tracks` への副作用より前に移し、`MuxError::Overflow` でも内部状態が不変になるようにした
+  - 既存トラックの `timescale` 不一致とオーバーフローが同時に成立する病理的入力では、返るエラーが `TimescaleMismatch` から `Overflow` に変わる
+  - @sile
+- [FIX] c-api の `Mp4SampleEntryAvc1` / `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の `to_sample_entry()` で配列ベースポインタが null の場合に未定義動作ではなくエラーを返すようにする
+  - `avc1` では `sps_count > 0` で `sps_sizes` が null、`pps_count > 0` で `pps_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
+  - `hev1` / `hvc1` では `nalu_array_count > 0` で `nalu_types` / `nalu_counts` が null のとき、および `nalu_counts[i] > 0` となる各 i について `nalu_data` / `nalu_sizes` が null のときに `MP4_ERROR_NULL_POINTER` を返す
+  - @sile
+- [FIX] c-api の `fmp4_segment_muxer_write_media_segment*` でサンプル変換エラーの種別が失われていたのを修正する
+  - `convert_samples` の戻り値を `&'static str` から `Mp4Error` に変え、`to_sample_entry()` が返したエラー種別をそのまま伝播する
+  - これまでは `to_sample_entry()` が返した `MP4_ERROR_NULL_POINTER` 等の種別が呼び出し側で観測できず、一律 `MP4_ERROR_INVALID_INPUT` として観測されていた
+  - @sile
+- [FIX] wasm の `mp4_sample_entry_hev1_free()` / `mp4_sample_entry_hvc1_free()` のメモリ解放の不一致を修正する
+  - `mp4_free` に確保時のバイト数を渡すようにする（これまでは `size = 0` を渡していたため、`naluArrays` が非空のときにヒープ領域が解放されずリークしていた）
+  - `free_array_list` に `nalu_counts` の総和を渡すようにする（これまでは NALU 配列の個数を渡していたため、確保時の要素数と食い違いヒープを破壊していた）
+  - @sile
+- [FIX] `Mp4FileMuxer::append_sample()` で `sample.data_size` が `u32::MAX` を超える場合にエラーを返すようにする
+  - これまでは `usize` から `u32` への暗黙キャストで上位ビットが切り捨てられ、壊れた MP4 が生成される可能性があった
+  - `u32::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
+  - 同様に `build_stbl_box` 内の `sample_per_chunk` でも `c.samples.len()` の `u32` 暗黙キャストを防御する
+  - @voluntas
+- [FIX] `Mp4FileMuxer` で映像トラックの解像度の幅と高さが `i16::MAX` を超える場合にエラーを返すようにする
+  - これまでは `u16` から `i16` への暗黙キャストで符号が反転し、`tkhd` の `width` / `height` が負の値になる可能性があった
+  - `i16::try_from()` で明示的にチェックし、超過時は `MuxError::EncodeError` を返すように変更した
+  - @voluntas
+- [FIX] `VpccBox::encode()` で `codec_initialization_data` の長さが `u16::MAX` を超える場合にエラーを返すようにする
+  - これまでは `usize` から `u16` への暗黙キャストで長さフィールドだけ切り捨てられ、実データとの不一致な壊れた `vpcC` が生成される可能性があった
+  - `u16::try_from()` で明示的にチェックし、超過時は `ErrorKind::InvalidInput` を返すように変更した
+  - @sile
+- [FIX] `Fmp4SegmentMuxer::build_init_trak()` で `TrackKind::Video` に非映像系 `SampleEntry` が渡された場合の tkhd `volume` を修正する
+  - これまでは `visual = None` に落ちるすべてのケースで `TkhdBox::DEFAULT_AUDIO_VOLUME` を採用していた
+  - 映像トラックに `SampleEntry::Unknown` 等の非映像系エントリが渡ると音声用の `volume` が採用される不整合があった
+  - `entry.track_kind` で外側に分岐する形に刷新し、映像トラックでは常に `DEFAULT_VIDEO_VOLUME` を採用するようにする
+  - @sile
+- [FIX] `Mp4FileMuxer` が生成した MP4 で、`timescale` の異なるトラックの尺が誤って解釈される問題を修正する
+  - `tkhd` の `duration` を `mdhd` の `timescale` 単位のまま書いていた
+  - `tkhd` の `duration` を参照するプレイヤーで、トラックの尺が実際より短く解釈されてサンプルが途中で打ち切られたり、逆に実際の数百倍の尺として報告されたりしていた
+  - `mvhd` の `timescale` 単位へ切り上げて換算するように変更した
+  - @sile
+- [FIX] 破損した `stts` / `ctts` / `co64` を含む入力で、サンプル数やデータ位置の累計がオーバーフローしたときにパニックせずエラーを返すようにする
+  - release ビルドではラップして誤ったサンプル数のアクセサが返っていた
+  - @sile
+- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` で `mfra` の `tfra.moof_offset` が実 moof 位置より sidx 分前を指す問題を修正する
+  - sidx を先頭に付加した際に、当該セグメントの tfra エントリと `media_bytes_written` に sidx サイズが加算されていなかった
+  - 当該セグメント自身と後続セグメントの両方で `tfra.moof_offset` が sidx 分ずれ、シーク・ランダムアクセスで moof の位置を外していた
+  - @sile
+- [FIX] `FullBoxFlags::from_flags` / `FullBoxFlags::is_set` にビット位置 32 以上を渡すとシフト演算でパニック（debug ビルド）やラップ（release ビルド）していたのを修正する
+  - `is_set` は 32 以上のビット位置に対して常に `false` を返す
+  - `from_flags` は 32 以上のビット位置を 0 として無視する
+  - @sile
+- [FIX] `FullBoxFlags::from_flags` に同一ビット位置を複数回渡すと u32 加算オーバーフローでパニックしていたのを修正する
+  - 内部の畳み込みを `.sum()` から OR (`.fold`) に変更し、重複を冪等に扱う
+  - @sile
+- [FIX] `TfraBox` のエンコードで短いバッファを渡すとパニックしていたのを修正する
+  - 内部の `encode_variable_uint` の 1〜3 バイトのアームが `buf.len()` を検査せず `buf[i]` へ直接代入していたため、バッファが不足するとインデックス範囲外で `Encode` トレイト契約に反してパニックしていた
+  - `match` の直前で `Error::check_buffer_size` を呼び、バッファ不足時は `InsufficientBuffer` を返すようにする
+  - @sile
+- [FIX] WASM の JSON サンプルエントリー変換で、パースが途中で失敗した場合に確保済みバッファがリークし得たのを防ぐ
+  - `parse_json_mp4_sample_entry_*` 系関数で、全 JSON フィールドを Rust 型に落としてから `allocate_and_copy_*` を呼ぶ順序に統一する
+  - 対象は avc1 / hev1 / hvc1 / av01 / mp4a / flac / tx3g（stpp / wvtt は既に同順か経路なし）
+  - @sile
+- [FIX] WASM の `fmp4_segment_muxer_write_media_segment_metadata*_json` でサンプルエントリーの内部ポインタが解放されずリークするのを修正する
+  - `write_segment_impl` および `parse_json_sample_metas` が `Box<Mp4SampleEntry>` / `Option<Mp4SampleEntry>` の通常 Drop だけに頼っており、`mp4_alloc` で確保した各 kind の可変長データ (SPS/PPS/NALU 配列など) が残っていた
+  - Drop 時に `mp4_sample_entry_free` を呼ぶラッパを `SampleMeta.sample_entry` に載せ、さらに `parse_json_mp4_sample_entry` の呼び出しを他フィールド解決後の最後に移して、パース途中失敗経路と C API 呼び出し経路のどちらでも内部ポインタが解放されるようにする
+  - @sile
+- [FIX] WASM の `u16` / `u32` / ポインタ配列の確保を要素型のアラインメントに合わせて直す
+  - `allocate_and_copy_u16_array` / `allocate_and_copy_array_list` および hev1 / hvc1 の `nalu_counts` が `mp4_alloc`（align 1）経由で `u16` / `u32` / ポインタ配列として読まれていた契約違反を解消する
+  - `mp4_alloc` / `mp4_free` の C ABI は変更しない
+  - @sile
+- [FIX] `Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx()` で `sidx` の `earliest_presentation_time` が `composition_time_offset` を無視して DTS だけを使っていた問題を修正する
+  - これまではセグメント先頭の累積 DTS（`track.decode_time`）をそのまま入れていた
+  - 参照トラック各サンプルの PTS（`DTS + composition_time_offset`、`None` は 0）の最小値を使うようにする
+  - PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` に収まらない場合は `MuxError::Overflow` を返す
+  - @sile
+- [FIX] `TrunBox::encode` がサンプル間で per-sample フィールドの `Option` 有無が揃っていない入力を黙って潰していたのを修正する
+  - これまでは先頭サンプルだけでフラグを決めていたため、両方向で情報が落ちていた（先頭 `None`・後続 `Some` では後続値が捨てられ、先頭 `Some`・後続 `None` では `unwrap_or(0)` で 0 が書き込まれていた）
+  - duration / size / flags / composition_time_offset のいずれかで有無が揃わない場合は `invalid_input` を返す
+  - あわせて `compute_flags` を `iter().any()` ベースに変更し、`FullBox::full_box_flags()` を直接呼び出しても「どのサンプルかに Some があればフラグを立てる」決定論的な値を返すようにする（`uses_version_1` と流儀を揃える）
+  - `Fmp4SegmentMuxer` 内部の TrunBox 生成 (`mux_fmp4_segment.rs`) は常に整合サンプルを組み立てるため、この変更で新たにエラーになるケースはない
+  - @sile
+
+### misc
+
+- [ADD] Hybrid MP4 の取り扱いについての補足ドキュメントを追加する
+  - @sile
+- [ADD] CI に `crates/wasm` の miri 実行ジョブを追加する
+  - `make miri`（`cargo +nightly miri test -p wasm`）を追加し、`.github/workflows/ci.yml` の CI ジョブとして実行する
+  - 既存 CI と同じ `push` / 月–金 cron で回す（他ジョブと並列）
+  - @sile
+- [ADD] `Mp4FileMuxer` の fuzz ターゲット (`fuzz_mp4_file_mux`) を追加する
+  - demux → mux パターンで任意バイト列に対するパニック安全性を検証する
+  - @voluntas
+- [ADD] `SampleTableAccessor` の fuzz ターゲット (`fuzz_sample_table_accessor`) を追加する
+  - `StblBox::decode()` から直接構築し、全アクセサメソッドのパニック安全性を検証する
+  - @voluntas
+- [UPDATE] WASM の `hev1` / `hvc1` サンプルエントリー JSON 変換の重複実装を共通ヘルパーへ抽出する
+  - `parse` / `free` / `NaluArrays` シリアライズおよびテスト JSON 組み立ての重複を解消する
+  - 公開 API（`parse_json_mp4_sample_entry_*` / `mp4_sample_entry_*_free` / `fmt_json_mp4_sample_entry_*`）のシグネチャは変更しない
+  - @sile
+- [UPDATE] `Hev1Box` / `Hvc1Box` および C API の `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の重複実装を共通ヘルパーへ抽出する
+  - ISO/IEC 14496-15 上で内部構造が同一の HEVC サンプルエントリー対について、エンコード / デコードおよび `to_sample_entry` の重複を解消する
+  - 公開 API（Rust の構造体フィールド・C ABI）は変更しない
+  - @sile
+- [UPDATE] `#[expect(missing_docs)]` を全撤廃して公開アイテムにドキュメントを付与する
+  - `MvhdBox::timescale` / `MdhdBox::timescale` / `SidxBox::timescale` の doc に、それぞれのタイムスケールが何を定義するかを明記する
+  - `MvhdBox::duration` / `MdhdBox::duration` / `TkhdBox::duration` / `ElstEntry::edit_duration` / `ElstEntry::media_time` の doc に、値がどの timescale 単位で表されるかを明記する（過去に `tkhd` の duration の単位を取り違える不具合を出しているための再発防止）
+  - あわせて `CttsBox` / `CslgBox` / `MdhdBox::language` の既存英語 doc を日本語化し、`SidxReference::subsegment_duration` などに単位表記を追記する
+  - @sile
+- [UPDATE] `fuzz_basic_types` に `SampleFlags` の decode/encode を追加する
+  - @voluntas
+- [UPDATE] `pbt/tests/prop_error_paths.rs` を対応する各 PBT ファイル（`prop_boxes_moov_tree.rs` / `prop_boxes_sample_entry.rs` を新設）に再配置する
+  - @sile
+- [UPDATE] examples と doc コメント内サンプルコードの日本語出力文字列を英語に置換する
+  - @sile
+- [UPDATE] `SampleTableAccessorError` の Display メッセージの英語文法を直す
+  - @sile
+- [UPDATE] `pbt/Cargo.toml` の `proptest` の指定を `1.9` から `1.11` に更新する
+  - @sile
+- [UPDATE] `fuzz` の `libfuzzer-sys` を 0.4.10 から 0.4.13 に更新する
+  - @sile
+
 ## 2026.3.0
 
 - [ADD] `Mp4FileMuxer::advance_position()` メソッドを追加する

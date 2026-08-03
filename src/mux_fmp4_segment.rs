@@ -1,6 +1,6 @@
 //! Fragmented MP4 (fMP4) のマルチプレックス機能を提供するモジュール
 //!
-//! このモジュールは、複数のメディアトラック（音声・映像）からのサンプルを
+//! このモジュールは、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 //! 初期化セグメントとメディアセグメントに分けて生成する機能を提供する。
 //!
 //! # fMP4 の構造
@@ -19,8 +19,7 @@
 //!
 //! そのため、`Mp4FileMuxer` と同様にサンプルごとに `track_kind` / `timescale` /
 //! `sample_entry` を受け取る設計になっている。
-//! 現時点では `Mp4FileMuxer` と同様に、同時に扱えるトラックは
-//! Audio 1 本と Video 1 本までに制限している。
+//! 現時点では同一 [`TrackKind`] のトラックは 1 本までに制限している（音声 / 映像 / 字幕 各 1 本）。
 //! 将来、同種複数トラックに対応する場合は file muxer と合わせて拡張する想定である。
 //!
 //! # Examples
@@ -32,7 +31,7 @@
 //! use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Sample};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
-//! let sample_entry = todo!("使用するコーデックに合わせたサンプルエントリーを構築する");
+//! let sample_entry = todo!("build a sample entry for the codec being used");
 //! let mut muxer = Fmp4SegmentMuxer::new()?;
 //!
 //! // 返り値は moof + mdat header であり、payload 自体は含まれない
@@ -58,29 +57,49 @@ use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
     BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
-    TrackKind, Utf8String,
+    TrackKind,
     boxes::{
-        Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MehdBox, MfhdBox, MfraBox,
-        MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, SampleEntry, SidxBox, SidxReference,
-        SmhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TfdtBox, TfhdBox, TfraBox,
-        TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, VmhdBox,
+        Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
+        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SampleEntry,
+        SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox,
+        SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
+        TrunSample, VmhdBox,
     },
-    mux_mp4_file::{MuxError, Sample},
+    mux_mp4_file::{MuxError, Sample, TrackMetadata},
 };
 
 /// [`Fmp4SegmentMuxer`] 用のオプション
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SegmentMuxerOptions {
     /// ファイル作成時刻（構築される fMP4 内のメタデータとして使われる）
     ///
     /// デフォルト値は UNIX エポック（1970年1月1日 00:00:00 UTC）
     pub creation_timestamp: Duration,
+
+    /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される。
+    /// トラックごとの個別指定は将来の対応
+    pub audio_track: TrackMetadata,
+
+    /// 映像トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
+    pub video_track: TrackMetadata,
+
+    /// 字幕トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
+    pub subtitle_track: TrackMetadata,
 }
 
-impl Default for SegmentMuxerOptions {
-    fn default() -> Self {
-        Self {
-            creation_timestamp: Duration::ZERO,
+impl SegmentMuxerOptions {
+    /// [`TrackKind`] に対応するトラックメタデータを返す
+    pub(crate) fn track_metadata(&self, kind: TrackKind) -> &TrackMetadata {
+        match kind {
+            TrackKind::Audio => &self.audio_track,
+            TrackKind::Video => &self.video_track,
+            TrackKind::Subtitle => &self.subtitle_track,
         }
     }
 }
@@ -101,7 +120,7 @@ struct TrackEntry {
 struct TfraSegmentEntry {
     /// このセグメントの先頭サンプルのデコード時間
     time: u64,
-    /// media segment 列の先頭を 0 としたときの moof ボックスの相対オフセット
+    /// メディアセグメント列の先頭を 0 としたときの moof ボックスの相対オフセット
     moof_relative_offset: u64,
     /// moof 内でのこのトラックの traf の 1 ベースインデックス
     traf_number: u32,
@@ -121,13 +140,14 @@ struct ResolvedSegmentTrack {
 struct ResolvedSegmentSample {
     duration: u32,
     keyframe: bool,
-    composition_time_offset: Option<i32>,
+    // `TrunSample::composition_time_offset` に転写するため公開 API と同じ i64 で保持する
+    composition_time_offset: Option<i64>,
     data_size: usize,
 }
 
 /// fMP4 ファイルを生成するマルチプレックス処理を行うための構造体
 ///
-/// この構造体は、複数のメディアトラック（音声・映像）からのサンプルを
+/// この構造体は、複数のメディアトラック（音声・映像・字幕）からのサンプルを
 ///  fMP4 形式の初期化セグメントとメディアセグメントに変換する。
 ///
 /// [`crate::mux::Mp4FileMuxer`] と同様に、サンプルごとに `track_kind` / `timescale` /
@@ -145,7 +165,7 @@ pub struct Fmp4SegmentMuxer {
     tracks: Vec<TrackEntry>,
     options: SegmentMuxerOptions,
     sequence_number: u32,
-    /// `create_media_segment_metadata*()` で表現した media segment のバイト数累計
+    /// `create_media_segment_metadata*()` で表現したメディアセグメントのバイト数累計
     media_bytes_written: u64,
     /// トラックごとの tfra エントリ（tracks と同じインデックス）
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
@@ -207,8 +227,10 @@ impl Fmp4SegmentMuxer {
     /// 「今回のセグメントに属する `mdat` payload 領域の先頭からの相対位置」である。
     ///
     /// `samples[*].composition_time_offset` は公開 API では demuxer と揃えて `i64` だが、
-    /// この muxer が `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲に限られる。
-    /// 範囲外の値を指定した場合はエラーになる。
+    /// `trun` に書けるのは ISO/IEC 14496-12 8.8.8 の制約により
+    /// version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲に限られる。
+    /// また、負値と `> i32::MAX` の値がひとつの `trun` に混在する場合は
+    /// どちらの版でも表現できないためエラーになる。
     ///
     /// 現実装は `1 track = 1 traf = 1 trun` を前提としている。
     /// そのため、ひとつのトラックに属する payload を複数の離れた範囲へ分割して
@@ -231,8 +253,23 @@ impl Fmp4SegmentMuxer {
     ///
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
+    /// `sidx` の `earliest_presentation_time` は、参照トラック各サンプルの
+    /// PTS（`DTS + composition_time_offset`、`None` は 0）の最小値である。
+    /// PTS が負、あるいは PTS または参照トラックの累積 DTS が `u64` の表現範囲を外れた場合は
+    /// [`MuxError::Overflow`] を返す。
+    /// エラー時は muxer の内部状態を変更しない。
+    ///
+    /// `sidx` の `starts_with_sap` / `sap_type` は、EPT を採ったサンプル（参照トラックで
+    /// PTS が最小のサンプル。同値時は samples[] 内で先に出現したもの）の `keyframe` を基準にする。
+    /// `sap_type` はキーフレームを一律 `1`（SAP type 1 相当）、非キーフレームを `0` として扱う近似であり、
+    /// ISO/IEC 14496-12 が定義する SAP type 1〜6 の区別（open GoP の I フレームは本来 type 3 相当 等）は
+    /// 行わない。
+    ///
     /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
+    ///
+    /// このメソッドで生成した sidx 付きセグメントを初期化セグメントの後ろに並べたファイル配置において、
+    /// [`mfra_bytes()`](Self::mfra_bytes) が返す `tfra.moof_offset` は sidx を含む実際の `moof` 位置と整合する。
     pub fn create_media_segment_metadata_with_sidx(
         &mut self,
         samples: &[Sample],
@@ -247,16 +284,27 @@ impl Fmp4SegmentMuxer {
             .filter(|s| s.track_kind == first_track_kind)
             .map(|s| s.duration as u64)
             .sum();
-        let first_sample_is_keyframe = samples
-            .iter()
-            .find(|s| s.track_kind == first_track_kind)
-            .map(|s| s.keyframe)
-            .unwrap_or(false);
-        let earliest_presentation_time = self
+        // build_media_segment_bytes 呼び出し前なので、ここでの decode_time は
+        // 当該セグメント先頭の累積 DTS（未登録トラックなら 0）である。
+        let decode_time = self
             .tracks
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
+        // ISO/IEC 14496-12 8.16.3.3 の starts_with_SAP は「参照される subsegment が
+        // SAP から始まる」の意味であり、EPT に対応するアクセスユニットが SAP かどうかが問われる。
+        let (earliest_presentation_time, sap_at_ept) =
+            compute_earliest_presentation_time(samples, first_track_kind, decode_time)?;
+
+        // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリ数を記録しておく。
+        // sidx エンコード後にこの記録と比較すれば、今回の呼び出しで新規追加された
+        // tfra エントリ（各トラックにつき末尾 1 件）を特定できる。
+        let pre_tfra_lens: Vec<usize> = self
+            .tfra_entries
+            .iter()
+            .map(|entries| entries.len())
+            .collect();
+
         let (media_segment, mdat_payload_size) = self.build_media_segment_bytes(samples)?;
         let media_segment_size = media_segment
             .len()
@@ -288,13 +336,47 @@ impl Fmp4SegmentMuxer {
                 reference_type: false,
                 referenced_size,
                 subsegment_duration: subsegment_duration_u32,
-                starts_with_sap: first_sample_is_keyframe,
-                sap_type: if first_sample_is_keyframe { 1 } else { 0 },
+                starts_with_sap: sap_at_ept,
+                sap_type: u8::from(sap_at_ept),
                 sap_delta_time: 0,
             }],
         };
 
         let sidx_bytes = sidx_box.encode_to_vec()?;
+        let sidx_size = sidx_bytes.len() as u64;
+
+        // 後続セグメントが moof_relative_offset の起点とする media_bytes_written に対して、
+        // 先にオーバーフロー検査を済ませる。ここで検査が通れば、当該セグメントの
+        // tfra エントリ（moof_relative_offset は加算前の media_bytes_written 以下）への
+        // 加算はオーバーフローしない。
+        let new_media_bytes_written = self
+            .media_bytes_written
+            .checked_add(sidx_size)
+            .ok_or(MuxError::Overflow)?;
+
+        // 当該セグメントで新規追加された tfra エントリの moof_relative_offset に sidx サイズを加算する。
+        // build_media_segment_bytes は各 track_kind につき最大 1 件だけ push するため、
+        // pre_tfra_lens よりも長くなったトラックは末尾 1 件が今回の新規エントリである。
+        for (track_index, entries) in self.tfra_entries.iter_mut().enumerate() {
+            // build_media_segment_bytes が新規トラックを追加した場合、self.tfra_entries は
+            // pre_tfra_lens より長くなり、末尾の新規トラックについては pre_tfra_lens に対応する
+            // 要素が存在しない。この場合の pre_len は「以前は存在しなかった = 0 件」を表す。
+            let pre_len = pre_tfra_lens.get(track_index).copied().unwrap_or(0);
+            if entries.len() > pre_len {
+                let last = entries
+                    .last_mut()
+                    .expect("bug: tfra entries grew but the vec is empty");
+                last.moof_relative_offset = last
+                    .moof_relative_offset
+                    .checked_add(sidx_size)
+                    .expect(
+                        "bug: moof_relative_offset <= media_bytes_written, so sidx_size fits after the media_bytes_written check",
+                    );
+            }
+        }
+
+        self.media_bytes_written = new_media_bytes_written;
+
         let mut result = sidx_bytes;
         result.extend_from_slice(&media_segment);
         Ok(result)
@@ -321,15 +403,23 @@ impl Fmp4SegmentMuxer {
             .map(|track| track.payload_end)
             .max()
             .ok_or(MuxError::EmptySamples)?;
-        let mdat_box_size_value = BoxHeader::MIN_SIZE as u64 + mdat_payload_size;
+        // 現実のメディアで payload が u64::MAX 近傍になることはまずない。
+        // それでも病理的な data_size なら公開 API から到達し得るため、防御的に検査する。
+        let mdat_box_size_value = (BoxHeader::MIN_SIZE as u64)
+            .checked_add(mdat_payload_size)
+            .ok_or(MuxError::Overflow)?;
         let (mdat_box_size, mdat_header_size) = if mdat_box_size_value <= u32::MAX as u64 {
             (
                 BoxSize::U32(mdat_box_size_value as u32),
                 BoxHeader::MIN_SIZE,
             )
         } else {
-            // 拡張サイズが必要: ヘッダーが 16 バイトになるため合計値を再計算する
-            let extended_box_size = 16u64 + mdat_payload_size as u64;
+            // 拡張ヘッダー（largesize 含む 16 バイト）込みの合計を再計算する。
+            // MIN_SIZE + payload が成功しても、payload が [u64::MAX - 15, u64::MAX - 8]
+            // なら 16 + payload はオーバーフローし得るため、ここでも checked_add が必要。
+            let extended_box_size = 16u64
+                .checked_add(mdat_payload_size)
+                .ok_or(MuxError::Overflow)?;
             (BoxSize::U64(extended_box_size), 16)
         };
         let mdat_header = BoxHeader::new(MdatBox::TYPE, mdat_box_size);
@@ -440,23 +530,26 @@ impl Fmp4SegmentMuxer {
             }
             let track = &self.tracks[ti];
 
-            // time / moof_offset が u32 に収まるか否かで version を決める
-            let needs_v1 = entries.iter().any(|e| {
-                let moof_offset = init_segment_size + e.moof_relative_offset;
-                e.time > u32::MAX as u64 || moof_offset > u32::MAX as u64
-            });
-            let version = if needs_v1 { 1 } else { 0 };
-
-            let tfra_entries: Vec<TfraEntry> = entries
-                .iter()
-                .map(|e| TfraEntry {
+            // time / moof_offset が u32 に収まるか否かで version を決める。
+            // moof_offset は init + relative の和なので、加算オーバーフローもここで検出する。
+            let mut needs_v1 = false;
+            let mut tfra_entries = Vec::new();
+            for e in entries {
+                let moof_offset = init_segment_size
+                    .checked_add(e.moof_relative_offset)
+                    .ok_or(MuxError::Overflow)?;
+                if e.time > u32::MAX as u64 || moof_offset > u32::MAX as u64 {
+                    needs_v1 = true;
+                }
+                tfra_entries.push(TfraEntry {
                     time: e.time,
-                    moof_offset: init_segment_size + e.moof_relative_offset,
+                    moof_offset,
                     traf_number: e.traf_number,
                     trun_number: 1,
                     sample_number: 1,
-                })
-                .collect();
+                });
+            }
+            let version = if needs_v1 { 1 } else { 0 };
 
             // traf_number の最大値に応じてフィールドサイズを決定する
             // ISO 14496-12: 0=1byte, 1=2bytes, 2=3bytes, 3=4bytes
@@ -601,39 +694,9 @@ impl Fmp4SegmentMuxer {
             .ok_or(MuxError::MissingSampleEntry {
                 track_kind: entry.track_kind,
             })?;
-        let visual = match sample_entry {
-            SampleEntry::Avc1(b) => Some(&b.visual),
-            SampleEntry::Hev1(b) => Some(&b.visual),
-            SampleEntry::Hvc1(b) => Some(&b.visual),
-            SampleEntry::Vp08(b) => Some(&b.visual),
-            SampleEntry::Vp09(b) => Some(&b.visual),
-            SampleEntry::Av01(b) => Some(&b.visual),
-            _ => None,
-        };
-        let (volume, width, height) = match visual {
-            Some(v) => {
-                let w = i16::try_from(v.width).map_err(|_| {
-                    MuxError::EncodeError(crate::Error::invalid_data(
-                        "video width exceeds i16::MAX",
-                    ))
-                })?;
-                let h = i16::try_from(v.height).map_err(|_| {
-                    MuxError::EncodeError(crate::Error::invalid_data(
-                        "video height exceeds i16::MAX",
-                    ))
-                })?;
-                (
-                    TkhdBox::DEFAULT_VIDEO_VOLUME,
-                    FixedPointNumber::new(w, 0),
-                    FixedPointNumber::new(h, 0),
-                )
-            }
-            None => (
-                TkhdBox::DEFAULT_AUDIO_VOLUME,
-                FixedPointNumber::default(),
-                FixedPointNumber::default(),
-            ),
-        };
+        // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
+        let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
+        let metadata = self.options.track_metadata(entry.track_kind);
 
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
@@ -646,26 +709,18 @@ impl Fmp4SegmentMuxer {
             duration: 0,
             layer: TkhdBox::DEFAULT_LAYER,
             alternate_group: TkhdBox::DEFAULT_ALTERNATE_GROUP,
-            volume,
+            volume: derived.volume,
             matrix: TkhdBox::DEFAULT_MATRIX,
-            width,
-            height,
-        };
-
-        let handler_type = match entry.track_kind {
-            TrackKind::Video => HdlrBox::HANDLER_TYPE_VIDE,
-            TrackKind::Audio => HdlrBox::HANDLER_TYPE_SOUN,
+            width: derived.width,
+            height: derived.height,
         };
 
         let hdlr_box = HdlrBox {
-            handler_type,
-            name: Utf8String::EMPTY.into_null_terminated_bytes(),
+            handler_type: derived.handler_type,
+            name: metadata.name.clone().into_null_terminated_bytes(),
         };
 
-        let smhd_or_vmhd = match entry.track_kind {
-            TrackKind::Audio => Some(Either::A(SmhdBox::default())),
-            TrackKind::Video => Some(Either::B(VmhdBox::default())),
-        };
+        let media_header = Some(derived.media_header);
 
         // fMP4 の初期化セグメントでは stbl は stsd のみ持てばよく、
         // 他のサンプルテーブルは空にする
@@ -673,7 +728,9 @@ impl Fmp4SegmentMuxer {
             stsd_box: StsdBox {
                 entries: entry.sample_entries.clone(),
             },
-            stts_box: SttsBox::from_sample_deltas(core::iter::empty()),
+            stts_box: SttsBox {
+                entries: Vec::new(),
+            },
             ctts_box: None,
             cslg_box: None,
             stsc_box: StscBox { entries: vec![] },
@@ -693,11 +750,11 @@ impl Fmp4SegmentMuxer {
             modification_time: creation_time,
             timescale: entry.timescale,
             duration: 0,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: metadata.language,
         };
 
         let minf_box = MinfBox {
-            smhd_or_vmhd_box: smhd_or_vmhd,
+            media_header,
             dinf_box: DinfBox::LOCAL_FILE,
             stbl_box,
             unknown_boxes: Vec::new(),
@@ -798,6 +855,52 @@ impl Fmp4SegmentMuxer {
     }
 }
 
+/// 参照トラックの各サンプルについて PTS を求め、その最小値と当該サンプルの `keyframe` を返す
+///
+/// `DTS_i = decode_time + Σ_{k < i} duration_k`（当該トラックのサンプルのみ）、
+/// `PTS_i = DTS_i + composition_time_offset.unwrap_or(0)`。
+/// 戻り値は `(min_pts, sap_at_ept)` で、第 2 要素は `min_pts` を採ったサンプルの `keyframe`。
+/// PTS が同値のときは samples[] 内で先に出現したサンプルの `keyframe` を保持する
+/// （PTS が厳密に減少するときだけ第 2 要素を更新する）。
+/// PTS が負、あるいは PTS または累積 DTS が `u64` の表現範囲を外れた場合は
+/// [`MuxError::Overflow`] を返す。
+///
+/// 呼び出し側は `samples` に `track_kind` を持つサンプルを最低 1 件含めること
+/// （逸脱した場合は末尾の `expect` で panic する）。
+fn compute_earliest_presentation_time(
+    samples: &[Sample],
+    track_kind: TrackKind,
+    decode_time: u64,
+) -> Result<(u64, bool), MuxError> {
+    let mut dts = decode_time;
+    // (min_pts, EPT サンプルの keyframe) を追跡する
+    let mut min_pts: Option<(i128, bool)> = None;
+
+    for sample in samples
+        .iter()
+        .filter(|sample| sample.track_kind == track_kind)
+    {
+        let cto = i128::from(sample.composition_time_offset.unwrap_or(0));
+        // dts (u64) + cto (i64) は i128 の表現範囲を超え得ないため、単純加算でよい
+        let pts = i128::from(dts) + cto;
+        match min_pts {
+            Some((current, _)) if pts >= current => {}
+            _ => {
+                min_pts = Some((pts, sample.keyframe));
+            }
+        }
+        dts = dts
+            .checked_add(u64::from(sample.duration))
+            .ok_or(MuxError::Overflow)?;
+    }
+
+    // 呼び出し側は samples[0].track_kind を渡すため、当該 kind のサンプルは少なくとも 1 件ある。
+    let (min_pts, sap_at_ept) =
+        min_pts.expect("bug: reference track must have at least one sample");
+    let min_pts = u64::try_from(min_pts).map_err(|_| MuxError::Overflow)?;
+    Ok((min_pts, sap_at_ept))
+}
+
 fn resolve_segment_tracks(
     tracks: &mut Vec<TrackEntry>,
     samples: &[Sample],
@@ -887,16 +990,7 @@ fn resolve_segment_tracks(
             resolved_samples.push(ResolvedSegmentSample {
                 duration: sample.duration,
                 keyframe: sample.keyframe,
-                composition_time_offset: sample
-                    .composition_time_offset
-                    .map(|offset| {
-                        i32::try_from(offset).map_err(|_| {
-                            MuxError::EncodeError(Error::invalid_input(
-                                "composition_time_offset for fMP4 must be within i32 range",
-                            ))
-                        })
-                    })
-                    .transpose()?,
+                composition_time_offset: sample.composition_time_offset,
                 data_size: sample.data_size,
             });
         }
@@ -969,6 +1063,116 @@ fn ensure_track_entry(
         current_sample_entry_index: None,
     });
     Ok(tracks.len() - 1)
+}
+
+/// tkhd の `width` / `height` を表す固定小数点数のペア型エイリアス
+type TkhdDimensions = (FixedPointNumber<i16, u16>, FixedPointNumber<i16, u16>);
+
+/// `track_kind` から派生する `trak` の属性群
+///
+/// tkhd の volume / width / height、ハンドラー種別、メディアヘッダーはすべて
+/// トラック種別ごとに決まる。使用箇所ごとに個別に match するのを避け、
+/// 決定表として 1 つの構造体に集約する。
+/// [`Fmp4SegmentMuxer`] と [`crate::mux::Mp4FileMuxer`] の両方から利用する
+pub(crate) struct TrakDerivation {
+    pub(crate) volume: FixedPointNumber<i8, u8>,
+    pub(crate) width: FixedPointNumber<i16, u16>,
+    pub(crate) height: FixedPointNumber<i16, u16>,
+    pub(crate) handler_type: [u8; 4],
+    pub(crate) media_header: MediaHeader,
+}
+
+/// `track_kind` と `sample_entry` から tkhd / hdlr / media_header 用の属性を導出する
+///
+/// [`TrackKind::Subtitle`] 側の (handler_type, media_header) 対応表は
+/// [`subtitle_trak_attributes`] を参照
+pub(crate) fn derive_trak_attributes(
+    track_kind: TrackKind,
+    sample_entry: &SampleEntry,
+) -> Result<TrakDerivation, MuxError> {
+    match track_kind {
+        TrackKind::Video => {
+            let (width, height): TkhdDimensions = extract_video_dimensions(sample_entry)?;
+            Ok(TrakDerivation {
+                volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
+                width,
+                height,
+                handler_type: HdlrBox::HANDLER_TYPE_VIDE,
+                media_header: MediaHeader::Vmhd(VmhdBox::default()),
+            })
+        }
+        TrackKind::Audio => Ok(TrakDerivation {
+            volume: TkhdBox::DEFAULT_AUDIO_VOLUME,
+            width: FixedPointNumber::default(),
+            height: FixedPointNumber::default(),
+            handler_type: HdlrBox::HANDLER_TYPE_SOUN,
+            media_header: MediaHeader::Smhd(SmhdBox::default()),
+        }),
+        // 字幕トラックの tkhd volume は 0 が慣習（DEFAULT_VIDEO_VOLUME と同じ値）。
+        // width / height は 0（表示領域を指定する必要が生じたら方式固有の実装で拡張する）
+        TrackKind::Subtitle => {
+            let (handler_type, media_header) = subtitle_trak_attributes(sample_entry);
+            Ok(TrakDerivation {
+                volume: TkhdBox::DEFAULT_VIDEO_VOLUME,
+                width: FixedPointNumber::default(),
+                height: FixedPointNumber::default(),
+                handler_type,
+                media_header,
+            })
+        }
+    }
+}
+
+/// 字幕サンプルエントリーからハンドラー種別とメディアヘッダーを決める
+///
+/// 対応表:
+///   stpp → subt + sthd (ISO/IEC 14496-30)
+///   wvtt → text + sthd (ISO/IEC 14496-30)
+///   tx3g → text + nmhd (3GPP TS 26.245)
+///
+/// `hdlr` と `minf.media_header` はトラック単位で 1 つしか持てないため、
+/// 1 つのトラック内でこの組が異なるサンプルエントリーが混在すると、
+/// `stsd` には両方が並ぶ一方でトラック側の属性は片方に固定され、規格上整合しなくなる。
+/// 呼び出し側はこの戻り値同士を突き合わせて混在を検出する
+pub(crate) fn subtitle_trak_attributes(sample_entry: &SampleEntry) -> ([u8; 4], MediaHeader) {
+    match sample_entry {
+        SampleEntry::Stpp(_) => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+        SampleEntry::Wvtt(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Sthd(SthdBox)),
+        SampleEntry::Tx3g(_) => (HdlrBox::HANDLER_TYPE_TEXT, MediaHeader::Nmhd(NmhdBox)),
+        // 対応表に載っていないバリアントは防御的に subt + sthd に丸める。
+        // 字幕トラックに映像系・音声系のサンプルエントリーが紐付く運用は無く、
+        // 実際には未知の字幕系サンプルエントリー（`SampleEntry::decode` が
+        // 型付きに落とせずに `SampleEntry::Unknown` に落としたもの）だけがこの arm に到達する
+        _ => (HdlrBox::HANDLER_TYPE_SUBT, MediaHeader::Sthd(SthdBox)),
+    }
+}
+
+/// 映像系サンプルエントリーから幅・高さを取り出して tkhd 用の [`FixedPointNumber`] に変換する
+///
+/// 非映像系 SampleEntry（`SampleEntry::Unknown` 等）が渡された場合は `(0, 0)` を返す
+/// （Video トラックに変則的に非映像系エントリが渡ったケースへの防御）
+fn extract_video_dimensions(sample_entry: &SampleEntry) -> Result<TkhdDimensions, MuxError> {
+    let visual = match sample_entry {
+        SampleEntry::Avc1(b) => Some(&b.visual),
+        SampleEntry::Hev1(b) => Some(&b.visual),
+        SampleEntry::Hvc1(b) => Some(&b.visual),
+        SampleEntry::Vp08(b) => Some(&b.visual),
+        SampleEntry::Vp09(b) => Some(&b.visual),
+        SampleEntry::Av01(b) => Some(&b.visual),
+        _ => None,
+    };
+    match visual {
+        Some(v) => {
+            let w = i16::try_from(v.width).map_err(|_| {
+                MuxError::EncodeError(crate::Error::invalid_data("video width exceeds i16::MAX"))
+            })?;
+            let h = i16::try_from(v.height).map_err(|_| {
+                MuxError::EncodeError(crate::Error::invalid_data("video height exceeds i16::MAX"))
+            })?;
+            Ok((FixedPointNumber::new(w, 0), FixedPointNumber::new(h, 0)))
+        }
+        None => Ok((FixedPointNumber::default(), FixedPointNumber::default())),
+    }
 }
 
 /// SampleFlags を生成する

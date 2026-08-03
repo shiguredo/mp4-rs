@@ -9,13 +9,13 @@ fn test_c_examples_compile() {
     // ライブラリファイルが存在することを確認
     assert!(
         lib_path.exists(),
-        "libmp4.a not found at {}. Run `cargo build` first.",
+        "libmp4.a が {} に見つからない。先に `cargo build` を実行すること",
         lib_path.display()
     );
 
     // examples ディレクトリから全ての .c ファイルを検索
     let c_files: Vec<_> = std::fs::read_dir(project_root.join("crates/c-api/examples/"))
-        .expect("Failed to read examples directory")
+        .expect("examples ディレクトリの読み取りに失敗した")
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
@@ -29,14 +29,14 @@ fn test_c_examples_compile() {
 
     assert!(
         !c_files.is_empty(),
-        "No .c files found in examples directory"
+        "examples ディレクトリに .c ファイルが見つからない"
     );
 
     // 各 C ファイルをコンパイルする
     for c_file in c_files {
         let example_name = c_file
             .file_stem()
-            .expect("Failed to get file stem")
+            .expect("ファイル stem の取得に失敗した")
             .to_string_lossy();
         let output_path = project_root
             .join("target/debug")
@@ -55,11 +55,11 @@ fn test_c_examples_compile() {
         #[cfg(target_os = "windows")]
         cmd.arg("-lws2_32").arg("-lntdll").arg("-luserenv");
 
-        let status = cmd.status().expect("Failed to execute cc command");
+        let status = cmd.status().expect("cc コマンドの実行に失敗した");
 
         assert!(
             status.success(),
-            "Compilation failed for example: {example_name}"
+            "example のコンパイルに失敗した: {example_name}"
         );
     }
 }
@@ -72,14 +72,14 @@ fn test_simple_mux_demux() {
     // ライブラリファイルが存在することを確認
     assert!(
         lib_path.exists(),
-        "libmp4.a not found at {}. Run `cargo build` first.",
+        "libmp4.a が {} に見つからない。先に `cargo build` を実行すること",
         lib_path.display()
     );
 
     let c_file = project_root.join("crates/c-api/tests/simple_mux_demux.c");
     assert!(
         c_file.exists(),
-        "simple_mux_demux.c not found at {}",
+        "simple_mux_demux.c が {} に見つからない",
         c_file.display()
     );
 
@@ -98,19 +98,21 @@ fn test_simple_mux_demux() {
     #[cfg(target_os = "windows")]
     cmd.arg("-lws2_32").arg("-lntdll").arg("-luserenv");
 
-    let status = cmd.status().expect("Failed to compile simple_mux_demux.c");
+    let status = cmd
+        .status()
+        .expect("simple_mux_demux.c のコンパイルに失敗した");
 
     assert!(
         status.success(),
-        "Compilation failed for simple_mux_demux.c"
+        "simple_mux_demux.c のコンパイルに失敗した"
     );
 
     // コンパイルされた実行ファイルを実行
     let status = Command::new(&output_path)
         .status()
-        .expect("Failed to execute simple_mux_demux");
+        .expect("simple_mux_demux の実行に失敗した");
 
-    assert!(status.success(), "simple_mux_demux execution failed");
+    assert!(status.success(), "simple_mux_demux の実行が失敗した");
 }
 
 fn get_project_root() -> PathBuf {
@@ -118,6 +120,6 @@ fn get_project_root() -> PathBuf {
     manifest_dir
         .parent()
         .and_then(|p| p.parent())
-        .expect("Failed to find project root")
+        .expect("プロジェクトルートの特定に失敗した")
         .to_path_buf()
 }

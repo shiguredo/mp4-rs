@@ -35,6 +35,15 @@ pub enum Mp4SampleEntryKind {
 
     /// FLAC
     MP4_SAMPLE_ENTRY_KIND_FLAC,
+
+    /// stpp (XMLSubtitleSampleEntry, ISO/IEC 14496-30)
+    MP4_SAMPLE_ENTRY_KIND_STPP,
+
+    /// wvtt (WVTTSampleEntry, ISO/IEC 14496-30)
+    MP4_SAMPLE_ENTRY_KIND_WVTT,
+
+    /// tx3g (TextSampleEntry, 3GPP TS 26.245)
+    MP4_SAMPLE_ENTRY_KIND_TX3G,
 }
 
 pub enum Mp4SampleEntryOwned {
@@ -101,6 +110,39 @@ pub enum Mp4SampleEntryOwned {
         // [NOTE]
         // Avc1 のコメントを参照
         streaminfo_data: Vec<u8>,
+    },
+    Stpp {
+        inner: shiguredo_mp4::boxes::StppBox,
+        // [NOTE]
+        // Stpp は Avc1 / Hev1 系のような backing storage フィールドを持たない。
+        // C 側に露出する `namespace_data` 等は `inner.namespace.get().as_ptr()`
+        // として `Utf8String` 内部の `String` heap バッファを直接指すため、
+        // 別途 `Vec<u8>` を保持する必要がない（`inner` が drop されるかフィールドが
+        // 再代入されるとポインタは無効化されるので、外部からの変更は禁物）
+    },
+    Wvtt {
+        inner: shiguredo_mp4::boxes::WvttBox,
+        // [NOTE]
+        // Stpp と同様に backing storage を持たない。
+        // C 側に露出する `config_data` は `inner.vttc_box.config.as_bytes().as_ptr()`
+        // として `String` の heap バッファを直接指す。
+        // ただし `String` 由来のため invariant は Stpp の `Utf8String` と異なり
+        // interior null を許容する（詳細は `Mp4SampleEntryWvtt` doc 参照）
+    },
+    Tx3g {
+        inner: shiguredo_mp4::boxes::Tx3gBox,
+
+        // [NOTE]
+        // Avc1 のコメントを参照
+        //
+        // `FontRecord` は `font_id: u16` + `font_name: Vec<u8>` の非連続レイアウトのため、
+        // `ftab_font_ids` は `FontRecord::font_id` を集約した u16 の連続バッファを
+        // 新規に確保する必要がある（`inner.ftab_box.entries.as_ptr() as *const u16` は不可）。
+        // `ftab_font_name_ptrs` / `ftab_font_name_sizes` は `inner.ftab_box.entries[i].font_name`
+        // のヒープバッファをそのまま指す（`inner` が破棄されるまで有効）
+        ftab_font_ids: Vec<u16>,
+        ftab_font_name_ptrs: Vec<*const u8>,
+        ftab_font_name_sizes: Vec<u32>,
     },
 }
 
@@ -208,6 +250,24 @@ impl Mp4SampleEntryOwned {
                 Some(Self::Flac {
                     inner,
                     streaminfo_data,
+                })
+            }
+            shiguredo_mp4::boxes::SampleEntry::Stpp(inner) => Some(Self::Stpp { inner }),
+            shiguredo_mp4::boxes::SampleEntry::Wvtt(inner) => Some(Self::Wvtt { inner }),
+            shiguredo_mp4::boxes::SampleEntry::Tx3g(inner) => {
+                let mut ftab_font_ids = Vec::new();
+                let mut ftab_font_name_ptrs = Vec::new();
+                let mut ftab_font_name_sizes = Vec::new();
+                for entry in &inner.ftab_box.entries {
+                    ftab_font_ids.push(entry.font_id);
+                    ftab_font_name_ptrs.push(entry.font_name.as_ptr());
+                    ftab_font_name_sizes.push(entry.font_name.len() as u32);
+                }
+                Some(Self::Tx3g {
+                    inner,
+                    ftab_font_ids,
+                    ftab_font_name_ptrs,
+                    ftab_font_name_sizes,
                 })
             }
             _ => None,
@@ -459,6 +519,75 @@ impl Mp4SampleEntryOwned {
                     data: Mp4SampleEntryData { flac },
                 }
             }
+            Self::Stpp { inner } => {
+                // Utf8String の内部バッファのポインタ・長さを直接露出する。
+                // 長さは null 終端を含まない（`_size` は `&str::len()` そのもの）
+                let namespace_bytes = inner.namespace.get().as_bytes();
+                let schema_location_bytes = inner.schema_location.get().as_bytes();
+                let auxiliary_mime_types_bytes = inner.auxiliary_mime_types.get().as_bytes();
+                let stpp = Mp4SampleEntryStpp {
+                    namespace_data: namespace_bytes.as_ptr(),
+                    namespace_size: namespace_bytes.len() as u32,
+                    schema_location_data: schema_location_bytes.as_ptr(),
+                    schema_location_size: schema_location_bytes.len() as u32,
+                    auxiliary_mime_types_data: auxiliary_mime_types_bytes.as_ptr(),
+                    auxiliary_mime_types_size: auxiliary_mime_types_bytes.len() as u32,
+                };
+                Mp4SampleEntry {
+                    kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP,
+                    data: Mp4SampleEntryData { stpp },
+                }
+            }
+            Self::Wvtt { inner } => {
+                // VttCBox::config の内部 String heap バッファのポインタ・長さを直接露出する。
+                // Stpp と違い interior null を含み得るため、C 側は必ず `config_size` を長さとして使う
+                let config_bytes = inner.vttc_box.config.as_bytes();
+                let wvtt = Mp4SampleEntryWvtt {
+                    config_data: config_bytes.as_ptr(),
+                    config_size: config_bytes.len() as u32,
+                };
+                Mp4SampleEntry {
+                    kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT,
+                    data: Mp4SampleEntryData { wvtt },
+                }
+            }
+            Self::Tx3g {
+                inner,
+                ftab_font_ids,
+                ftab_font_name_ptrs,
+                ftab_font_name_sizes,
+            } => {
+                // 3 並列 Vec は同一ループで push される invariant を持つ。
+                // リファクタリングで長さがズレると C 側で `from_raw_parts` が範囲外アクセスになるため防御
+                debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_ptrs.len());
+                debug_assert_eq!(ftab_font_ids.len(), ftab_font_name_sizes.len());
+                let tx3g = Mp4SampleEntryTx3g {
+                    display_flags: inner.display_flags,
+                    horizontal_justification: inner.horizontal_justification,
+                    vertical_justification: inner.vertical_justification,
+                    background_color_rgba: inner.background_color_rgba,
+                    default_text_box: [
+                        inner.default_text_box.top,
+                        inner.default_text_box.left,
+                        inner.default_text_box.bottom,
+                        inner.default_text_box.right,
+                    ],
+                    default_style_start_char: inner.default_style.start_char,
+                    default_style_end_char: inner.default_style.end_char,
+                    default_style_font_id: inner.default_style.font_id,
+                    default_style_face_style_flags: inner.default_style.face_style_flags,
+                    default_style_font_size: inner.default_style.font_size,
+                    default_style_text_color_rgba: inner.default_style.text_color_rgba,
+                    ftab_font_ids: ftab_font_ids.as_ptr(),
+                    ftab_font_name_ptrs: ftab_font_name_ptrs.as_ptr(),
+                    ftab_font_name_sizes: ftab_font_name_sizes.as_ptr(),
+                    ftab_count: ftab_font_ids.len() as u32,
+                };
+                Mp4SampleEntry {
+                    kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G,
+                    data: Mp4SampleEntryData { tx3g },
+                }
+            }
         }
     }
 }
@@ -495,11 +624,20 @@ pub union Mp4SampleEntryData {
 
     /// FLAC 音声コーデック用のサンプルエントリー
     pub flac: Mp4SampleEntryFlac,
+
+    /// stpp（XML 字幕）用のサンプルエントリー
+    pub stpp: Mp4SampleEntryStpp,
+
+    /// wvtt（WebVTT 字幕）用のサンプルエントリー
+    pub wvtt: Mp4SampleEntryWvtt,
+
+    /// tx3g（3GPP Timed Text 字幕）用のサンプルエントリー
+    pub tx3g: Mp4SampleEntryTx3g,
 }
 
 /// MP4 サンプルエントリー
 ///
-/// MP4 ファイル内で使用されるメディアサンプル（フレーム単位の音声または映像データ）の
+/// MP4 ファイル内で使用されるメディアサンプル（フレーム単位の音声・映像・字幕データ）の
 /// 詳細情報を保持する構造体
 ///
 /// 各サンプルはコーデック種別ごとに異なる詳細情報を持つため、
@@ -577,6 +715,15 @@ impl Mp4SampleEntry {
             Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_FLAC => unsafe {
                 self.data.flac.to_sample_entry()
             },
+            Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP => unsafe {
+                self.data.stpp.to_sample_entry()
+            },
+            Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT => unsafe {
+                self.data.wvtt.to_sample_entry()
+            },
+            Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G => unsafe {
+                self.data.tx3g.to_sample_entry()
+            },
         }
     }
 }
@@ -587,6 +734,14 @@ impl Mp4SampleEntry {
 /// 解像度、プロファイル、レベル、SPS/PPS パラメータセットなどの情報が含まれる
 ///
 /// 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+///
+/// # ポインタフィールドの null 契約
+///
+/// - `sps_data` / `pps_data` は `sps_count` / `pps_count` の値によらず常に非 null でなければならない
+///   （既存 C API の後方互換性を維持するための挙動。`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` とは非対称）
+/// - `sps_sizes` は `sps_count > 0` のとき、`pps_sizes` は `pps_count > 0` のとき非 null が必要
+/// - 配列要素 `sps_data[i]` / `pps_data[i]` も個別に非 null が必要
+/// - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
 ///
 /// # 使用例
 ///
@@ -639,10 +794,15 @@ impl Mp4SampleEntryAvc1 {
     fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
         // SPS / PPS リストをメモリから読み込む
         let mut sps_list = Vec::new();
+        // sps_count == 0 でも sps_data の非 null を要求する既存挙動を据え置く
+        // （詳細は Mp4SampleEntryAvc1 の null 契約セクションを参照）
         if self.sps_data.is_null() {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
         if self.sps_count > 0 {
+            if self.sps_sizes.is_null() {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
             unsafe {
                 for i in 0..self.sps_count as usize {
                     let sps_ptr = *self.sps_data.add(i);
@@ -656,10 +816,14 @@ impl Mp4SampleEntryAvc1 {
         }
 
         let mut pps_list = Vec::new();
+        // pps_count == 0 でも pps_data の非 null を要求する既存挙動を据え置く（SPS 側と同旨）
         if self.pps_data.is_null() {
             return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
         }
         if self.pps_count > 0 {
+            if self.pps_sizes.is_null() {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
             unsafe {
                 for i in 0..self.pps_count as usize {
                     let pps_ptr = *self.pps_data.add(i);
@@ -712,6 +876,17 @@ impl Mp4SampleEntryAvc1 {
 /// 解像度、プロファイル、レベル、NALU パラメータセットなどの情報が含まれる
 ///
 /// 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+///
+/// # ポインタフィールドの null 契約
+///
+/// - `nalu_array_count == 0` のとき、`nalu_types` / `nalu_counts` /
+///   `nalu_data` / `nalu_sizes` はいずれも null でも許容される
+/// - `nalu_array_count > 0` のとき、`nalu_types` / `nalu_counts` は非 null が必要
+/// - 少なくとも 1 つの `nalu_counts[i] > 0` があるとき、`nalu_data` / `nalu_sizes` も非 null が必要
+///   （全 `nalu_counts[i] == 0` のとき、`nalu_data` / `nalu_sizes` は null でも許容される。
+///   空 NALU 配列のみの `hvcC` を過剰に弾かないための挙動）
+/// - 配列要素 `nalu_data[k]` も個別に非 null が必要
+/// - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
 ///
 /// # 使用例
 ///
@@ -767,83 +942,45 @@ pub struct Mp4SampleEntryHev1 {
 }
 
 impl Mp4SampleEntryHev1 {
-    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // NALU 配列を構築
-        let mut nalu_arrays = Vec::new();
-        if self.nalu_array_count > 0 {
-            unsafe {
-                for i in 0..self.nalu_array_count as usize {
-                    let nalu_type = *self.nalu_types.add(i);
-                    let nalu_count = *self.nalu_counts.add(i);
-
-                    let mut nalus = Vec::new();
-                    for j in 0..nalu_count as usize {
-                        let nalu_index = self.nalu_data_index(i, j);
-                        let nalu_ptr = *self.nalu_data.add(nalu_index);
-                        let nalu_size = *self.nalu_sizes.add(nalu_index) as usize;
-
-                        if nalu_ptr.is_null() {
-                            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                        }
-                        nalus.push(std::slice::from_raw_parts(nalu_ptr, nalu_size).to_vec());
-                    }
-
-                    nalu_arrays.push(shiguredo_mp4::boxes::HvccNalUintArray {
-                        // 保守的な固定値: この NALU 型のすべてのインスタンスが配列に含まれていない可能性を示す
-                        array_completeness: shiguredo_mp4::Uint::new(0),
-
-                        nal_unit_type: shiguredo_mp4::Uint::new(nalu_type),
-                        nalus,
-                    });
-                }
-            }
-        }
-
-        // ボックスを構築
-        let hvcc_box = shiguredo_mp4::boxes::HvccBox {
-            general_profile_space: shiguredo_mp4::Uint::new(self.general_profile_space),
-            general_tier_flag: shiguredo_mp4::Uint::new(self.general_tier_flag),
-            general_profile_idc: shiguredo_mp4::Uint::new(self.general_profile_idc),
+    /// C ABI 構造体のフィールドを中間表現へ写し替える
+    fn to_raw(self) -> HevcSampleEntryRaw {
+        HevcSampleEntryRaw {
+            width: self.width,
+            height: self.height,
+            general_profile_space: self.general_profile_space,
+            general_tier_flag: self.general_tier_flag,
+            general_profile_idc: self.general_profile_idc,
             general_profile_compatibility_flags: self.general_profile_compatibility_flags,
-            general_constraint_indicator_flags: shiguredo_mp4::Uint::new(
-                self.general_constraint_indicator_flags,
-            ),
+            general_constraint_indicator_flags: self.general_constraint_indicator_flags,
             general_level_idc: self.general_level_idc,
-            min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(
-                self.min_spatial_segmentation_idc,
-            ),
-            parallelism_type: shiguredo_mp4::Uint::new(self.parallelism_type),
-            chroma_format_idc: shiguredo_mp4::Uint::new(self.chroma_format_idc),
-            bit_depth_luma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_luma_minus8),
-            bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_chroma_minus8),
+            chroma_format_idc: self.chroma_format_idc,
+            bit_depth_luma_minus8: self.bit_depth_luma_minus8,
+            bit_depth_chroma_minus8: self.bit_depth_chroma_minus8,
+            min_spatial_segmentation_idc: self.min_spatial_segmentation_idc,
+            parallelism_type: self.parallelism_type,
             avg_frame_rate: self.avg_frame_rate,
-            constant_frame_rate: shiguredo_mp4::Uint::new(self.constant_frame_rate),
-            num_temporal_layers: shiguredo_mp4::Uint::new(self.num_temporal_layers),
-            temporal_id_nested: shiguredo_mp4::Uint::new(self.temporal_id_nested),
-            length_size_minus_one: shiguredo_mp4::Uint::new(self.length_size_minus_one),
-            nalu_arrays,
-        };
+            constant_frame_rate: self.constant_frame_rate,
+            num_temporal_layers: self.num_temporal_layers,
+            temporal_id_nested: self.temporal_id_nested,
+            length_size_minus_one: self.length_size_minus_one,
+            nalu_array_count: self.nalu_array_count,
+            nalu_types: self.nalu_types,
+            nalu_counts: self.nalu_counts,
+            nalu_data: self.nalu_data,
+            nalu_sizes: self.nalu_sizes,
+        }
+    }
+
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        let raw = self.to_raw();
+        let nalu_arrays = build_hvcc_nalu_arrays(&raw)?;
+        let hvcc_box = build_hvcc_box(&raw, nalu_arrays);
         let hev1_box = shiguredo_mp4::boxes::Hev1Box {
-            visual: create_visual_sample_entry_fields(self.width, self.height),
+            visual: create_visual_sample_entry_fields(raw.width, raw.height),
             hvcc_box,
             unknown_boxes: Vec::new(),
         };
-
         Ok(shiguredo_mp4::boxes::SampleEntry::Hev1(hev1_box))
-    }
-
-    fn nalu_data_index(&self, array_index: usize, nalu_index: usize) -> usize {
-        unsafe {
-            let mut index = 0;
-            // 指定された配列インデックスまでの NALU 数を合計する
-            for i in 0..array_index {
-                let count = *self.nalu_counts.add(i) as usize;
-                index += count;
-            }
-            // 現在の配列内でのインデックスを加算
-            index += nalu_index;
-            index
-        }
     }
 }
 
@@ -853,6 +990,18 @@ impl Mp4SampleEntryHev1 {
 /// 解像度、プロファイル、レベル、NALU パラメータセットなどの情報が含まれる
 ///
 /// 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+///
+/// # ポインタフィールドの null 契約
+///
+/// `Mp4SampleEntryHev1` と同じ規約に従う（ポインタフィールドの構成が同型）。
+///
+/// - `nalu_array_count == 0` のとき、`nalu_types` / `nalu_counts` /
+///   `nalu_data` / `nalu_sizes` はいずれも null でも許容される
+/// - `nalu_array_count > 0` のとき、`nalu_types` / `nalu_counts` は非 null が必要
+/// - 少なくとも 1 つの `nalu_counts[i] > 0` があるとき、`nalu_data` / `nalu_sizes` も非 null が必要
+///   （全 `nalu_counts[i] == 0` のとき、`nalu_data` / `nalu_sizes` は null でも許容される）
+/// - 配列要素 `nalu_data[k]` も個別に非 null が必要
+/// - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
 ///
 /// # 使用例
 ///
@@ -908,83 +1057,45 @@ pub struct Mp4SampleEntryHvc1 {
 }
 
 impl Mp4SampleEntryHvc1 {
-    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
-        // NALU 配列を構築
-        let mut nalu_arrays = Vec::new();
-        if self.nalu_array_count > 0 {
-            unsafe {
-                for i in 0..self.nalu_array_count as usize {
-                    let nalu_type = *self.nalu_types.add(i);
-                    let nalu_count = *self.nalu_counts.add(i);
-
-                    let mut nalus = Vec::new();
-                    for j in 0..nalu_count as usize {
-                        let nalu_index = self.nalu_data_index(i, j);
-                        let nalu_ptr = *self.nalu_data.add(nalu_index);
-                        let nalu_size = *self.nalu_sizes.add(nalu_index) as usize;
-
-                        if nalu_ptr.is_null() {
-                            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
-                        }
-                        nalus.push(std::slice::from_raw_parts(nalu_ptr, nalu_size).to_vec());
-                    }
-
-                    nalu_arrays.push(shiguredo_mp4::boxes::HvccNalUintArray {
-                        // 保守的な固定値: この NALU 型のすべてのインスタンスが配列に含まれていない可能性を示す
-                        array_completeness: shiguredo_mp4::Uint::new(0),
-
-                        nal_unit_type: shiguredo_mp4::Uint::new(nalu_type),
-                        nalus,
-                    });
-                }
-            }
-        }
-
-        // ボックスを構築
-        let hvcc_box = shiguredo_mp4::boxes::HvccBox {
-            general_profile_space: shiguredo_mp4::Uint::new(self.general_profile_space),
-            general_tier_flag: shiguredo_mp4::Uint::new(self.general_tier_flag),
-            general_profile_idc: shiguredo_mp4::Uint::new(self.general_profile_idc),
+    /// C ABI 構造体のフィールドを中間表現へ写し替える
+    fn to_raw(self) -> HevcSampleEntryRaw {
+        HevcSampleEntryRaw {
+            width: self.width,
+            height: self.height,
+            general_profile_space: self.general_profile_space,
+            general_tier_flag: self.general_tier_flag,
+            general_profile_idc: self.general_profile_idc,
             general_profile_compatibility_flags: self.general_profile_compatibility_flags,
-            general_constraint_indicator_flags: shiguredo_mp4::Uint::new(
-                self.general_constraint_indicator_flags,
-            ),
+            general_constraint_indicator_flags: self.general_constraint_indicator_flags,
             general_level_idc: self.general_level_idc,
-            min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(
-                self.min_spatial_segmentation_idc,
-            ),
-            parallelism_type: shiguredo_mp4::Uint::new(self.parallelism_type),
-            chroma_format_idc: shiguredo_mp4::Uint::new(self.chroma_format_idc),
-            bit_depth_luma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_luma_minus8),
-            bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(self.bit_depth_chroma_minus8),
+            chroma_format_idc: self.chroma_format_idc,
+            bit_depth_luma_minus8: self.bit_depth_luma_minus8,
+            bit_depth_chroma_minus8: self.bit_depth_chroma_minus8,
+            min_spatial_segmentation_idc: self.min_spatial_segmentation_idc,
+            parallelism_type: self.parallelism_type,
             avg_frame_rate: self.avg_frame_rate,
-            constant_frame_rate: shiguredo_mp4::Uint::new(self.constant_frame_rate),
-            num_temporal_layers: shiguredo_mp4::Uint::new(self.num_temporal_layers),
-            temporal_id_nested: shiguredo_mp4::Uint::new(self.temporal_id_nested),
-            length_size_minus_one: shiguredo_mp4::Uint::new(self.length_size_minus_one),
-            nalu_arrays,
-        };
+            constant_frame_rate: self.constant_frame_rate,
+            num_temporal_layers: self.num_temporal_layers,
+            temporal_id_nested: self.temporal_id_nested,
+            length_size_minus_one: self.length_size_minus_one,
+            nalu_array_count: self.nalu_array_count,
+            nalu_types: self.nalu_types,
+            nalu_counts: self.nalu_counts,
+            nalu_data: self.nalu_data,
+            nalu_sizes: self.nalu_sizes,
+        }
+    }
+
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        let raw = self.to_raw();
+        let nalu_arrays = build_hvcc_nalu_arrays(&raw)?;
+        let hvcc_box = build_hvcc_box(&raw, nalu_arrays);
         let hvc1_box = shiguredo_mp4::boxes::Hvc1Box {
-            visual: create_visual_sample_entry_fields(self.width, self.height),
+            visual: create_visual_sample_entry_fields(raw.width, raw.height),
             hvcc_box,
             unknown_boxes: Vec::new(),
         };
-
         Ok(shiguredo_mp4::boxes::SampleEntry::Hvc1(hvc1_box))
-    }
-
-    fn nalu_data_index(&self, array_index: usize, nalu_index: usize) -> usize {
-        unsafe {
-            let mut index = 0;
-            // 指定された配列インデックスまでの NALU 数を合計する
-            for i in 0..array_index {
-                let count = *self.nalu_counts.add(i) as usize;
-                index += count;
-            }
-            // 現在の配列内でのインデックスを加算
-            index += nalu_index;
-            index
-        }
     }
 }
 
@@ -1215,6 +1326,126 @@ fn create_visual_sample_entry_fields(
     }
 }
 
+/// `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の共通フィールドを保持する中間構造体
+///
+/// C ABI (`#[repr(C)]`) ではなく内部専用。生ポインタの有効期間は C 側の契約
+/// （`to_sample_entry` 呼び出しスコープ中に生存）で決まるため、ライフタイムは付けない
+#[derive(Clone, Copy)]
+struct HevcSampleEntryRaw {
+    width: u16,
+    height: u16,
+    general_profile_space: u8,
+    general_tier_flag: u8,
+    general_profile_idc: u8,
+    general_profile_compatibility_flags: u32,
+    general_constraint_indicator_flags: u64,
+    general_level_idc: u8,
+    chroma_format_idc: u8,
+    bit_depth_luma_minus8: u8,
+    bit_depth_chroma_minus8: u8,
+    min_spatial_segmentation_idc: u16,
+    parallelism_type: u8,
+    avg_frame_rate: u16,
+    constant_frame_rate: u8,
+    num_temporal_layers: u8,
+    temporal_id_nested: u8,
+    length_size_minus_one: u8,
+    nalu_array_count: u32,
+    nalu_types: *const u8,
+    nalu_counts: *const u32,
+    nalu_data: *const *const u8,
+    nalu_sizes: *const u32,
+}
+
+/// HEVC サンプルエントリーの NALU 配列を構築する
+///
+/// null 契約は `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` の docstring
+/// 「# ポインタフィールドの null 契約」に従う
+fn build_hvcc_nalu_arrays(
+    raw: &HevcSampleEntryRaw,
+) -> Result<Vec<shiguredo_mp4::boxes::HvccNalUintArray>, Mp4Error> {
+    let mut nalu_arrays = Vec::new();
+    if raw.nalu_array_count == 0 {
+        return Ok(nalu_arrays);
+    }
+
+    // 外側ループで必ず参照される配列ベースポインタを検査する
+    // 後続の `nalu_counts.add(i)` もこの検査で保護される
+    if raw.nalu_types.is_null() || raw.nalu_counts.is_null() {
+        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+    }
+
+    // SAFETY: null ポインタは本関数で検査済み。残る前提は、C 側が宣言した
+    // 要素数分の有効なメモリ領域（適切な長さ・アライメント）を指していること
+    unsafe {
+        for i in 0..raw.nalu_array_count as usize {
+            let nalu_type = *raw.nalu_types.add(i);
+            let nalu_count = *raw.nalu_counts.add(i);
+
+            let mut nalus = Vec::new();
+            // 内側ループが実際に回るときだけ検査する
+            // （全 nalu_counts[i] == 0 の入力を過剰に弾かないため）
+            if nalu_count > 0 && (raw.nalu_data.is_null() || raw.nalu_sizes.is_null()) {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
+
+            // 指定配列までの NALU 数合計 + 配列内インデックスを平坦インデックスにする
+            let mut flat_base = 0;
+            for prev in 0..i {
+                flat_base += *raw.nalu_counts.add(prev) as usize;
+            }
+
+            for j in 0..nalu_count as usize {
+                let nalu_index = flat_base + j;
+                let nalu_ptr = *raw.nalu_data.add(nalu_index);
+                let nalu_size = *raw.nalu_sizes.add(nalu_index) as usize;
+
+                if nalu_ptr.is_null() {
+                    return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+                }
+                nalus.push(std::slice::from_raw_parts(nalu_ptr, nalu_size).to_vec());
+            }
+
+            nalu_arrays.push(shiguredo_mp4::boxes::HvccNalUintArray {
+                // 保守的な固定値: この NALU 型のすべてのインスタンスが配列に含まれていない可能性を示す
+                array_completeness: shiguredo_mp4::Uint::new(0),
+                nal_unit_type: shiguredo_mp4::Uint::new(nalu_type),
+                nalus,
+            });
+        }
+    }
+
+    Ok(nalu_arrays)
+}
+
+/// HEVC サンプルエントリーの `hvcC` ボックスを構築する
+fn build_hvcc_box(
+    raw: &HevcSampleEntryRaw,
+    nalu_arrays: Vec<shiguredo_mp4::boxes::HvccNalUintArray>,
+) -> shiguredo_mp4::boxes::HvccBox {
+    shiguredo_mp4::boxes::HvccBox {
+        general_profile_space: shiguredo_mp4::Uint::new(raw.general_profile_space),
+        general_tier_flag: shiguredo_mp4::Uint::new(raw.general_tier_flag),
+        general_profile_idc: shiguredo_mp4::Uint::new(raw.general_profile_idc),
+        general_profile_compatibility_flags: raw.general_profile_compatibility_flags,
+        general_constraint_indicator_flags: shiguredo_mp4::Uint::new(
+            raw.general_constraint_indicator_flags,
+        ),
+        general_level_idc: raw.general_level_idc,
+        min_spatial_segmentation_idc: shiguredo_mp4::Uint::new(raw.min_spatial_segmentation_idc),
+        parallelism_type: shiguredo_mp4::Uint::new(raw.parallelism_type),
+        chroma_format_idc: shiguredo_mp4::Uint::new(raw.chroma_format_idc),
+        bit_depth_luma_minus8: shiguredo_mp4::Uint::new(raw.bit_depth_luma_minus8),
+        bit_depth_chroma_minus8: shiguredo_mp4::Uint::new(raw.bit_depth_chroma_minus8),
+        avg_frame_rate: raw.avg_frame_rate,
+        constant_frame_rate: shiguredo_mp4::Uint::new(raw.constant_frame_rate),
+        num_temporal_layers: shiguredo_mp4::Uint::new(raw.num_temporal_layers),
+        temporal_id_nested: shiguredo_mp4::Uint::new(raw.temporal_id_nested),
+        length_size_minus_one: shiguredo_mp4::Uint::new(raw.length_size_minus_one),
+        nalu_arrays,
+    }
+}
+
 /// Opus 音声コーデック用のサンプルエントリー
 ///
 /// Opus 音声コーデックの詳細情報を保持する構造体で、
@@ -1417,5 +1648,274 @@ impl Mp4SampleEntryFlac {
         };
 
         Ok(shiguredo_mp4::boxes::SampleEntry::Flac(flac_box))
+    }
+}
+
+/// stpp（XMLSubtitleSampleEntry, ISO/IEC 14496-30）用のサンプルエントリー
+///
+/// XML 形式の字幕（TTML / IMSC 等）のトラックが持つメタデータを表現する。
+/// 3 本の文字列フィールドは各々 `_data` + `_size` のペアで露出し、
+/// バイト列は null 終端を含まない UTF-8 バイト列で `_size` は正味のバイト数を表す
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Mp4SampleEntryStpp {
+    /// XML 名前空間 URI のスペース区切り文字列（null 終端なし、UTF-8）
+    pub namespace_data: *const u8,
+
+    /// [`Mp4SampleEntryStpp::namespace_data`] の長さ（バイト単位）
+    pub namespace_size: u32,
+
+    /// 対応する XML スキーマの URL（null 終端なし、UTF-8。空文字列は `size == 0`）
+    pub schema_location_data: *const u8,
+
+    /// [`Mp4SampleEntryStpp::schema_location_data`] の長さ（バイト単位）
+    pub schema_location_size: u32,
+
+    /// 補助 MIME タイプ（null 終端なし、UTF-8。空文字列は `size == 0`）
+    pub auxiliary_mime_types_data: *const u8,
+
+    /// [`Mp4SampleEntryStpp::auxiliary_mime_types_data`] の長さ（バイト単位）
+    pub auxiliary_mime_types_size: u32,
+}
+
+impl Mp4SampleEntryStpp {
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        let namespace = Self::decode_utf8_string(self.namespace_data, self.namespace_size)?;
+        let schema_location =
+            Self::decode_utf8_string(self.schema_location_data, self.schema_location_size)?;
+        let auxiliary_mime_types = Self::decode_utf8_string(
+            self.auxiliary_mime_types_data,
+            self.auxiliary_mime_types_size,
+        )?;
+
+        let stpp_box = shiguredo_mp4::boxes::StppBox {
+            data_reference_index: shiguredo_mp4::boxes::StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+            namespace,
+            schema_location,
+            auxiliary_mime_types,
+            unknown_boxes: Vec::new(),
+        };
+
+        Ok(shiguredo_mp4::boxes::SampleEntry::Stpp(stpp_box))
+    }
+
+    /// C 側から受け取った `*const u8 + u32` のペアを [`Utf8String`] に復元する
+    ///
+    /// `size == 0` の場合は空文字列（`Utf8String::EMPTY`）を返す。
+    /// UTF-8 として不正 または null 文字混入は、いずれもデータ内容の不正なので
+    /// [`Mp4Error::MP4_ERROR_INVALID_INPUT`] にマッピングする
+    /// （C API では列挙値のみで内容を返すため、どのフィールドで失敗したかは伝えない）
+    fn decode_utf8_string(
+        data: *const u8,
+        size: u32,
+    ) -> Result<shiguredo_mp4::Utf8String, Mp4Error> {
+        if size == 0 {
+            return Ok(shiguredo_mp4::Utf8String::EMPTY);
+        }
+        if data.is_null() {
+            return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
+        let s = std::str::from_utf8(bytes).map_err(|_| Mp4Error::MP4_ERROR_INVALID_INPUT)?;
+        shiguredo_mp4::Utf8String::new(s).ok_or(Mp4Error::MP4_ERROR_INVALID_INPUT)
+    }
+}
+
+/// wvtt（WVTTSampleEntry, ISO/IEC 14496-30）用のサンプルエントリー
+///
+/// WebVTT 字幕のトラックが持つメタデータを表現する。
+/// `config` フィールドは WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列）を保持する。
+///
+/// # data_reference_index の情報損失
+///
+/// 本構造体は `data_reference_index` を含まないため、C API 経由で
+/// `Mp4SampleEntry → WvttBox` に復元する際は常に
+/// [`WvttBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::WvttBox::DEFAULT_DATA_REFERENCE_INDEX]
+/// (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Mp4a と同じ
+///
+/// # interior null について
+///
+/// `config_data` は `String::as_bytes()` の生バイト列で、既存 `Mp4SampleEntryStpp` の
+/// [`Utf8String`][shiguredo_mp4::Utf8String] invariant（null 除外）と異なり
+/// **interior null を含み得る**。C consumer 側で `strlen` などバイト列内 null を
+/// ターミネータとみなす API を使うと途中で切れる恐れがあるため、必ず `config_size` を
+/// 長さとして利用すること
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Mp4SampleEntryWvtt {
+    /// WebVTT 設定テキストのバイト列（null 終端なし、UTF-8。空文字列は `size == 0`）
+    pub config_data: *const u8,
+
+    /// [`Mp4SampleEntryWvtt::config_data`] の長さ（バイト単位）
+    pub config_size: u32,
+}
+
+impl Mp4SampleEntryWvtt {
+    /// `Mp4SampleEntryWvtt` を [`shiguredo_mp4::boxes::SampleEntry::Wvtt`] に復元する
+    ///
+    /// C 側から渡す `config_data` は interior null を含んでも valid とみなす
+    /// （`VttCBox::config` は `String` で invariant が「valid UTF-8」のみ）。
+    /// これは既存 `Mp4SampleEntryStpp` の `Utf8String` invariant（null 除外）と異なる
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        // size == 0 は空 config として許容する（vttC の "WEBVTT" 必須検証は本ライブラリのスコープ外）
+        let config = if self.config_size == 0 {
+            String::new()
+        } else {
+            if self.config_data.is_null() {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
+            let bytes =
+                unsafe { std::slice::from_raw_parts(self.config_data, self.config_size as usize) };
+            std::str::from_utf8(bytes)
+                .map(String::from)
+                .map_err(|_| Mp4Error::MP4_ERROR_INVALID_INPUT)?
+        };
+
+        let wvtt_box = shiguredo_mp4::boxes::WvttBox {
+            data_reference_index: shiguredo_mp4::boxes::WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+            vttc_box: shiguredo_mp4::boxes::VttCBox { config },
+            unknown_boxes: Vec::new(),
+        };
+
+        Ok(shiguredo_mp4::boxes::SampleEntry::Wvtt(wvtt_box))
+    }
+}
+
+/// tx3g（TextSampleEntry, 3GPP TS 26.245）用のサンプルエントリー
+///
+/// 3GPP Timed Text 字幕のトラックが持つメタデータを表現する。
+/// 本体固定サイズ 30 バイト（displayFlags / justification / RGBA / BoxRecord / StyleRecord）と
+/// 可変長の FontTableBox を保持する。
+///
+/// # data_reference_index の情報損失
+///
+/// 本構造体は `data_reference_index` を含まないため、C API 経由で
+/// `Mp4SampleEntry → Tx3gBox` に復元する際は常に
+/// [`Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX]
+/// (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Wvtt / Mp4a と同じ
+///
+/// # font-name のエンコーディング
+///
+/// `ftab_font_name_ptrs[i]` は 3GPP TS 26.245 が文字エンコーディングを明示していないため、
+/// UTF-8 を保証しない生バイト列を指す。C consumer 側で文字列として扱う場合は
+/// UTF-8 として妥当性を検証してから利用すること
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Mp4SampleEntryTx3g {
+    /// 表示挙動フラグ（3GPP TS 26.245 §5.16.1.1 のビットマスク。値域チェックはしない）
+    pub display_flags: u32,
+
+    /// 水平方向のジャスティフィケーション（`0 = left` / `1 = centered` / `-1 = right`）
+    pub horizontal_justification: i8,
+
+    /// 垂直方向のジャスティフィケーション（`0 = top` / `1 = centered` / `-1 = bottom`）
+    pub vertical_justification: i8,
+
+    /// テキスト背景色（RGBA）
+    pub background_color_rgba: [u8; 4],
+
+    /// テキスト表示領域の既定矩形（`top` / `left` / `bottom` / `right` の順で `i16` 4 個）
+    pub default_text_box: [i16; 4],
+
+    /// 既定スタイル: style を適用する文字範囲の開始
+    pub default_style_start_char: u16,
+
+    /// 既定スタイル: style を適用する文字範囲の終了
+    pub default_style_end_char: u16,
+
+    /// 既定スタイル: font-ID
+    pub default_style_font_id: u16,
+
+    /// 既定スタイル: face-style-flags（3GPP TS 26.245 §5.16.1.2 のビットマスク）
+    pub default_style_face_style_flags: u8,
+
+    /// 既定スタイル: font-size（ピクセル）
+    pub default_style_font_size: u8,
+
+    /// 既定スタイル: text-color-rgba
+    pub default_style_text_color_rgba: [u8; 4],
+
+    /// ftab の font-ID 配列（長さは `ftab_count`）
+    pub ftab_font_ids: *const u16,
+
+    /// ftab の font-name ポインタ配列（各要素は `ftab_font_name_sizes[i]` バイト、null 終端なし）
+    pub ftab_font_name_ptrs: *const *const u8,
+
+    /// ftab の font-name 長さ配列（バイト単位）
+    pub ftab_font_name_sizes: *const u32,
+
+    /// ftab のエントリー数
+    pub ftab_count: u32,
+}
+
+impl Mp4SampleEntryTx3g {
+    /// `Mp4SampleEntryTx3g` を [`shiguredo_mp4::boxes::SampleEntry::Tx3g`] に復元する
+    fn to_sample_entry(self) -> Result<shiguredo_mp4::boxes::SampleEntry, Mp4Error> {
+        // `FtabBox::entry_count` は u16 のため 65535 以下でなければならない
+        // （超過状態のまま entries を全件 push すると FtabBox::encode で失敗するため、
+        // 無駄なヒープ確保を避けて早期にエラー返却する）
+        if self.ftab_count > u16::MAX as u32 {
+            return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
+        }
+        let mut entries = Vec::new();
+        if self.ftab_count > 0 {
+            if self.ftab_font_ids.is_null()
+                || self.ftab_font_name_ptrs.is_null()
+                || self.ftab_font_name_sizes.is_null()
+            {
+                return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+            }
+            let ids =
+                unsafe { std::slice::from_raw_parts(self.ftab_font_ids, self.ftab_count as usize) };
+            let ptrs = unsafe {
+                std::slice::from_raw_parts(self.ftab_font_name_ptrs, self.ftab_count as usize)
+            };
+            let sizes = unsafe {
+                std::slice::from_raw_parts(self.ftab_font_name_sizes, self.ftab_count as usize)
+            };
+            for i in 0..self.ftab_count as usize {
+                let size = sizes[i] as usize;
+                // `FontRecord::font_name_length` は u8 のため 255 バイト以下でなければならない
+                if size > u8::MAX as usize {
+                    return Err(Mp4Error::MP4_ERROR_INVALID_INPUT);
+                }
+                let font_name = if size == 0 {
+                    Vec::new()
+                } else {
+                    if ptrs[i].is_null() {
+                        return Err(Mp4Error::MP4_ERROR_NULL_POINTER);
+                    }
+                    unsafe { std::slice::from_raw_parts(ptrs[i], size) }.to_vec()
+                };
+                entries.push(shiguredo_mp4::boxes::FontRecord {
+                    font_id: ids[i],
+                    font_name,
+                });
+            }
+        }
+        let tx3g_box = shiguredo_mp4::boxes::Tx3gBox {
+            data_reference_index: shiguredo_mp4::boxes::Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+            display_flags: self.display_flags,
+            horizontal_justification: self.horizontal_justification,
+            vertical_justification: self.vertical_justification,
+            background_color_rgba: self.background_color_rgba,
+            default_text_box: shiguredo_mp4::boxes::BoxRecord {
+                top: self.default_text_box[0],
+                left: self.default_text_box[1],
+                bottom: self.default_text_box[2],
+                right: self.default_text_box[3],
+            },
+            default_style: shiguredo_mp4::boxes::StyleRecord {
+                start_char: self.default_style_start_char,
+                end_char: self.default_style_end_char,
+                font_id: self.default_style_font_id,
+                face_style_flags: self.default_style_face_style_flags,
+                font_size: self.default_style_font_size,
+                text_color_rgba: self.default_style_text_color_rgba,
+            },
+            ftab_box: shiguredo_mp4::boxes::FtabBox { entries },
+            unknown_boxes: Vec::new(),
+        };
+        Ok(shiguredo_mp4::boxes::SampleEntry::Tx3g(tx3g_box))
     }
 }

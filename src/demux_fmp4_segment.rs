@@ -19,14 +19,14 @@
 //! let mut demuxer = Fmp4SegmentDemuxer::new();
 //!
 //! // 初期化セグメントを処理する
-//! let init_data: &[u8] = todo!("初期化セグメントのバイト列");
+//! let init_data: &[u8] = todo!("bytes of the init segment");
 //! demuxer.handle_init_segment(init_data)?;
 //!
 //! let tracks = demuxer.tracks()?;
-//! println!("{}個のトラックが見つかりました", tracks.len());
+//! println!("Found {} track(s)", tracks.len());
 //!
 //! // メディアセグメントを処理する
-//! let segment_data: &[u8] = todo!("メディアセグメントのバイト列");
+//! let segment_data: &[u8] = todo!("bytes of a media segment");
 //! let samples = demuxer.handle_media_segment(segment_data)?;
 //! for sample in &samples {
 //!     let data = &segment_data[sample.data_offset as usize
@@ -145,6 +145,8 @@ impl Fmp4SegmentDemuxer {
             let kind = match trak.mdia_box.hdlr_box.handler_type {
                 HdlrBox::HANDLER_TYPE_VIDE => TrackKind::Video,
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
+                // 字幕トラックのハンドラー種別は `subt` (stpp) / `text` (wvtt / tx3g) の 2 種類
+                HdlrBox::HANDLER_TYPE_SUBT | HdlrBox::HANDLER_TYPE_TEXT => TrackKind::Subtitle,
                 _ => continue,
             };
 
@@ -397,9 +399,7 @@ impl Fmp4SegmentDemuxer {
                             keyframe,
                             data_offset: sample_data_offset as u64,
                             data_size: size,
-                            composition_time_offset: trun_sample
-                                .composition_time_offset
-                                .map(i64::from),
+                            composition_time_offset: trun_sample.composition_time_offset,
                         });
                         track_runtime.current_sample_description_index =
                             Some(sample_description_index);

@@ -8,6 +8,12 @@ use crate::{basic_types::Mp4TrackKind, boxes::Mp4SampleEntry, error::Mp4Error};
 
 /// MP4 ファイルに追加（マルチプレックス）するメディアサンプルを表す構造体
 ///
+/// 音声・字幕トラックでは、各サンプルが独立してデコード可能なのが通例のため
+/// `keyframe` = `true` を指定するのが正規である。
+///
+/// 字幕トラック（`MP4_TRACK_KIND_SUBTITLE`）ではあわせて
+/// `has_composition_time_offset` = `false` を推奨する。
+///
 /// # 使用例
 ///
 /// ```c
@@ -49,10 +55,16 @@ pub struct Mp4MuxSample {
     /// 以降は（コーデック設定に変更がない間は）省略可能で、NULL が渡された場合は前のサンプルと同じ値が使用される
     pub sample_entry: *const Mp4SampleEntry,
 
-    /// キーフレームであるかどうか
+    /// キーフレーム（同期サンプル）であるかどうか
     ///
-    /// `true` の場合、このサンプルはキーフレームであり、
-    /// このポイントから復号（再生）を開始できることを意味する
+    /// 音声・字幕では `true` を指定するのが正規である。
+    ///
+    /// `Mp4FileMuxer` では `stss` の生成に使われる。
+    /// 映像トラックの全サンプルが `false` の場合、`mp4_file_muxer_finalize` は
+    /// `MP4_ERROR_INVALID_INPUT` を返す。
+    /// 音声・字幕では同条件でも `stss` を省略して全サンプル同期として扱う。
+    ///
+    /// `Fmp4SegmentMuxer` では `trun` のサンプルフラグおよび `sidx` の SAP 判定に使われる。
     pub keyframe: bool,
 
     /// サンプルのタイムスケール（時間単位）
@@ -106,7 +118,9 @@ pub struct Mp4MuxSample {
     /// demux API と往復しやすいように `i64` で公開しているが、
     /// 実際に mux 時に受理される範囲は次の通り:
     /// - file mux: `i32::MIN ..= u32::MAX`
-    /// - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+    /// - fMP4 segment mux: `i32::MIN ..= u32::MAX`
+    ///   （ただし ISO/IEC 14496-12 8.8.8 の制約により、
+    ///   ひとつの `trun` に負値と `> i32::MAX` の値を混在させることはできない）
     ///
     /// 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
     pub composition_time_offset: i64,
@@ -123,7 +137,7 @@ struct Output {
     data: Vec<u8>,
 }
 
-/// メディアトラック（音声・映像）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
+/// メディアトラック（音声・映像・字幕）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
 ///
 /// # 関連関数
 ///
@@ -270,29 +284,62 @@ impl Mp4FileMuxer {
 ///
 /// # 引数
 ///
-/// - `audio_sample_count`: 音声トラック内の予想サンプル数
-/// - `video_sample_count`: 映像トラック内の予想サンプル数
+/// - `sample_counts`: トラックごとの予想サンプル数の配列
+///   - 配列内の要素の順序は任意（合計サンプル数と要素数だけを見積もりに使う）
+///   - `uint32_t` として整列されている必要がある（4 バイト境界）
+///   - NULL の場合は `track_count` の値によらず `0` を返す（誤用扱い）
+/// - `track_count`: `sample_counts` の要素数（トラック数）
+///   - `sample_counts` が NULL でなく `track_count` が `0` の場合は空スライスとして扱い、
+///     トラックなしの基本オーバーヘッド相当の値を返す
 ///
 /// # 戻り値
 ///
 /// moov ボックスに必要な最大バイト数を返す
 ///
+/// # NOTE
+///
+/// この関数は概算であり、以下の場合には見積もりが不足することがある:
+/// - サンプルエントリーが大きい場合（`stpp` の名前空間文字列が長い場合など）
+/// - サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合
+///
+/// 見積もりが不足しても生成される MP4 ファイル自体は正しく、
+/// faststart が無効になり moov ボックスがファイル末尾に配置されるだけで済む。
+/// ただし縮退したことを呼び出し側で検知する手段は無い。
+/// faststart を確実に有効にしたい場合は、余裕を持たせた値を
+/// `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定すること
+///
+/// # 関連関数
+///
+/// - `mp4_file_muxer_set_reserved_moov_box_size()`: 見積もった値を faststart 用の予約サイズとして指定する
+///
 /// # 使用例
 ///
 /// ```c
-/// // 音声 1000 サンプル、映像 3000 フレームの場合
-/// uint32_t required_size = mp4_estimate_maximum_moov_box_size(1000, 3000);
-/// mp4_file_muxer_set_reserved_moov_box_size(muxer, required_size);
+/// // 合計 3 トラック、4100 サンプルの場合（トラックの並び順は任意）
+/// uint32_t sample_counts[] = {1000, 3000, 100};
+/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+///     sample_counts, 3);
+/// mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
 /// ```
 #[unsafe(no_mangle)]
-pub extern "C" fn mp4_estimate_maximum_moov_box_size(
-    audio_sample_count: u32,
-    video_sample_count: u32,
+pub unsafe extern "C" fn mp4_estimate_maximum_moov_box_size(
+    sample_counts: *const u32,
+    track_count: u32,
 ) -> u32 {
-    shiguredo_mp4::mux::estimate_maximum_moov_box_size(&[
-        audio_sample_count as usize,
-        video_sample_count as usize,
-    ]) as u32
+    if sample_counts.is_null() {
+        return 0;
+    }
+
+    let counts: Vec<usize> =
+        unsafe { std::slice::from_raw_parts(sample_counts, track_count as usize) }
+            .iter()
+            .map(|&count| count as usize)
+            .collect();
+
+    // 64bit ホストで見積もり結果が u32::MAX を超えた場合、`as u32` では下位 32bit だけ残り
+    // 呼び出し側から見て「見積もりが実 moov より小さい」silent truncation になる。
+    // これを避けるため u32::MAX に飽和させる（それでも足りない場合は faststart を諦めるしかない）。
+    u32::try_from(shiguredo_mp4::mux::estimate_maximum_moov_box_size(&counts)).unwrap_or(u32::MAX)
 }
 
 /// 新しい `Mp4FileMuxer` インスタンスを作成して、それへのポインタを返す
@@ -470,7 +517,9 @@ pub unsafe extern "C" fn mp4_file_muxer_get_last_error(
 /// Mp4FileMuxer *muxer = mp4_file_muxer_new();
 ///
 /// // 見積もり値を使用して moov ボックスサイズを設定
-/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(100, 3000);
+/// uint32_t sample_counts[] = {100, 3000};
+/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+///     sample_counts, 2);
 /// mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
 ///
 /// // マルチプレックス処理を初期化
@@ -767,7 +816,9 @@ pub unsafe extern "C" fn mp4_file_muxer_append_sample(
             match (&*sample.sample_entry).to_sample_entry() {
                 Ok(entry) => Some(entry),
                 Err(e) => {
-                    muxer.set_last_error("[mp4_file_muxer_append_sample] Invalid sample entry");
+                    muxer.set_last_error(&format!(
+                        "[mp4_file_muxer_append_sample] Invalid sample entry: {e:?}"
+                    ));
                     return e;
                 }
             }

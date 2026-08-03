@@ -1,7 +1,7 @@
 #ifndef SHIGUREDO_MP4_H
 #define SHIGUREDO_MP4_H
 
-/* Generated with cbindgen:0.29.2 */
+/* Generated with cbindgen:0.29.4 */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -64,6 +64,10 @@ typedef enum Mp4TrackKind {
    * 映像トラック
    */
   MP4_TRACK_KIND_VIDEO = 1,
+  /**
+   * 字幕トラック
+   */
+  MP4_TRACK_KIND_SUBTITLE = 2,
 } Mp4TrackKind;
 
 /**
@@ -108,6 +112,18 @@ typedef enum Mp4SampleEntryKind {
    * FLAC
    */
   MP4_SAMPLE_ENTRY_KIND_FLAC,
+  /**
+   * stpp (XMLSubtitleSampleEntry, ISO/IEC 14496-30)
+   */
+  MP4_SAMPLE_ENTRY_KIND_STPP,
+  /**
+   * wvtt (WVTTSampleEntry, ISO/IEC 14496-30)
+   */
+  MP4_SAMPLE_ENTRY_KIND_WVTT,
+  /**
+   * tx3g (TextSampleEntry, 3GPP TS 26.245)
+   */
+  MP4_SAMPLE_ENTRY_KIND_TX3G,
 } Mp4SampleEntryKind;
 
 typedef enum Mp4FileKind {
@@ -171,7 +187,11 @@ typedef struct Fmp4SegmentMuxer Fmp4SegmentMuxer;
  * while (true) {
  *     uint64_t required_pos;
  *     int32_t required_size;
- *     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     if (err != MP4_ERROR_OK) {
+ *         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+ *         break;
+ *     }
  *     if (required_size == 0) break;
  *
  *     // NOTE: 実際には `required_size == -1` の場合には、ファイル末尾までを読み込む必要がある
@@ -211,7 +231,7 @@ typedef struct Mp4FileDemuxer Mp4FileDemuxer;
 typedef struct Mp4FileKindDetector Mp4FileKindDetector;
 
 /**
- * メディアトラック（音声・映像）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
+ * メディアトラック（音声・映像・字幕）を含んだ MP4 ファイルの構築（マルチプレックス）処理を行うための構造体
  *
  * # 関連関数
  *
@@ -350,7 +370,7 @@ typedef struct Mp4DemuxTrackInfo {
    */
   uint32_t track_id;
   /**
-   * トラックの種類（音声または映像）
+   * トラックの種類（音声・映像・字幕）
    */
   enum Mp4TrackKind kind;
   /**
@@ -378,6 +398,14 @@ typedef struct Mp4DemuxTrackInfo {
  * 解像度、プロファイル、レベル、SPS/PPS パラメータセットなどの情報が含まれる
  *
  * 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+ *
+ * # ポインタフィールドの null 契約
+ *
+ * - `sps_data` / `pps_data` は `sps_count` / `pps_count` の値によらず常に非 null でなければならない
+ *   （既存 C API の後方互換性を維持するための挙動。`Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` とは非対称）
+ * - `sps_sizes` は `sps_count > 0` のとき、`pps_sizes` は `pps_count > 0` のとき非 null が必要
+ * - 配列要素 `sps_data[i]` / `pps_data[i]` も個別に非 null が必要
+ * - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
  *
  * # 使用例
  *
@@ -432,6 +460,17 @@ typedef struct Mp4SampleEntryAvc1 {
  * 解像度、プロファイル、レベル、NALU パラメータセットなどの情報が含まれる
  *
  * 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+ *
+ * # ポインタフィールドの null 契約
+ *
+ * - `nalu_array_count == 0` のとき、`nalu_types` / `nalu_counts` /
+ *   `nalu_data` / `nalu_sizes` はいずれも null でも許容される
+ * - `nalu_array_count > 0` のとき、`nalu_types` / `nalu_counts` は非 null が必要
+ * - 少なくとも 1 つの `nalu_counts[i] > 0` があるとき、`nalu_data` / `nalu_sizes` も非 null が必要
+ *   （全 `nalu_counts[i] == 0` のとき、`nalu_data` / `nalu_sizes` は null でも許容される。
+ *   空 NALU 配列のみの `hvcC` を過剰に弾かないための挙動）
+ * - 配列要素 `nalu_data[k]` も個別に非 null が必要
+ * - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
  *
  * # 使用例
  *
@@ -492,6 +531,18 @@ typedef struct Mp4SampleEntryHev1 {
  * 解像度、プロファイル、レベル、NALU パラメータセットなどの情報が含まれる
  *
  * 各フィールドの詳細については MP4 やコーデックの仕様を参照のこと
+ *
+ * # ポインタフィールドの null 契約
+ *
+ * `Mp4SampleEntryHev1` と同じ規約に従う（ポインタフィールドの構成が同型）。
+ *
+ * - `nalu_array_count == 0` のとき、`nalu_types` / `nalu_counts` /
+ *   `nalu_data` / `nalu_sizes` はいずれも null でも許容される
+ * - `nalu_array_count > 0` のとき、`nalu_types` / `nalu_counts` は非 null が必要
+ * - 少なくとも 1 つの `nalu_counts[i] > 0` があるとき、`nalu_data` / `nalu_sizes` も非 null が必要
+ *   （全 `nalu_counts[i] == 0` のとき、`nalu_data` / `nalu_sizes` は null でも許容される）
+ * - 配列要素 `nalu_data[k]` も個別に非 null が必要
+ * - 上記のいずれかに違反した場合、変換 API は `Mp4Error::MP4_ERROR_NULL_POINTER` を返す
  *
  * # 使用例
  *
@@ -753,6 +804,155 @@ typedef struct Mp4SampleEntryFlac {
 } Mp4SampleEntryFlac;
 
 /**
+ * stpp（XMLSubtitleSampleEntry, ISO/IEC 14496-30）用のサンプルエントリー
+ *
+ * XML 形式の字幕（TTML / IMSC 等）のトラックが持つメタデータを表現する。
+ * 3 本の文字列フィールドは各々 `_data` + `_size` のペアで露出し、
+ * バイト列は null 終端を含まない UTF-8 バイト列で `_size` は正味のバイト数を表す
+ */
+typedef struct Mp4SampleEntryStpp {
+  /**
+   * XML 名前空間 URI のスペース区切り文字列（null 終端なし、UTF-8）
+   */
+  const uint8_t *namespace_data;
+  /**
+   * [`Mp4SampleEntryStpp::namespace_data`] の長さ（バイト単位）
+   */
+  uint32_t namespace_size;
+  /**
+   * 対応する XML スキーマの URL（null 終端なし、UTF-8。空文字列は `size == 0`）
+   */
+  const uint8_t *schema_location_data;
+  /**
+   * [`Mp4SampleEntryStpp::schema_location_data`] の長さ（バイト単位）
+   */
+  uint32_t schema_location_size;
+  /**
+   * 補助 MIME タイプ（null 終端なし、UTF-8。空文字列は `size == 0`）
+   */
+  const uint8_t *auxiliary_mime_types_data;
+  /**
+   * [`Mp4SampleEntryStpp::auxiliary_mime_types_data`] の長さ（バイト単位）
+   */
+  uint32_t auxiliary_mime_types_size;
+} Mp4SampleEntryStpp;
+
+/**
+ * wvtt（WVTTSampleEntry, ISO/IEC 14496-30）用のサンプルエントリー
+ *
+ * WebVTT 字幕のトラックが持つメタデータを表現する。
+ * `config` フィールドは WebVTT 設定テキスト（`"WEBVTT"` で始まる UTF-8 文字列）を保持する。
+ *
+ * # data_reference_index の情報損失
+ *
+ * 本構造体は `data_reference_index` を含まないため、C API 経由で
+ * `Mp4SampleEntry → WvttBox` に復元する際は常に
+ * [`WvttBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::WvttBox::DEFAULT_DATA_REFERENCE_INDEX]
+ * (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Mp4a と同じ
+ *
+ * # interior null について
+ *
+ * `config_data` は `String::as_bytes()` の生バイト列で、既存 `Mp4SampleEntryStpp` の
+ * [`Utf8String`][shiguredo_mp4::Utf8String] invariant（null 除外）と異なり
+ * **interior null を含み得る**。C consumer 側で `strlen` などバイト列内 null を
+ * ターミネータとみなす API を使うと途中で切れる恐れがあるため、必ず `config_size` を
+ * 長さとして利用すること
+ */
+typedef struct Mp4SampleEntryWvtt {
+  /**
+   * WebVTT 設定テキストのバイト列（null 終端なし、UTF-8。空文字列は `size == 0`）
+   */
+  const uint8_t *config_data;
+  /**
+   * [`Mp4SampleEntryWvtt::config_data`] の長さ（バイト単位）
+   */
+  uint32_t config_size;
+} Mp4SampleEntryWvtt;
+
+/**
+ * tx3g（TextSampleEntry, 3GPP TS 26.245）用のサンプルエントリー
+ *
+ * 3GPP Timed Text 字幕のトラックが持つメタデータを表現する。
+ * 本体固定サイズ 30 バイト（displayFlags / justification / RGBA / BoxRecord / StyleRecord）と
+ * 可変長の FontTableBox を保持する。
+ *
+ * # data_reference_index の情報損失
+ *
+ * 本構造体は `data_reference_index` を含まないため、C API 経由で
+ * `Mp4SampleEntry → Tx3gBox` に復元する際は常に
+ * [`Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX`][shiguredo_mp4::boxes::Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX]
+ * (= 1) が用いられる。元のバイト列に非 1 の値があっても失われる制約は既存 Stpp / Wvtt / Mp4a と同じ
+ *
+ * # font-name のエンコーディング
+ *
+ * `ftab_font_name_ptrs[i]` は 3GPP TS 26.245 が文字エンコーディングを明示していないため、
+ * UTF-8 を保証しない生バイト列を指す。C consumer 側で文字列として扱う場合は
+ * UTF-8 として妥当性を検証してから利用すること
+ */
+typedef struct Mp4SampleEntryTx3g {
+  /**
+   * 表示挙動フラグ（3GPP TS 26.245 §5.16.1.1 のビットマスク。値域チェックはしない）
+   */
+  uint32_t display_flags;
+  /**
+   * 水平方向のジャスティフィケーション（`0 = left` / `1 = centered` / `-1 = right`）
+   */
+  int8_t horizontal_justification;
+  /**
+   * 垂直方向のジャスティフィケーション（`0 = top` / `1 = centered` / `-1 = bottom`）
+   */
+  int8_t vertical_justification;
+  /**
+   * テキスト背景色（RGBA）
+   */
+  uint8_t background_color_rgba[4];
+  /**
+   * テキスト表示領域の既定矩形（`top` / `left` / `bottom` / `right` の順で `i16` 4 個）
+   */
+  int16_t default_text_box[4];
+  /**
+   * 既定スタイル: style を適用する文字範囲の開始
+   */
+  uint16_t default_style_start_char;
+  /**
+   * 既定スタイル: style を適用する文字範囲の終了
+   */
+  uint16_t default_style_end_char;
+  /**
+   * 既定スタイル: font-ID
+   */
+  uint16_t default_style_font_id;
+  /**
+   * 既定スタイル: face-style-flags（3GPP TS 26.245 §5.16.1.2 のビットマスク）
+   */
+  uint8_t default_style_face_style_flags;
+  /**
+   * 既定スタイル: font-size（ピクセル）
+   */
+  uint8_t default_style_font_size;
+  /**
+   * 既定スタイル: text-color-rgba
+   */
+  uint8_t default_style_text_color_rgba[4];
+  /**
+   * ftab の font-ID 配列（長さは `ftab_count`）
+   */
+  const uint16_t *ftab_font_ids;
+  /**
+   * ftab の font-name ポインタ配列（各要素は `ftab_font_name_sizes[i]` バイト、null 終端なし）
+   */
+  const uint8_t *const *ftab_font_name_ptrs;
+  /**
+   * ftab の font-name 長さ配列（バイト単位）
+   */
+  const uint32_t *ftab_font_name_sizes;
+  /**
+   * ftab のエントリー数
+   */
+  uint32_t ftab_count;
+} Mp4SampleEntryTx3g;
+
+/**
  * MP4 サンプルエントリーの詳細データを格納するユニオン型
  *
  * このユニオン型は、`Mp4SampleEntry` の `kind` フィールドで指定されたコーデック種別に応じて、
@@ -795,12 +995,24 @@ typedef union Mp4SampleEntryData {
    * FLAC 音声コーデック用のサンプルエントリー
    */
   struct Mp4SampleEntryFlac flac;
+  /**
+   * stpp（XML 字幕）用のサンプルエントリー
+   */
+  struct Mp4SampleEntryStpp stpp;
+  /**
+   * wvtt（WebVTT 字幕）用のサンプルエントリー
+   */
+  struct Mp4SampleEntryWvtt wvtt;
+  /**
+   * tx3g（3GPP Timed Text 字幕）用のサンプルエントリー
+   */
+  struct Mp4SampleEntryTx3g tx3g;
 } Mp4SampleEntryData;
 
 /**
  * MP4 サンプルエントリー
  *
- * MP4 ファイル内で使用されるメディアサンプル（フレーム単位の音声または映像データ）の
+ * MP4 ファイル内で使用されるメディアサンプル（フレーム単位の音声・映像・字幕データ）の
  * 詳細情報を保持する構造体
  *
  * 各サンプルはコーデック種別ごとに異なる詳細情報を持つため、
@@ -854,7 +1066,7 @@ typedef struct Mp4SampleEntry {
 /**
  * MP4 デマルチプレックス処理によって抽出されたメディアサンプルを表す構造体
  *
- * MP4 ファイル内の各サンプル（フレーム単位の音声または映像データ）のメタデータと
+ * MP4 ファイル内の各サンプル（フレーム単位の音声・映像・字幕データ）のメタデータと
  * ファイル内の位置情報を保持する
  *
  * この構造体が参照しているポインタのメモリ管理は各 demuxer が行っており、
@@ -972,8 +1184,11 @@ typedef struct Fmp4SegmentSample {
    * コンポジション時間オフセット（`has_composition_time_offset` が true の場合のみ有効）
    *
    * demux API と合わせて `i64` で公開している。
-   * ただし fMP4 の `trun` に書けるのは `i32::MIN ..= i32::MAX` の範囲だけであり、
-   * 範囲外の値を指定すると mux 関数はエラーを返す。
+   * ただし fMP4 の `trun` に書けるのは ISO/IEC 14496-12 8.8.8 の制約により
+   * version 0 で `0..=u32::MAX`、version 1 で `i32::MIN..=i32::MAX` の範囲に限られる。
+   * また、負値と `> i32::MAX` の値がひとつの `trun` に混在する場合は
+   * どちらの版でも表現できないためエラーになる。
+   * これらの制約を満たさない値を指定すると mux 関数はエラーを返す。
    */
   int64_t composition_time_offset;
   /**
@@ -996,6 +1211,12 @@ typedef struct Fmp4SegmentSample {
 
 /**
  * MP4 ファイルに追加（マルチプレックス）するメディアサンプルを表す構造体
+ *
+ * 音声・字幕トラックでは、各サンプルが独立してデコード可能なのが通例のため
+ * `keyframe` = `true` を指定するのが正規である。
+ *
+ * 字幕トラック（`MP4_TRACK_KIND_SUBTITLE`）ではあわせて
+ * `has_composition_time_offset` = `false` を推奨する。
  *
  * # 使用例
  *
@@ -1041,10 +1262,16 @@ typedef struct Mp4MuxSample {
    */
   const struct Mp4SampleEntry *sample_entry;
   /**
-   * キーフレームであるかどうか
+   * キーフレーム（同期サンプル）であるかどうか
    *
-   * `true` の場合、このサンプルはキーフレームであり、
-   * このポイントから復号（再生）を開始できることを意味する
+   * 音声・字幕では `true` を指定するのが正規である。
+   *
+   * `Mp4FileMuxer` では `stss` の生成に使われる。
+   * 映像トラックの全サンプルが `false` の場合、`mp4_file_muxer_finalize` は
+   * `MP4_ERROR_INVALID_INPUT` を返す。
+   * 音声・字幕では同条件でも `stss` を省略して全サンプル同期として扱う。
+   *
+   * `Fmp4SegmentMuxer` では `trun` のサンプルフラグおよび `sidx` の SAP 判定に使われる。
    */
   bool keyframe;
   /**
@@ -1102,7 +1329,9 @@ typedef struct Mp4MuxSample {
    * demux API と往復しやすいように `i64` で公開しているが、
    * 実際に mux 時に受理される範囲は次の通り:
    * - file mux: `i32::MIN ..= u32::MAX`
-   * - fMP4 segment mux: `i32::MIN ..= i32::MAX`
+   * - fMP4 segment mux: `i32::MIN ..= u32::MAX`
+   *   （ただし ISO/IEC 14496-12 8.8.8 の制約により、
+   *   ひとつの `trun` に負値と `> i32::MAX` の値を混在させることはできない）
    *
    * 範囲外の値を指定した場合、対応する mux 関数はエラーを返す。
    */
@@ -1227,11 +1456,14 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  *     - 通常は、より大きな範囲のデータを一度に渡した方が効率がいい
  *   - 0 が設定された場合は、これ以上の入力データが不要であることを意味する
  *   - -1 が設定された場合は、ファイルの末尾までのデータが必要であることを意味する
+ *   - 要求サイズが `i32::MAX` を超える場合は更新されず、`MP4_ERROR_UNSUPPORTED` が返る
  *
  * # 戻り値
  *
- * - `MP4_ERROR_OK`: 正常に処理された
+ * - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
  * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+ *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
  *
  * # 使用例
  *
@@ -1243,7 +1475,11 @@ const char *mp4_file_demuxer_get_last_error(const struct Mp4FileDemuxer *demuxer
  * while (true) {
  *     uint64_t required_pos;
  *     int32_t required_size;
- *     mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     Mp4Error err = mp4_file_demuxer_get_required_input(demuxer, &required_pos, &required_size);
+ *     if (err != MP4_ERROR_OK) {
+ *         // 非 OK 時は out が更新されないため、required_pos / required_size を読まない
+ *         break;
+ *     }
  *     if (required_size == 0) break; // 初期化完了
  *
  *     // ファイルから必要なデータを読み込む
@@ -1313,7 +1549,7 @@ enum Mp4Error mp4_file_demuxer_handle_input(struct Mp4FileDemuxer *demuxer,
                                             uint32_t input_data_size);
 
 /**
- * MP4 ファイル内に含まれるすべてのメディアトラック（音声および映像）の情報を取得する
+ * MP4 ファイル内に含まれるすべてのメディアトラック（音声・映像・字幕）の情報を取得する
  *
  * # 引数
  *
@@ -1795,7 +2031,13 @@ const char *mp4_file_kind_detector_get_last_error(const struct Mp4FileKindDetect
  * `mdat` のような巨大ペイロードを丸ごと要求することはない想定である。
  * そのため、サイズ表現には `int32_t` を使っている。
  *
- * 判定器がエラー状態に遷移している場合は `MP4_ERROR_OK` ではなくエラーを返す。
+ * # 戻り値
+ *
+ * - `MP4_ERROR_OK`: 正常に処理された（このときのみ両 out が有効）
+ * - `MP4_ERROR_NULL_POINTER`: 引数として NULL ポインタが渡された
+ * - `MP4_ERROR_UNSUPPORTED`: 要求サイズが `i32::MAX`（約 2 GiB）を超えた
+ *   - この場合、`out_required_input_position` / `out_required_input_size` は更新されない
+ * - 判定器がエラー状態に遷移している場合は、上記以外のエラーを返す
  */
 enum Mp4Error mp4_file_kind_detector_get_required_input(struct Mp4FileKindDetector *detector,
                                                         uint64_t *out_required_input_position,
@@ -1832,23 +2074,46 @@ enum Mp4Error mp4_file_kind_detector_get_file_kind(struct Mp4FileKindDetector *d
  *
  * # 引数
  *
- * - `audio_sample_count`: 音声トラック内の予想サンプル数
- * - `video_sample_count`: 映像トラック内の予想サンプル数
+ * - `sample_counts`: トラックごとの予想サンプル数の配列
+ *   - 配列内の要素の順序は任意（合計サンプル数と要素数だけを見積もりに使う）
+ *   - `uint32_t` として整列されている必要がある（4 バイト境界）
+ *   - NULL の場合は `track_count` の値によらず `0` を返す（誤用扱い）
+ * - `track_count`: `sample_counts` の要素数（トラック数）
+ *   - `sample_counts` が NULL でなく `track_count` が `0` の場合は空スライスとして扱い、
+ *     トラックなしの基本オーバーヘッド相当の値を返す
  *
  * # 戻り値
  *
  * moov ボックスに必要な最大バイト数を返す
  *
+ * # NOTE
+ *
+ * この関数は概算であり、以下の場合には見積もりが不足することがある:
+ * - サンプルエントリーが大きい場合（`stpp` の名前空間文字列が長い場合など）
+ * - サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合
+ *
+ * 見積もりが不足しても生成される MP4 ファイル自体は正しく、
+ * faststart が無効になり moov ボックスがファイル末尾に配置されるだけで済む。
+ * ただし縮退したことを呼び出し側で検知する手段は無い。
+ * faststart を確実に有効にしたい場合は、余裕を持たせた値を
+ * `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定すること
+ *
+ * # 関連関数
+ *
+ * - `mp4_file_muxer_set_reserved_moov_box_size()`: 見積もった値を faststart 用の予約サイズとして指定する
+ *
  * # 使用例
  *
  * ```c
- * // 音声 1000 サンプル、映像 3000 フレームの場合
- * uint32_t required_size = mp4_estimate_maximum_moov_box_size(1000, 3000);
- * mp4_file_muxer_set_reserved_moov_box_size(muxer, required_size);
+ * // 合計 3 トラック、4100 サンプルの場合（トラックの並び順は任意）
+ * uint32_t sample_counts[] = {1000, 3000, 100};
+ * uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+ *     sample_counts, 3);
+ * mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
  * ```
  */
-uint32_t mp4_estimate_maximum_moov_box_size(uint32_t audio_sample_count,
-                                            uint32_t video_sample_count);
+uint32_t mp4_estimate_maximum_moov_box_size(const uint32_t *sample_counts,
+                                            uint32_t track_count);
 
 /**
  * 新しい `Mp4FileMuxer` インスタンスを作成して、それへのポインタを返す
@@ -2004,7 +2269,9 @@ const char *mp4_file_muxer_get_last_error(const struct Mp4FileMuxer *muxer);
  * Mp4FileMuxer *muxer = mp4_file_muxer_new();
  *
  * // 見積もり値を使用して moov ボックスサイズを設定
- * uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(100, 3000);
+ * uint32_t sample_counts[] = {100, 3000};
+ * uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+ *     sample_counts, 2);
  * mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
  *
  * // マルチプレックス処理を初期化

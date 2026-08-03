@@ -1,29 +1,59 @@
 //! サンプルエントリー系のボックスをまとめたモジュール
 //!
 //! このモジュールは内部的なもので、構造体などの外部への提供は boxes モジュールを通して行う
-use alloc::{boxed::Box, format, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 use core::num::NonZeroU16;
 
 use crate::{
     BaseBox, BoxHeader, BoxType, Decode, Encode, Error, FixedPointNumber, FullBox, FullBoxFlags,
-    FullBoxHeader, Result, Uint,
+    FullBoxHeader, Result, Uint, Utf8String,
     basic_types::as_box_object,
     boxes::{EsdsBox, UnknownBox, check_mandatory_box, with_box_type},
 };
 
 /// [`StsdBox`][crate::boxes::StsdBox] に含まれるエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub enum SampleEntry {
+    /// H.264 (AVC) 用サンプルエントリー（`avc1`）
     Avc1(Avc1Box),
+
+    /// H.265 (HEVC) 用サンプルエントリー（`hev1`。パラメータセットが in-band 前提）
     Hev1(Hev1Box),
+
+    /// H.265 (HEVC) 用サンプルエントリー（`hvc1`。パラメータセットが out-of-band 前提）
     Hvc1(Hvc1Box),
+
+    /// VP8 用サンプルエントリー（`vp08`）
     Vp08(Vp08Box),
+
+    /// VP9 用サンプルエントリー（`vp09`）
     Vp09(Vp09Box),
+
+    /// AV1 用サンプルエントリー（`av01`）
     Av01(Av01Box),
+
+    /// Opus 音声用サンプルエントリー（`Opus`）
     Opus(OpusBox),
+
+    /// MPEG-4 音声（主に AAC）用サンプルエントリー（`mp4a`）
     Mp4a(Mp4aBox),
+
+    /// FLAC 音声用サンプルエントリー（`fLaC`）
     Flac(FlacBox),
+
+    /// XML 字幕（TTML / IMSC 等）用サンプルエントリー（`stpp`）
+    Stpp(StppBox),
+
+    /// WebVTT 字幕用サンプルエントリー（`wvtt`）
+    Wvtt(WvttBox),
+
+    /// 3GPP タイムドテキスト用サンプルエントリー（`tx3g`）
+    Tx3g(Tx3gBox),
+
+    /// 上記のいずれにも該当しない box_type だった場合の受け皿
+    ///
+    /// demux 時に未知の box_type が出現した場合の保持先、および
+    /// mux 時に任意の未知サンプルエントリーを組み込む場合に使う
     Unknown(UnknownBox),
 }
 
@@ -99,6 +129,9 @@ impl SampleEntry {
             Self::Opus(b) => b,
             Self::Mp4a(b) => b,
             Self::Flac(b) => b,
+            Self::Stpp(b) => b,
+            Self::Wvtt(b) => b,
+            Self::Tx3g(b) => b,
             Self::Unknown(b) => b,
         }
     }
@@ -116,6 +149,9 @@ impl Encode for SampleEntry {
             Self::Opus(b) => b.encode(buf),
             Self::Mp4a(b) => b.encode(buf),
             Self::Flac(b) => b.encode(buf),
+            Self::Stpp(b) => b.encode(buf),
+            Self::Wvtt(b) => b.encode(buf),
+            Self::Tx3g(b) => b.encode(buf),
             Self::Unknown(b) => b.encode(buf),
         }
     }
@@ -134,6 +170,9 @@ impl Decode for SampleEntry {
             OpusBox::TYPE => OpusBox::decode(buf).map(|(b, n)| (Self::Opus(b), n)),
             Mp4aBox::TYPE => Mp4aBox::decode(buf).map(|(b, n)| (Self::Mp4a(b), n)),
             FlacBox::TYPE => FlacBox::decode(buf).map(|(b, n)| (Self::Flac(b), n)),
+            StppBox::TYPE => StppBox::decode(buf).map(|(b, n)| (Self::Stpp(b), n)),
+            WvttBox::TYPE => WvttBox::decode(buf).map(|(b, n)| (Self::Wvtt(b), n)),
+            Tx3gBox::TYPE => Tx3gBox::decode(buf).map(|(b, n)| (Self::Tx3g(b), n)),
             _ => UnknownBox::decode(buf).map(|(b, n)| (Self::Unknown(b), n)),
         }
     }
@@ -155,15 +194,29 @@ impl BaseBox for SampleEntry {
 
 /// 映像系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct VisualSampleEntryFields {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
     pub data_reference_index: NonZeroU16,
+
+    /// 映像フレームの幅（ピクセル）
     pub width: u16,
+
+    /// 映像フレームの高さ（ピクセル）
     pub height: u16,
+
+    /// 水平解像度（dpi）
     pub horizresolution: FixedPointNumber<u16, u16>,
+
+    /// 垂直解像度（dpi）
     pub vertresolution: FixedPointNumber<u16, u16>,
+
+    /// 1 サンプルに含まれるフレーム数（通常は 1）
     pub frame_count: u16,
+
+    /// コンプレッサー名（先頭 1 バイトが長さで残りが ASCII 文字列という Pascal 文字列形式）
     pub compressorname: [u8; 32],
+
+    /// 色深度（ビット数。24 は透明無しのカラー画像を意味する）
     pub depth: u16,
 }
 
@@ -239,10 +292,14 @@ impl Decode for VisualSampleEntryFields {
 
 /// [ISO/IEC 14496-15] AVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Avc1Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// H.264 デコーダー設定を保持する `avcC` ボックス
     pub avcc_box: AvccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -317,17 +374,36 @@ impl BaseBox for Avc1Box {
 
 /// [ISO/IEC 14496-15] AVCConfigurationBox class (親: [`Avc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct AvccBox {
+    /// H.264 プロファイル識別子（`profile_idc`）
     pub avc_profile_indication: u8,
+
+    /// プロファイル互換性フラグ（`constraint_set*_flag` のビット列）
     pub profile_compatibility: u8,
+
+    /// H.264 レベル識別子（`level_idc`）
     pub avc_level_indication: u8,
+
+    /// NAL ユニット長のバイト数から 1 を引いた値（0..=3。値 3 は 4 バイト長を表す）
     pub length_size_minus_one: Uint<u8, 2>,
+
+    /// SPS (Sequence Parameter Set) NAL ユニットのバイト列（最大 31 個）
     pub sps_list: Vec<Vec<u8>>,
+
+    /// PPS (Picture Parameter Set) NAL ユニットのバイト列（最大 255 個）
     pub pps_list: Vec<Vec<u8>>,
+
+    /// クロマフォーマット (0..=3)。`avc_profile_indication` が
+    /// 66 / 77 / 88 以外の場合のみ ISO/IEC 14496-15 仕様上は必須
     pub chroma_format: Option<Uint<u8, 2>>,
+
+    /// 輝度のビット深度から 8 を引いた値。`chroma_format` と同じ条件で存在する
     pub bit_depth_luma_minus8: Option<Uint<u8, 3>>,
+
+    /// 色差のビット深度から 8 を引いた値。`chroma_format` と同じ条件で存在する
     pub bit_depth_chroma_minus8: Option<Uint<u8, 3>>,
+
+    /// SPS 拡張 NAL ユニットのバイト列（`chroma_format` と同じ条件で存在しうる）
     pub sps_ext_list: Vec<Vec<u8>>,
 }
 
@@ -349,6 +425,8 @@ impl Encode for AvccBox {
         offset += self.avc_level_indication.encode(&mut buf[offset..])?;
         offset += (0b1111_1100 | self.length_size_minus_one.get()).encode(&mut buf[offset..])?;
 
+        // ISO/IEC 14496-15 の numOfSequenceParameterSets は unsigned int(5) のため最大 31。
+        // PPS 側の numOfPictureParameterSets（unsigned int(8)、最大 255）と取り違えないこと。
         if self.sps_list.len() > 31 {
             return Err(Error::invalid_input("Too many SPSs (max 31)"));
         }
@@ -361,10 +439,10 @@ impl Encode for AvccBox {
             offset += sps.encode(&mut buf[offset..])?;
         }
 
-        if self.pps_list.len() > 31 {
-            return Err(Error::invalid_input("Too many PPSs (max 31)"));
-        }
-        let pps_count = self.pps_list.len() as u8;
+        // ISO/IEC 14496-15 の numOfPictureParameterSets は unsigned int(8) のため最大 255。
+        // SPS 側の numOfSequenceParameterSets（unsigned int(5)、最大 31）と取り違えないこと。
+        let pps_count = u8::try_from(self.pps_list.len())
+            .map_err(|_| Error::invalid_input("Too many PPSs (max 255)"))?;
         offset += pps_count.encode(&mut buf[offset..])?;
         for pps in &self.pps_list {
             let size =
@@ -505,11 +583,17 @@ impl BaseBox for AvccBox {
 }
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// `hev1` はパラメータセット（VPS / SPS / PPS）がサンプル中に in-band で現れうる場合に使う
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Hev1Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// H.265 デコーダー設定を保持する `hvcC` ボックス
     pub hvcc_box: HvccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -520,51 +604,28 @@ impl Hev1Box {
 
 impl Encode for Hev1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let header = BoxHeader::new_variable_size(Self::TYPE);
-        let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.hvcc_box.encode(&mut buf[offset..])?;
-        for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
-        }
-        header.finalize_box_size(&mut buf[..offset])?;
-        Ok(offset)
+        encode_hevc_sample_entry(
+            buf,
+            Self::TYPE,
+            &self.visual,
+            &self.hvcc_box,
+            &self.unknown_boxes,
+        )
     }
 }
 
 impl Decode for Hev1Box {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        with_box_type(Self::TYPE, || {
-            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
-            header.box_type.expect(Self::TYPE)?;
-
-            let mut offset = 0;
-            let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
-
-            let mut hvcc_box = None;
-            let mut unknown_boxes = Vec::new();
-
-            while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
-                match child_header.box_type {
-                    HvccBox::TYPE if hvcc_box.is_none() => {
-                        hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
-                    }
-                    _ => {
-                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
-                    }
-                }
-            }
-
-            Ok((
-                Self {
-                    visual,
-                    hvcc_box: check_mandatory_box(hvcc_box, "hvcc", "hev1")?,
-                    unknown_boxes,
-                },
-                header.external_size() + payload.len(),
-            ))
-        })
+        let (visual, hvcc_box, unknown_boxes, size) =
+            decode_hevc_sample_entry(buf, Self::TYPE, "hev1")?;
+        Ok((
+            Self {
+                visual,
+                hvcc_box,
+                unknown_boxes,
+            },
+            size,
+        ))
     }
 }
 
@@ -583,11 +644,17 @@ impl BaseBox for Hev1Box {
 }
 
 /// [ISO/IEC 14496-15] HEVCSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// `hvc1` はパラメータセット（VPS / SPS / PPS）が全て `hvcC` の out-of-band に格納される場合に使う
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Hvc1Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// H.265 デコーダー設定を保持する `hvcC` ボックス
     pub hvcc_box: HvccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -598,51 +665,28 @@ impl Hvc1Box {
 
 impl Encode for Hvc1Box {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let header = BoxHeader::new_variable_size(Self::TYPE);
-        let mut offset = header.encode(buf)?;
-        offset += self.visual.encode(&mut buf[offset..])?;
-        offset += self.hvcc_box.encode(&mut buf[offset..])?;
-        for b in &self.unknown_boxes {
-            offset += b.encode(&mut buf[offset..])?;
-        }
-        header.finalize_box_size(&mut buf[..offset])?;
-        Ok(offset)
+        encode_hevc_sample_entry(
+            buf,
+            Self::TYPE,
+            &self.visual,
+            &self.hvcc_box,
+            &self.unknown_boxes,
+        )
     }
 }
 
 impl Decode for Hvc1Box {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        with_box_type(Self::TYPE, || {
-            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
-            header.box_type.expect(Self::TYPE)?;
-
-            let mut offset = 0;
-            let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
-
-            let mut hvcc_box = None;
-            let mut unknown_boxes = Vec::new();
-
-            while offset < payload.len() {
-                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
-                match child_header.box_type {
-                    HvccBox::TYPE if hvcc_box.is_none() => {
-                        hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
-                    }
-                    _ => {
-                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
-                    }
-                }
-            }
-
-            Ok((
-                Self {
-                    visual,
-                    hvcc_box: check_mandatory_box(hvcc_box, "hvcc", "hvc1")?,
-                    unknown_boxes,
-                },
-                header.external_size() + payload.len(),
-            ))
-        })
+        let (visual, hvcc_box, unknown_boxes, size) =
+            decode_hevc_sample_entry(buf, Self::TYPE, "hvc1")?;
+        Ok((
+            Self {
+                visual,
+                hvcc_box,
+                unknown_boxes,
+            },
+            size,
+        ))
     }
 }
 
@@ -660,35 +704,133 @@ impl BaseBox for Hvc1Box {
     }
 }
 
+/// HEVC サンプルエントリー（`hev1` / `hvc1`）のエンコード共通処理
+///
+/// ISO/IEC 14496-15 上、`hev1` と `hvc1` の内部構造は同一であるため、
+/// ボックス種別だけを引数で受け取り、ヘッダ書き込みからサイズ確定までを一括で行う
+fn encode_hevc_sample_entry(
+    buf: &mut [u8],
+    box_type: BoxType,
+    visual: &VisualSampleEntryFields,
+    hvcc_box: &HvccBox,
+    unknown_boxes: &[UnknownBox],
+) -> Result<usize> {
+    let header = BoxHeader::new_variable_size(box_type);
+    let mut offset = header.encode(buf)?;
+    offset += visual.encode(&mut buf[offset..])?;
+    offset += hvcc_box.encode(&mut buf[offset..])?;
+    for b in unknown_boxes {
+        offset += b.encode(&mut buf[offset..])?;
+    }
+    header.finalize_box_size(&mut buf[..offset])?;
+    Ok(offset)
+}
+
+/// HEVC サンプルエントリー（`hev1` / `hvc1`）のデコード共通処理
+///
+/// `parent_name` は `check_mandatory_box` のエラーメッセージ用に呼び出し側が明示する
+/// （`BoxType` から `&str` を導出する API がないため）
+fn decode_hevc_sample_entry(
+    buf: &[u8],
+    expected_type: BoxType,
+    parent_name: &str,
+) -> Result<(VisualSampleEntryFields, HvccBox, Vec<UnknownBox>, usize)> {
+    with_box_type(expected_type, || {
+        let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+        header.box_type.expect(expected_type)?;
+
+        let mut offset = 0;
+        let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
+
+        let mut hvcc_box = None;
+        let mut unknown_boxes = Vec::new();
+
+        while offset < payload.len() {
+            let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+            match child_header.box_type {
+                HvccBox::TYPE if hvcc_box.is_none() => {
+                    hvcc_box = Some(HvccBox::decode_at(payload, &mut offset)?);
+                }
+                _ => {
+                    unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                }
+            }
+        }
+
+        Ok((
+            visual,
+            check_mandatory_box(hvcc_box, "hvcc", parent_name)?,
+            unknown_boxes,
+            header.external_size() + payload.len(),
+        ))
+    })
+}
+
 /// [`HvccBox`] 内の NAL ユニット配列を保持する構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct HvccNalUintArray {
+    /// この配列が該当種別の NAL ユニットを網羅しているかを示すフラグ（1 ビット）
     pub array_completeness: Uint<u8, 1, 7>,
+
+    /// この配列に含まれる NAL ユニットの `nal_unit_type`（6 ビット）
     pub nal_unit_type: Uint<u8, 6, 0>,
+
+    /// NAL ユニット本体のバイト列
     pub nalus: Vec<Vec<u8>>,
 }
 
 /// [ISO/IEC 14496-15] HVCConfigurationBox class (親: [`Hev1Box`], [`Hvc1Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct HvccBox {
+    /// `general_profile_space`（2 ビット）
     pub general_profile_space: Uint<u8, 2, 6>,
+
+    /// `general_tier_flag`（1 ビット）
     pub general_tier_flag: Uint<u8, 1, 5>,
+
+    /// `general_profile_idc`（5 ビット）
     pub general_profile_idc: Uint<u8, 5, 0>,
+
+    /// `general_profile_compatibility_flags`（32 ビット）
     pub general_profile_compatibility_flags: u32,
+
+    /// `general_constraint_indicator_flags`（48 ビット）
     pub general_constraint_indicator_flags: Uint<u64, 48>,
+
+    /// `general_level_idc`
     pub general_level_idc: u8,
+
+    /// `min_spatial_segmentation_idc`（12 ビット）
     pub min_spatial_segmentation_idc: Uint<u16, 12>,
+
+    /// `parallelism_type`（2 ビット）
     pub parallelism_type: Uint<u8, 2>,
+
+    /// `chroma_format_idc`（2 ビット）
     pub chroma_format_idc: Uint<u8, 2>,
+
+    /// 輝度のビット深度から 8 を引いた値（3 ビット）
     pub bit_depth_luma_minus8: Uint<u8, 3>,
+
+    /// 色差のビット深度から 8 を引いた値（3 ビット）
     pub bit_depth_chroma_minus8: Uint<u8, 3>,
+
+    /// 平均フレームレート（256 倍された値）
     pub avg_frame_rate: u16,
+
+    /// フレームレートが定数か（2 ビット。1 なら CBR、0 なら VBR、2 は temporal sublayer 単位で CBR）
     pub constant_frame_rate: Uint<u8, 2, 6>,
+
+    /// 一時レイヤー数（3 ビット）
     pub num_temporal_layers: Uint<u8, 3, 3>,
+
+    /// `temporal_id_nested` フラグ（1 ビット）
     pub temporal_id_nested: Uint<u8, 1, 2>,
+
+    /// NAL ユニット長のバイト数から 1 を引いた値（2 ビット。値 3 は 4 バイト長を表す）
     pub length_size_minus_one: Uint<u8, 2, 0>,
+
+    /// NAL ユニット種別ごとの配列（VPS / SPS / PPS など）
     pub nalu_arrays: Vec<HvccNalUintArray>,
 }
 
@@ -866,10 +1008,14 @@ impl BaseBox for HvccBox {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP8SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Vp08Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// VP コーデック設定を保持する `vpcC` ボックス
     pub vpcc_box: VpccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -944,10 +1090,14 @@ impl BaseBox for Vp08Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VP9SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Vp09Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// VP コーデック設定を保持する `vpcC` ボックス
     pub vpcc_box: VpccBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1022,16 +1172,32 @@ impl BaseBox for Vp09Box {
 
 /// [<https://www.webmproject.org/vp9/mp4/>] VPCodecConfigurationBox class (親: [`Vp08Box`], [`Vp09Box`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct VpccBox {
+    /// VP コーデックのプロファイル
     pub profile: u8,
+
+    /// VP コーデックのレベル
     pub level: u8,
+
+    /// ビット深度（4 ビット。8 / 10 / 12 のいずれか）
     pub bit_depth: Uint<u8, 4, 4>,
+
+    /// クロマサブサンプリング（3 ビット）
     pub chroma_subsampling: Uint<u8, 3, 1>,
+
+    /// 映像レンジフラグ（1 ビット。1 なら full-range、0 なら limited-range）
     pub video_full_range_flag: Uint<u8, 1>,
+
+    /// 色域（ISO/IEC 23001-8 の `ColourPrimaries`）
     pub colour_primaries: u8,
+
+    /// 伝達特性（ISO/IEC 23001-8 の `TransferCharacteristics`）
     pub transfer_characteristics: u8,
+
+    /// マトリックス係数（ISO/IEC 23001-8 の `MatrixCoefficients`）
     pub matrix_coefficients: u8,
+
+    /// コーデック初期化データ（VP8 / VP9 は仕様上は常に空バイト列）
     pub codec_initialization_data: Vec<u8>,
 }
 
@@ -1054,7 +1220,9 @@ impl Encode for VpccBox {
         offset += self.colour_primaries.encode(&mut buf[offset..])?;
         offset += self.transfer_characteristics.encode(&mut buf[offset..])?;
         offset += self.matrix_coefficients.encode(&mut buf[offset..])?;
-        offset += (self.codec_initialization_data.len() as u16).encode(&mut buf[offset..])?;
+        offset += u16::try_from(self.codec_initialization_data.len())
+            .map_err(|_| Error::invalid_input("codec_initialization_data exceeds u16::MAX"))?
+            .encode(&mut buf[offset..])?;
         offset += self.codec_initialization_data.encode(&mut buf[offset..])?;
         header.finalize_box_size(&mut buf[..offset])?;
         Ok(offset)
@@ -1134,10 +1302,14 @@ impl FullBox for VpccBox {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1SampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Av01Box {
+    /// 映像系サンプルエントリー共通フィールド
     pub visual: VisualSampleEntryFields,
+
+    /// AV1 コーデック設定を保持する `av1C` ボックス
     pub av1c_box: Av1cBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1212,18 +1384,38 @@ impl BaseBox for Av01Box {
 
 /// [<https://aomediacodec.github.io/av1-isobmff/>] AV1CodecConfigurationBox class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Av1cBox {
+    /// AV1 の `seq_profile`（3 ビット）
     pub seq_profile: Uint<u8, 3, 5>,
+
+    /// AV1 の `seq_level_idx[0]`（5 ビット）
     pub seq_level_idx_0: Uint<u8, 5, 0>,
+
+    /// AV1 の `seq_tier[0]`（1 ビット）
     pub seq_tier_0: Uint<u8, 1, 7>,
+
+    /// AV1 の `high_bitdepth`（1 ビット）
     pub high_bitdepth: Uint<u8, 1, 6>,
+
+    /// AV1 の `twelve_bit`（1 ビット）
     pub twelve_bit: Uint<u8, 1, 5>,
+
+    /// AV1 の `monochrome`（1 ビット）
     pub monochrome: Uint<u8, 1, 4>,
+
+    /// AV1 の `subsampling_x`（1 ビット）
     pub chroma_subsampling_x: Uint<u8, 1, 3>,
+
+    /// AV1 の `subsampling_y`（1 ビット）
     pub chroma_subsampling_y: Uint<u8, 1, 2>,
+
+    /// AV1 の `chroma_sample_position`（2 ビット）
     pub chroma_sample_position: Uint<u8, 2, 0>,
+
+    /// AV1 の `initial_presentation_delay_minus_one`（4 ビット。存在する場合のみ有効）
     pub initial_presentation_delay_minus_one: Option<Uint<u8, 4, 0>>,
+
+    /// AV1 の設定 OBU 列（`Sequence Header OBU` などを raw で保持する）
     pub config_obus: Vec<u8>,
 }
 
@@ -1336,10 +1528,14 @@ impl BaseBox for Av1cBox {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct OpusBox {
+    /// 音声系サンプルエントリー共通フィールド
     pub audio: AudioSampleEntryFields,
+
+    /// Opus のデコーダー設定を保持する `dOps` ボックス
     pub dops_box: DopsBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1414,10 +1610,14 @@ impl BaseBox for OpusBox {
 
 /// [ISO/IEC 14496-14] MP4AudioSampleEntry class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct Mp4aBox {
+    /// 音声系サンプルエントリー共通フィールド
     pub audio: AudioSampleEntryFields,
+
+    /// MPEG-4 コーデック設定（ES 記述子）を保持する `esds` ボックス
     pub esds_box: EsdsBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1494,10 +1694,14 @@ impl BaseBox for Mp4aBox {
 ///
 /// <https://github.com/xiph/flac/blob/master/doc/isoflac.txt>
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct FlacBox {
+    /// 音声系サンプルエントリー共通フィールド
     pub audio: AudioSampleEntryFields,
+
+    /// FLAC のデコーダー設定を保持する `dfLa` ボックス
     pub dfla_box: DflaBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
 }
 
@@ -1772,11 +1976,18 @@ impl Decode for FlacMetadataBlock {
 
 /// 音声系の [`SampleEntry`] に共通のフィールドをまとめた構造体
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct AudioSampleEntryFields {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
     pub data_reference_index: NonZeroU16,
+
+    /// チャンネル数（1 = モノラル、2 = ステレオ など）
     pub channelcount: u16,
+
+    /// 1 サンプルあたりのビット数（例: 16）
     pub samplesize: u16,
+
+    /// サンプリングレート（Hz）。整数部が u16 に収まらないコーデックでは
+    /// コーデック固有のフィールド（例: `dOps` の `input_sample_rate`）を優先する
     pub samplerate: FixedPointNumber<u16, u16>,
 }
 
@@ -1828,11 +2039,17 @@ impl Decode for AudioSampleEntryFields {
 
 /// [<https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html>] OpusSpecificBox class (親: [`OpusBox`])
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct DopsBox {
+    /// Opus のデコード後チャンネル数
     pub output_channel_count: u8,
+
+    /// 出力先頭で捨てるサンプル数（48 kHz 基準のサンプル数）
     pub pre_skip: u16,
+
+    /// エンコード前のオリジナルのサンプリングレート（Hz。参考値であり再生には影響しない）
     pub input_sample_rate: u32,
+
+    /// 出力ゲイン（Q7.8 固定小数点の dB。復号後に線形スケールで適用する）
     pub output_gain: i16,
 }
 
@@ -1903,5 +2120,557 @@ impl BaseBox for DopsBox {
 
     fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
         Box::new(core::iter::empty())
+    }
+}
+
+/// [ISO/IEC 14496-30] XMLSubtitleSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// XML 形式の字幕（TTML / IMSC 等）を格納するためのサンプルエントリー。
+/// サンプルデータ自体は生バイト列として扱い、XML 構造の解釈は利用側の責務とする
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StppBox {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
+    pub data_reference_index: NonZeroU16,
+    /// XML 名前空間 URI のスペース区切りリスト
+    ///
+    /// 仕様上は非空前提だが、パーサの堅牢性のため空文字列も受け入れる。
+    /// 複数名前空間を扱う場合は利用側で分割する運用
+    pub namespace: Utf8String,
+    /// 対応する XML スキーマの URL のスペース区切りリスト（空可）
+    pub schema_location: Utf8String,
+    /// 補助 MIME タイプのスペース区切りリスト（空可）
+    pub auxiliary_mime_types: Utf8String,
+    /// 型付き実装を持たない任意の子ボックス（`btrt` / `m4ds` 等）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl StppBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"stpp");
+
+    /// [`StppBox::data_reference_index`] のデフォルト値
+    pub const DEFAULT_DATA_REFERENCE_INDEX: NonZeroU16 = NonZeroU16::MIN;
+}
+
+impl Encode for StppBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += [0u8; 6].encode(&mut buf[offset..])?;
+        offset += self.data_reference_index.encode(&mut buf[offset..])?;
+        offset += self.namespace.encode(&mut buf[offset..])?;
+        offset += self.schema_location.encode(&mut buf[offset..])?;
+        offset += self.auxiliary_mime_types.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for StppBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _ = <[u8; 6]>::decode_at(payload, &mut offset)?;
+            let data_reference_index = NonZeroU16::decode_at(payload, &mut offset)?;
+
+            // Utf8String::decode の元エラーメッセージを保持しつつ、
+            // どのフィールドで失敗したかを接頭辞で示す
+            let namespace = Utf8String::decode_at(payload, &mut offset)
+                .map_err(|e| Error::invalid_input(format!("stpp.namespace: {e}")))?;
+            let schema_location = Utf8String::decode_at(payload, &mut offset)
+                .map_err(|e| Error::invalid_input(format!("stpp.schema_location: {e}")))?;
+            let auxiliary_mime_types = Utf8String::decode_at(payload, &mut offset)
+                .map_err(|e| Error::invalid_input(format!("stpp.auxiliary_mime_types: {e}")))?;
+
+            let mut unknown_boxes = Vec::new();
+            while offset < payload.len() {
+                unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+            }
+
+            Ok((
+                Self {
+                    data_reference_index,
+                    namespace,
+                    schema_location,
+                    auxiliary_mime_types,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for StppBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(self.unknown_boxes.iter().map(as_box_object))
+    }
+}
+
+/// [ISO/IEC 14496-30] WVTTSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// WebVTT 字幕を格納するためのサンプルエントリー。
+/// サンプルデータ自体は WebVTT の cue ボックス列（`vttc` / `vtte` / `vtta` 等）で
+/// 構成される生バイト列として扱い、内部構造の解釈は利用側の責務とする
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WvttBox {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
+    pub data_reference_index: NonZeroU16,
+    /// 必須の WebVTT 設定ボックス
+    pub vttc_box: VttCBox,
+    /// 型付き実装を持たない任意の子ボックス（`vlab` / `btrt` 等）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl WvttBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"wvtt");
+
+    /// [`WvttBox::data_reference_index`] のデフォルト値
+    pub const DEFAULT_DATA_REFERENCE_INDEX: NonZeroU16 = NonZeroU16::MIN;
+}
+
+impl Encode for WvttBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += [0u8; 6].encode(&mut buf[offset..])?;
+        offset += self.data_reference_index.encode(&mut buf[offset..])?;
+        offset += self.vttc_box.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for WvttBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _ = <[u8; 6]>::decode_at(payload, &mut offset)?;
+            let data_reference_index = NonZeroU16::decode_at(payload, &mut offset)?;
+
+            let mut vttc_box = None;
+            let mut unknown_boxes = Vec::new();
+
+            while offset < payload.len() {
+                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                match child_header.box_type {
+                    VttCBox::TYPE if vttc_box.is_none() => {
+                        vttc_box = Some(VttCBox::decode_at(payload, &mut offset)?);
+                    }
+                    _ => {
+                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                    }
+                }
+            }
+
+            Ok((
+                Self {
+                    data_reference_index,
+                    vttc_box: check_mandatory_box(vttc_box, "vttC", "wvtt")?,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for WvttBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(
+            core::iter::empty()
+                .chain(core::iter::once(&self.vttc_box).map(as_box_object))
+                .chain(self.unknown_boxes.iter().map(as_box_object)),
+        )
+    }
+}
+
+/// [ISO/IEC 14496-30] WebVTTConfigurationBox class (親: [`WvttBox`])
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VttCBox {
+    /// WebVTT の設定テキスト（`"WEBVTT"` 行で始まる UTF-8 文字列）
+    ///
+    /// null 終端せず、BoxHeader 残バイト全体を 1 個の UTF-8 テキストとして扱う
+    /// （バイト数はボックスサイズから一意に決まる）
+    pub config: String,
+}
+
+impl VttCBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"vttC");
+}
+
+impl Encode for VttCBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += self.config.as_bytes().encode(&mut buf[offset..])?;
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for VttCBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            // BoxHeader 残バイト全体を 1 個の UTF-8 テキストとして復元する
+            // （null 終端ではなく、box_size からサイズが一意に決まる）
+            let config = String::from_utf8(payload.to_vec())
+                .map_err(|e| Error::invalid_input(format!("vttC.config: {e}")))?;
+
+            Ok((Self { config }, header.external_size() + payload.len()))
+        })
+    }
+}
+
+impl BaseBox for VttCBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+/// [3GPP TS 26.245] BoxRecord (親: [`Tx3gBox`])
+///
+/// テキスト表示領域の矩形を表す 8 バイト固定レコード。
+/// ボックスではないので [`BaseBox`] は実装しない
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BoxRecord {
+    /// 表示領域の上端
+    pub top: i16,
+    /// 表示領域の左端
+    pub left: i16,
+    /// 表示領域の下端
+    pub bottom: i16,
+    /// 表示領域の右端
+    pub right: i16,
+}
+
+impl Encode for BoxRecord {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut offset = 0;
+        offset += self.top.encode(&mut buf[offset..])?;
+        offset += self.left.encode(&mut buf[offset..])?;
+        offset += self.bottom.encode(&mut buf[offset..])?;
+        offset += self.right.encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for BoxRecord {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let top = i16::decode_at(buf, &mut offset)?;
+        let left = i16::decode_at(buf, &mut offset)?;
+        let bottom = i16::decode_at(buf, &mut offset)?;
+        let right = i16::decode_at(buf, &mut offset)?;
+        Ok((
+            Self {
+                top,
+                left,
+                bottom,
+                right,
+            },
+            offset,
+        ))
+    }
+}
+
+/// [3GPP TS 26.245] StyleRecord (親: [`Tx3gBox`])
+///
+/// 既定のテキストスタイルを表す 12 バイト固定レコード。
+/// ボックスではないので [`BaseBox`] は実装しない
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StyleRecord {
+    /// style を適用する文字範囲の開始インデックス
+    pub start_char: u16,
+    /// style を適用する文字範囲の終了インデックス
+    pub end_char: u16,
+    /// フォント識別子（`FtabBox::entries` の `font_id` を参照する）
+    pub font_id: u16,
+    /// 装飾ビットマスク（3GPP TS 26.245 §5.16.1.2 の `face-style-flags`。値域チェックはしない）
+    pub face_style_flags: u8,
+    /// フォントサイズ（ピクセル単位）
+    pub font_size: u8,
+    /// テキスト色（RGBA 4 バイト）
+    pub text_color_rgba: [u8; 4],
+}
+
+impl Encode for StyleRecord {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut offset = 0;
+        offset += self.start_char.encode(&mut buf[offset..])?;
+        offset += self.end_char.encode(&mut buf[offset..])?;
+        offset += self.font_id.encode(&mut buf[offset..])?;
+        offset += self.face_style_flags.encode(&mut buf[offset..])?;
+        offset += self.font_size.encode(&mut buf[offset..])?;
+        offset += self.text_color_rgba.encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for StyleRecord {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let start_char = u16::decode_at(buf, &mut offset)?;
+        let end_char = u16::decode_at(buf, &mut offset)?;
+        let font_id = u16::decode_at(buf, &mut offset)?;
+        let face_style_flags = u8::decode_at(buf, &mut offset)?;
+        let font_size = u8::decode_at(buf, &mut offset)?;
+        let text_color_rgba = <[u8; 4]>::decode_at(buf, &mut offset)?;
+        Ok((
+            Self {
+                start_char,
+                end_char,
+                font_id,
+                face_style_flags,
+                font_size,
+                text_color_rgba,
+            },
+            offset,
+        ))
+    }
+}
+
+/// [3GPP TS 26.245] FontRecord (親: [`FtabBox`])
+///
+/// `FtabBox` 内のフォントエントリー。ボックスではないので [`BaseBox`] は実装しない。
+/// `font_name` は Pascal string で、`font_name_length: u8` バイト分のバイト列を保持する。
+/// 3GPP TS 26.245 は文字エンコーディングを明示していないため、
+/// 本ライブラリは UTF-8 として検証せずに生バイト列として保持する
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FontRecord {
+    /// フォント識別子（[`StyleRecord::font_id`] からの参照先）
+    pub font_id: u16,
+    /// フォント名の生バイト列（Pascal string、null 終端なし、最大 255 バイト）
+    pub font_name: Vec<u8>,
+}
+
+impl Encode for FontRecord {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let font_name_length = u8::try_from(self.font_name.len())
+            .map_err(|_| Error::invalid_input("FontRecord.font_name_length exceeds u8::MAX"))?;
+        let mut offset = 0;
+        offset += self.font_id.encode(&mut buf[offset..])?;
+        offset += font_name_length.encode(&mut buf[offset..])?;
+        offset += self.font_name.as_slice().encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for FontRecord {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let font_id = u16::decode_at(buf, &mut offset)?;
+        let font_name_length = u8::decode_at(buf, &mut offset)?;
+        Error::check_buffer_size(font_name_length as usize, &buf[offset..])?;
+        let font_name = buf[offset..offset + font_name_length as usize].to_vec();
+        offset += font_name_length as usize;
+        Ok((Self { font_id, font_name }, offset))
+    }
+}
+
+/// [3GPP TS 26.245] FontTableBox class (親: [`Tx3gBox`])
+///
+/// `Tx3gBox` の必須子ボックスで、`Tx3gBox` から参照されるフォントテーブルを保持する。
+/// エントリー数（`entry_count`）は [`FtabBox::entries`] の要素数から一意に決まる
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+pub struct FtabBox {
+    /// フォントエントリー
+    pub entries: Vec<FontRecord>,
+}
+
+impl FtabBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"ftab");
+}
+
+impl Encode for FtabBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        let entry_count = u16::try_from(self.entries.len())
+            .map_err(|_| Error::invalid_input("ftab.entry_count exceeds u16::MAX"))?;
+        offset += entry_count.encode(&mut buf[offset..])?;
+        for entry in &self.entries {
+            offset += entry.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for FtabBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let entry_count = u16::decode_at(payload, &mut offset)?;
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(FontRecord::decode_at(payload, &mut offset)?);
+            }
+
+            Ok((Self { entries }, header.external_size() + payload.len()))
+        })
+    }
+}
+
+impl BaseBox for FtabBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+/// [3GPP TS 26.245] TextSampleEntry class (§5.16、親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// 3GPP Timed Text 形式の字幕を格納するためのサンプルエントリー。
+/// サンプルデータ自体は `text_length: u16` (BE) + テキスト + 任意 modifier boxes
+/// （`styl` / `hlit` / `hclr` / `krok` / `dlay` / `href` / `tbox` / `blnk` / `twrp`）で
+/// 構成される生バイト列として扱い、内部構造の解釈は利用側の責務とする
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Tx3gBox {
+    /// データ参照インデックス（`dref` 内のエントリーを 1-based で指す）
+    pub data_reference_index: NonZeroU16,
+    /// 表示挙動フラグ（3GPP TS 26.245 §5.16.1.1 のビットマスク。値域チェックはしない）
+    pub display_flags: u32,
+    /// 水平方向のジャスティフィケーション（`0 = left` / `1 = centered` / `-1 = right`）
+    pub horizontal_justification: i8,
+    /// 垂直方向のジャスティフィケーション（`0 = top` / `1 = centered` / `-1 = bottom`）
+    pub vertical_justification: i8,
+    /// テキスト背景色（RGBA 4 バイト）
+    pub background_color_rgba: [u8; 4],
+    /// テキスト表示領域の既定矩形
+    pub default_text_box: BoxRecord,
+    /// 既定のテキストスタイル
+    pub default_style: StyleRecord,
+    /// 必須の FontTableBox
+    pub ftab_box: FtabBox,
+    /// 型付き実装を持たない任意の子ボックス（`dprp` 等）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl Tx3gBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"tx3g");
+
+    /// [`Tx3gBox::data_reference_index`] のデフォルト値
+    pub const DEFAULT_DATA_REFERENCE_INDEX: NonZeroU16 = NonZeroU16::MIN;
+}
+
+impl Encode for Tx3gBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += [0u8; 6].encode(&mut buf[offset..])?;
+        offset += self.data_reference_index.encode(&mut buf[offset..])?;
+        offset += self.display_flags.encode(&mut buf[offset..])?;
+        offset += self.horizontal_justification.encode(&mut buf[offset..])?;
+        offset += self.vertical_justification.encode(&mut buf[offset..])?;
+        offset += self.background_color_rgba.encode(&mut buf[offset..])?;
+        offset += self.default_text_box.encode(&mut buf[offset..])?;
+        offset += self.default_style.encode(&mut buf[offset..])?;
+        offset += self.ftab_box.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for Tx3gBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let _ = <[u8; 6]>::decode_at(payload, &mut offset)?;
+            let data_reference_index = NonZeroU16::decode_at(payload, &mut offset)?;
+            let display_flags = u32::decode_at(payload, &mut offset)?;
+            let horizontal_justification = i8::decode_at(payload, &mut offset)?;
+            let vertical_justification = i8::decode_at(payload, &mut offset)?;
+            let background_color_rgba = <[u8; 4]>::decode_at(payload, &mut offset)?;
+            let default_text_box = BoxRecord::decode_at(payload, &mut offset)?;
+            let default_style = StyleRecord::decode_at(payload, &mut offset)?;
+
+            let mut ftab_box = None;
+            let mut unknown_boxes = Vec::new();
+
+            while offset < payload.len() {
+                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                match child_header.box_type {
+                    FtabBox::TYPE if ftab_box.is_none() => {
+                        ftab_box = Some(FtabBox::decode_at(payload, &mut offset)?);
+                    }
+                    _ => {
+                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                    }
+                }
+            }
+
+            Ok((
+                Self {
+                    data_reference_index,
+                    display_flags,
+                    horizontal_justification,
+                    vertical_justification,
+                    background_color_rgba,
+                    default_text_box,
+                    default_style,
+                    ftab_box: check_mandatory_box(ftab_box, "ftab", "tx3g")?,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for Tx3gBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(
+            core::iter::empty()
+                .chain(core::iter::once(&self.ftab_box).map(as_box_object))
+                .chain(self.unknown_boxes.iter().map(as_box_object)),
+        )
     }
 }

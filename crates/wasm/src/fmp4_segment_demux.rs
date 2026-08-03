@@ -154,6 +154,7 @@ fn fmt_json_track_info(
     let kind_str = match track.kind {
         c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_AUDIO => "audio",
         c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_VIDEO => "video",
+        c_api::basic_types::Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE => "subtitle",
     };
     f.object(|f| {
         f.member("track_id", track.track_id)?;

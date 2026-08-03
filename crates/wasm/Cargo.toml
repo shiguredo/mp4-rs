@@ -5,9 +5,10 @@ edition = "2024"
 publish = false
 
 [lib]
-name = "mp4_wasm"
 crate-type = ["cdylib"]
+name = "mp4_wasm"
 
 [dependencies]
 c_api = { package = "c-api", path = "../c-api" }
+# JSON の入出力に使用する
 nojson = "0.3"

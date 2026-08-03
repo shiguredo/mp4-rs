@@ -1,6 +1,6 @@
 //! MP4 ファイルのデマルチプレックス（分離）機能を提供するモジュール
 //!
-//! このモジュールは、MP4ファイルに含まれる複数のメディアトラック（音声・映像）から
+//! このモジュールは、MP4ファイルに含まれる複数のメディアトラック（音声・映像・字幕）から
 //! 時系列順にサンプルを抽出するための機能を提供する。
 //!
 //! # Examples
@@ -11,7 +11,7 @@
 //! use shiguredo_mp4::demux::{Input, Mp4FileDemuxer};
 //!
 //! // MP4 ファイル全体をメモリに読み込む
-//! let file_data = std::fs::read("sample.mp4").expect("ファイル読み込み失敗");
+//! let file_data = std::fs::read("sample.mp4").expect("failed to read file");
 //!
 //! // デマルチプレックス処理を初期化し、ファイルデータ全体を提供する
 //! let mut demuxer = Mp4FileDemuxer::new();
@@ -22,16 +22,16 @@
 //! demuxer.handle_input(input);
 //!
 //! // トラック情報を取得する
-//! let tracks = demuxer.tracks().expect("トラック取得失敗");
-//! println!("{}個のトラックが見つかりました", tracks.len());
+//! let tracks = demuxer.tracks().expect("failed to get tracks");
+//! println!("Found {} track(s)", tracks.len());
 //! for track in tracks {
-//!     println!("トラックID: {}, 種類: {:?}, 尺: {}, タイムスケール: {}",
+//!     println!("Track ID: {}, kind: {:?}, duration: {}, timescale: {}",
 //!              track.track_id, track.kind, track.duration, track.timescale);
 //! }
 //!
 //! // 時系列順にサンプルを抽出する
-//! while let Some(sample) = demuxer.next_sample().expect("サンプル読み込み失敗") {
-//!     println!("サンプル - トラックID: {}, タイムスタンプ: {}, サイズ: {} バイト",
+//! while let Some(sample) = demuxer.next_sample().expect("failed to read sample") {
+//!     println!("Sample - Track ID: {}, timestamp: {}, size: {} bytes",
 //!              sample.track.track_id, sample.timestamp, sample.data_size);
 //!     // sample.data_offset の位置から sample.data_size バイトのサンプルデータにアクセス
 //!     let sample_data = &file_data[sample.data_offset as usize..
@@ -229,7 +229,6 @@ struct TrackState {
 }
 
 /// MP4 デマルチプレックス処理中に発生するエラーを表す列挙型
-#[non_exhaustive]
 #[derive(Clone)]
 pub enum DemuxError {
     /// MP4 ボックスのデコード処理中に発生したエラー
@@ -446,7 +445,15 @@ impl Mp4FileDemuxer {
         let (header, _header_size) = BoxHeader::decode(data)?;
         header.box_type.expect(FtypBox::TYPE)?;
 
-        let box_size = Some(header.box_size.get() as usize).filter(|n| *n > 0);
+        // 合法な ftyp が usize::MAX を超えることは現実的にはないが、破損入力への防御として検査する
+        let box_size = Some(header.box_size.get())
+            .filter(|n| *n > 0)
+            .map(|n| {
+                usize::try_from(n).map_err(|_| {
+                    DemuxError::DecodeError(Error::invalid_data("ftyp box size exceeds usize::MAX"))
+                })
+            })
+            .transpose()?;
         self.phase = Phase::ReadFtypBox { box_size };
         self.handle_input_inner(input)
     }
@@ -490,7 +497,15 @@ impl Mp4FileDemuxer {
             })?;
             self.phase = Phase::ReadMoovBoxHeader { offset };
         } else {
-            let box_size = box_size.map(|n| n as usize);
+            let box_size = box_size
+                .map(|n| {
+                    usize::try_from(n).map_err(|_| {
+                        DemuxError::DecodeError(Error::invalid_data(
+                            "moov box size exceeds usize::MAX",
+                        ))
+                    })
+                })
+                .transpose()?;
             self.phase = Phase::ReadMoovBox { offset, box_size };
         }
         self.handle_input_inner(input)
@@ -511,6 +526,8 @@ impl Mp4FileDemuxer {
             let kind = match trak_box.mdia_box.hdlr_box.handler_type {
                 HdlrBox::HANDLER_TYPE_VIDE => TrackKind::Video,
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
+                // 字幕トラックのハンドラー種別は `subt` (stpp) / `text` (wvtt / tx3g) の 2 種類
+                HdlrBox::HANDLER_TYPE_SUBT | HdlrBox::HANDLER_TYPE_TEXT => TrackKind::Subtitle,
                 _ => continue,
             };
             let timescale = trak_box.mdia_box.mdhd_box.timescale;

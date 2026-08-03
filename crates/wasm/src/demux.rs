@@ -102,6 +102,7 @@ fn fmt_json_mp4_demux_track_info(
     let kind = match track_info.kind {
         Mp4TrackKind::MP4_TRACK_KIND_AUDIO => "audio",
         Mp4TrackKind::MP4_TRACK_KIND_VIDEO => "video",
+        Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE => "subtitle",
     };
 
     f.object(|f| {

@@ -6,11 +6,12 @@ use std::num::NonZeroU16;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint,
+    BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint, Utf8String,
     boxes::{
-        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, EsdsBox,
-        FlacBox, FlacMetadataBlock, FreeBox, Hev1Box, Hvc1Box, HvccBox, MdatBox, Mp4aBox, OpusBox,
-        UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox, DopsBox,
+        EsdsBox, FlacBox, FlacMetadataBlock, FontRecord, FreeBox, FtabBox, Hev1Box, Hvc1Box,
+        HvccBox, MdatBox, Mp4aBox, OpusBox, StppBox, StyleRecord, Tx3gBox, UnknownBox,
+        VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
     },
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
@@ -28,7 +29,8 @@ fn arb_audio_sample_entry() -> impl Strategy<Value = AudioSampleEntryFields> {
     )
         .prop_map(
             |(dri, channelcount, samplesize, sr_int, sr_frac)| AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(dri).unwrap(),
+                data_reference_index: NonZeroU16::new(dri)
+                    .expect("Strategy の値域が 1 以上なので非ゼロ"),
                 channelcount,
                 samplesize,
                 samplerate: FixedPointNumber::new(sr_int, sr_frac),
@@ -64,7 +66,8 @@ fn arb_visual_sample_entry() -> impl Strategy<Value = VisualSampleEntryFields> {
                 depth,
             )| {
                 VisualSampleEntryFields {
-                    data_reference_index: NonZeroU16::new(dri).unwrap(),
+                    data_reference_index: NonZeroU16::new(dri)
+                        .expect("Strategy の値域が 1 以上なので非ゼロ"),
                     width,
                     height,
                     horizresolution: FixedPointNumber::new(hr_int, hr_frac),
@@ -146,8 +149,9 @@ fn arb_avcc_box() -> impl Strategy<Value = AvccBox> {
         any::<u8>(),
         any::<u8>(),
         0u8..4,
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..3),
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..3),
+        // SPS は unsigned int(5)（最大 31）、PPS は unsigned int(8)（最大 255）まで格納できる。
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..32),
+        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..256),
     )
         .prop_map(
             |(profile, compat, level, length_size, sps_list, pps_list)| AvccBox {
@@ -236,6 +240,185 @@ fn arb_av1c_box() -> impl Strategy<Value = Av1cBox> {
     })
 }
 
+/// null 文字を含まない任意の UTF-8 文字列を生成する Strategy
+///
+/// `Utf8String` は null 文字を含む文字列を受け入れないため、null 文字を除外する
+/// （`pbt/tests/prop_basic_types.rs:41` の `arb_utf8_string` と同じ正規表現）
+fn arb_utf8_string() -> impl Strategy<Value = String> {
+    "[^\x00]{0,100}"
+}
+
+/// UnknownBox を生成する Strategy
+///
+/// 必須子ボックスを持たない SampleEntry（例: StppBox）で子ボックス経路を
+/// PBT でカバーするために使う
+fn arb_unknown_box() -> impl Strategy<Value = UnknownBox> {
+    (any::<[u8; 4]>(), prop::collection::vec(any::<u8>(), 0..64)).prop_map(|(box_type, payload)| {
+        UnknownBox {
+            box_type: BoxType::Normal(box_type),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
+            payload,
+        }
+    })
+}
+
+/// StppBox を生成する Strategy
+///
+/// `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールドを
+/// 独立に生成する（それぞれの空・非空パターンを網羅する）。
+/// StppBox は必須子ボックスを持たないため、`unknown_boxes` を Strategy 経由で
+/// 生成して decode / encode の子ボックス処理経路もカバーする
+fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
+    (
+        1u16..=u16::MAX,                                // data_reference_index
+        arb_utf8_string(),                              // namespace
+        arb_utf8_string(),                              // schema_location
+        arb_utf8_string(),                              // auxiliary_mime_types
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
+    )
+        .prop_map(|(dri, ns, sl, am, unknown_boxes)| StppBox {
+            data_reference_index: NonZeroU16::new(dri)
+                .expect("Strategy の値域が 1 以上なので非ゼロ"),
+            namespace: Utf8String::new(&ns).expect("null 文字を含まない"),
+            schema_location: Utf8String::new(&sl).expect("null 文字を含まない"),
+            auxiliary_mime_types: Utf8String::new(&am).expect("null 文字を含まない"),
+            unknown_boxes,
+        })
+}
+
+/// VttCBox の config を生成する Strategy
+///
+/// interior null と改行を含む任意の valid UTF-8 文字列を生成する。
+/// `.` は既定で null を含むが `\n` を除外するため、dotall フラグ `(?s)` を明示して
+/// 改行も含める
+fn arb_wvtt_config() -> impl Strategy<Value = String> {
+    "(?s).{0,100}"
+}
+
+/// VttCBox を生成する Strategy
+fn arb_vttc_box() -> impl Strategy<Value = VttCBox> {
+    arb_wvtt_config().prop_map(|config| VttCBox { config })
+}
+
+/// WvttBox を生成する Strategy
+///
+/// `data_reference_index` と必須子 `vttc_box` に加えて 0-3 個の任意子ボックスを
+/// 混ぜて decode / encode の子ボックス処理経路もカバーする
+fn arb_wvtt_box() -> impl Strategy<Value = WvttBox> {
+    (
+        1u16..=u16::MAX,                                // data_reference_index
+        arb_vttc_box(),                                 // vttc_box
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
+    )
+        .prop_map(|(dri, vttc_box, unknown_boxes)| WvttBox {
+            data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
+            vttc_box,
+            unknown_boxes,
+        })
+}
+
+/// BoxRecord を生成する Strategy
+///
+/// `i16` 全域を許容する（3GPP TS 26.245 は値域を明示していない）
+fn arb_box_record() -> impl Strategy<Value = BoxRecord> {
+    (any::<i16>(), any::<i16>(), any::<i16>(), any::<i16>()).prop_map(
+        |(top, left, bottom, right)| BoxRecord {
+            top,
+            left,
+            bottom,
+            right,
+        },
+    )
+}
+
+/// StyleRecord を生成する Strategy
+///
+/// 各フィールドは仕様上のビットマスク / 値域制限をせず、全域を生成する
+fn arb_style_record() -> impl Strategy<Value = StyleRecord> {
+    (
+        any::<u16>(),     // start_char
+        any::<u16>(),     // end_char
+        any::<u16>(),     // font_id
+        any::<u8>(),      // face_style_flags
+        any::<u8>(),      // font_size
+        any::<[u8; 4]>(), // text_color_rgba
+    )
+        .prop_map(
+            |(start_char, end_char, font_id, face_style_flags, font_size, text_color_rgba)| {
+                StyleRecord {
+                    start_char,
+                    end_char,
+                    font_id,
+                    face_style_flags,
+                    font_size,
+                    text_color_rgba,
+                }
+            },
+        )
+}
+
+/// `FontRecord::font_name` を生成する Strategy
+///
+/// Pascal string の長さ制約（0-255 バイト）に合わせて任意バイト列を生成する
+fn arb_font_name() -> impl Strategy<Value = Vec<u8>> {
+    prop::collection::vec(any::<u8>(), 0..=255)
+}
+
+/// FontRecord を生成する Strategy
+fn arb_font_record() -> impl Strategy<Value = FontRecord> {
+    (any::<u16>(), arb_font_name())
+        .prop_map(|(font_id, font_name)| FontRecord { font_id, font_name })
+}
+
+/// FtabBox を生成する Strategy
+///
+/// エントリー数は組み合わせ爆発回避のため 0-8 個に制限する。
+/// 0 個も許容してパーサ堅牢性のエッジケースを含める
+fn arb_ftab_box() -> impl Strategy<Value = FtabBox> {
+    prop::collection::vec(arb_font_record(), 0..=8).prop_map(|entries| FtabBox { entries })
+}
+
+/// Tx3gBox を生成する Strategy
+///
+/// 本体固定サイズ 30 バイトと必須子 `ftab_box` に加えて 0-3 個の任意子ボックスを
+/// 混ぜて decode / encode の子ボックス処理経路もカバーする
+fn arb_tx3g_box() -> impl Strategy<Value = Tx3gBox> {
+    (
+        1u16..=u16::MAX,                                // data_reference_index
+        any::<u32>(),                                   // display_flags
+        any::<i8>(),                                    // horizontal_justification
+        any::<i8>(),                                    // vertical_justification
+        any::<[u8; 4]>(),                               // background_color_rgba
+        arb_box_record(),                               // default_text_box
+        arb_style_record(),                             // default_style
+        arb_ftab_box(),                                 // ftab_box
+        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
+    )
+        .prop_map(
+            |(
+                dri,
+                display_flags,
+                horizontal_justification,
+                vertical_justification,
+                background_color_rgba,
+                default_text_box,
+                default_style,
+                ftab_box,
+                unknown_boxes,
+            )| Tx3gBox {
+                data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
+                display_flags,
+                horizontal_justification,
+                vertical_justification,
+                background_color_rgba,
+                default_text_box,
+                default_style,
+                ftab_box,
+                unknown_boxes,
+            },
+        )
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 
@@ -252,8 +435,9 @@ proptest! {
             box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
             payload: payload.clone(),
         };
-        let encoded = unknown.encode_to_vec().unwrap();
-        let (decoded, size) = UnknownBox::decode(&encoded).unwrap();
+        let encoded = unknown.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = UnknownBox::decode(&encoded)
+            .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.payload, payload);
@@ -263,8 +447,9 @@ proptest! {
     #[test]
     fn free_box_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
         let free = FreeBox { payload: payload.clone() };
-        let encoded = free.encode_to_vec().unwrap();
-        let (decoded, size) = FreeBox::decode(&encoded).unwrap();
+        let encoded = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = FreeBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FreeBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.payload, payload);
@@ -274,8 +459,9 @@ proptest! {
     #[test]
     fn mdat_box_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
         let mdat = MdatBox { payload: payload.clone() };
-        let encoded = mdat.encode_to_vec().unwrap();
-        let (decoded, size) = MdatBox::decode(&encoded).unwrap();
+        let encoded = mdat.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = MdatBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdatBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.payload, payload);
@@ -294,8 +480,9 @@ proptest! {
             dops_box: dops,
             unknown_boxes: vec![],
         };
-        let encoded = opus.encode_to_vec().unwrap();
-        let (decoded, size) = OpusBox::decode(&encoded).unwrap();
+        let encoded = opus.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = OpusBox::decode(&encoded)
+            .expect("直前にエンコードした有効な OpusBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.audio.channelcount, opus.audio.channelcount);
@@ -313,8 +500,9 @@ proptest! {
             esds_box: esds,
             unknown_boxes: vec![],
         };
-        let encoded = mp4a.encode_to_vec().unwrap();
-        let (decoded, size) = Mp4aBox::decode(&encoded).unwrap();
+        let encoded = mp4a.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Mp4aBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Mp4aBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.audio.channelcount, mp4a.audio.channelcount);
@@ -332,8 +520,9 @@ proptest! {
             dfla_box: dfla,
             unknown_boxes: vec![],
         };
-        let encoded = flac.encode_to_vec().unwrap();
-        let (decoded, size) = FlacBox::decode(&encoded).unwrap();
+        let encoded = flac.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = FlacBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FlacBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.audio.channelcount, flac.audio.channelcount);
@@ -343,8 +532,9 @@ proptest! {
     /// DflaBox の encode/decode roundtrip
     #[test]
     fn dfla_box_roundtrip(dfla in arb_dfla_box()) {
-        let encoded = dfla.encode_to_vec().unwrap();
-        let (decoded, size) = DflaBox::decode(&encoded).unwrap();
+        let encoded = dfla.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = DflaBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DflaBox は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.metadata_blocks.len(), dfla.metadata_blocks.len());
@@ -364,8 +554,9 @@ proptest! {
             avcc_box: avcc,
             unknown_boxes: vec![],
         };
-        let encoded = avc1.encode_to_vec().unwrap();
-        let (decoded, size) = Avc1Box::decode(&encoded).unwrap();
+        let encoded = avc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Avc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Avc1Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, avc1.visual.width);
@@ -384,8 +575,9 @@ proptest! {
             hvcc_box: hvcc,
             unknown_boxes: vec![],
         };
-        let encoded = hev1.encode_to_vec().unwrap();
-        let (decoded, size) = Hev1Box::decode(&encoded).unwrap();
+        let encoded = hev1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Hev1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Hev1Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, hev1.visual.width);
@@ -403,8 +595,9 @@ proptest! {
             hvcc_box: hvcc,
             unknown_boxes: vec![],
         };
-        let encoded = hvc1.encode_to_vec().unwrap();
-        let (decoded, size) = Hvc1Box::decode(&encoded).unwrap();
+        let encoded = hvc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Hvc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Hvc1Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, hvc1.visual.width);
@@ -422,8 +615,9 @@ proptest! {
             vpcc_box: vpcc,
             unknown_boxes: vec![],
         };
-        let encoded = vp08.encode_to_vec().unwrap();
-        let (decoded, size) = Vp08Box::decode(&encoded).unwrap();
+        let encoded = vp08.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Vp08Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Vp08Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, vp08.visual.width);
@@ -441,8 +635,9 @@ proptest! {
             vpcc_box: vpcc,
             unknown_boxes: vec![],
         };
-        let encoded = vp09.encode_to_vec().unwrap();
-        let (decoded, size) = Vp09Box::decode(&encoded).unwrap();
+        let encoded = vp09.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Vp09Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Vp09Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, vp09.visual.width);
@@ -460,12 +655,116 @@ proptest! {
             av1c_box: av1c,
             unknown_boxes: vec![],
         };
-        let encoded = av01.encode_to_vec().unwrap();
-        let (decoded, size) = Av01Box::decode(&encoded).unwrap();
+        let encoded = av01.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = Av01Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Av01Box は必ずデコードできる");
 
         prop_assert_eq!(size, encoded.len());
         prop_assert_eq!(decoded.visual.width, av01.visual.width);
         prop_assert_eq!(decoded.visual.height, av01.visual.height);
+    }
+
+    // ===== Subtitle Sample Entry Box のテスト =====
+
+    /// StppBox の encode/decode roundtrip
+    ///
+    /// 3 フィールドすべてに任意の UTF-8 文字列（空文字列も含む）と、
+    /// 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
+    #[test]
+    fn stpp_box_roundtrip(stpp in arb_stpp_box()) {
+        let encoded = stpp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = StppBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StppBox は必ずデコードできる");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded.data_reference_index, stpp.data_reference_index);
+        prop_assert_eq!(&decoded.namespace, &stpp.namespace);
+        prop_assert_eq!(&decoded.schema_location, &stpp.schema_location);
+        prop_assert_eq!(&decoded.auxiliary_mime_types, &stpp.auxiliary_mime_types);
+        prop_assert_eq!(&decoded.unknown_boxes, &stpp.unknown_boxes);
+    }
+
+    /// VttCBox の encode/decode roundtrip
+    ///
+    /// config は任意の UTF-8 文字列（空文字列・改行・interior null すべて含む）を
+    /// 割り当ててラウンドトリップを検証する
+    #[test]
+    fn vttc_box_roundtrip(vttc in arb_vttc_box()) {
+        let encoded = vttc.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = VttCBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(&decoded.config, &vttc.config);
+    }
+
+    /// WvttBox の encode/decode roundtrip
+    ///
+    /// 必須子 vttC と 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
+    #[test]
+    fn wvtt_box_roundtrip(wvtt in arb_wvtt_box()) {
+        let encoded = wvtt.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = WvttBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded.data_reference_index, wvtt.data_reference_index);
+        prop_assert_eq!(&decoded.vttc_box, &wvtt.vttc_box);
+        prop_assert_eq!(&decoded.unknown_boxes, &wvtt.unknown_boxes);
+    }
+
+    /// BoxRecord の encode/decode roundtrip
+    ///
+    /// `i16` 4 個の 8 バイト固定レコードを検証する
+    #[test]
+    fn box_record_roundtrip(record in arb_box_record()) {
+        let encoded = record.encode_to_vec().expect("encode に失敗しない想定");
+        prop_assert_eq!(encoded.len(), 8);
+        let (decoded, size) = BoxRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded, record);
+    }
+
+    /// StyleRecord の encode/decode roundtrip
+    ///
+    /// 12 バイト固定レコードのフィールド全域を検証する
+    #[test]
+    fn style_record_roundtrip(record in arb_style_record()) {
+        let encoded = record.encode_to_vec().expect("encode に失敗しない想定");
+        prop_assert_eq!(encoded.len(), 12);
+        let (decoded, size) = StyleRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded, record);
+    }
+
+    /// FtabBox の encode/decode roundtrip
+    ///
+    /// 空エントリー・複数エントリー・font_name の長さ境界（0 / 255）を含めて検証する
+    #[test]
+    fn ftab_box_roundtrip(ftab in arb_ftab_box()) {
+        let encoded = ftab.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = FtabBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(&decoded.entries, &ftab.entries);
+    }
+
+    /// Tx3gBox の encode/decode roundtrip
+    ///
+    /// 本体固定 30 バイト + 必須子 ftab + 0-3 個の任意子ボックスを割り当てて
+    /// ラウンドトリップを検証する
+    #[test]
+    fn tx3g_box_roundtrip(tx3g in arb_tx3g_box()) {
+        let encoded = tx3g.encode_to_vec().expect("encode に失敗しない想定");
+        let (decoded, size) = Tx3gBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+
+        prop_assert_eq!(size, encoded.len());
+        prop_assert_eq!(decoded.data_reference_index, tx3g.data_reference_index);
+        prop_assert_eq!(decoded.display_flags, tx3g.display_flags);
+        prop_assert_eq!(decoded.horizontal_justification, tx3g.horizontal_justification);
+        prop_assert_eq!(decoded.vertical_justification, tx3g.vertical_justification);
+        prop_assert_eq!(decoded.background_color_rgba, tx3g.background_color_rgba);
+        prop_assert_eq!(decoded.default_text_box, tx3g.default_text_box);
+        prop_assert_eq!(decoded.default_style, tx3g.default_style);
+        prop_assert_eq!(&decoded.ftab_box, &tx3g.ftab_box);
+        prop_assert_eq!(&decoded.unknown_boxes, &tx3g.unknown_boxes);
     }
 }
 
@@ -482,8 +781,11 @@ mod boundary_tests {
             box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 0),
             payload: vec![],
         };
-        let encoded = unknown.encode_to_vec().unwrap();
-        let (decoded, _) = UnknownBox::decode(&encoded).unwrap();
+        let encoded = unknown
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = UnknownBox::decode(&encoded)
+            .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -491,8 +793,9 @@ mod boundary_tests {
     #[test]
     fn free_box_empty_payload() {
         let free = FreeBox { payload: vec![] };
-        let encoded = free.encode_to_vec().unwrap();
-        let (decoded, _) = FreeBox::decode(&encoded).unwrap();
+        let encoded = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = FreeBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FreeBox は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -500,8 +803,9 @@ mod boundary_tests {
     #[test]
     fn mdat_box_empty_payload() {
         let mdat = MdatBox { payload: vec![] };
-        let encoded = mdat.encode_to_vec().unwrap();
-        let (decoded, _) = MdatBox::decode(&encoded).unwrap();
+        let encoded = mdat.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MdatBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdatBox は必ずデコードできる");
         assert!(decoded.payload.is_empty());
     }
 
@@ -510,7 +814,7 @@ mod boundary_tests {
     fn opus_box_minimal() {
         let opus = OpusBox {
             audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1).unwrap(),
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
                 channelcount: 2,
                 samplesize: 16,
                 samplerate: FixedPointNumber::new(48000, 0),
@@ -523,8 +827,9 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = opus.encode_to_vec().unwrap();
-        let (decoded, _) = OpusBox::decode(&encoded).unwrap();
+        let encoded = opus.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = OpusBox::decode(&encoded)
+            .expect("直前にエンコードした有効な OpusBox は必ずデコードできる");
         assert_eq!(decoded.audio.channelcount, 2);
         assert_eq!(decoded.dops_box.output_channel_count, 2);
     }
@@ -534,7 +839,7 @@ mod boundary_tests {
     fn mp4a_box_aac_lc() {
         let mp4a = Mp4aBox {
             audio: AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1).unwrap(),
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
                 channelcount: 2,
                 samplesize: 16,
                 samplerate: FixedPointNumber::new(48000, 0),
@@ -562,8 +867,9 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = mp4a.encode_to_vec().unwrap();
-        let (decoded, _) = Mp4aBox::decode(&encoded).unwrap();
+        let encoded = mp4a.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Mp4aBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Mp4aBox は必ずデコードできる");
         assert_eq!(
             decoded.esds_box.es.dec_config_descr.object_type_indication,
             0x40
@@ -575,7 +881,7 @@ mod boundary_tests {
     fn avc1_box_1080p() {
         let avc1 = Avc1Box {
             visual: VisualSampleEntryFields {
-                data_reference_index: NonZeroU16::new(1).unwrap(),
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
                 width: 1920,
                 height: 1080,
                 horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
@@ -598,8 +904,9 @@ mod boundary_tests {
             },
             unknown_boxes: vec![],
         };
-        let encoded = avc1.encode_to_vec().unwrap();
-        let (decoded, _) = Avc1Box::decode(&encoded).unwrap();
+        let encoded = avc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Avc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Avc1Box は必ずデコードできる");
         assert_eq!(decoded.visual.width, 1920);
         assert_eq!(decoded.visual.height, 1080);
     }
@@ -621,8 +928,9 @@ mod root_box_tests {
         };
         let root = RootBox::Free(free);
 
-        let encoded = root.encode_to_vec().unwrap();
-        let (decoded, size) = RootBox::decode(&encoded).unwrap();
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, RootBox::Free(_)));
@@ -641,8 +949,9 @@ mod root_box_tests {
         };
         let root = RootBox::Mdat(mdat);
 
-        let encoded = root.encode_to_vec().unwrap();
-        let (decoded, size) = RootBox::decode(&encoded).unwrap();
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, RootBox::Mdat(_)));
@@ -660,8 +969,9 @@ mod root_box_tests {
         };
         let root = RootBox::Unknown(unknown);
 
-        let encoded = root.encode_to_vec().unwrap();
-        let (decoded, size) = RootBox::decode(&encoded).unwrap();
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
         assert!(matches!(decoded, RootBox::Unknown(_)));
@@ -711,335 +1021,11 @@ mod root_box_tests {
     #[test]
     fn brand_roundtrip() {
         let brand = Brand::new(*b"test");
-        let encoded = brand.encode_to_vec().unwrap();
-        let (decoded, size) = Brand::decode(&encoded).unwrap();
+        let encoded = brand.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) =
+            Brand::decode(&encoded).expect("直前にエンコードした有効な Brand は必ずデコードできる");
 
         assert_eq!(size, 4);
         assert_eq!(decoded.get(), *b"test");
-    }
-}
-
-// ===== SampleEntry のメソッドテスト =====
-
-mod sample_entry_tests {
-    use std::num::NonZeroU16;
-
-    use shiguredo_mp4::{
-        BaseBox, BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint,
-        boxes::{
-            AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DopsBox, EsdsBox, FlacBox,
-            FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox, SampleEntry,
-            UnknownBox, VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
-        },
-        descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
-    };
-
-    fn create_audio_fields() -> AudioSampleEntryFields {
-        AudioSampleEntryFields {
-            data_reference_index: NonZeroU16::new(1).unwrap(),
-            channelcount: 2,
-            samplesize: 16,
-            samplerate: FixedPointNumber::new(48000, 0),
-        }
-    }
-
-    fn create_visual_fields() -> VisualSampleEntryFields {
-        VisualSampleEntryFields {
-            data_reference_index: NonZeroU16::new(1).unwrap(),
-            width: 1920,
-            height: 1080,
-            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
-            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
-            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
-            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
-            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
-        }
-    }
-
-    /// SampleEntry::Opus の audio_* メソッドのテスト
-    #[test]
-    fn sample_entry_opus_audio_methods() {
-        let entry = SampleEntry::Opus(OpusBox {
-            audio: create_audio_fields(),
-            dops_box: DopsBox {
-                output_channel_count: 2,
-                pre_skip: 312,
-                input_sample_rate: 48000,
-                output_gain: 0,
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.audio_channel_count(), Some(2));
-        assert_eq!(entry.audio_sample_rate(), Some(48000));
-        assert_eq!(entry.audio_sample_size(), Some(16));
-        assert_eq!(entry.video_resolution(), None);
-        assert!(!entry.is_unknown_box());
-        assert_eq!(entry.box_type(), OpusBox::TYPE);
-    }
-
-    /// SampleEntry::Mp4a の audio_* メソッドのテスト
-    #[test]
-    fn sample_entry_mp4a_audio_methods() {
-        let entry = SampleEntry::Mp4a(Mp4aBox {
-            audio: create_audio_fields(),
-            esds_box: EsdsBox {
-                es: EsDescriptor {
-                    es_id: 1,
-                    stream_priority: Uint::new(0),
-                    depends_on_es_id: None,
-                    url_string: None,
-                    ocr_es_id: None,
-                    dec_config_descr: DecoderConfigDescriptor {
-                        object_type_indication: 0x40,
-                        stream_type: Uint::new(0x05),
-                        up_stream: Uint::new(0),
-                        buffer_size_db: Uint::new(0),
-                        max_bitrate: 128000,
-                        avg_bitrate: 128000,
-                        dec_specific_info: None,
-                    },
-                    sl_config_descr: SlConfigDescriptor,
-                },
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.audio_channel_count(), Some(2));
-        assert_eq!(entry.audio_sample_rate(), Some(48000));
-        assert_eq!(entry.audio_sample_size(), Some(16));
-        assert_eq!(entry.video_resolution(), None);
-    }
-
-    /// SampleEntry::Flac の audio_* メソッドのテスト
-    #[test]
-    fn sample_entry_flac_audio_methods() {
-        let entry = SampleEntry::Flac(FlacBox {
-            audio: create_audio_fields(),
-            dfla_box: shiguredo_mp4::boxes::DflaBox {
-                metadata_blocks: vec![FlacMetadataBlock {
-                    last_metadata_block_flag: Uint::new(1),
-                    block_type: Uint::new(0),
-                    block_data: vec![0; 34],
-                }],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.audio_channel_count(), Some(2));
-        assert_eq!(entry.audio_sample_rate(), Some(48000));
-        assert_eq!(entry.audio_sample_size(), Some(16));
-        assert_eq!(entry.video_resolution(), None);
-    }
-
-    /// SampleEntry::Avc1 の video_resolution メソッドのテスト
-    #[test]
-    fn sample_entry_avc1_video_methods() {
-        let entry = SampleEntry::Avc1(Avc1Box {
-            visual: create_visual_fields(),
-            avcc_box: AvccBox {
-                avc_profile_indication: 66,
-                profile_compatibility: 0,
-                avc_level_indication: 40,
-                length_size_minus_one: Uint::new(3),
-                sps_list: vec![],
-                pps_list: vec![],
-                chroma_format: None,
-                bit_depth_luma_minus8: None,
-                bit_depth_chroma_minus8: None,
-                sps_ext_list: vec![],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.audio_channel_count(), None);
-        assert_eq!(entry.audio_sample_rate(), None);
-        assert_eq!(entry.audio_sample_size(), None);
-        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
-    }
-
-    /// SampleEntry::Hev1 の video_resolution メソッドのテスト
-    #[test]
-    fn sample_entry_hev1_video_methods() {
-        let entry = SampleEntry::Hev1(Hev1Box {
-            visual: create_visual_fields(),
-            hvcc_box: HvccBox {
-                general_profile_space: Uint::new(0),
-                general_tier_flag: Uint::new(0),
-                general_profile_idc: Uint::new(1),
-                general_profile_compatibility_flags: 0,
-                general_constraint_indicator_flags: Uint::new(0),
-                general_level_idc: 0,
-                min_spatial_segmentation_idc: Uint::new(0),
-                parallelism_type: Uint::new(0),
-                chroma_format_idc: Uint::new(1),
-                bit_depth_luma_minus8: Uint::new(0),
-                bit_depth_chroma_minus8: Uint::new(0),
-                avg_frame_rate: 0,
-                constant_frame_rate: Uint::new(0),
-                num_temporal_layers: Uint::new(1),
-                temporal_id_nested: Uint::new(0),
-                length_size_minus_one: Uint::new(3),
-                nalu_arrays: vec![],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
-    }
-
-    /// SampleEntry::Hvc1 の video_resolution メソッドのテスト
-    #[test]
-    fn sample_entry_hvc1_video_methods() {
-        let entry = SampleEntry::Hvc1(Hvc1Box {
-            visual: create_visual_fields(),
-            hvcc_box: HvccBox {
-                general_profile_space: Uint::new(0),
-                general_tier_flag: Uint::new(0),
-                general_profile_idc: Uint::new(1),
-                general_profile_compatibility_flags: 0,
-                general_constraint_indicator_flags: Uint::new(0),
-                general_level_idc: 0,
-                min_spatial_segmentation_idc: Uint::new(0),
-                parallelism_type: Uint::new(0),
-                chroma_format_idc: Uint::new(1),
-                bit_depth_luma_minus8: Uint::new(0),
-                bit_depth_chroma_minus8: Uint::new(0),
-                avg_frame_rate: 0,
-                constant_frame_rate: Uint::new(0),
-                num_temporal_layers: Uint::new(1),
-                temporal_id_nested: Uint::new(0),
-                length_size_minus_one: Uint::new(3),
-                nalu_arrays: vec![],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
-    }
-
-    /// SampleEntry::Vp08 の video_resolution メソッドのテスト
-    #[test]
-    fn sample_entry_vp08_video_methods() {
-        let entry = SampleEntry::Vp08(Vp08Box {
-            visual: create_visual_fields(),
-            vpcc_box: VpccBox {
-                profile: 0,
-                level: 10,
-                bit_depth: Uint::new(8),
-                chroma_subsampling: Uint::new(1),
-                video_full_range_flag: Uint::new(0),
-                colour_primaries: 1,
-                transfer_characteristics: 1,
-                matrix_coefficients: 1,
-                codec_initialization_data: vec![],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
-    }
-
-    /// SampleEntry::Vp09 の video_resolution メソッドのテスト
-    #[test]
-    fn sample_entry_vp09_video_methods() {
-        let entry = SampleEntry::Vp09(Vp09Box {
-            visual: create_visual_fields(),
-            vpcc_box: VpccBox {
-                profile: 0,
-                level: 10,
-                bit_depth: Uint::new(8),
-                chroma_subsampling: Uint::new(1),
-                video_full_range_flag: Uint::new(0),
-                colour_primaries: 1,
-                transfer_characteristics: 1,
-                matrix_coefficients: 1,
-                codec_initialization_data: vec![],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
-    }
-
-    /// SampleEntry::Av01 の video_resolution メソッドのテスト
-    #[test]
-    fn sample_entry_av01_video_methods() {
-        let entry = SampleEntry::Av01(Av01Box {
-            visual: create_visual_fields(),
-            av1c_box: Av1cBox {
-                seq_profile: Uint::new(0),
-                seq_level_idx_0: Uint::new(0),
-                seq_tier_0: Uint::new(0),
-                high_bitdepth: Uint::new(0),
-                twelve_bit: Uint::new(0),
-                monochrome: Uint::new(0),
-                chroma_subsampling_x: Uint::new(1),
-                chroma_subsampling_y: Uint::new(1),
-                chroma_sample_position: Uint::new(0),
-                initial_presentation_delay_minus_one: None,
-                config_obus: vec![],
-            },
-            unknown_boxes: vec![],
-        });
-
-        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
-    }
-
-    /// SampleEntry::Unknown のテスト
-    #[test]
-    fn sample_entry_unknown_methods() {
-        let entry = SampleEntry::Unknown(UnknownBox {
-            box_type: BoxType::Normal(*b"test"),
-            box_size: BoxSize::U32(8),
-            payload: vec![],
-        });
-
-        assert_eq!(entry.audio_channel_count(), None);
-        assert_eq!(entry.audio_sample_rate(), None);
-        assert_eq!(entry.audio_sample_size(), None);
-        assert_eq!(entry.video_resolution(), None);
-        assert!(entry.is_unknown_box());
-    }
-
-    /// SampleEntry の encode/decode roundtrip テスト
-    #[test]
-    fn sample_entry_encode_decode_roundtrip() {
-        let entry = SampleEntry::Opus(OpusBox {
-            audio: create_audio_fields(),
-            dops_box: DopsBox {
-                output_channel_count: 2,
-                pre_skip: 312,
-                input_sample_rate: 48000,
-                output_gain: 0,
-            },
-            unknown_boxes: vec![],
-        });
-
-        let encoded = entry.encode_to_vec().unwrap();
-        let (decoded, size) = SampleEntry::decode(&encoded).unwrap();
-
-        assert_eq!(size, encoded.len());
-        assert!(matches!(decoded, SampleEntry::Opus(_)));
-        assert_eq!(decoded.audio_channel_count(), Some(2));
-    }
-
-    /// SampleEntry::children() のテスト
-    #[test]
-    fn sample_entry_children() {
-        let entry = SampleEntry::Opus(OpusBox {
-            audio: create_audio_fields(),
-            dops_box: DopsBox {
-                output_channel_count: 2,
-                pre_skip: 312,
-                input_sample_rate: 48000,
-                output_gain: 0,
-            },
-            unknown_boxes: vec![],
-        });
-
-        // Opus の children は dops_box
-        let children: Vec<_> = entry.children().collect();
-        assert_eq!(children.len(), 1);
     }
 }

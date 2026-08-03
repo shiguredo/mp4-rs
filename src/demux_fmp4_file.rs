@@ -17,7 +17,7 @@
 //! use shiguredo_mp4::demux::{Fmp4FileDemuxer, Input};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
-//! let file_data: Vec<u8> = todo!("fMP4 ファイルのバイト列");
+//! let file_data: Vec<u8> = todo!("bytes of the fMP4 file");
 //! let mut demuxer = Fmp4FileDemuxer::new();
 //!
 //! while let Some(required) = demuxer.required_input() {
@@ -30,7 +30,7 @@
 //! }
 //!
 //! let tracks = demuxer.tracks()?;
-//! println!("{}個のトラックが見つかりました", tracks.len());
+//! println!("Found {} track(s)", tracks.len());
 //!
 //! while let Some(sample) = demuxer.next_sample()? {
 //!     println!(
@@ -320,6 +320,8 @@ impl Fmp4FileDemuxer {
             let kind = match trak.mdia_box.hdlr_box.handler_type {
                 HdlrBox::HANDLER_TYPE_VIDE => TrackKind::Video,
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
+                // 字幕トラックのハンドラー種別は `subt` (stpp) / `text` (wvtt / tx3g) の 2 種類
+                HdlrBox::HANDLER_TYPE_SUBT | HdlrBox::HANDLER_TYPE_TEXT => TrackKind::Subtitle,
                 _ => continue,
             };
 

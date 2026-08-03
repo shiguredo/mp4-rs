@@ -17,13 +17,14 @@ mod demux_fmp4_segment;
 mod demux_mp4_file;
 mod demux_mp4_file_kind_detector;
 pub mod descriptors;
+pub mod docs;
 pub mod mux;
 mod mux_fmp4_segment;
 mod mux_mp4_file;
 
 pub use basic_types::{
     BaseBox, BoxHeader, BoxSize, BoxType, Either, FixedPointNumber, FullBox, FullBoxFlags,
-    FullBoxHeader, Mp4File, Mp4FileTime, SampleFlags, TrackKind, Uint, Utf8String,
+    FullBoxHeader, LanguageCode, Mp4File, Mp4FileTime, SampleFlags, TrackKind, Uint, Utf8String,
 };
 pub use codec::{Decode, Encode, Error, ErrorKind, Result};
 

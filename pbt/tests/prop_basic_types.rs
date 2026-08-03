@@ -11,6 +11,23 @@ fn arb_full_box_flags() -> impl Strategy<Value = u32> {
     0u32..=0x00FF_FFFF
 }
 
+/// FullBoxFlags のビット位置を生成する Strategy
+///
+/// `u32` の型幅 (32) 前後の境界値を `Just` で確実にサンプリングしつつ、
+/// 任意の `usize` 値も混ぜて広く探索する。
+/// 32 境界のガード条件（`is_set` / `from_flags` の 32 以上を無視する挙動）を
+/// shrink 結果に依存せず毎回踏むための構成。
+fn arb_bit_position() -> impl Strategy<Value = usize> {
+    prop_oneof![
+        Just(0usize),
+        Just(31usize),
+        Just(32usize),
+        Just(33usize),
+        Just(usize::MAX),
+        any::<usize>(),
+    ]
+}
+
 /// BoxType::Normal 用の 4 バイト値を生成する Strategy
 fn arb_box_type_normal() -> impl Strategy<Value = [u8; 4]> {
     any::<[u8; 4]>()
@@ -49,24 +66,14 @@ proptest! {
     #[test]
     fn full_box_flags_roundtrip(value in arb_full_box_flags()) {
         let flags = FullBoxFlags::new(value);
-        let encoded = flags.encode_to_vec().unwrap();
+        let encoded = flags.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), 3);
 
-        let (decoded, size) = FullBoxFlags::decode(&encoded).unwrap();
+        let (decoded, size) = FullBoxFlags::decode(&encoded)
+            .expect("直前にエンコードした 3 バイト表現は必ずデコードできる");
         prop_assert_eq!(size, 3);
         prop_assert_eq!(decoded.get(), flags.get());
-    }
-
-    // FullBoxFlags のビット操作
-    #[test]
-    fn full_box_flags_bit_operations(value in arb_full_box_flags()) {
-        let flags = FullBoxFlags::new(value);
-
-        for i in 0..24 {
-            let expected = (value & (1 << i)) != 0;
-            prop_assert_eq!(flags.is_set(i), expected, "bit {} mismatch", i);
-        }
     }
 
     // FullBoxFlags::from_flags の検証 (各ビット位置は一度だけ)
@@ -78,8 +85,59 @@ proptest! {
 
         for i in 0..24 {
             let expected = (bit_mask & (1 << i)) != 0;
-            prop_assert_eq!(flags.is_set(i), expected, "bit {} mismatch", i);
+            prop_assert_eq!(flags.is_set(i), expected, "bit {} が一致しない", i);
         }
+    }
+
+    // FullBoxFlags::is_set の任意ビット位置に対する挙動を検証する
+    //
+    // 公開 API の型 (`usize`) が受け付け得る任意入力に対して、
+    // `i < 32` なら `(flags >> i) & 1 == 1` と等価、`i >= 32` なら常に `false` となること。
+    // ビット位置の Strategy は境界値 (0/31/32/33/usize::MAX) を確実に踏む構成にしている。
+    #[test]
+    fn full_box_flags_is_set_any_bit_position(flags in any::<u32>(), i in arb_bit_position()) {
+        let fbf = FullBoxFlags::new(flags);
+        let expected = if i < 32 {
+            (flags >> i) & 1 == 1
+        } else {
+            false
+        };
+        prop_assert_eq!(fbf.is_set(i), expected, "フラグ不一致 flags={:#x} i={}", flags, i);
+    }
+
+    // FullBoxFlags::from_flags の任意ビット位置に対する挙動を検証する
+    //
+    // `i < 32` なら `1u32 << i` が立った値、`i >= 32` なら 0 となること。
+    // ビット位置の Strategy は境界値 (0/31/32/33/usize::MAX) を確実に踏む構成にしている。
+    // 併せて `is_set(i)` が `i < 32` と一致することも検証し、
+    // `from_flags` と `is_set` の 32 境界の対称性を 1 本でクロス検証する。
+    #[test]
+    fn full_box_flags_from_flags_any_bit_position(i in arb_bit_position()) {
+        let fbf = FullBoxFlags::from_flags([(i, true)]);
+        let expected = if i < 32 { 1u32 << i } else { 0 };
+        prop_assert_eq!(fbf.get(), expected, "不一致 i={}", i);
+        prop_assert_eq!(fbf.is_set(i), i < 32, "is_set が一致しない i={}", i);
+    }
+
+    // FullBoxFlags::from_flags の重複ビット位置に対する冪等性を検証する
+    //
+    // 同じビット位置が複数回渡された場合でも、結果は
+    // 「有効なビット位置 (i < 32 かつ bool が true) の集合を OR で合成した値」と等価になること。
+    // （素朴に sum() で畳み込むと u32 加算オーバーフローでパニックするため）
+    // 入力に `bool` も混ぜて生成し、`filter(x.1)` の false 分岐もカバーする。
+    #[test]
+    fn full_box_flags_from_flags_duplicate_positions_or_folded(
+        items in proptest::collection::vec((any::<usize>(), any::<bool>()), 0..64),
+    ) {
+        let actual = FullBoxFlags::from_flags(items.clone()).get();
+
+        let expected: u32 = items
+            .iter()
+            .filter(|(_, b)| *b)
+            .filter(|(i, _)| *i < 32)
+            .fold(0u32, |acc, (i, _)| acc | (1u32 << *i));
+
+        prop_assert_eq!(actual, expected, "items が一致しない: {:?}", items);
     }
 
     // FullBoxHeader の Roundtrip
@@ -89,11 +147,12 @@ proptest! {
             version,
             flags: FullBoxFlags::new(flags_value),
         };
-        let encoded = header.encode_to_vec().unwrap();
+        let encoded = header.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), 4);
 
-        let (decoded, size) = FullBoxHeader::decode(&encoded).unwrap();
+        let (decoded, size) = FullBoxHeader::decode(&encoded)
+            .expect("直前にエンコードした 4 バイト表現は必ずデコードできる");
         prop_assert_eq!(size, 4);
         prop_assert_eq!(decoded.version, header.version);
         prop_assert_eq!(decoded.flags.get(), header.flags.get());
@@ -103,11 +162,12 @@ proptest! {
     #[test]
     fn fixed_point_u8_u8_roundtrip(integer in any::<u8>(), fraction in any::<u8>()) {
         let fpn: FixedPointNumber<u8, u8> = FixedPointNumber::new(integer, fraction);
-        let encoded = fpn.encode_to_vec().unwrap();
+        let encoded = fpn.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), 2);
 
-        let (decoded, size) = FixedPointNumber::<u8, u8>::decode(&encoded).unwrap();
+        let (decoded, size) = FixedPointNumber::<u8, u8>::decode(&encoded)
+            .expect("直前にエンコードした 2 バイト表現は必ずデコードできる");
         prop_assert_eq!(size, 2);
         prop_assert_eq!(decoded.integer, fpn.integer);
         prop_assert_eq!(decoded.fraction, fpn.fraction);
@@ -117,11 +177,12 @@ proptest! {
     #[test]
     fn fixed_point_i16_u16_roundtrip(integer in any::<i16>(), fraction in any::<u16>()) {
         let fpn: FixedPointNumber<i16, u16> = FixedPointNumber::new(integer, fraction);
-        let encoded = fpn.encode_to_vec().unwrap();
+        let encoded = fpn.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), 4);
 
-        let (decoded, size) = FixedPointNumber::<i16, u16>::decode(&encoded).unwrap();
+        let (decoded, size) = FixedPointNumber::<i16, u16>::decode(&encoded)
+            .expect("直前にエンコードした 4 バイト表現は必ずデコードできる");
         prop_assert_eq!(size, 4);
         prop_assert_eq!(decoded.integer, fpn.integer);
         prop_assert_eq!(decoded.fraction, fpn.fraction);
@@ -190,11 +251,12 @@ proptest! {
             box_type: BoxType::Normal(ty),
             box_size: BoxSize::U32(size),
         };
-        let encoded = header.encode_to_vec().unwrap();
+        let encoded = header.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), header.external_size());
 
-        let (decoded, decode_size) = BoxHeader::decode(&encoded).unwrap();
+        let (decoded, decode_size) = BoxHeader::decode(&encoded)
+            .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
         prop_assert_eq!(decode_size, header.external_size());
         prop_assert_eq!(decoded.box_type, header.box_type);
         prop_assert_eq!(decoded.box_size, header.box_size);
@@ -207,11 +269,12 @@ proptest! {
             box_type: BoxType::Uuid(ty),
             box_size: BoxSize::U32(size),
         };
-        let encoded = header.encode_to_vec().unwrap();
+        let encoded = header.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), header.external_size());
 
-        let (decoded, decode_size) = BoxHeader::decode(&encoded).unwrap();
+        let (decoded, decode_size) = BoxHeader::decode(&encoded)
+            .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
         prop_assert_eq!(decode_size, header.external_size());
         prop_assert_eq!(decoded.box_type, header.box_type);
         prop_assert_eq!(decoded.box_size, header.box_size);
@@ -224,11 +287,12 @@ proptest! {
             box_type: BoxType::Normal(ty),
             box_size: BoxSize::U64(size),
         };
-        let encoded = header.encode_to_vec().unwrap();
+        let encoded = header.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         prop_assert_eq!(encoded.len(), header.external_size());
 
-        let (decoded, decode_size) = BoxHeader::decode(&encoded).unwrap();
+        let (decoded, decode_size) = BoxHeader::decode(&encoded)
+            .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
         prop_assert_eq!(decode_size, header.external_size());
         prop_assert_eq!(decoded.box_type, header.box_type);
         prop_assert_eq!(decoded.box_size, header.box_size);
@@ -237,14 +301,15 @@ proptest! {
     // Utf8String の Roundtrip
     #[test]
     fn utf8_string_roundtrip(s in arb_utf8_string()) {
-        let utf8_str = Utf8String::new(&s).unwrap();
-        let encoded = utf8_str.encode_to_vec().unwrap();
+        let utf8_str = Utf8String::new(&s).expect("Strategy で null 文字を除外している");
+        let encoded = utf8_str.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         // null 終端を含む
         prop_assert_eq!(encoded.len(), s.len() + 1);
         prop_assert_eq!(encoded.last(), Some(&0u8));
 
-        let (decoded, size) = Utf8String::decode(&encoded).unwrap();
+        let (decoded, size) = Utf8String::decode(&encoded)
+            .expect("直前にエンコードした null 終端 UTF-8 は必ずデコードできる");
         prop_assert_eq!(size, s.len() + 1);
         prop_assert_eq!(decoded.get(), utf8_str.get());
     }
@@ -550,10 +615,11 @@ mod boundary_tests {
         // 24 ビットを超える値は切り捨てられる
         let flags = FullBoxFlags::new(0xFFFF_FFFF);
         // エンコード後は 24 ビットに収まる
-        let encoded = flags.encode_to_vec().unwrap();
+        let encoded = flags.encode_to_vec().expect("Vec への書き込みは失敗しない");
         assert_eq!(encoded.len(), 3);
 
-        let (decoded, _) = FullBoxFlags::decode(&encoded).unwrap();
+        let (decoded, _) = FullBoxFlags::decode(&encoded)
+            .expect("直前にエンコードした 3 バイト表現は必ずデコードできる");
         assert_eq!(decoded.get(), 0x00FF_FFFF);
     }
 
@@ -571,11 +637,12 @@ mod boundary_tests {
 
     #[test]
     fn utf8_string_empty() {
-        let s = Utf8String::new("").unwrap();
-        let encoded = s.encode_to_vec().unwrap();
+        let s = Utf8String::new("").expect("空文字列は null を含まないので有効");
+        let encoded = s.encode_to_vec().expect("Vec への書き込みは失敗しない");
         assert_eq!(encoded, vec![0]);
 
-        let (decoded, size) = Utf8String::decode(&encoded).unwrap();
+        let (decoded, size) = Utf8String::decode(&encoded)
+            .expect("直前にエンコードした null 終端 UTF-8 は必ずデコードできる");
         assert_eq!(size, 1);
         assert_eq!(decoded.get(), "");
     }
@@ -584,7 +651,8 @@ mod boundary_tests {
     fn utf8_string_only_null() {
         // null のみのバイト列
         let buf = [0u8];
-        let (decoded, size) = Utf8String::decode(&buf).unwrap();
+        let (decoded, size) =
+            Utf8String::decode(&buf).expect("null のみは空文字列として有効にデコードできる");
         assert_eq!(size, 1);
         assert_eq!(decoded.get(), "");
     }
@@ -640,7 +708,8 @@ mod boundary_tests {
         buf[4..8].copy_from_slice(b"test");
         buf[8..16].copy_from_slice(&0x100000001u64.to_be_bytes()); // 4GB + 1
 
-        let (header, size) = BoxHeader::decode(&buf).unwrap();
+        let (header, size) =
+            BoxHeader::decode(&buf).expect("組み立てた 16 バイトの拡張サイズヘッダーは有効");
         assert_eq!(size, 16);
         assert!(matches!(header.box_size, BoxSize::U64(0x100000001)));
     }
@@ -703,7 +772,7 @@ mod codec_box_boundary_tests {
         // 修正後はエラーを返すはず (panic しない)
         assert!(
             result.is_err(),
-            "HvccBox should return error for NAL unit length exceeding payload: got {:?}",
+            "HvccBox は NAL unit 長が payload を超える場合にエラーを返す: 実際は {:?}",
             result
         );
     }
@@ -767,7 +836,7 @@ mod codec_box_boundary_tests {
         // 修正前は panic、修正後はエラーを返すはず
         assert!(
             result.is_err(),
-            "HvccBox should return error for NAL unit length exceeding payload: got {:?}",
+            "HvccBox は NAL unit 長が payload を超える場合にエラーを返す: 実際は {:?}",
             result
         );
     }
@@ -809,7 +878,7 @@ mod codec_box_boundary_tests {
         // 修正後はエラーを返すはず (panic しない)
         assert!(
             result.is_err(),
-            "VpccBox should return error for codec_init_size exceeding payload"
+            "VpccBox は codec_init_size が payload を超える場合にエラーを返す"
         );
     }
 
@@ -856,7 +925,7 @@ mod codec_box_boundary_tests {
         // 修正前は panic、修正後はエラーを返すはず
         assert!(
             result.is_err(),
-            "VpccBox should return error for codec_init_size exceeding payload: got {:?}",
+            "VpccBox は codec_init_size が payload を超える場合にエラーを返す: 実際は {:?}",
             result
         );
     }
@@ -974,8 +1043,9 @@ mod weird_values {
             ]
         ) {
             let flags = FullBoxFlags::new(value);
-            let encoded = flags.encode_to_vec().unwrap();
-            let (decoded, _) = FullBoxFlags::decode(&encoded).unwrap();
+            let encoded = flags.encode_to_vec().expect("Vec への書き込みは失敗しない");
+            let (decoded, _) = FullBoxFlags::decode(&encoded)
+                .expect("直前にエンコードした 3 バイト表現は必ずデコードできる");
 
             // 上位 8 ビットは切り捨てられる
             prop_assert_eq!(decoded.get(), value & 0x00FFFFFF);
@@ -1015,8 +1085,9 @@ mod weird_values {
             ]
         ) {
             if let Some(utf8_str) = Utf8String::new(&s) {
-                let encoded = utf8_str.encode_to_vec().unwrap();
-                let (decoded, _) = Utf8String::decode(&encoded).unwrap();
+                let encoded = utf8_str.encode_to_vec().expect("Vec への書き込みは失敗しない");
+                let (decoded, _) = Utf8String::decode(&encoded)
+                    .expect("直前にエンコードした null 終端 UTF-8 は必ずデコードできる");
                 prop_assert_eq!(decoded.get(), utf8_str.get());
             }
         }

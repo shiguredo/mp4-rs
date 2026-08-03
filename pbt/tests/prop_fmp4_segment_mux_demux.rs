@@ -7,17 +7,20 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, TrackKind, Uint,
+    Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MfraBox, MoofBox, MoovBox,
-        OpusBox, SampleEntry, SidxBox, VisualSampleEntryFields,
+        OpusBox, SampleEntry, SidxBox, StppBox, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
-    mux::{Fmp4SegmentMuxer, Sample},
+    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
+
+mod common;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 const AUDIO_TIMESCALE: u32 = 48_000;
+const SUBTITLE_TIMESCALE: u32 = 1_000;
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
     SampleEntry::Avc1(Avc1Box {
@@ -61,6 +64,17 @@ fn create_opus_sample_entry() -> SampleEntry {
             input_sample_rate: 48000,
             output_gain: 0,
         },
+        unknown_boxes: vec![],
+    })
+}
+
+/// テスト用の Stpp（TTML）SampleEntry を作成
+fn create_stpp_sample_entry() -> SampleEntry {
+    SampleEntry::Stpp(StppBox {
+        data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+        namespace: Utf8String::new("http://www.w3.org/ns/ttml").expect("null 文字を含まない"),
+        schema_location: Utf8String::EMPTY,
+        auxiliary_mime_types: Utf8String::EMPTY,
         unknown_boxes: vec![],
     })
 }
@@ -115,7 +129,7 @@ fn video_segment_sample(
 ) -> Sample {
     Sample {
         track_kind: TrackKind::Video,
-        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("non-zero"),
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("非ゼロである"),
         sample_entry: Some(sample_entry.clone()),
         duration: sample.duration,
         keyframe: sample.keyframe,
@@ -128,7 +142,20 @@ fn video_segment_sample(
 fn audio_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Sample {
     Sample {
         track_kind: TrackKind::Audio,
-        timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("non-zero"),
+        timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("非ゼロである"),
+        sample_entry: Some(sample_entry.clone()),
+        duration: sample.duration,
+        keyframe: sample.keyframe,
+        composition_time_offset: None,
+        data_offset: 0,
+        data_size: sample.data.len(),
+    }
+}
+
+fn subtitle_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Sample {
+    Sample {
+        track_kind: TrackKind::Subtitle,
+        timescale: NonZeroU32::new(SUBTITLE_TIMESCALE).expect("非ゼロである"),
         sample_entry: Some(sample_entry.clone()),
         duration: sample.duration,
         keyframe: sample.keyframe,
@@ -163,7 +190,7 @@ fn build_complete_media_segment_impl(
     assert_eq!(
         samples.len(),
         payloads.len(),
-        "samples and payloads length mismatch"
+        "samples と payloads の長さが一致しない"
     );
 
     let mut ordered_kinds = Vec::new();
@@ -185,7 +212,7 @@ fn build_complete_media_segment_impl(
             arranged_samples[index].data_size = payload.len();
             next_offset = next_offset
                 .checked_add(payload.len() as u64)
-                .expect("payload size overflow");
+                .expect("payload サイズがオーバーフローした");
             payload_bytes.extend_from_slice(payload);
         }
     }
@@ -195,7 +222,7 @@ fn build_complete_media_segment_impl(
     } else {
         muxer.create_media_segment_metadata(&arranged_samples)
     }
-    .expect("failed to create media segment");
+    .expect("media セグメントの作成に失敗した");
     segment.extend_from_slice(&payload_bytes);
     segment
 }
@@ -218,22 +245,22 @@ fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
 
 fn rewrite_init_segment(init_segment: &[u8], f: impl FnOnce(&mut MoovBox)) -> Vec<u8> {
     let (ftyp_box, ftyp_box_size) =
-        FtypBox::decode(init_segment).expect("failed to decode ftyp from init segment");
+        FtypBox::decode(init_segment).expect("init セグメントからの ftyp デコードに失敗した");
     let (mut moov_box, moov_box_size) = MoovBox::decode(&init_segment[ftyp_box_size..])
-        .expect("failed to decode moov from init segment");
+        .expect("init セグメントからの moov デコードに失敗した");
     assert_eq!(
         ftyp_box_size + moov_box_size,
         init_segment.len(),
-        "init segment must contain only ftyp + moov in this test"
+        "このテストでは init セグメントは ftyp + moov のみを含む"
     );
     f(&mut moov_box);
 
     let mut rewritten = ftyp_box
         .encode_to_vec()
-        .expect("failed to encode ftyp while rewriting init segment");
+        .expect("init セグメント書き換え中の ftyp エンコードに失敗した");
     let moov_bytes = moov_box
         .encode_to_vec()
-        .expect("failed to encode moov while rewriting init segment");
+        .expect("init セグメント書き換え中の moov エンコードに失敗した");
     rewritten.extend_from_slice(&moov_bytes);
     rewritten
 }
@@ -255,11 +282,11 @@ fn append_sample_entry_and_set_trex_default(
         let trex_box = moov_box
             .mvex_box
             .as_mut()
-            .expect("muxer-generated init segment must contain mvex")
+            .expect("muxer が生成した init セグメントは mvex を含む")
             .trex_boxes
             .iter_mut()
             .find(|trex_box| trex_box.track_id == track_id)
-            .expect("trex for first track must exist");
+            .expect("最初の track の trex が存在する");
         trex_box.default_sample_description_index = default_sample_description_index;
     })
 }
@@ -269,25 +296,25 @@ fn rewrite_media_segment_tfhd_sample_description_index(
     sample_description_index: Option<u32>,
 ) -> Vec<u8> {
     let (mut moof_box, moof_box_size) =
-        MoofBox::decode(media_segment).expect("failed to decode moof from media segment");
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
     for traf_box in &mut moof_box.traf_boxes {
         traf_box.tfhd_box.sample_description_index = sample_description_index;
     }
 
     let mut rewritten = moof_box
         .encode_to_vec()
-        .expect("failed to encode moof while rewriting media segment");
+        .expect("media セグメント書き換え中の moof エンコードに失敗した");
     rewritten.extend_from_slice(&media_segment[moof_box_size..]);
     rewritten
 }
 
 fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
     let (_moof_box, moof_box_size) =
-        MoofBox::decode(media_segment).expect("failed to decode moof from media segment");
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
     let mdat_size_offset = moof_box_size;
     assert!(
         media_segment.len() >= mdat_size_offset + 8,
-        "media segment must contain an mdat header after moof"
+        "media セグメントは moof の後に mdat ヘッダを含む"
     );
 
     let mut rewritten = media_segment.to_vec();
@@ -298,7 +325,80 @@ fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
-    /// 単一映像トラックの init + media segment roundtrip
+    /// Options で指定した language / name が init セグメントの demux で復元される
+    ///
+    /// 3 kind（映像・音声・字幕）すべてで反映されることを固定する
+    #[test]
+    fn track_metadata_roundtrip(
+        video_meta in common::arb_track_metadata(),
+        audio_meta in common::arb_track_metadata(),
+        subtitle_meta in common::arb_track_metadata(),
+    ) {
+        let options = SegmentMuxerOptions {
+            video_track: video_meta.clone(),
+            audio_track: audio_meta.clone(),
+            subtitle_track: subtitle_meta.clone(),
+            ..Default::default()
+        };
+        let mut muxer =
+            Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+        let video_entry = create_avc1_sample_entry(320, 240);
+        let audio_entry = create_opus_sample_entry();
+        let subtitle_entry = create_stpp_sample_entry();
+        let video = TestSample {
+            track_index: 0,
+            duration: 3000,
+            keyframe: true,
+            data: vec![0x11; 16],
+        };
+        let audio = TestSample {
+            track_index: 1,
+            duration: 960,
+            keyframe: true,
+            data: vec![0x22; 8],
+        };
+        let subtitle = TestSample {
+            track_index: 2,
+            duration: 1000,
+            keyframe: true,
+            data: vec![0x33; 4],
+        };
+        let samples = [
+            video_segment_sample(&video_entry, &video, None),
+            audio_segment_sample(&audio_entry, &audio),
+            subtitle_segment_sample(&subtitle_entry, &subtitle),
+        ];
+        let payloads: [&[u8]; 3] = [&video.data, &audio.data, &subtitle.data];
+        let _segment_bytes = build_complete_media_segment(&mut muxer, &samples, &payloads);
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+
+        let (ftyp_box, ftyp_size) =
+            FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
+        let _ = ftyp_box;
+        let moov_bytes = &init_bytes[ftyp_size..];
+        let (moov_box, moov_size) =
+            MoovBox::decode(moov_bytes).expect("moov のデコードに失敗した");
+        prop_assert_eq!(
+            moov_size,
+            moov_bytes.len(),
+            "moov の decode サイズがバイト列長と一致しない"
+        );
+        prop_assert_eq!(moov_box.trak_boxes.len(), 3);
+        common::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta)?;
+        common::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta)?;
+        common::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta)?;
+
+        // demuxer でも init を受理できることを確認する
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
+        prop_assert_eq!(tracks.len(), 3);
+    }
+
+    /// 単一映像トラックの init + メディアセグメント roundtrip
     #[test]
     fn video_only_roundtrip(
         width in 64u16..1921,
@@ -306,7 +406,7 @@ proptest! {
         samples in prop::collection::vec(arb_video_sample(0), 1..10),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
@@ -314,21 +414,21 @@ proptest! {
             .collect();
         let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         prop_assert_eq!(tracks.len(), 1);
         prop_assert_eq!(tracks[0].kind, TrackKind::Video);
         prop_assert_eq!(tracks[0].timescale.get(), 90000);
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed.len(), samples.len());
 
@@ -349,7 +449,7 @@ proptest! {
         samples in prop::collection::vec(arb_audio_sample(0), 1..10),
     ) {
         let sample_entry = create_opus_sample_entry();
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
@@ -357,20 +457,20 @@ proptest! {
             .collect();
         let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         prop_assert_eq!(tracks.len(), 1);
         prop_assert_eq!(tracks[0].kind, TrackKind::Audio);
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed.len(), samples.len());
 
@@ -391,7 +491,7 @@ proptest! {
         samples in prop::collection::vec(arb_video_sample(0), 2..10),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
@@ -406,16 +506,16 @@ proptest! {
             .collect();
         let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed.len(), samples.len());
         prop_assert_eq!(demuxed[0].sample_entry, Some(&sample_entry));
@@ -444,7 +544,7 @@ proptest! {
     ) {
         let video_sample_entry = create_avc1_sample_entry(width, height);
         let audio_sample_entry = create_opus_sample_entry();
-        let mut muxer = Fmp4SegmentMuxer::new().expect("failed to create muxer");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("muxer の作成に失敗した");
 
         let mut all_samples: Vec<TestSample> = Vec::new();
         let max_len = video_samples.len().max(audio_samples.len());
@@ -469,19 +569,19 @@ proptest! {
             .collect();
         let payloads: Vec<&[u8]> = all_samples.iter().map(|sample| sample.data.as_slice()).collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
-        let demux_tracks = demuxer.tracks().expect("failed to get tracks");
+        let demux_tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         prop_assert_eq!(demux_tracks.len(), 2);
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed.len(), video_samples.len() + audio_samples.len());
 
@@ -508,7 +608,7 @@ proptest! {
         samples_with_cto in prop::collection::vec(arb_video_sample_with_cto(0), 1..10),
     ) {
         let sample_entry = create_avc1_sample_entry(320, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let fmp4_samples: Vec<Sample> = samples_with_cto
             .iter()
@@ -519,16 +619,16 @@ proptest! {
             .map(|(sample, _)| sample.data.as_slice())
             .collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed.len(), samples_with_cto.len());
 
@@ -554,7 +654,7 @@ proptest! {
         ),
     ) {
         let sample_entry = create_avc1_sample_entry(320, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let mut segment_sizes = Vec::new();
 
         for segment_samples in &segments {
@@ -570,11 +670,11 @@ proptest! {
             segment_sizes.push(segment.len() as u64);
         }
 
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
-        let mfra = muxer.mfra_bytes().expect("failed to build mfra");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
 
         // mfra が valid な MP4 ボックスとしてデコードできること
-        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("failed to decode mfra");
+        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
         prop_assert_eq!(decoded_size, mfra.len());
 
         // tfra のエントリ数はセグメント数と一致すること
@@ -596,6 +696,185 @@ proptest! {
         prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
     }
 
+    /// sidx あり／なしを混在させたときにも tfra.moof_offset が実 moof 位置を指すことを確認する
+    ///
+    /// sidx 付きセグメントはメディアセグメントの直前に sidx を置くため、
+    /// tfra.moof_offset は init + それまでのセグメント合計 + 自セグメントの sidx サイズ を指す必要がある。
+    #[test]
+    fn mfra_bytes_roundtrip_with_sidx_mix(
+        segments in prop::collection::vec(
+            (prop::collection::vec(arb_video_sample(0), 1..5), any::<bool>()),
+            1..5,
+        ),
+    ) {
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        // 各セグメントについて (sidx サイズ, セグメント全体のバイト数) を記録する。
+        // sidx なしの場合は sidx サイズを 0 とする。
+        let mut segment_layouts: Vec<(u64, u64)> = Vec::new();
+
+        for (segment_samples, with_sidx) in &segments {
+            let fmp4_samples: Vec<Sample> = segment_samples
+                .iter()
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
+                .collect();
+            let payloads: Vec<&[u8]> = segment_samples
+                .iter()
+                .map(|sample| sample.data.as_slice())
+                .collect();
+            let segment = if *with_sidx {
+                build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads)
+            } else {
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads)
+            };
+
+            // sidx サイズはセグメント先頭から SidxBox をデコードして得る（サイズ算出を実装側と分離するため）
+            let sidx_size = if *with_sidx {
+                let (_sidx_box, decoded) =
+                    SidxBox::decode(&segment).expect("セグメントからの sidx デコードに失敗した");
+                decoded as u64
+            } else {
+                0
+            };
+            segment_layouts.push((sidx_size, segment.len() as u64));
+        }
+
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
+
+        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
+        prop_assert_eq!(decoded_size, mfra.len());
+
+        // 単一映像トラックのみのため tfra_box は 1 つ、エントリ数はセグメント数と一致する
+        prop_assert_eq!(mfra_box.tfra_boxes.len(), 1);
+        prop_assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
+
+        // 実 moof 位置 = セグメント先頭 + sidx サイズ（sidx なしなら 0）を各エントリで検証する
+        let init_size = init_bytes.len() as u64;
+        let mut media_head = init_size;
+        for (entry, (sidx_size, segment_size)) in mfra_box.tfra_boxes[0]
+            .entries
+            .iter()
+            .zip(segment_layouts.iter().copied())
+        {
+            let expected_moof_offset = media_head + sidx_size;
+            prop_assert_eq!(entry.moof_offset, expected_moof_offset);
+            media_head += segment_size;
+        }
+
+        // mfro.size が mfra 全体のサイズと一致すること
+        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+    }
+
+    /// 映像 + 音声のマルチトラックで sidx あり／なし混在時にも tfra.moof_offset が実 moof 位置を指すことを確認する
+    ///
+    /// 各セグメントで音声サンプルを 0 個以上（映像は必ず 1 個以上）に振り分けることで、以下の分岐をカバーする:
+    /// - 両トラックが同じセグメントに含まれる（両方の tfra エントリに sidx 加算が入ることの検証）
+    /// - 音声トラックが 2 セグメント目以降に初めて登場する（`pre_tfra_lens.get(track_index) = None → unwrap_or(0)` に落ちる経路）
+    /// - 既存トラックで今回サンプルが無い（`entries.len() == pre_len` で加算スキップされる経路）
+    #[test]
+    fn mfra_bytes_roundtrip_with_sidx_mix_multi_track(
+        segments in prop::collection::vec(
+            (
+                prop::collection::vec(arb_video_sample(0), 1..3),
+                prop::collection::vec(arb_audio_sample(1), 0..3),
+                any::<bool>(),
+            ),
+            1..5,
+        ),
+    ) {
+        let video_entry = create_avc1_sample_entry(320, 240);
+        let audio_entry = create_opus_sample_entry();
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        // 各セグメントについて (実 moof 位置 = セグメント先頭 + sidx サイズ, has_audio) を記録する
+        let mut segment_moof_positions: Vec<(u64, bool)> = Vec::new();
+        let mut cumulative_bytes = 0u64;
+
+        for (video_samples, audio_samples, with_sidx) in &segments {
+            let has_audio = !audio_samples.is_empty();
+
+            // 映像を先に並べることで video が track_id=1、audio が track_id=2 になるよう固定する
+            let mut fmp4_samples: Vec<Sample> = Vec::new();
+            let mut payloads: Vec<&[u8]> = Vec::new();
+            for sample in video_samples {
+                fmp4_samples.push(video_segment_sample(&video_entry, sample, None));
+                payloads.push(sample.data.as_slice());
+            }
+            for sample in audio_samples {
+                fmp4_samples.push(audio_segment_sample(&audio_entry, sample));
+                payloads.push(sample.data.as_slice());
+            }
+
+            let segment = if *with_sidx {
+                build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads)
+            } else {
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads)
+            };
+
+            let sidx_size = if *with_sidx {
+                let (_sidx_box, decoded) =
+                    SidxBox::decode(&segment).expect("セグメントからの sidx デコードに失敗した");
+                decoded as u64
+            } else {
+                0
+            };
+
+            segment_moof_positions.push((cumulative_bytes + sidx_size, has_audio));
+            cumulative_bytes += segment.len() as u64;
+        }
+
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
+
+        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
+        prop_assert_eq!(decoded_size, mfra.len());
+
+        // 映像トラックは全セグメントで必ずサンプルを持つ。音声はサンプルがあるセグメントだけ tfra エントリを持つ
+        let has_audio_any = segment_moof_positions.iter().any(|(_, a)| *a);
+        let expected_track_count = 1 + usize::from(has_audio_any);
+        prop_assert_eq!(mfra_box.tfra_boxes.len(), expected_track_count);
+
+        let init_size = init_bytes.len() as u64;
+
+        // 映像トラック（track_id=1）は全セグメントの moof を指すこと
+        let video_tfra = mfra_box
+            .tfra_boxes
+            .iter()
+            .find(|t| t.track_id == 1)
+            .expect("track_id=1 の video tfra_box が存在する");
+        prop_assert_eq!(video_tfra.entries.len(), segment_moof_positions.len());
+        for (entry, (moof_pos, _)) in video_tfra
+            .entries
+            .iter()
+            .zip(segment_moof_positions.iter().copied())
+        {
+            prop_assert_eq!(entry.moof_offset, init_size + moof_pos);
+        }
+
+        // 音声トラック（track_id=2）は音声サンプルがあったセグメントの moof のみを指すこと
+        if has_audio_any {
+            let audio_tfra = mfra_box
+                .tfra_boxes
+                .iter()
+                .find(|t| t.track_id == 2)
+                .expect("track_id=2 の audio tfra_box が存在する");
+            let expected_audio_offsets: Vec<u64> = segment_moof_positions
+                .iter()
+                .filter(|(_, a)| *a)
+                .map(|(p, _)| init_size + *p)
+                .collect();
+            prop_assert_eq!(audio_tfra.entries.len(), expected_audio_offsets.len());
+            for (entry, expected) in audio_tfra.entries.iter().zip(expected_audio_offsets.iter()) {
+                prop_assert_eq!(entry.moof_offset, *expected);
+            }
+        }
+
+        // mfro.size が mfra 全体のサイズと一致すること
+        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+    }
+
     /// sidx 付きセグメントが正しく demux できることを確認する
     #[test]
     fn sidx_roundtrip(
@@ -604,7 +883,7 @@ proptest! {
         samples in prop::collection::vec(arb_video_sample(0), 1..5),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
@@ -615,17 +894,17 @@ proptest! {
         let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
         let segment_bytes =
             build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
         // sidx は自動的にスキップされて正常に demux できる
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
-            .expect("failed to handle sidx segment");
+            .expect("sidx セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed.len(), samples.len());
 
@@ -648,7 +927,7 @@ proptest! {
         samples in prop::collection::vec(arb_video_sample(0), 1..5),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
@@ -658,12 +937,46 @@ proptest! {
         let segment_bytes =
             build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
 
-        let (sidx_box, sidx_size) = SidxBox::decode(&segment_bytes).expect("failed to decode sidx");
+        let (sidx_box, sidx_size) = SidxBox::decode(&segment_bytes).expect("sidx のデコードに失敗した");
         prop_assert_eq!(sidx_box.references.len(), 1);
         prop_assert_eq!(
             sidx_box.references[0].referenced_size as usize,
             segment_bytes.len() - sidx_size,
         );
+    }
+
+    /// CTO=None 入力では sidx の `starts_with_sap` / `sap_type` が
+    /// samples[0].keyframe と一致すること
+    ///
+    /// arb_video_sample は keyframe: bool をランダム化するが CTO=None のため PTS は
+    /// 単調非減少で samples[0] が最小 PTS を採る。したがって EPT サンプル == samples[0]
+    /// となり、`starts_with_sap == samples[0].keyframe` /
+    /// `sap_type == u8::from(samples[0].keyframe)` を任意入力で固定する。
+    /// `sap_delta_time` は現行の `0` のまま変更されない。
+    #[test]
+    fn sidx_starts_with_sap_matches_first_sample_keyframe(
+        width in 64u16..1921,
+        height in 64u16..1081,
+        samples in prop::collection::vec(arb_video_sample(0), 1..5),
+    ) {
+        let sample_entry = create_avc1_sample_entry(width, height);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        let fmp4_samples: Vec<Sample> = samples
+            .iter()
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
+            .collect();
+        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let segment_bytes =
+            build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
+
+        let (sidx_box, _) = SidxBox::decode(&segment_bytes).expect("sidx のデコードに失敗した");
+        prop_assert_eq!(sidx_box.references.len(), 1);
+
+        let expected_starts_with_sap = samples[0].keyframe;
+        prop_assert_eq!(sidx_box.references[0].starts_with_sap, expected_starts_with_sap);
+        prop_assert_eq!(sidx_box.references[0].sap_type, u8::from(expected_starts_with_sap));
+        prop_assert_eq!(sidx_box.references[0].sap_delta_time, 0);
     }
 
     /// 最初のサンプルに `sample_entry` がない場合は
@@ -674,10 +987,10 @@ proptest! {
         keyframe in any::<bool>(),
         data in prop::collection::vec(any::<u8>(), 1..256),
     ) {
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let sample = Sample {
             track_kind: TrackKind::Video,
-            timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("non-zero"),
+            timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("非ゼロである"),
             sample_entry: None,
             duration,
             keyframe,
@@ -694,7 +1007,7 @@ proptest! {
             }) => {
                 prop_assert_eq!(track_kind, TrackKind::Video);
             }
-            other => prop_assert!(false, "unexpected result: {other:?}"),
+            other => prop_assert!(false, "予期しない結果: {other:?}"),
         }
     }
 
@@ -710,7 +1023,7 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let bootstrap_sample =
             video_segment_sample(&alternative_sample_entry, &samples[0], None);
@@ -720,7 +1033,7 @@ proptest! {
             &[samples[0].data.as_slice()],
         );
         prop_assert!(!bootstrap_segment.is_empty());
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 2);
 
         let fmp4_samples: Vec<Sample> = samples
@@ -736,10 +1049,10 @@ proptest! {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
         let demuxed = demuxer
             .handle_media_segment(&media_segment)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(
             demuxed[0].sample_entry,
@@ -761,7 +1074,7 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let _ = build_complete_media_segment(
             &mut muxer,
             &[video_segment_sample(&original_sample_entry, &samples[0], None)],
@@ -772,7 +1085,7 @@ proptest! {
             &[video_segment_sample(&alternative_sample_entry, &samples[0], None)],
             &[samples[0].data.as_slice()],
         );
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
         let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry, 2);
 
         let fmp4_samples: Vec<Sample> = samples
@@ -787,10 +1100,10 @@ proptest! {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
         let demuxed = demuxer
             .handle_media_segment(&media_segment)
-            .expect("failed to handle media segment");
+            .expect("media セグメントの処理に失敗した");
 
         prop_assert_eq!(demuxed[0].sample_entry, Some(&original_sample_entry));
         for sample in demuxed.iter().skip(1) {
@@ -811,7 +1124,7 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let first_segment_input: Vec<Sample> = first_segment_samples
             .iter()
@@ -834,16 +1147,16 @@ proptest! {
             build_complete_media_segment(&mut muxer, &first_segment_input, &first_payloads);
         let second_segment =
             build_complete_media_segment(&mut muxer, &second_segment_input, &second_payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
         let first_demuxed = demuxer
             .handle_media_segment(&first_segment)
-            .expect("failed to handle first media segment");
+            .expect("最初の media セグメントの処理に失敗した");
         prop_assert_eq!(
             first_demuxed[0].sample_entry,
             Some(&original_sample_entry),
@@ -854,7 +1167,7 @@ proptest! {
 
         let second_demuxed = demuxer
             .handle_media_segment(&second_segment)
-            .expect("failed to handle second media segment");
+            .expect("2 つ目の media セグメントの処理に失敗した");
         prop_assert_eq!(
             second_demuxed[0].sample_entry,
             Some(&alternative_sample_entry),
@@ -874,7 +1187,7 @@ proptest! {
         second_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let first_segment_input: Vec<Sample> = first_segment_samples
             .iter()
@@ -895,7 +1208,7 @@ proptest! {
             .collect();
         let mut concatenated =
             build_complete_media_segment(&mut muxer, &first_segment_input, &first_payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
         concatenated.extend_from_slice(&build_complete_media_segment(
             &mut muxer,
             &second_segment_input,
@@ -905,7 +1218,7 @@ proptest! {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
 
         let result = demuxer.handle_media_segment(&concatenated);
         prop_assert!(matches!(result, Err(DemuxError::DecodeError(_))));
@@ -923,7 +1236,7 @@ proptest! {
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let first_segment_input: Vec<Sample> = first_segment_samples
             .iter()
@@ -946,7 +1259,7 @@ proptest! {
             build_complete_media_segment(&mut muxer, &first_segment_input, &first_payloads);
         let second_segment =
             build_complete_media_segment(&mut muxer, &second_segment_input, &second_payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
 
         let mut file_data = init_bytes;
         file_data.extend_from_slice(&first_segment);
@@ -962,7 +1275,7 @@ proptest! {
                     Ok(Some(sample)) => break Some(sample),
                     Ok(None) => break None,
                     Err(DemuxError::InputRequired(_)) => feed_fmp4_file_demuxer(&mut demuxer, &file_data),
-                    Err(error) => panic!("next_sample error: {error}"),
+                    Err(error) => panic!("next_sample エラー: {error}"),
                 }
             };
 
@@ -997,7 +1310,7 @@ proptest! {
         prop_assume!(width1 != width2);
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let _ = build_complete_media_segment(
             &mut muxer,
             &[video_segment_sample(
@@ -1007,7 +1320,7 @@ proptest! {
             )],
             &[samples[0].data.as_slice()],
         );
-        let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
         let init_bytes = append_sample_entry_and_set_trex_default(
             &init_bytes,
             create_avc1_sample_entry(width2, 240),
@@ -1026,7 +1339,7 @@ proptest! {
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
             .handle_init_segment(&init_bytes)
-            .expect("failed to handle init segment");
+            .expect("init セグメントの処理に失敗した");
         let result = demuxer.handle_media_segment(&media_segment);
 
         prop_assert!(matches!(
@@ -1046,7 +1359,7 @@ proptest! {
         ),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         // 全セグメントをひとつのバイト列に連結して完全な fMP4 ファイルを組み立てる
         let mut file_data = Vec::new();
@@ -1066,7 +1379,7 @@ proptest! {
             all_samples.extend_from_slice(segment_samples);
             file_data.extend_from_slice(&segment_bytes);
         }
-        let mut init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+        let mut init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
         init_bytes.extend_from_slice(&file_data);
         let file_data = init_bytes;
 
@@ -1074,7 +1387,7 @@ proptest! {
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
 
         // トラック情報の確認
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         prop_assert_eq!(tracks.len(), 1);
         prop_assert_eq!(tracks[0].kind, TrackKind::Video);
         prop_assert_eq!(tracks[0].timescale.get(), 90000);
@@ -1085,11 +1398,11 @@ proptest! {
             let sample = loop {
                 match demuxer.next_sample() {
                     Ok(Some(sample)) => break sample,
-                    Ok(None) => panic!("unexpected end of samples"),
+                    Ok(None) => panic!("sample が予期せず終端した"),
                     Err(DemuxError::InputRequired(_)) => {
                         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
                     }
-                    Err(error) => panic!("next_sample error: {error}"),
+                    Err(error) => panic!("next_sample エラー: {error}"),
                 }
             };
 
@@ -1108,11 +1421,11 @@ proptest! {
 
         // 全サンプルを読み終えたら None が返ることを確認する
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
-        let last = demuxer.next_sample().expect("next_sample error");
-        prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);
+        let last = demuxer.next_sample().expect("next_sample エラー");
+        prop_assert!(last.is_none(), "これ以上 sample は無い想定だが {:?} が返った", last);
     }
 
-    /// `mdat size=0` の media segment を含む fMP4 ファイルでも
+    /// `mdat size=0` のメディアセグメントを含む fMP4 ファイルでも
     /// `Fmp4FileDemuxer` が末尾までの `mdat` として処理できることを確認する
     #[test]
     fn fmp4_file_demuxer_accepts_mdat_size_zero(
@@ -1121,7 +1434,7 @@ proptest! {
         samples in prop::collection::vec(arb_video_sample(0), 1..10),
     ) {
         let sample_entry = create_avc1_sample_entry(width, height);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let segment_samples: Vec<Sample> = samples
             .iter()
@@ -1131,13 +1444,13 @@ proptest! {
         let media_segment = build_complete_media_segment(&mut muxer, &segment_samples, &payloads);
         let media_segment = rewrite_media_segment_mdat_size_zero(&media_segment);
 
-        let mut file_data = muxer.init_segment_bytes().expect("failed to build init segment");
+        let mut file_data = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
         file_data.extend_from_slice(&media_segment);
 
         let mut demuxer = Fmp4FileDemuxer::new();
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
 
-        let tracks = demuxer.tracks().expect("failed to get tracks");
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         prop_assert_eq!(tracks.len(), 1);
         prop_assert_eq!(tracks[0].kind, TrackKind::Video);
 
@@ -1146,11 +1459,11 @@ proptest! {
             let sample = loop {
                 match demuxer.next_sample() {
                     Ok(Some(sample)) => break sample,
-                    Ok(None) => panic!("unexpected end of samples"),
+                    Ok(None) => panic!("sample が予期せず終端した"),
                     Err(DemuxError::InputRequired(_)) => {
                         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
                     }
-                    Err(error) => panic!("next_sample error: {error}"),
+                    Err(error) => panic!("next_sample エラー: {error}"),
                 }
             };
 
@@ -1167,8 +1480,8 @@ proptest! {
         }
 
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
-        let last = demuxer.next_sample().expect("next_sample error");
-        prop_assert!(last.is_none(), "expected no more samples, got {:?}", last);
+        let last = demuxer.next_sample().expect("next_sample エラー");
+        prop_assert!(last.is_none(), "これ以上 sample は無い想定だが {:?} が返った", last);
     }
 
     /// timestamp が複数セグメントにわたって正しく累積されることを確認する
@@ -1180,7 +1493,7 @@ proptest! {
         ),
     ) {
         let sample_entry = create_avc1_sample_entry(320, 240);
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
         let mut expected_decode_time: u64 = 0;
         let mut demuxer = Fmp4SegmentDemuxer::new();
@@ -1198,16 +1511,16 @@ proptest! {
             let segment_bytes =
                 build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
             if !initialized {
-                let init_bytes = muxer.init_segment_bytes().expect("failed to build init segment");
+                let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
                 demuxer
                     .handle_init_segment(&init_bytes)
-                    .expect("failed to handle init segment");
+                    .expect("init セグメントの処理に失敗した");
                 initialized = true;
             }
 
             let demuxed = demuxer
                 .handle_media_segment(&segment_bytes)
-                .expect("failed to handle media segment");
+                .expect("media セグメントの処理に失敗した");
 
             prop_assert_eq!(demuxed[0].timestamp, expected_decode_time);
 
@@ -1222,12 +1535,12 @@ proptest! {
         video_size in 1usize..256,
         audio_size in 1usize..256,
     ) {
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new failed");
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let video_sample = Sample {
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(320, 240)),
             keyframe: true,
-            timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("non-zero"),
+            timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("非ゼロである"),
             duration: 3000,
             composition_time_offset: None,
             data_offset: 0,
@@ -1237,7 +1550,7 @@ proptest! {
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: true,
-            timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("non-zero"),
+            timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("非ゼロである"),
             duration: 960,
             composition_time_offset: None,
             data_offset: video_size as u64 + 1,

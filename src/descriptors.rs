@@ -5,14 +5,26 @@ use crate::{Decode, Encode, Error, Result, Uint};
 
 /// [ISO_IEC_14496-1] ES_Descriptor class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct EsDescriptor {
+    /// ElementaryStream の識別子（0 は予約、実質的な最小値は [`EsDescriptor::MIN_ES_ID`]）
     pub es_id: u16,
+
+    /// ストリーム優先度（5 ビット。値が大きいほど優先度が高い）
     pub stream_priority: Uint<u8, 5>,
+
+    /// このストリームが依存する別 ES の `es_id`。存在しない場合は [`None`]
     pub depends_on_es_id: Option<u16>,
+
+    /// このストリームの外部データを指す URL（最大 255 バイト）。存在しない場合は [`None`]
     pub url_string: Option<String>,
+
+    /// object clock reference を共有する別 ES の `es_id`。存在しない場合は [`None`]
     pub ocr_es_id: Option<u16>,
+
+    /// このストリームのデコーダー設定
     pub dec_config_descr: DecoderConfigDescriptor,
+
+    /// このストリームの Sync Layer 設定
     pub sl_config_descr: SlConfigDescriptor,
 }
 
@@ -120,14 +132,28 @@ impl Encode for EsDescriptor {
 
 /// [ISO_IEC_14496-1] DecoderConfigDescriptor class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct DecoderConfigDescriptor {
+    /// オブジェクトタイプ識別子（例: AAC は
+    /// [`DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3`]）
     pub object_type_indication: u8,
+
+    /// ストリーム種別（6 ビット。例: 音声は [`DecoderConfigDescriptor::STREAM_TYPE_AUDIO`]）
     pub stream_type: Uint<u8, 6, 2>,
+
+    /// 上り方向ストリームか（1 ビット。再生用ファイルは常に
+    /// [`DecoderConfigDescriptor::UP_STREAM_FALSE`]）
     pub up_stream: Uint<u8, 1, 1>,
+
+    /// デコーダーバッファサイズ（24 ビット、バイト単位）
     pub buffer_size_db: Uint<u32, 24>,
+
+    /// 最大ビットレート（bps）
     pub max_bitrate: u32,
+
+    /// 平均ビットレート（bps。0 は「不明」を意味する）
     pub avg_bitrate: u32,
+
+    /// コーデック固有のデコーダー情報（AAC の AudioSpecificConfig 等）
     pub dec_specific_info: Option<DecoderSpecificInfo>,
 }
 
@@ -224,8 +250,8 @@ impl Encode for DecoderConfigDescriptor {
 
 /// [ISO_IEC_14496-1] DecoderSpecificInfo class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct DecoderSpecificInfo {
+    /// コーデック固有のバイト列（AAC なら AudioSpecificConfig など）
     pub payload: Vec<u8>,
 }
 
@@ -368,9 +394,11 @@ mod tests {
     #[test]
     fn tag_and_size() {
         let mut buf = [0; 32];
-        let encoded_size = encode_tag_and_size(&mut buf, 12, 123456).unwrap();
+        let encoded_size = encode_tag_and_size(&mut buf, 12, 123456)
+            .expect("32 バイトのバッファは 5 バイト以内のエンコード結果を必ず収められる");
 
-        let (tag, size, consumed) = decode_tag_and_size(&buf).unwrap();
+        let (tag, size, consumed) = decode_tag_and_size(&buf)
+            .expect("直前にエンコードした有効なタグとサイズが必ずデコードできる");
         assert_eq!(tag, 12);
         assert_eq!(size, 123456);
         assert_eq!(consumed, encoded_size);

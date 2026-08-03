@@ -35,6 +35,8 @@ const char *get_track_kind_name(enum Mp4TrackKind kind) {
             return "Audio";
         case MP4_TRACK_KIND_VIDEO:
             return "Video";
+        case MP4_TRACK_KIND_SUBTITLE:
+            return "Subtitle";
         default:
             return "Unknown";
     }
@@ -61,6 +63,12 @@ const char *get_sample_entry_kind_name(enum Mp4SampleEntryKind kind) {
             return "MP4A (AAC)";
         case MP4_SAMPLE_ENTRY_KIND_FLAC:
             return "FLAC";
+        case MP4_SAMPLE_ENTRY_KIND_STPP:
+            return "stpp (XML Subtitle)";
+        case MP4_SAMPLE_ENTRY_KIND_WVTT:
+            return "wvtt (WebVTT)";
+        case MP4_SAMPLE_ENTRY_KIND_TX3G:
+            return "tx3g (3GPP Timed Text)";
         default:
             return "Unknown";
     }
@@ -314,4 +322,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-

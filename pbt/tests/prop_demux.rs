@@ -187,7 +187,7 @@ proptest! {
     fn corrupted_h264_mp4_no_infinite_loop(corruption in arb_corruption(TEST_MP4_H264.len())) {
         let corrupted = corrupt_mp4(TEST_MP4_H264, corruption);
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
     }
 
     /// 破損した AAC MP4 で無限ループが発生しないことを確認
@@ -195,7 +195,7 @@ proptest! {
     fn corrupted_aac_mp4_no_infinite_loop(corruption in arb_corruption(TEST_MP4_AAC.len())) {
         let corrupted = corrupt_mp4(TEST_MP4_AAC, corruption);
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
     }
 
     /// 複数箇所を破損させた場合も無限ループが発生しないことを確認
@@ -208,14 +208,14 @@ proptest! {
             data = corrupt_mp4(&data, corruption);
         }
         let result = demux_with_loop_detection(&data, 1000);
-        prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
     }
 
     /// ランダムバイト列で無限ループが発生しないことを確認
     #[test]
     fn random_bytes_no_infinite_loop(data in prop::collection::vec(any::<u8>(), 0..1024)) {
         let result = demux_with_loop_detection(&data, 100);
-        prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
     }
 
     /// ボックスヘッダー付近の破損で無限ループが発生しないことを確認
@@ -227,7 +227,7 @@ proptest! {
         let corruption = CorruptionType::SingleByte { position: offset, value };
         let corrupted = corrupt_mp4(TEST_MP4_H264, corruption);
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
     }
 
     /// サイズフィールドを極端な値に破損させた場合も無限ループが発生しないことを確認
@@ -241,7 +241,7 @@ proptest! {
             corrupted[0..4].copy_from_slice(&size_bytes);
         }
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
     }
 
     /// prev_sample() が next_sample() と往復できることを確認
@@ -262,11 +262,11 @@ proptest! {
         };
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(input);
-        let _ = demuxer.tracks().expect("failed to get tracks");
+        let _ = demuxer.tracks().expect("tracks の取得に失敗した");
 
         let mut skipped = 0usize;
         while skipped < skip_samples {
-            match demuxer.next_sample().expect("failed to read next sample") {
+            match demuxer.next_sample().expect("次の sample の読み取りに失敗した") {
                 Some(_) => {
                     skipped += 1;
                 }
@@ -275,7 +275,7 @@ proptest! {
         }
 
         let mut forward = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("failed to read next sample") {
+        while let Some(sample) = demuxer.next_sample().expect("次の sample の読み取りに失敗した") {
             forward.push(sample_to_digest(&sample));
             if forward.len() >= max_samples {
                 break;
@@ -285,18 +285,18 @@ proptest! {
 
         let mut backward = Vec::new();
         for _ in 0..forward.len() {
-            let sample = demuxer.prev_sample().expect("failed to read previous sample");
+            let sample = demuxer.prev_sample().expect("前の sample の読み取りに失敗した");
             prop_assert!(sample.is_some());
-            backward.push(sample_to_digest(sample.as_ref().expect("missing sample")));
+            backward.push(sample_to_digest(sample.as_ref().expect("sample が欠落している")));
         }
         backward.reverse();
         prop_assert_eq!(backward.as_slice(), forward.as_slice());
 
         let mut forward_again = Vec::new();
         for _ in 0..forward.len() {
-            let sample = demuxer.next_sample().expect("failed to read next sample");
+            let sample = demuxer.next_sample().expect("次の sample の読み取りに失敗した");
             prop_assert!(sample.is_some());
-            forward_again.push(sample_to_digest(sample.as_ref().expect("missing sample")));
+            forward_again.push(sample_to_digest(sample.as_ref().expect("sample が欠落している")));
         }
         prop_assert_eq!(forward_again.as_slice(), forward.as_slice());
     }
@@ -318,19 +318,19 @@ proptest! {
         };
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(input);
-        let tracks = demuxer.tracks().expect("failed to get tracks").to_vec();
+        let tracks = demuxer.tracks().expect("tracks の取得に失敗した").to_vec();
         prop_assume!(!tracks.is_empty());
 
         let max_duration = tracks
             .iter()
             .map(|track| ticks_to_duration(track.duration, track.timescale.get()))
             .max()
-            .expect("bug");
+            .expect("実装バグ");
         let offset_duration = std::time::Duration::from_millis(seek_ticks_offset);
         let seek_duration = max_duration / 2 + offset_duration;
 
-        demuxer.seek(seek_duration).expect("failed to seek");
-        let sample = demuxer.next_sample().expect("failed to read sample");
+        demuxer.seek(seek_duration).expect("seek に失敗した");
+        let sample = demuxer.next_sample().expect("sample の読み取りに失敗した");
 
         let any_track_has_sample = tracks.iter().any(|track| {
             let track_seek_ticks = duration_to_ticks(seek_duration, track.timescale.get());
@@ -360,7 +360,7 @@ mod boundary_tests {
             vec![0x00; 256],
         ])) {
             let result = demux_with_loop_detection(&case, 100);
-            prop_assert!(result.is_ok(), "Error: {:?}", result.err());
+            prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
         }
     }
 }
@@ -482,7 +482,7 @@ mod handle_input_validation_tests {
             let start = usize::try_from(wrong_position)
                 .ok()
                 .map(|position| position.min(TEST_MP4_AAC_FILE.len()))
-                .expect("usize conversion must succeed on supported targets");
+                .expect("サポート対象では usize への変換は失敗しない");
             let input = Input {
                 position: wrong_position,
                 data: &TEST_MP4_AAC_FILE[start..],

@@ -127,6 +127,8 @@ WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 - ISO/IEC 14496-12
 - ISO/IEC 14496-14
 - ISO/IEC 14496-15
+- ISO/IEC 14496-30
+- 3GPP TS 26.245
 - [VP Codec ISO Media File Format Binding](https://www.webmproject.org/vp9/mp4/)
 - [AV1 Codec ISO Media File Format Binding](https://aomediacodec.github.io/av1-isobmff/)
 - [Encapsulation of Opus in ISO Base Media File Format](https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html)
@@ -136,14 +138,15 @@ WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 
 - AV2 のサポート
 - H.266 (VVC) のサポート
+- [Open Audio Codec (OAC)](https://github.com/AOMediaCodec/oac) のサポート
 
 ## ライセンス
 
 Apache License 2.0
 
 ```text
-Copyright 2024-2026, Takeru Ohta (Original Author)
-Copyright 2024-2026, Shiguredo Inc.
+Copyright 2024 Takeru Ohta (Original Author)
+Copyright 2024 Shiguredo Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

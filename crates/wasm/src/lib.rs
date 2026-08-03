@@ -12,8 +12,11 @@ pub mod boxes_hev1;
 pub mod boxes_hvc1;
 pub mod boxes_mp4a;
 pub mod boxes_opus;
+pub mod boxes_stpp;
+pub mod boxes_tx3g;
 pub mod boxes_vp08;
 pub mod boxes_vp09;
+pub mod boxes_wvtt;
 pub mod demux;
 pub mod fmp4_segment_demux;
 pub mod fmp4_segment_mux;
@@ -31,7 +34,10 @@ use std::alloc::Layout;
 ///
 /// # 戻り値
 ///
-/// 確保したメモリの先頭アドレス
+/// 確保したメモリの先頭アドレス。
+/// `size == 0` のときは null を返す。
+/// `size != 0` のときは、確保成功時に有効なポインタを返し、
+/// 確保失敗時は `handle_alloc_error` によりプロセスを abort する（本関数から null は返らない）
 #[unsafe(no_mangle)]
 pub extern "C" fn mp4_alloc(size: u32) -> *mut u8 {
     if size == 0 {
@@ -39,7 +45,11 @@ pub extern "C" fn mp4_alloc(size: u32) -> *mut u8 {
     }
     let layout = Layout::from_size_align(size as usize, 1)
         .expect("layout creation with alignment 1 should never fail");
-    unsafe { std::alloc::alloc(layout) }
+    let allocated = unsafe { std::alloc::alloc(layout) };
+    if allocated.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    allocated
 }
 
 /// `mp4_alloc()` で確保したメモリを解放する

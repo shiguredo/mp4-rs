@@ -11,6 +11,9 @@ pub enum Mp4TrackKind {
 
     /// 映像トラック
     MP4_TRACK_KIND_VIDEO = 1,
+
+    /// 字幕トラック
+    MP4_TRACK_KIND_SUBTITLE = 2,
 }
 
 impl From<TrackKind> for Mp4TrackKind {
@@ -18,6 +21,7 @@ impl From<TrackKind> for Mp4TrackKind {
         match kind {
             TrackKind::Audio => Self::MP4_TRACK_KIND_AUDIO,
             TrackKind::Video => Self::MP4_TRACK_KIND_VIDEO,
+            TrackKind::Subtitle => Self::MP4_TRACK_KIND_SUBTITLE,
         }
     }
 }
@@ -27,6 +31,7 @@ impl From<Mp4TrackKind> for TrackKind {
         match kind {
             Mp4TrackKind::MP4_TRACK_KIND_AUDIO => Self::Audio,
             Mp4TrackKind::MP4_TRACK_KIND_VIDEO => Self::Video,
+            Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE => Self::Subtitle,
         }
     }
 }

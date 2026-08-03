@@ -9,14 +9,15 @@ pub use crate::boxes_fmp4::{
 };
 pub use crate::boxes_moov_tree::{
     Co64Box, CslgBox, CttsBox, CttsEntry, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, EsdsBox,
-    HdlrBox, MdhdBox, MdiaBox, MehdBox, MinfBox, MoovBox, MvexBox, MvhdBox, SdtpBox,
-    SdtpSampleFlags, SmhdBox, StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox, StszBox,
-    SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UrlBox, VmhdBox,
+    HdlrBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox,
+    SdtpBox, SdtpSampleFlags, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StscEntry, StsdBox,
+    StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox, TrexBox, UrlBox, VmhdBox,
 };
 pub use crate::boxes_sample_entry::{
-    AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, DflaBox, DopsBox, FlacBox,
-    FlacMetadataBlock, Hev1Box, Hvc1Box, HvccBox, HvccNalUintArray, Mp4aBox, OpusBox, SampleEntry,
-    VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox,
+    AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox, DopsBox,
+    FlacBox, FlacMetadataBlock, FontRecord, FtabBox, Hev1Box, Hvc1Box, HvccBox, HvccNalUintArray,
+    Mp4aBox, OpusBox, SampleEntry, StppBox, StyleRecord, Tx3gBox, VisualSampleEntryFields, Vp08Box,
+    Vp09Box, VpccBox, VttCBox, WvttBox,
 };
 
 pub(crate) fn with_box_type<F, T>(ty: BoxType, f: F) -> Result<T>
@@ -198,10 +199,14 @@ impl Decode for Brand {
 
 /// [ISO/IEC 14496-12] FileTypeBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct FtypBox {
+    /// このファイルの主要な準拠仕様を示すブランド
     pub major_brand: Brand,
+
+    /// `major_brand` のマイナーバージョン
     pub minor_version: u32,
+
+    /// このファイルが同時に満たすブランド群（`major_brand` を含めた列挙）
     pub compatible_brands: Vec<Brand>,
 }
 
@@ -263,14 +268,29 @@ impl BaseBox for FtypBox {
 
 /// [`Mp4File`](crate::Mp4File) のトップレベルに位置するボックス群のデフォルト実装
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub enum RootBox {
+    /// `free` ボックス（空き領域埋め）
     Free(FreeBox),
+
+    /// `mdat` ボックス（メディアデータ本体）
     Mdat(MdatBox),
+
+    /// `moov` ボックス（movie メタデータ）
     Moov(MoovBox),
+
+    /// `moof` ボックス（fMP4 のムービーフラグメント）
     Moof(MoofBox),
+
+    /// `mfra` ボックス（fMP4 のランダムアクセスインデックス）
     Mfra(MfraBox),
+
+    /// `sidx` ボックス（DASH などで使うセグメントインデックス）
     Sidx(SidxBox),
+
+    /// 上記のいずれにも該当しない box_type だった場合の受け皿
+    ///
+    /// 既知のトップレベルボックス型（`free` / `mdat` / `moov` / `moof` / `mfra` / `sidx`）に
+    /// 該当しない box を demux 時に保持する場合や、mux 時に任意の未知 box を組み込む場合に使う
     Unknown(UnknownBox),
 }
 
@@ -333,8 +353,8 @@ impl BaseBox for RootBox {
 
 /// [ISO/IEC 14496-12] FreeSpaceBox class
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
 pub struct FreeBox {
+    /// この `free` ボックスのペイロード（内容は未指定のパディングとして扱われる）
     pub payload: Vec<u8>,
 }
 

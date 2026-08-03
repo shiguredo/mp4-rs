@@ -150,11 +150,20 @@ impl BoxHeader {
     ///
     /// # ボックスサイズ 0 の扱いについて
     ///
-    /// MP4 の仕様では、ボックスサイズが 0 の場合は「ファイルの最後まで」を意味するが、
-    /// 本実装では、渡されたバッファ全体をペイロードとして扱う。
+    /// MP4 の仕様（ISO/IEC 14496-12）では、32-bit の `size` フィールドが 0 の場合は
+    /// 「ファイルの最後まで」を意味する。本実装では、渡された `buf` の末尾までを
+    /// ボックス全体として扱い、ヘッダー直後からバッファ末尾までをペイロードとして返す。
     ///
-    /// この挙動には以下の条件を前提がある：
-    /// - `buf` がファイル末尾を含む完全なデータである
+    /// この扱いは [`BoxSize::VARIABLE_SIZE`]（`BoxSize::U32(0)`）に限る。
+    /// `size==1` + `largesize==0`（[`BoxSize::LARGE_VARIABLE_SIZE`] / `BoxSize::U64(0)`）は
+    /// 仕様上意味が未定義のため、サイズ下限検査（`box_size < header_size`）でエラーとする。
+    ///
+    /// 親ボックスのペイロード残り（`&payload[offset..]` 等）を `buf` に渡した場合も、
+    /// 「末尾」は渡したスライスの末尾を指す。ネストした `size==0` は後続の兄弟ボックスを
+    /// 飲み込んで成功し得るため、呼び出し側はファイル末尾のボックスに限って使うこと。
+    ///
+    /// 前提:
+    /// - `buf` がファイル末尾を含む完全なデータである（またはその前提を呼び出し側が保証する）
     /// - ストリーミングやチャンク読み込みには非対応
     ///
     /// ストリーミング対応が必要な場合は、呼び出し側で別途サイズ管理が必要となる。
@@ -163,15 +172,15 @@ impl BoxHeader {
 
         let mut box_size = usize::try_from(header.box_size.get())
             .map_err(|_| Error::invalid_data("too large box size"))?;
-        if box_size < header_size {
+
+        if header.box_size == BoxSize::VARIABLE_SIZE {
+            box_size = buf.len();
+        } else if box_size < header_size {
+            // `BoxSize::U64(0)`（largesize=0）もここに落ちる（可変長としては扱わない）
             return Err(Error::invalid_data("box size is smaller than header size"));
         }
-        Error::check_buffer_size(box_size, buf)?;
 
-        // サイズが0の場合は、バッファ全体を使用する（ファイル末尾の可変長ボックスと想定）
-        if box_size == 0 {
-            box_size = buf.len();
-        }
+        Error::check_buffer_size(box_size, buf)?;
 
         Ok((header, &buf[header_size..box_size]))
     }
@@ -222,7 +231,7 @@ impl Decode for BoxHeader {
         box_type.copy_from_slice(&buf[offset..offset + 4]);
         offset += 4;
 
-        let box_type = if box_type == [b'u', b'u', b'i', b'd'] {
+        let box_type = if box_type == *b"uuid" {
             Error::check_buffer_size(offset + 16, buf)?;
 
             let mut uuid = [0; 16];
@@ -308,11 +317,18 @@ impl FullBoxFlags {
     }
 
     /// `(ビット位置、フラグがセットされているかどうか)` のイテレーターを受け取って、対応するビットフラグを作成する
+    ///
+    /// ビット位置が `u32` の型幅（32 bit）以上の場合、そのビットは 0 として無視する。
+    /// 同じビット位置が複数回渡された場合は OR で合成される（冪等）。
     pub fn from_flags<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = (usize, bool)>,
     {
-        let flags = iter.into_iter().filter(|x| x.1).map(|x| 1 << x.0).sum();
+        let flags: u32 = iter
+            .into_iter()
+            .filter(|x| x.1 && x.0 < u32::BITS as usize)
+            .map(|x| 1u32 << x.0)
+            .fold(0u32, |acc, bit| acc | bit);
         Self(flags)
     }
 
@@ -322,8 +338,13 @@ impl FullBoxFlags {
     }
 
     /// 指定されたビット位置のフラグがセットされているかどうかを判定する
+    ///
+    /// ビット位置が `u32` の型幅（32 bit）以上の場合は常に `false` を返す。
     pub const fn is_set(self, i: usize) -> bool {
-        (self.0 & (1 << i)) != 0
+        if i >= u32::BITS as usize {
+            return false;
+        }
+        (self.0 & (1u32 << i)) != 0
     }
 }
 
@@ -345,21 +366,35 @@ impl Decode for FullBoxFlags {
 /// [`BaseBox`] のサイズ
 ///
 /// ボックスのサイズは原則として、ヘッダー部分とペイロード部分のサイズを足した値となる。
-/// ただし、MP4 ファイルの末尾にあるボックスについてはサイズを 0 とすることで、ペイロードが可変長（追記可能）なボックスとして扱うことが可能となっている。
+/// ただし、MP4 ファイルの末尾にあるボックスについては 32-bit の `size` を 0
+/// （[`BoxSize::VARIABLE_SIZE`]）とすることで、ペイロードが可変長（追記可能）なボックスとして
+/// 扱うことが可能となっている。デコード時の末尾拡張は [`BoxHeader::decode_header_and_payload`]
+/// が行い、`size==1` + `largesize==0`（[`BoxSize::LARGE_VARIABLE_SIZE`]）は可変長としては扱わない。
+///
+/// 仕様上、ボックスヘッダーの `size` フィールドが 1 のときは 32-bit サイズを 64-bit の
+/// `largesize` フィールドで拡張表現する（`aligned(8) class Box { unsigned int(32) size;
+/// if (size==1) { unsigned int(64) largesize; } ... }`）。
+/// Rust 側ではこの符号化上の分岐を variant で区別する
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[allow(missing_docs)]
 pub enum BoxSize {
+    /// 32-bit の `size` フィールドで表される場合
     U32(u32),
+
+    /// `size==1` として 64-bit の `largesize` フィールドが後続する場合
     U64(u64),
 }
 
 impl BoxSize {
-    /// ファイル末尾に位置する可変長のボックスを表すための特別な値
+    /// ファイル末尾に位置する可変長のボックスを表すための特別な値（32-bit `size==0`）
+    ///
+    /// [`BoxHeader`] の `Decode` は値として許容するだけであり、バッファ末尾までの拡張は
+    /// [`BoxHeader::decode_header_and_payload`] が行う。
     pub const VARIABLE_SIZE: Self = Self::U32(0);
 
-    /// ファイル末尾に位置する可変長のボックスを表すための特別な値
+    /// エンコード用の特別な値（`size==1` + `largesize==0`）。64-bit サイズ符号化でヘッダー幅を確保する
     ///
-    /// 基本的には [`BoxSize::VARIABLE_SIZE`] と同じだが、4GB を超えるボックスに備えて、こちらは 64 ビットサイズエンコーディングを使用する
+    /// デコードでは [`BoxHeader::decode_header_and_payload`] が可変長としては扱わずエラーにする
+    /// （詳細は同関数のドキュメントを参照）。
     pub const LARGE_VARIABLE_SIZE: Self = Self::U64(0);
 
     /// ボックス種別とペイロードサイズを受け取って、対応する [`BoxSize`] インスタンスを作成する
@@ -516,11 +551,15 @@ impl<I: Decode, F: Decode> Decode for FixedPointNumber<I, F> {
 }
 
 /// null 終端の UTF-8 文字列
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// [`Default`] の実装は空文字列を返し、[`Self::EMPTY`] と同値になる。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Utf8String(String);
 
 impl Utf8String {
     /// 空文字列
+    ///
+    /// [`Self::default()`] と同値
     pub const EMPTY: Self = Utf8String(String::new());
 
     /// 終端の null を含まない文字列を受け取って [`Utf8String`] インスタンスを作成する
@@ -582,10 +621,15 @@ impl Decode for Utf8String {
 }
 
 /// `A` か `B` のどちらかの値を保持する列挙型
+///
+/// 各 variant は保持する型引数以外に意味を持たない汎用ラッパーで、
+/// 具体的な用途は利用側の型定義（例: [`crate::boxes::StblBox::stco_or_co64_box`]）が決める
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[allow(missing_docs)]
 pub enum Either<A, B> {
+    /// 型引数 `A` に対応する variant
     A(A),
+
+    /// 型引数 `B` に対応する variant
     B(B),
 }
 
@@ -672,6 +716,97 @@ where
     }
 }
 
+/// [`crate::boxes::MdhdBox::language`] 用の 3 文字言語コード
+///
+/// 各バイトは `0x60..=0x7F` の範囲に収まる必要がある
+/// （ISO/IEC 14496-12 の `unsigned int(5)[3]` パック規約に由来）。
+/// この規約は「各文字を `char - 0x60` した値を 5 ビットにパックする」と定めており、
+/// `0x60..=0x7F` の外側の値を受理してしまうと encode 時に隣接ビットを破壊するため
+/// [`Self::new`] / [`Self::from_ascii`] で入り口で弾く。
+///
+/// 一方、ISO-639-2/T が定義する文字集合（`a-z`）まで絞る厳格化は行わない。
+/// `0x7B..=0x7F`（`{|}~<DEL>`）などは 5 ビット的には有効に符号化できるため、
+/// エンコーダとして書ける MP4 は受理する。プレイヤーが表示できるかは呼び出し側の責任。
+///
+/// なお本ライブラリの [`crate::boxes::MdhdBox::decode`] は 5 ビットマスクで
+/// 防御的に読み取るため、decode 直後の値は必ず `0x60..=0x7F` に収まる。
+/// したがって decode 結果を [`Self::new`] に通す経路（crate 内の `expect`）は
+/// 理論上必ず `Some` を返す。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LanguageCode([u8; 3]);
+
+impl LanguageCode {
+    /// 未定義言語（`*b"und"`）
+    ///
+    /// ISO 639-2 で「未定義」を意味する 3 文字コード。
+    ///
+    /// なお本型は「未指定」と「利用者が明示的に `und` を指定」を型上で区別しない。
+    /// 両者は同じ値になる。将来この区別が必要になった場合は
+    /// [`crate::mux::TrackMetadata::language`] の型を `Option<LanguageCode>` に変える
+    /// 破壊的変更を伴うため、その時点で改めて設計する
+    pub const UNDEFINED: Self = Self(*b"und");
+
+    /// 3 バイト配列から作る
+    ///
+    /// 各バイトが `0x60..=0x7F` の範囲外なら [`None`] を返す
+    pub fn new(code: [u8; 3]) -> Option<Self> {
+        if code.iter().all(|&b| (0x60..=0x7F).contains(&b)) {
+            Some(Self(code))
+        } else {
+            None
+        }
+    }
+
+    /// 3 バイトの文字列から作る（例: `"eng"`, `"jpn"`）
+    ///
+    /// 受理するのは各バイトが `0x60..=0x7F` の範囲に収まる 3 バイトの文字列だけである。
+    /// ASCII 全域を受理するわけではない（大文字 `"ENG"` のように範囲外のバイトを含む場合は
+    /// [`None`] を返す）。バイト長が 3 でない場合（マルチバイト UTF-8 の 1 文字などを含む）も
+    /// [`None`] を返す。
+    ///
+    /// 命名は「ISO/IEC 14496-12 の unsigned int(5)\[3\] パック用の ASCII サブセット」の意で、
+    /// ASCII 全域受理を意味しない。
+    pub fn from_ascii(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 3 {
+            return None;
+        }
+        Self::new([bytes[0], bytes[1], bytes[2]])
+    }
+
+    /// 内部の 3 バイト配列を返す
+    pub const fn as_bytes(self) -> [u8; 3] {
+        self.0
+    }
+}
+
+impl Default for LanguageCode {
+    fn default() -> Self {
+        Self::UNDEFINED
+    }
+}
+
+impl core::fmt::Debug for LanguageCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // 内部の 3 バイトは常に `0x60..=0x7F`（ASCII サブセット）に収まるため
+        // `from_utf8` は基本的に成功する。防御的に失敗時はバイト列で表示する
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            f.debug_tuple("LanguageCode").field(&s).finish()
+        } else {
+            f.debug_tuple("LanguageCode").field(&self.0).finish()
+        }
+    }
+}
+
+impl core::fmt::Display for LanguageCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            return write!(f, "{s}");
+        }
+        write!(f, "{:?}", self.0)
+    }
+}
+
 /// トラックの種類を表す列挙型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TrackKind {
@@ -680,6 +815,14 @@ pub enum TrackKind {
 
     /// 映像トラック
     Video,
+
+    /// 字幕トラック
+    ///
+    /// ISO/IEC 14496-30 の `stpp` / `wvtt` や 3GPP TS 26.245 の `tx3g` などの
+    /// Timed Text 系サンプルエントリーを持つトラックを表す。
+    /// 対応するハンドラー種別は `subt`（`stpp` 用）または `text`（`wvtt` / `tx3g` 用）で、
+    /// どちらもこのバリアントにマップされる。
+    Subtitle,
 }
 
 /// [ISO/IEC 14496-12] Sample Flags

@@ -246,4 +246,3 @@ c-api の関数がそのまま利用可能です。詳細は `crates/c-api/READM
   "decSpecificInfo": [17, 144, 109, ...]
 }
 ```
-

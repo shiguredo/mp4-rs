@@ -1,7 +1,7 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use shiguredo_mp4::{
-    Decode, Either, Encode, FixedPointNumber, Mp4File, Mp4FileTime, Utf8String,
+    Decode, Either, Encode, FixedPointNumber, LanguageCode, Mp4File, Mp4FileTime, Utf8String,
     aux::SampleTableAccessor,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MinfBox, MoovBox,
@@ -135,7 +135,7 @@ impl OutputMp4Builder {
             modification_time: Mp4FileTime::default(),
             timescale: OUTPUT_TIMESCALE,
             duration: track.duration().as_micros() as u64,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: LanguageCode::UNDEFINED,
         };
         let hdlr_box = HdlrBox {
             handler_type: if track.is_audio {

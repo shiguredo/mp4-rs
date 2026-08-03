@@ -11,6 +11,9 @@
 
 ## develop
 
+- [CHANGE] `MdhdBox::language` の型を `[u8; 3]` から `LanguageCode` に置き換える
+  - `MdhdBox::LANGUAGE_UNDEFINED` を削除し、`LanguageCode::UNDEFINED` に集約する
+  - @sile
 - [CHANGE] C API の `mp4_estimate_maximum_moov_box_size()` を任意トラック数対応のシグネチャに変更する
   - `(audio_sample_count, video_sample_count)` から `(sample_counts, track_count)` に置き換える
   - 字幕を含む 3 トラック以上の構成でも faststart 用の予約サイズを見積もれるようにする

@@ -35,19 +35,9 @@ pub fn assert_track_metadata(
     trak_box: &TrakBox,
     expected: &TrackMetadata,
 ) -> Result<(), TestCaseError> {
-    // `MdhdBox::decode` は 5 ビットマスクで各バイトを `0x60..=0x7F` に丸めるため
-    // 理論的にはここは必ず `Some` になる。防御的に prop_assert! で扱う
-    let raw = trak_box.mdia_box.mdhd_box.language;
-    let actual_language = LanguageCode::new(raw);
-    prop_assert!(
-        actual_language.is_some(),
-        "muxer が LanguageCode 範囲外 (0x60..=0x7F 外) の language={:?} を出力した",
-        raw
-    );
-    let actual_language = actual_language.expect("上の prop_assert! で Some を保証済み");
     prop_assert_eq!(
         expected.language,
-        actual_language,
+        trak_box.mdia_box.mdhd_box.language,
         "mdhd.language が入力と一致しない"
     );
     prop_assert_eq!(

@@ -6,8 +6,8 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    BoxSize, BoxType, Decode, Either, Encode, FixedPointNumber, Mp4FileTime, SampleFlags,
-    TrackKind, Utf8String,
+    BoxSize, BoxType, Decode, Either, Encode, FixedPointNumber, LanguageCode, Mp4FileTime,
+    SampleFlags, TrackKind, Utf8String,
     boxes::{
         AudioSampleEntryFields, BoxRecord, Brand, Co64Box, DinfBox, DopsBox, FtabBox, FtypBox,
         HdlrBox, MdhdBox, MdiaBox, MediaHeader, MinfBox, MoovBox, MvexBox, MvhdBox, NmhdBox,
@@ -62,7 +62,7 @@ fn minimal_mdhd_box() -> MdhdBox {
         modification_time: Mp4FileTime::from_secs(0),
         timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
         duration: 0,
-        language: MdhdBox::LANGUAGE_UNDEFINED,
+        language: LanguageCode::UNDEFINED,
     }
 }
 
@@ -463,6 +463,7 @@ proptest! {
         timescale in 1u32..=u32::MAX,
         duration in any::<u64>(),
         language in prop::array::uniform3(0x61u8..=0x7Au8)
+            .prop_map(|b| LanguageCode::new(b).expect("Strategy の値域は有効な言語コード"))
     ) {
         let mdia = MdiaBox {
             mdhd_box: MdhdBox {

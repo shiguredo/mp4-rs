@@ -730,14 +730,14 @@ where
 ///
 /// なお本ライブラリの [`crate::boxes::MdhdBox::decode`] は 5 ビットマスクで
 /// 防御的に読み取るため、decode 直後の値は必ず `0x60..=0x7F` に収まる。
-/// したがって decode 側の値を [`Self::new`] に通す経路は理論上必ず `Some` を返す。
+/// したがって decode 結果を [`Self::new`] に通す経路（crate 内の `expect`）は
+/// 理論上必ず `Some` を返す。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LanguageCode([u8; 3]);
 
 impl LanguageCode {
     /// 未定義言語（`*b"und"`）
     ///
-    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] と同値。
     /// ISO 639-2 で「未定義」を意味する 3 文字コード。
     ///
     /// なお本型は「未指定」と「利用者が明示的に `und` を指定」を型上で区別しない。
@@ -775,7 +775,7 @@ impl LanguageCode {
     }
 
     /// 内部の 3 バイト配列を返す
-    pub fn as_bytes(self) -> [u8; 3] {
+    pub const fn as_bytes(self) -> [u8; 3] {
         self.0
     }
 }

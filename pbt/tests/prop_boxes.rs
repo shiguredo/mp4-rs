@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, Mp4FileTime, Utf8String,
+    Decode, Encode, FixedPointNumber, LanguageCode, Mp4FileTime, Utf8String,
     boxes::{
         Brand, Co64Box, CslgBox, CttsBox, CttsEntry, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry,
         FtypBox, HdlrBox, MdhdBox, MvhdBox, SdtpBox, SdtpSampleFlags, SmhdBox, StcoBox, StscBox,
@@ -570,6 +570,7 @@ proptest! {
         timescale in 1u32..=u32::MAX,
         duration in 0u64..=(u32::MAX as u64),
         language in prop::array::uniform3(0x61u8..=0x7Au8)
+            .prop_map(|b| LanguageCode::new(b).expect("Strategy の値域は有効な言語コード"))
     ) {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(creation_time),
@@ -598,6 +599,7 @@ proptest! {
         timescale in 1u32..=u32::MAX,
         duration in any::<u64>(),
         language in prop::array::uniform3(0x61u8..=0x7Au8)
+            .prop_map(|b| LanguageCode::new(b).expect("Strategy の値域は有効な言語コード"))
     ) {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(creation_time),
@@ -988,53 +990,35 @@ mod boundary_tests {
         assert!(decoded.flag_track_size_is_aspect_ratio);
     }
 
-    /// MdhdBox: 言語コードの境界
+    /// MdhdBox: `LanguageCode` の受理境界と代表値の encode/decode
+    ///
+    /// `0x60` / `0x7F` は 5 ビットパックの下限・上限（code = 0 / 31）。
+    /// `0x61` / `0x7A` は ISO-639-2/T の文字集合（`a-z`）の端。
     #[test]
     fn mdhd_box_language_boundary() {
-        // 最小値 'aaa' (0x61)
-        let mdhd_min = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
-            duration: 0,
-            language: [0x61, 0x61, 0x61],
-        };
-        let encoded = mdhd_min
-            .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
-        let (decoded, _) = MdhdBox::decode(&encoded)
-            .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
-        assert_eq!(decoded.language, [0x61, 0x61, 0x61]);
+        fn roundtrip(language: LanguageCode) {
+            let mdhd = MdhdBox {
+                creation_time: Mp4FileTime::from_secs(0),
+                modification_time: Mp4FileTime::from_secs(0),
+                timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
+                duration: 0,
+                language,
+            };
+            let encoded = mdhd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+            let (decoded, _) = MdhdBox::decode(&encoded)
+                .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
+            assert_eq!(decoded.language, language);
+        }
 
-        // 最大値 'zzz' (0x7A)
-        let mdhd_max = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
-            duration: 0,
-            language: [0x7A, 0x7A, 0x7A],
-        };
-        let encoded = mdhd_max
-            .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
-        let (decoded, _) = MdhdBox::decode(&encoded)
-            .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
-        assert_eq!(decoded.language, [0x7A, 0x7A, 0x7A]);
-
-        // 標準的な "und" (undefined)
-        let mdhd_und = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
-            duration: 0,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
-        };
-        let encoded = mdhd_und
-            .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
-        let (decoded, _) = MdhdBox::decode(&encoded)
-            .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
-        assert_eq!(decoded.language, *b"und");
+        // LanguageCode の下限（5 ビット code = 0）
+        roundtrip(LanguageCode::new([0x60, 0x60, 0x60]).expect("0x60 は範囲内"));
+        // LanguageCode の上限（5 ビット code = 31）
+        roundtrip(LanguageCode::new([0x7F, 0x7F, 0x7F]).expect("0x7F は範囲内"));
+        // ISO-639-2/T の文字集合の下限 'aaa'
+        roundtrip(LanguageCode::new([0x61, 0x61, 0x61]).expect("0x61 は範囲内"));
+        // ISO-639-2/T の文字集合の上限 'zzz'
+        roundtrip(LanguageCode::new([0x7A, 0x7A, 0x7A]).expect("0x7A は範囲内"));
+        roundtrip(LanguageCode::UNDEFINED);
     }
 
     /// HdlrBox: 空の name

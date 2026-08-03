@@ -284,8 +284,13 @@ impl Mp4FileMuxer {
 ///
 /// # 引数
 ///
-/// - `audio_sample_count`: 音声トラック内の予想サンプル数
-/// - `video_sample_count`: 映像トラック内の予想サンプル数
+/// - `sample_counts`: トラックごとの予想サンプル数の配列
+///   - 配列内の要素の順序は任意（合計サンプル数と要素数だけを見積もりに使う）
+///   - `uint32_t` として整列されている必要がある（4 バイト境界）
+///   - NULL の場合は `track_count` の値によらず `0` を返す（誤用扱い）
+/// - `track_count`: `sample_counts` の要素数（トラック数）
+///   - `sample_counts` が NULL でなく `track_count` が `0` の場合は空スライスとして扱い、
+///     トラックなしの基本オーバーヘッド相当の値を返す
 ///
 /// # 戻り値
 ///
@@ -293,33 +298,48 @@ impl Mp4FileMuxer {
 ///
 /// # NOTE
 ///
-/// この関数は音声・映像の 2 トラック分しか見積もれない。
-/// 字幕トラックを含める場合や、サンプルエントリーが大きい場合
-/// （`stpp` の名前空間文字列が長い場合など）、
-/// サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合には
-/// 見積もりが不足することがある。
-/// その場合は faststart が無効になり moov ボックスがファイル末尾に配置されるだけで、
-/// 生成される MP4 ファイル自体は正しい。
-/// 見積もりが不足しても呼び出し側にはエラーとして通知されないため、
-/// faststart を確実に有効にしたい場合は余裕を持たせた値を
+/// この関数は概算であり、以下の場合には見積もりが不足することがある:
+/// - サンプルエントリーが大きい場合（`stpp` の名前空間文字列が長い場合など）
+/// - サンプルごとにトラックを切り替えてチャンクが細かく分かれる場合
+///
+/// 見積もりが不足しても生成される MP4 ファイル自体は正しく、
+/// faststart が無効になり moov ボックスがファイル末尾に配置されるだけで済む。
+/// ただし縮退したことを呼び出し側で検知する手段は無い。
+/// faststart を確実に有効にしたい場合は、余裕を持たせた値を
 /// `mp4_file_muxer_set_reserved_moov_box_size()` に直接指定すること
+///
+/// # 関連関数
+///
+/// - `mp4_file_muxer_set_reserved_moov_box_size()`: 見積もった値を faststart 用の予約サイズとして指定する
 ///
 /// # 使用例
 ///
 /// ```c
-/// // 音声 1000 サンプル、映像 3000 フレームの場合
-/// uint32_t required_size = mp4_estimate_maximum_moov_box_size(1000, 3000);
-/// mp4_file_muxer_set_reserved_moov_box_size(muxer, required_size);
+/// // 合計 3 トラック、4100 サンプルの場合（トラックの並び順は任意）
+/// uint32_t sample_counts[] = {1000, 3000, 100};
+/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+///     sample_counts, 3);
+/// mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
 /// ```
 #[unsafe(no_mangle)]
-pub extern "C" fn mp4_estimate_maximum_moov_box_size(
-    audio_sample_count: u32,
-    video_sample_count: u32,
+pub unsafe extern "C" fn mp4_estimate_maximum_moov_box_size(
+    sample_counts: *const u32,
+    track_count: u32,
 ) -> u32 {
-    shiguredo_mp4::mux::estimate_maximum_moov_box_size(&[
-        audio_sample_count as usize,
-        video_sample_count as usize,
-    ]) as u32
+    if sample_counts.is_null() {
+        return 0;
+    }
+
+    let counts: Vec<usize> =
+        unsafe { std::slice::from_raw_parts(sample_counts, track_count as usize) }
+            .iter()
+            .map(|&count| count as usize)
+            .collect();
+
+    // 64bit ホストで見積もり結果が u32::MAX を超えた場合、`as u32` では下位 32bit だけ残り
+    // 呼び出し側から見て「見積もりが実 moov より小さい」silent truncation になる。
+    // これを避けるため u32::MAX に飽和させる（それでも足りない場合は faststart を諦めるしかない）。
+    u32::try_from(shiguredo_mp4::mux::estimate_maximum_moov_box_size(&counts)).unwrap_or(u32::MAX)
 }
 
 /// 新しい `Mp4FileMuxer` インスタンスを作成して、それへのポインタを返す
@@ -497,7 +517,9 @@ pub unsafe extern "C" fn mp4_file_muxer_get_last_error(
 /// Mp4FileMuxer *muxer = mp4_file_muxer_new();
 ///
 /// // 見積もり値を使用して moov ボックスサイズを設定
-/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(100, 3000);
+/// uint32_t sample_counts[] = {100, 3000};
+/// uint32_t estimated_size = mp4_estimate_maximum_moov_box_size(
+///     sample_counts, 2);
 /// mp4_file_muxer_set_reserved_moov_box_size(muxer, estimated_size);
 ///
 /// // マルチプレックス処理を初期化

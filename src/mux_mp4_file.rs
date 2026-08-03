@@ -96,9 +96,20 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
     // - stco_box/co64_box（チャンクオフセット）: チャンクあたり ~8 バイト
     const BYTES_PER_SAMPLE: usize = 16;
 
+    // wasm32 のような usize が 32bit のターゲットで、極端に多いトラック数・サンプル数を
+    // 与えられたときのラップアラウンドを避けるため、加算・乗算はすべて saturating で行う。
+    // オーバーフローが起きた場合は usize::MAX に飽和し、呼び出し側から見ると
+    // 「見積もりが十分大きい」状態になるだけで、生成される MP4 の正しさには影響しない。
+    let track_overhead = sample_count_per_track
+        .len()
+        .saturating_mul(PER_TRACK_OVERHEAD);
+    let sample_overhead = sample_count_per_track
+        .iter()
+        .fold(0usize, |acc, &n| acc.saturating_add(n))
+        .saturating_mul(BYTES_PER_SAMPLE);
     BASE_MOOV_OVERHEAD
-        + (sample_count_per_track.len() * PER_TRACK_OVERHEAD)
-        + (sample_count_per_track.iter().sum::<usize>() * BYTES_PER_SAMPLE)
+        .saturating_add(track_overhead)
+        .saturating_add(sample_overhead)
 }
 
 /// トラック単位のメタデータ（`mdhd.language` / `hdlr.name`）

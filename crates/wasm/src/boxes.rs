@@ -894,8 +894,8 @@ mod tests {
     /// 必須スカラーフィールドを 1 つずつ欠落させた JSON を渡し、
     /// いずれのケースでも `parse_json_hevc_sample_entry_fields` が `Err` を返すことを検証する。
     ///
-    /// closed issue 0047 で確立した「フェーズ 1 で全 JSON フィールドを Rust 型に落として
-    /// からフェーズ 2 で一括メモリ確保する」順序の invariant を、18 個の全スカラー欠落
+    /// 「フェーズ 1 で全 JSON フィールドを Rust 型に落としてから
+    /// フェーズ 2 で一括メモリ確保する」順序の invariant を、18 個の全スカラー欠落
     /// パターンで守るための表駆動テスト
     #[test]
     fn test_parse_json_hevc_sample_entry_fields_rejects_each_missing_scalar_field() {

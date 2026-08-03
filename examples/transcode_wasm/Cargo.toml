@@ -8,6 +8,8 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+# 非同期処理用のコンビネータ (join_all など) に使用する
 futures = "0.3"
+# JSON の入出力に使用する
 nojson = "0.3"
 shiguredo_mp4 = { "path" = "../../" }

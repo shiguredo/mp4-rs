@@ -10,4 +10,5 @@ name = "mp4_wasm"
 
 [dependencies]
 c_api = { package = "c-api", path = "../c-api" }
+# JSON の入出力に使用する
 nojson = "0.3"

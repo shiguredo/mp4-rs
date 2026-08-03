@@ -12,4 +12,5 @@ name = "mp4"
 shiguredo_mp4 = { path = "../../" }
 
 [build-dependencies]
+# C ヘッダー (mp4.h) を Rust コードから生成するために使用する
 cbindgen = { version = "0.29", default-features = false }

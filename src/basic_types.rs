@@ -737,7 +737,6 @@ pub struct LanguageCode([u8; 3]);
 impl LanguageCode {
     /// 未定義言語（`*b"und"`）
     ///
-    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] と同値。
     /// ISO 639-2 で「未定義」を意味する 3 文字コード。
     ///
     /// なお本型は「未指定」と「利用者が明示的に `und` を指定」を型上で区別しない。
@@ -775,7 +774,7 @@ impl LanguageCode {
     }
 
     /// 内部の 3 バイト配列を返す
-    pub fn as_bytes(self) -> [u8; 3] {
+    pub const fn as_bytes(self) -> [u8; 3] {
         self.0
     }
 }

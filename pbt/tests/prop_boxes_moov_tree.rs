@@ -1,139 +1,12 @@
 //! `src/boxes_moov_tree.rs` に定義される moov ツリー配下ボックスの Property-Based Testing
 
-mod moov_tree_error_tests {
-    use std::num::NonZeroU32;
-
-    use shiguredo_mp4::{Encode, Mp4FileTime, boxes::MdhdBox};
-
-    // ===== MdhdBox の不正な言語コードエラー =====
-
-    /// MdhdBox: 言語コードが 0x60 未満でエンコードエラー
-    #[test]
-    fn mdhd_box_invalid_language_code_low() {
-        let mdhd = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
-            duration: 0,
-            language: [0x00, 0x61, 0x61], // 最初の文字が 0x60 未満
-        };
-        let result = mdhd.encode_to_vec();
-        assert!(result.is_err());
-    }
-
-    /// MdhdBox: 言語コードが 0x60 未満 (2番目の文字)
-    #[test]
-    fn mdhd_box_invalid_language_code_middle() {
-        let mdhd = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
-            duration: 0,
-            language: [0x61, 0x00, 0x61], // 2番目の文字が 0x60 未満
-        };
-        let result = mdhd.encode_to_vec();
-        assert!(result.is_err());
-    }
-
-    /// MdhdBox: 言語コードが 0x60 未満 (3番目の文字)
-    #[test]
-    fn mdhd_box_invalid_language_code_last() {
-        let mdhd = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
-            duration: 0,
-            language: [0x61, 0x61, 0x00], // 3番目の文字が 0x60 未満
-        };
-        let result = mdhd.encode_to_vec();
-        assert!(result.is_err());
-    }
-
-    /// MdhdBox: 言語コードが 0x7F を超える (1番目の文字) でエンコードエラー
-    #[test]
-    fn mdhd_box_invalid_language_code_high() {
-        let mdhd = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
-            duration: 0,
-            // 1 文字目が 0x7F (= 0x60 + 31) を超え、char - 0x60 が 5 ビットに収まらない
-            language: [0x80, 0x61, 0x61],
-        };
-        let result = mdhd.encode_to_vec();
-        assert!(result.is_err());
-    }
-
-    /// MdhdBox: 言語コードが 0x7F を超える (2番目の文字) でエンコードエラー
-    #[test]
-    fn mdhd_box_invalid_language_code_high_middle() {
-        let mdhd = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
-            duration: 0,
-            // 2 文字目が 0x7F (= 0x60 + 31) を超え、char - 0x60 が 5 ビットに収まらない
-            language: [0x61, 0x80, 0x61],
-        };
-        let result = mdhd.encode_to_vec();
-        assert!(result.is_err());
-    }
-
-    /// MdhdBox: 言語コードが 0x7F を超える (3番目の文字) でエンコードエラー
-    #[test]
-    fn mdhd_box_invalid_language_code_high_last() {
-        let mdhd = MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
-            duration: 0,
-            // 3 文字目が 0x7F (= 0x60 + 31) を超え、char - 0x60 が 5 ビットに収まらない
-            language: [0x61, 0x61, 0x80],
-        };
-        let result = mdhd.encode_to_vec();
-        assert!(result.is_err());
-    }
-
-    /// MdhdBox: 言語コードの 5 ビット境界値（下限・上限）
-    ///
-    /// `0x5F` はエラー、`0x60` / `0x7F` は成功、`0x80` はエラーであることを
-    /// 全 3 文字位置で確認する。
-    #[test]
-    fn mdhd_box_language_code_5bit_boundaries() {
-        let timescale = NonZeroU32::new(48000).expect("timescale は非ゼロである");
-        let base = |language: [u8; 3]| MdhdBox {
-            creation_time: Mp4FileTime::from_secs(0),
-            modification_time: Mp4FileTime::from_secs(0),
-            timescale,
-            duration: 0,
-            language,
-        };
-
-        // 下限: 0x5F はエラー、0x60 (code = 0) は成功
-        assert!(base([0x5F, 0x61, 0x61]).encode_to_vec().is_err());
-        assert!(base([0x61, 0x5F, 0x61]).encode_to_vec().is_err());
-        assert!(base([0x61, 0x61, 0x5F]).encode_to_vec().is_err());
-        assert!(base([0x60, 0x61, 0x61]).encode_to_vec().is_ok());
-        assert!(base([0x61, 0x60, 0x61]).encode_to_vec().is_ok());
-        assert!(base([0x61, 0x61, 0x60]).encode_to_vec().is_ok());
-
-        // 上限: 0x7F (code = 31) は成功、0x80 はエラー
-        assert!(base([0x7F, 0x61, 0x61]).encode_to_vec().is_ok());
-        assert!(base([0x61, 0x7F, 0x61]).encode_to_vec().is_ok());
-        assert!(base([0x61, 0x61, 0x7F]).encode_to_vec().is_ok());
-        assert!(base([0x80, 0x61, 0x61]).encode_to_vec().is_err());
-        assert!(base([0x61, 0x80, 0x61]).encode_to_vec().is_err());
-        assert!(base([0x61, 0x61, 0x80]).encode_to_vec().is_err());
-    }
-}
-
 // ===== boxes_moov_tree.rs 系ボックスの境界値・バリアント違いテスト =====
 
 mod moov_tree_boundary_tests {
     use std::num::NonZeroU32;
 
     use shiguredo_mp4::{
-        Decode, Encode, FixedPointNumber, Mp4FileTime, Utf8String,
+        Decode, Encode, FixedPointNumber, LanguageCode, Mp4FileTime, Utf8String,
         boxes::{
             Co64Box, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, HdlrBox, MdhdBox, MinfBox,
             MvhdBox, StblBox, StcoBox, StscBox, StsdBox, StszBox, SttsBox, TkhdBox, UrlBox,
@@ -256,7 +129,7 @@ mod moov_tree_boundary_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             duration: 0,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: LanguageCode::UNDEFINED,
         };
         let encoded = mdhd.encode_to_vec().expect("エンコードは失敗しない");
         let (decoded, _) = MdhdBox::decode(&encoded).expect("デコードは失敗しない");
@@ -529,7 +402,7 @@ mod moov_tree_base_box_tests {
     use std::num::NonZeroU32;
 
     use shiguredo_mp4::{
-        BaseBox, BoxType, Either, FixedPointNumber, Mp4FileTime,
+        BaseBox, BoxType, Either, FixedPointNumber, LanguageCode, Mp4FileTime,
         boxes::{
             Co64Box, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, HdlrBox, MdhdBox, MdiaBox,
             MediaHeader, MinfBox, MoovBox, MvhdBox, SmhdBox, StblBox, StcoBox, StscBox, StsdBox,
@@ -605,7 +478,7 @@ mod moov_tree_base_box_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(30).expect("timescale は非ゼロである"),
             duration: 1000,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: LanguageCode::UNDEFINED,
         };
         assert_eq!(mdhd.box_type(), BoxType::Normal(*b"mdhd"));
         let children: Vec<_> = mdhd.children().collect();
@@ -835,7 +708,7 @@ mod moov_tree_base_box_tests {
                 modification_time: Mp4FileTime::from_secs(0),
                 timescale: NonZeroU32::new(30).expect("timescale は非ゼロである"),
                 duration: 1000,
-                language: MdhdBox::LANGUAGE_UNDEFINED,
+                language: LanguageCode::UNDEFINED,
             },
             hdlr_box: HdlrBox {
                 handler_type: HdlrBox::HANDLER_TYPE_VIDE,

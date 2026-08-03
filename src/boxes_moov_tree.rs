@@ -6,7 +6,7 @@ use core::num::NonZeroU32;
 
 use crate::{
     BaseBox, BoxHeader, BoxType, Decode, Either, Encode, Error, FixedPointNumber, FullBox,
-    FullBoxFlags, FullBoxHeader, Mp4FileTime, Result, SampleFlags, Utf8String,
+    FullBoxFlags, FullBoxHeader, LanguageCode, Mp4FileTime, Result, SampleFlags, Utf8String,
     basic_types::as_box_object,
     boxes::{SampleEntry, UnknownBox, check_mandatory_box, with_box_type},
     descriptors::EsDescriptor,
@@ -860,28 +860,22 @@ pub struct MdhdBox {
     /// [`MdhdBox::timescale`] 単位で表したこのトラック（メディア）の尺
     pub duration: u64,
 
-    /// ISO-639-2/T 言語コード（3 文字の小文字 ASCII 相当を 3 バイト配列で保持する）
+    /// ISO-639-2/T 言語コード
     ///
     /// ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を
-    /// `unsigned int(5)` にパックするため、encode 時に各バイトが `0x60..=0x7F` の
-    /// 範囲外の場合はエラーを返す。範囲外の値をパックすると隣接ビットフィールドを
-    /// 破壊した不正な `mdhd` が生成されるため。
+    /// `unsigned int(5)` にパックする。各バイトが `0x60..=0x7F` に収まることは
+    /// [`LanguageCode`] の構築時（[`LanguageCode::new`] / [`LanguageCode::from_ascii`]）に
+    /// 検証済みである。
     ///
-    /// 一方、decode 側は 5 ビットマスクで防御的に読み取るため、必ず `0x60..=0x7F`
+    /// decode 側は 5 ビットマスクで防御的に読み取るため、必ず `0x60..=0x7F`
     /// の値を返す。したがって decode 直後の値を再 encode するラウンドトリップは
     /// 常に成功する。
-    pub language: [u8; 3],
+    pub language: LanguageCode,
 }
 
 impl MdhdBox {
     /// ボックス種別
     pub const TYPE: BoxType = BoxType::Normal(*b"mdhd");
-
-    /// 未定義を表す言語コード
-    ///
-    /// muxer 経由で組み立てる場合の型安全なラッパーは
-    /// [`crate::LanguageCode::UNDEFINED`]（同値の `*b"und"` を返す）
-    pub const LANGUAGE_UNDEFINED: [u8; 3] = *b"und";
 }
 
 impl Encode for MdhdBox {
@@ -904,21 +898,10 @@ impl Encode for MdhdBox {
             offset += (self.duration as u32).encode(&mut buf[offset..])?;
         }
 
-        // 各バイトの値域は `MdhdBox::language` の doc を参照。
+        // 各バイトの値域は `LanguageCode` 構築時に保証済み。
         let mut language: u16 = 0;
-        for l in &self.language {
-            let Some(code) = l.checked_sub(0x60) else {
-                return Err(Error::invalid_input(format!(
-                    "Invalid language code: {:?} (each byte must be in 0x60..=0x7F)",
-                    self.language
-                )));
-            };
-            if code > 31 {
-                return Err(Error::invalid_input(format!(
-                    "Invalid language code: {:?} (each byte must be in 0x60..=0x7F)",
-                    self.language
-                )));
-            }
+        for l in self.language.as_bytes() {
+            let code = l - 0x60;
             language = (language << 5) | code as u16;
         }
         offset += language.encode(&mut buf[offset..])?;
@@ -942,7 +925,7 @@ impl Decode for MdhdBox {
                 modification_time: Mp4FileTime::default(),
                 timescale: NonZeroU32::MIN,
                 duration: 0,
-                language: Self::LANGUAGE_UNDEFINED,
+                language: LanguageCode::UNDEFINED,
             };
 
             if full_header.version == 1 {
@@ -962,11 +945,13 @@ impl Decode for MdhdBox {
             }
 
             let language = u16::decode_at(payload, &mut offset)?;
-            this.language = [
+            let language_bytes = [
                 ((language >> 10) & 0b11111) as u8 + 0x60,
                 ((language >> 5) & 0b11111) as u8 + 0x60,
                 (language & 0b11111) as u8 + 0x60,
             ];
+            this.language = LanguageCode::new(language_bytes)
+                .expect("5-bit masked language bytes are always in 0x60..=0x7F");
 
             let _ = <[u8; 2]>::decode_at(payload, &mut offset)?;
 

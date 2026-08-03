@@ -1056,7 +1056,7 @@ impl Mp4FileMuxer {
             modification_time: creation_time,
             timescale: entry.timescale,
             duration: total_duration,
-            language: metadata.language.as_bytes(),
+            language: metadata.language,
         };
 
         let hdlr_box = HdlrBox {
@@ -1369,18 +1369,12 @@ mod tests {
 
     /// `TrackMetadata` を未指定のまま muxer を使ったときに生成される
     /// `mdhd.language` / `hdlr.name` のバイト列を回帰防止として固定する。
-    /// あわせて [`crate::LanguageCode::UNDEFINED`] と
-    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] が同値であることも担保する
     #[test]
     fn test_default_track_metadata_bytes() {
         let metadata = TrackMetadata::default();
 
         // mdhd.language は `*b"und"`
-        assert_eq!(metadata.language.as_bytes(), MdhdBox::LANGUAGE_UNDEFINED);
-        assert_eq!(
-            LanguageCode::UNDEFINED.as_bytes(),
-            MdhdBox::LANGUAGE_UNDEFINED
-        );
+        assert_eq!(metadata.language.as_bytes(), *b"und");
 
         // hdlr.name は末尾 null 1 バイトのみ
         assert_eq!(metadata.name.into_null_terminated_bytes(), vec![0u8]);

@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use shiguredo_mp4::{
-    Decode, Encode, FixedPointNumber, Mp4FileTime, Utf8String,
+    Decode, Encode, FixedPointNumber, LanguageCode, Mp4FileTime, Utf8String,
     boxes::{
         Brand, Co64Box, CslgBox, CttsBox, CttsEntry, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry,
         FtypBox, HdlrBox, MdhdBox, MvhdBox, SdtpBox, SdtpSampleFlags, SmhdBox, StcoBox, StscBox,
@@ -570,6 +570,7 @@ proptest! {
         timescale in 1u32..=u32::MAX,
         duration in 0u64..=(u32::MAX as u64),
         language in prop::array::uniform3(0x61u8..=0x7Au8)
+            .prop_map(|b| LanguageCode::new(b).expect("Strategy の値域は有効な言語コード"))
     ) {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(creation_time),
@@ -598,6 +599,7 @@ proptest! {
         timescale in 1u32..=u32::MAX,
         duration in any::<u64>(),
         language in prop::array::uniform3(0x61u8..=0x7Au8)
+            .prop_map(|b| LanguageCode::new(b).expect("Strategy の値域は有効な言語コード"))
     ) {
         let mdhd = MdhdBox {
             creation_time: Mp4FileTime::from_secs(creation_time),
@@ -997,14 +999,17 @@ mod boundary_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
             duration: 0,
-            language: [0x61, 0x61, 0x61],
+            language: LanguageCode::new([0x61, 0x61, 0x61]).expect("0x61 は範囲内"),
         };
         let encoded = mdhd_min
             .encode_to_vec()
             .expect("Vec への書き込みは失敗しない");
         let (decoded, _) = MdhdBox::decode(&encoded)
             .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
-        assert_eq!(decoded.language, [0x61, 0x61, 0x61]);
+        assert_eq!(
+            decoded.language,
+            LanguageCode::new([0x61, 0x61, 0x61]).expect("0x61 は範囲内")
+        );
 
         // 最大値 'zzz' (0x7A)
         let mdhd_max = MdhdBox {
@@ -1012,14 +1017,17 @@ mod boundary_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
             duration: 0,
-            language: [0x7A, 0x7A, 0x7A],
+            language: LanguageCode::new([0x7A, 0x7A, 0x7A]).expect("0x7A は範囲内"),
         };
         let encoded = mdhd_max
             .encode_to_vec()
             .expect("Vec への書き込みは失敗しない");
         let (decoded, _) = MdhdBox::decode(&encoded)
             .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
-        assert_eq!(decoded.language, [0x7A, 0x7A, 0x7A]);
+        assert_eq!(
+            decoded.language,
+            LanguageCode::new([0x7A, 0x7A, 0x7A]).expect("0x7A は範囲内")
+        );
 
         // 標準的な "und" (undefined)
         let mdhd_und = MdhdBox {
@@ -1027,14 +1035,14 @@ mod boundary_tests {
             modification_time: Mp4FileTime::from_secs(0),
             timescale: NonZeroU32::new(48000).expect("48000 は非ゼロ"),
             duration: 0,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: LanguageCode::UNDEFINED,
         };
         let encoded = mdhd_und
             .encode_to_vec()
             .expect("Vec への書き込みは失敗しない");
         let (decoded, _) = MdhdBox::decode(&encoded)
             .expect("直前にエンコードした有効な MdhdBox は必ずデコードできる");
-        assert_eq!(decoded.language, *b"und");
+        assert_eq!(decoded.language, LanguageCode::UNDEFINED);
     }
 
     /// HdlrBox: 空の name

@@ -750,7 +750,7 @@ impl Fmp4SegmentMuxer {
             modification_time: creation_time,
             timescale: entry.timescale,
             duration: 0,
-            language: metadata.language.as_bytes(),
+            language: metadata.language,
         };
 
         let minf_box = MinfBox {

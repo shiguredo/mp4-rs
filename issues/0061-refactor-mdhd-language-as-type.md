@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-08-03
-- Completed: YYYY-MM-DD
+- Completed: 2026-08-03
 - Model: Opus 4.7
 - Branch: feature/refactor-mdhd-language-as-type
 - Polished: 2026-08-03
@@ -166,3 +166,33 @@ this.language = LanguageCode::new(language_bytes)
 - 参照している全箇所（`examples/transcode_wasm/`、`pbt/tests/`（`common.rs` / `prop_boxes.rs` / `prop_container_boxes.rs` / `prop_boxes_moov_tree.rs` を含む）、`src/mux_mp4_file.rs`、`src/mux_fmp4_segment.rs`、`src/basic_types.rs`、`src/boxes_moov_tree.rs`）が新型に追従していること
 - `CHANGES.md` に破壊的変更として `[CHANGE]` エントリが記載されていること（公開フィールドの型変更と `LANGUAGE_UNDEFINED` 削除。主目的は設計清書のため Branch prefix は `feature/refactor-` のままとする。0053 が機能追加に伴う破壊的 API 変更を `feature/add-` + `[CHANGE]` で扱った先例に倣う）
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` / `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` が warning なしで通ること
+
+## 解決方法
+
+### 型置換と定数集約
+
+- `MdhdBox::language` の型を `LanguageCode` に置き換えた
+- `MdhdBox::LANGUAGE_UNDEFINED` を削除し、参照を `LanguageCode::UNDEFINED` に集約した
+- `LanguageCode::as_bytes` を `const fn` 化した
+- `LanguageCode::UNDEFINED` doc から旧 `MdhdBox::LANGUAGE_UNDEFINED` への intra-doc link を削除した
+
+### Encode / Decode
+
+- encode の 5 ビット範囲チェックを削除し、`LanguageCode` 構築時の保証に任せた
+- decode は 5 ビットマスク後に `LanguageCode::new(...).expect(...)`（英語メッセージ）で構築するようにした
+- `MdhdBox::language` の doc を型置換後の事実（検証は構築時、language 起因では encode 失敗しない）に合わせた
+
+### 参照箇所の追従
+
+- muxer（`build_mdia_box` / `build_init_trak`）は `metadata.language` をそのまま代入する形にした
+- `examples/transcode_wasm`、PBT（`common.rs` / `prop_boxes.rs` / `prop_container_boxes.rs` / `prop_boxes_moov_tree.rs`）を新型に合わせた
+- `assert_track_metadata` の `LanguageCode::new` 再構築をやめ、直接比較に簡素化した
+- `moov_tree_error_tests`（不正 `[u8; 3]` の encode エラー検証）は型置換後に構築不能のためモジュールごと削除した（範囲外拒否は `tests/test_basic_types.rs` の `LanguageCode` テストが担う）
+
+### テスト補強
+
+- `mdhd_box_language_boundary` に `LanguageCode` 受理端（`0x60` / `0x7F`）の決定的 roundtrip を追加した
+
+### CHANGES.md
+
+- `[CHANGE]` `MdhdBox::language` の型を `LanguageCode` に置き換える（`LANGUAGE_UNDEFINED` 削除を含む）を追記した

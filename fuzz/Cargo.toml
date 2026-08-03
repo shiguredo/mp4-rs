@@ -505,5 +505,6 @@ path = "fuzz_targets/fuzz_sample_table_accessor.rs"
 test = false
 
 [dependencies]
+# cargo-fuzz 用の fuzz ターゲットランタイム
 libfuzzer-sys = "0.4"
 shiguredo_mp4 = { path = ".." }

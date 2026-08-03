@@ -31,8 +31,8 @@
 //!
 //! let options = Mp4FileMuxerOptions {
 //!     subtitle_track: TrackMetadata {
-//!         language: LanguageCode::from_ascii("eng").expect("受理範囲内"),
-//!         name: Utf8String::new("English").expect("null 無し"),
+//!         language: LanguageCode::from_ascii("eng").expect("valid language code"),
+//!         name: Utf8String::new("English").expect("no null byte"),
 //!     },
 //!     ..Default::default()
 //! };

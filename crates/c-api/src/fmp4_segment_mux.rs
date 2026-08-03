@@ -124,6 +124,7 @@ pub unsafe extern "C" fn fmp4_segment_muxer_new_with_options(
         let options = unsafe { &*options };
         SegmentMuxerOptions {
             creation_timestamp: Duration::from_secs(options.creation_timestamp_secs),
+            ..Default::default()
         }
     };
 

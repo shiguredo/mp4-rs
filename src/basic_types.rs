@@ -551,11 +551,15 @@ impl<I: Decode, F: Decode> Decode for FixedPointNumber<I, F> {
 }
 
 /// null 終端の UTF-8 文字列
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// [`Default`] の実装は空文字列を返し、[`Self::EMPTY`] と同値になる。
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Utf8String(String);
 
 impl Utf8String {
     /// 空文字列
+    ///
+    /// [`Self::default()`] と同値
     pub const EMPTY: Self = Utf8String(String::new());
 
     /// 終端の null を含まない文字列を受け取って [`Utf8String`] インスタンスを作成する
@@ -709,6 +713,97 @@ where
 {
     fn from(value: bool) -> Self {
         Self::new(T::from(value))
+    }
+}
+
+/// [`crate::boxes::MdhdBox::language`] 用の 3 文字言語コード
+///
+/// 各バイトは `0x60..=0x7F` の範囲に収まる必要がある
+/// （ISO/IEC 14496-12 の `unsigned int(5)[3]` パック規約に由来）。
+/// この規約は「各文字を `char - 0x60` した値を 5 ビットにパックする」と定めており、
+/// `0x60..=0x7F` の外側の値を受理してしまうと encode 時に隣接ビットを破壊するため
+/// [`Self::new`] / [`Self::from_ascii`] で入り口で弾く。
+///
+/// 一方、ISO-639-2/T が定義する文字集合（`a-z`）まで絞る厳格化は行わない。
+/// `0x7B..=0x7F`（`{|}~<DEL>`）などは 5 ビット的には有効に符号化できるため、
+/// エンコーダとして書ける MP4 は受理する。プレイヤーが表示できるかは呼び出し側の責任。
+///
+/// なお本ライブラリの [`crate::boxes::MdhdBox::decode`] は 5 ビットマスクで
+/// 防御的に読み取るため、decode 直後の値は必ず `0x60..=0x7F` に収まる。
+/// したがって decode 側の値を [`Self::new`] に通す経路は理論上必ず `Some` を返す。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LanguageCode([u8; 3]);
+
+impl LanguageCode {
+    /// 未定義言語（`*b"und"`）
+    ///
+    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] と同値。
+    /// ISO 639-2 で「未定義」を意味する 3 文字コード。
+    ///
+    /// なお本型は「未指定」と「利用者が明示的に `und` を指定」を型上で区別しない。
+    /// 両者は同じ値になる。将来この区別が必要になった場合は
+    /// [`crate::mux::TrackMetadata::language`] の型を `Option<LanguageCode>` に変える
+    /// 破壊的変更を伴うため、その時点で改めて設計する
+    pub const UNDEFINED: Self = Self(*b"und");
+
+    /// 3 バイト配列から作る
+    ///
+    /// 各バイトが `0x60..=0x7F` の範囲外なら [`None`] を返す
+    pub fn new(code: [u8; 3]) -> Option<Self> {
+        if code.iter().all(|&b| (0x60..=0x7F).contains(&b)) {
+            Some(Self(code))
+        } else {
+            None
+        }
+    }
+
+    /// 3 バイトの文字列から作る（例: `"eng"`, `"jpn"`）
+    ///
+    /// 受理するのは各バイトが `0x60..=0x7F` の範囲に収まる 3 バイトの文字列だけである。
+    /// ASCII 全域を受理するわけではない（大文字 `"ENG"` のように範囲外のバイトを含む場合は
+    /// [`None`] を返す）。バイト長が 3 でない場合（マルチバイト UTF-8 の 1 文字などを含む）も
+    /// [`None`] を返す。
+    ///
+    /// 命名は「ISO/IEC 14496-12 の unsigned int(5)\[3\] パック用の ASCII サブセット」の意で、
+    /// ASCII 全域受理を意味しない。
+    pub fn from_ascii(s: &str) -> Option<Self> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 3 {
+            return None;
+        }
+        Self::new([bytes[0], bytes[1], bytes[2]])
+    }
+
+    /// 内部の 3 バイト配列を返す
+    pub fn as_bytes(self) -> [u8; 3] {
+        self.0
+    }
+}
+
+impl Default for LanguageCode {
+    fn default() -> Self {
+        Self::UNDEFINED
+    }
+}
+
+impl core::fmt::Debug for LanguageCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // 内部の 3 バイトは常に `0x60..=0x7F`（ASCII サブセット）に収まるため
+        // `from_utf8` は基本的に成功する。防御的に失敗時はバイト列で表示する
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            f.debug_tuple("LanguageCode").field(&s).finish()
+        } else {
+            f.debug_tuple("LanguageCode").field(&self.0).finish()
+        }
+    }
+}
+
+impl core::fmt::Display for LanguageCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            return write!(f, "{s}");
+        }
+        write!(f, "{:?}", self.0)
     }
 }
 

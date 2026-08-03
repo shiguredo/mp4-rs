@@ -2,7 +2,8 @@
 //!
 //! 正常系のラウンドトリップは `pbt/tests/prop_basic_types.rs` が担う。
 //! 本ファイルは PBT で安定して狙いにくい `decode_header_and_payload` の
-//! size=0 / largesize=0 / サイズ下限 / バッファ不足の挙動を固定する。
+//! size=0 / largesize=0 / サイズ下限 / バッファ不足の挙動、および
+//! `LanguageCode` / `Utf8String::Default` の境界値を固定する。
 
 mod decode_header_and_payload_size_zero {
     use shiguredo_mp4::{BoxHeader, BoxSize, BoxType, ErrorKind};
@@ -96,5 +97,118 @@ mod decode_header_and_payload_size_zero {
         let err = BoxHeader::decode_header_and_payload(&buf)
             .expect_err("宣言サイズがバッファを超える場合はエラーになる");
         assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+    }
+}
+
+mod language_code {
+    use shiguredo_mp4::LanguageCode;
+
+    /// `LanguageCode::UNDEFINED` が `*b"und"` であること
+    #[test]
+    fn undefined_is_und() {
+        assert_eq!(LanguageCode::UNDEFINED.as_bytes(), *b"und");
+        assert_eq!(LanguageCode::default(), LanguageCode::UNDEFINED);
+    }
+
+    /// 受理範囲の境界（`0x60` / `0x7F`）を含む 3 バイトは成功すること
+    #[test]
+    fn new_accepts_boundary_bytes() {
+        assert_eq!(
+            LanguageCode::new([0x60, 0x60, 0x60])
+                .expect("下限は受理される")
+                .as_bytes(),
+            [0x60, 0x60, 0x60]
+        );
+        assert_eq!(
+            LanguageCode::new([0x7F, 0x7F, 0x7F])
+                .expect("上限は受理される")
+                .as_bytes(),
+            [0x7F, 0x7F, 0x7F]
+        );
+        assert_eq!(
+            LanguageCode::new(*b"eng")
+                .expect("ISO-639-2/T の小文字は受理される")
+                .as_bytes(),
+            *b"eng"
+        );
+    }
+
+    /// 受理範囲の外側（`0x5F` / `0x80`）を 1 バイトでも含むと拒否すること
+    ///
+    /// 位置ごとの網羅（1 バイト目・2 バイト目・3 バイト目の単独違反）を確認する
+    #[test]
+    fn new_rejects_out_of_range_bytes() {
+        assert!(
+            LanguageCode::new([0x5F, b'n', b'd']).is_none(),
+            "1 バイト目が 0x5F（範囲外）なので拒否される"
+        );
+        assert!(
+            LanguageCode::new([b'u', 0x80, b'd']).is_none(),
+            "2 バイト目が 0x80（範囲外）なので拒否される"
+        );
+        assert!(
+            LanguageCode::new([b'u', b'n', 0x5F]).is_none(),
+            "3 バイト目が 0x5F（範囲外）なので拒否される"
+        );
+        assert!(
+            LanguageCode::new([b'u', b'n', 0x80]).is_none(),
+            "3 バイト目が 0x80（範囲外）なので拒否される"
+        );
+        assert!(
+            LanguageCode::new([0x00, 0x00, 0x00]).is_none(),
+            "全バイトが 0x00（範囲外）なので拒否される"
+        );
+    }
+
+    /// `from_ascii` は 3 バイトかつ各バイトが `0x60..=0x7F` のときだけ成功すること
+    #[test]
+    fn from_ascii_accepts_valid_three_byte_codes() {
+        assert_eq!(
+            LanguageCode::from_ascii("jpn").expect("小文字 3 文字は受理される"),
+            LanguageCode::new(*b"jpn").expect("new でも受理される")
+        );
+        assert_eq!(
+            LanguageCode::from_ascii("`{|")
+                .expect("0x60..=0x7F 内なら非 a-z も受理される")
+                .as_bytes(),
+            [0x60, 0x7B, 0x7C]
+        );
+    }
+
+    /// バイト長が 3 以外、または大文字を含む文字列は拒否すること
+    #[test]
+    fn from_ascii_rejects_invalid_inputs() {
+        assert!(
+            LanguageCode::from_ascii("").is_none(),
+            "空文字列は拒否される"
+        );
+        assert!(
+            LanguageCode::from_ascii("en").is_none(),
+            "2 文字は拒否される"
+        );
+        assert!(
+            LanguageCode::from_ascii("engx").is_none(),
+            "4 文字は拒否される"
+        );
+        assert!(
+            LanguageCode::from_ascii("ENG").is_none(),
+            "大文字は 0x60..=0x7F の外なので拒否される"
+        );
+        // 「あ」は 3 バイト UTF-8。バイト長は 3 だが個々のバイトが 0x60..=0x7F の外に落ちる
+        assert!(
+            LanguageCode::from_ascii("あ").is_none(),
+            "非 ASCII マルチバイト文字はバイト範囲外として拒否される"
+        );
+    }
+}
+
+mod utf8_string_default {
+    use shiguredo_mp4::Utf8String;
+
+    /// `Utf8String::default()` が `Utf8String::EMPTY`（空文字列）と等しいこと
+    #[test]
+    fn default_equals_empty() {
+        assert_eq!(Utf8String::default(), Utf8String::EMPTY);
+        assert_eq!(Utf8String::default().get(), "");
     }
 }

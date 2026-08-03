@@ -2,7 +2,7 @@
 
 - Priority: Low
 - Created: 2026-07-27
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: Opus 5
 - Branch: feature/add-track-language-and-name
 - Polished: 2026-07-31
@@ -145,3 +145,44 @@ impl Default for LanguageCode {
     - `[ADD]` `TrackMetadata` 型を新設し `mux::` から公開する
     - `[ADD]` `Utf8String` に `Default` を実装する
 - `cargo fmt --all -- --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm` / `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --no-deps` が warning なしで通ること
+
+## 解決方法
+
+### 型と Options の追加
+
+- `basic_types.rs` に `LanguageCode` 型を新設した
+    - 内部は `[u8; 3]`。`new` と `from_ascii` の入り口で `0x60..=0x7F` を検証し、`UNDEFINED` 定数（`*b"und"`）を提供
+    - `Default` は `UNDEFINED`、`Debug` / `Display` は `BoxType` に倣って 3 文字表示にした
+    - `lib.rs` から `pub use` で再エクスポート
+- `basic_types.rs` の `Utf8String` に `#[derive(Default)]` を追加した（空文字列を返し、`Utf8String::EMPTY` と同値）
+- `mux_mp4_file` に `TrackMetadata { language: LanguageCode, name: Utf8String }` 型を新設し、`mux::` から再エクスポートした
+- `Mp4FileMuxerOptions` / `SegmentMuxerOptions` の両方に `audio_track` / `video_track` / `subtitle_track` の 3 フィールドを追加した
+    - 両 Options とも `#[derive(Debug, Clone, Default)]` に統一。手書き `Default` は削除
+    - 引き当ては両 Options に `pub(crate) fn track_metadata(&self, kind: TrackKind) -> &TrackMetadata` として inherent method 化（当初検討した 4 引数自由関数は廃止）
+- `Mp4FileMuxer::build_mdia_box` と `Fmp4SegmentMuxer::build_init_trak` の両方で、`self.options.track_metadata(entry.track_kind)` から `mdhd.language` と `hdlr.name` を反映するようにした
+
+### 追随修正
+
+- `..Default::default()` を含まなかった 2 箇所（`crates/c-api/src/fmp4_segment_mux.rs` の `fmp4_segment_muxer_new_with_options`、`src/mux_mp4_file.rs` の `#[cfg(test)]` 内 `Mp4FileMuxerOptions` リテラル）に `..Default::default()` を追加
+
+### バインディング拡張のスコープ
+
+- C API / WASM 経由の利用者は本フィールドを指定する手段を持たず、デフォルト値（`und` + 空文字列）に固定される
+- 実際に指定したいという要求が発生した時点で改めて検討する（本 issue のスコープからは外す）
+- CHANGES.md の `[CHANGE]` エントリに上記の制約を明示した
+
+### テスト
+
+- `LanguageCode` の境界値単体テスト（`tests/test_basic_types.rs`）
+    - `new` の位置別網羅（1 / 2 / 3 バイト目それぞれ範囲外のケース）と `UNDEFINED` の値固定
+    - `from_ascii` の受理・拒否（大文字・空文字列・非 ASCII マルチバイト 3 バイト）
+- `Utf8String::default()` が `Utf8String::EMPTY` と等しいことの単体テスト
+- `TrackMetadata::default()` が生成する `mdhd.language` / `hdlr.name` のバイト列が現行と一致することを固定する単体テスト（`src/mux_mp4_file.rs` の `mod tests`）
+- 両 muxer について「Options で指定した language / name が mux → demux で復元されること」を検証する PBT を追加した
+    - `Mp4FileMuxer` / `Fmp4SegmentMuxer` の両方で映像・音声・字幕の 3 kind すべてを流し、`MoovBox::decode` の返却サイズも `bytes.len()` と一致することを固定
+- PBT の共通ヘルパー（`arb_language_code` / `arb_track_name` / `arb_track_metadata` / `assert_track_metadata`）を `pbt/tests/common/mod.rs` に集約した
+
+### CHANGES.md
+
+- `[CHANGE]` `Mp4FileMuxerOptions` / `SegmentMuxerOptions` に 3 フィールド追加（既存リテラルは破壊的、C API / WASM 経由の利用者はデフォルト固定になる旨を含む）
+- `[ADD]` `LanguageCode` / `TrackMetadata` / `Utf8String` の `Default`

@@ -57,8 +57,8 @@ use alloc::{vec, vec::Vec};
 use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
-    BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, TrackKind,
-    Utf8String,
+    BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, LanguageCode, Mp4FileTime,
+    TrackKind, Utf8String,
     boxes::{
         Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
         MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, StblBox, StcoBox, StscBox,
@@ -101,8 +101,26 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
         + (sample_count_per_track.iter().sum::<usize>() * BYTES_PER_SAMPLE)
 }
 
+/// トラック単位のメタデータ（`mdhd.language` / `hdlr.name`）
+///
+/// プレイヤーが複数トラックの一覧をユーザーに提示して選択させる際の
+/// 主要な表示情報になる（特に字幕トラックで意味を持つ）。
+///
+/// [`Default`] は「未指定相当」の値（`und` + 空文字列）を返し、
+/// 生成される MP4 のバイト列は本フィールド追加前と一致する
+#[derive(Debug, Clone, Default)]
+pub struct TrackMetadata {
+    /// 未指定時は [`LanguageCode::UNDEFINED`]（`*b"und"`）
+    pub language: LanguageCode,
+
+    /// 未指定時は空文字列
+    ///
+    /// muxer は `HdlrBox::name` に「末尾 null 1 バイト付き UTF-8」として書き出す
+    pub name: Utf8String,
+}
+
 /// [`Mp4FileMuxer`] 用のオプション
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Mp4FileMuxerOptions {
     /// faststart 形式用に事前に確保する moov ボックスのサイズ（バイト単位）
     ///
@@ -126,13 +144,31 @@ pub struct Mp4FileMuxerOptions {
     ///
     /// デフォルト値は UNIX エポック（1970年1月1日 00:00:00 UTC）
     pub creation_timestamp: Duration,
+
+    /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される。
+    /// トラックごとの個別指定は将来の対応
+    pub audio_track: TrackMetadata,
+
+    /// 映像トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
+    pub video_track: TrackMetadata,
+
+    /// 字幕トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
+    pub subtitle_track: TrackMetadata,
 }
 
-impl Default for Mp4FileMuxerOptions {
-    fn default() -> Self {
-        Self {
-            reserved_moov_box_size: 0,
-            creation_timestamp: Duration::ZERO,
+impl Mp4FileMuxerOptions {
+    /// [`TrackKind`] に対応するトラックメタデータを返す
+    pub(crate) fn track_metadata(&self, kind: TrackKind) -> &TrackMetadata {
+        match kind {
+            TrackKind::Audio => &self.audio_track,
+            TrackKind::Video => &self.video_track,
+            TrackKind::Subtitle => &self.subtitle_track,
         }
     }
 }
@@ -1001,6 +1037,7 @@ impl Mp4FileMuxer {
         derived: &TrakDerivation,
     ) -> Result<MdiaBox, MuxError> {
         let total_duration = total_sample_duration(entry);
+        let metadata = self.options.track_metadata(entry.track_kind);
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let mdhd_box = MdhdBox {
@@ -1008,12 +1045,12 @@ impl Mp4FileMuxer {
             modification_time: creation_time,
             timescale: entry.timescale,
             duration: total_duration,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: metadata.language.as_bytes(),
         };
 
         let hdlr_box = HdlrBox {
             handler_type: derived.handler_type,
-            name: Utf8String::EMPTY.into_null_terminated_bytes(),
+            name: metadata.name.clone().into_null_terminated_bytes(),
         };
 
         let minf_box = MinfBox {
@@ -1312,10 +1349,30 @@ mod tests {
         let options = Mp4FileMuxerOptions {
             reserved_moov_box_size: 4096,
             creation_timestamp: Duration::from_secs(0),
+            ..Default::default()
         };
         let muxer =
             Mp4FileMuxer::with_options(options).expect("failed to create muxer with options");
         assert!(!muxer.initial_boxes_bytes().is_empty());
+    }
+
+    /// `TrackMetadata` を未指定のまま muxer を使ったときに生成される
+    /// `mdhd.language` / `hdlr.name` のバイト列を回帰防止として固定する。
+    /// あわせて [`crate::LanguageCode::UNDEFINED`] と
+    /// [`crate::boxes::MdhdBox::LANGUAGE_UNDEFINED`] が同値であることも担保する
+    #[test]
+    fn test_default_track_metadata_bytes() {
+        let metadata = TrackMetadata::default();
+
+        // mdhd.language は `*b"und"`
+        assert_eq!(metadata.language.as_bytes(), MdhdBox::LANGUAGE_UNDEFINED);
+        assert_eq!(
+            LanguageCode::UNDEFINED.as_bytes(),
+            MdhdBox::LANGUAGE_UNDEFINED
+        );
+
+        // hdlr.name は末尾 null 1 バイトのみ
+        assert_eq!(metadata.name.into_null_terminated_bytes(), vec![0u8]);
     }
 
     /// サンプル追加とファイナライズの基本的なワークフローテスト

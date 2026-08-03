@@ -878,6 +878,9 @@ impl MdhdBox {
     pub const TYPE: BoxType = BoxType::Normal(*b"mdhd");
 
     /// 未定義を表す言語コード
+    ///
+    /// muxer 経由で組み立てる場合の型安全なラッパーは
+    /// [`crate::LanguageCode::UNDEFINED`]（同値の `*b"und"` を返す）
     pub const LANGUAGE_UNDEFINED: [u8; 3] = *b"und";
 }
 

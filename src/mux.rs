@@ -22,8 +22,24 @@
 //! };
 //! let _ = (&mut muxer, sample);
 //! ```
+//!
+//! トラックの言語（`mdhd.language`）とトラック名（`hdlr.name`）を指定する例:
+//!
+//! ```no_run
+//! use shiguredo_mp4::mux::{Mp4FileMuxer, Mp4FileMuxerOptions, TrackMetadata};
+//! use shiguredo_mp4::{LanguageCode, Utf8String};
+//!
+//! let options = Mp4FileMuxerOptions {
+//!     subtitle_track: TrackMetadata {
+//!         language: LanguageCode::from_ascii("eng").expect("valid language code"),
+//!         name: Utf8String::new("English").expect("no null byte"),
+//!     },
+//!     ..Default::default()
+//! };
+//! let _muxer = Mp4FileMuxer::with_options(options).expect("muxer creation failed");
+//! ```
 pub use crate::mux_fmp4_segment::{Fmp4SegmentMuxer, SegmentMuxerOptions};
 pub use crate::mux_mp4_file::{
-    FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample,
+    FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample, TrackMetadata,
     estimate_maximum_moov_box_size,
 };

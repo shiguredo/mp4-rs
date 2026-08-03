@@ -57,7 +57,7 @@ use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
     BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
-    TrackKind, Utf8String,
+    TrackKind,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SampleEntry,
@@ -65,22 +65,41 @@ use crate::{
         SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
         TrunSample, VmhdBox,
     },
-    mux_mp4_file::{MuxError, Sample},
+    mux_mp4_file::{MuxError, Sample, TrackMetadata},
 };
 
 /// [`Fmp4SegmentMuxer`] 用のオプション
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SegmentMuxerOptions {
     /// ファイル作成時刻（構築される fMP4 内のメタデータとして使われる）
     ///
     /// デフォルト値は UNIX エポック（1970年1月1日 00:00:00 UTC）
     pub creation_timestamp: Duration,
+
+    /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される。
+    /// トラックごとの個別指定は将来の対応
+    pub audio_track: TrackMetadata,
+
+    /// 映像トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
+    pub video_track: TrackMetadata,
+
+    /// 字幕トラックのメタデータ（`mdhd.language` / `hdlr.name`）
+    ///
+    /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
+    pub subtitle_track: TrackMetadata,
 }
 
-impl Default for SegmentMuxerOptions {
-    fn default() -> Self {
-        Self {
-            creation_timestamp: Duration::ZERO,
+impl SegmentMuxerOptions {
+    /// [`TrackKind`] に対応するトラックメタデータを返す
+    pub(crate) fn track_metadata(&self, kind: TrackKind) -> &TrackMetadata {
+        match kind {
+            TrackKind::Audio => &self.audio_track,
+            TrackKind::Video => &self.video_track,
+            TrackKind::Subtitle => &self.subtitle_track,
         }
     }
 }
@@ -677,6 +696,7 @@ impl Fmp4SegmentMuxer {
             })?;
         // トラック種別依存の tkhd 属性・ハンドラー種別・メディアヘッダーを 1 箇所で決める
         let derived = derive_trak_attributes(entry.track_kind, sample_entry)?;
+        let metadata = self.options.track_metadata(entry.track_kind);
 
         let tkhd_box = TkhdBox {
             flag_track_enabled: true,
@@ -697,7 +717,7 @@ impl Fmp4SegmentMuxer {
 
         let hdlr_box = HdlrBox {
             handler_type: derived.handler_type,
-            name: Utf8String::EMPTY.into_null_terminated_bytes(),
+            name: metadata.name.clone().into_null_terminated_bytes(),
         };
 
         let media_header = Some(derived.media_header);
@@ -730,7 +750,7 @@ impl Fmp4SegmentMuxer {
             modification_time: creation_time,
             timescale: entry.timescale,
             duration: 0,
-            language: MdhdBox::LANGUAGE_UNDEFINED,
+            language: metadata.language.as_bytes(),
         };
 
         let minf_box = MinfBox {

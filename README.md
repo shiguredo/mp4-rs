@@ -1,9 +1,10 @@
 # mp4-rs
 
-[![shiguredo_mp4](https://img.shields.io/crates/v/shiguredo_mp4.svg)](https://crates.io/crates/shiguredo_mp4)
-[![Documentation](https://docs.rs/shiguredo_mp4/badge.svg)](https://docs.rs/shiguredo_mp4)
-[![GitHub Actions](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/shiguredo_mp4.svg)](https://crates.io/crates/shiguredo_mp4)
+[![docs.rs](https://docs.rs/shiguredo_mp4/badge.svg)](https://docs.rs/shiguredo_mp4)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub Actions](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml)
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/shiguredo)
 
 ## About Shiguredo's open source software
 
@@ -120,6 +121,16 @@ WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 
 - [MP4 Dump](https://shiguredo.github.io/mp4-rs/examples/dump/)
 - [MP4 Transcode](https://shiguredo.github.io/mp4-rs/examples/transcode/)
+
+## Agent Skills
+
+[Agent Skills](https://agentskills.io/) 形式のスキルを同梱しています。`gh skill install` コマンドで対応する AI エージェント (Claude Code, Cursor, GitHub Copilot, Gemini CLI 等) にインストールでき、エージェントがこのライブラリの API や規格準拠仕様を理解した上で支援できるようになります。
+
+```bash
+gh skill install shiguredo/mp4-rs shiguredo-mp4
+```
+
+スキルの内容は [`skills/shiguredo-mp4/SKILL.md`](skills/shiguredo-mp4/SKILL.md) を参照してください。
 
 ## 規格書
 

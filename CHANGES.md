@@ -11,6 +11,8 @@
 
 ## develop
 
+## 2026.4.0
+
 - [CHANGE] `MdhdBox::language` の型を `[u8; 3]` から `LanguageCode` に置き換える
   - `MdhdBox::LANGUAGE_UNDEFINED` を削除し、`LanguageCode::UNDEFINED` に集約する
   - @sile

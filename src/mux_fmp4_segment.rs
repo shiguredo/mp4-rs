@@ -78,8 +78,7 @@ pub struct SegmentMuxerOptions {
 
     /// 音声トラックのメタデータ（`mdhd.language` / `hdlr.name`）
     ///
-    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される
-    /// （同一 `TrackKind` に複数トラックを追加した場合、両方に同じメタデータが刺さる）。
+    /// 現状は同じ `TrackKind` の全トラックに共通の値が適用される。
     /// トラックごとの個別指定は将来の対応
     pub audio_track: TrackMetadata,
 

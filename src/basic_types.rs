@@ -552,17 +552,14 @@ impl<I: Decode, F: Decode> Decode for FixedPointNumber<I, F> {
 
 /// null 終端の UTF-8 文字列
 ///
-/// [`Default`] の実装は空文字列を返し、[`Self::EMPTY`] と同値になる
-/// （内部 [`String::default()`] が `String::new()` を返す性質に依存する）。
-/// 明示指定と派生 default のどちらでも同じ空文字列になる。
+/// [`Default`] の実装は空文字列を返し、[`Self::EMPTY`] と同値になる。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Utf8String(String);
 
 impl Utf8String {
     /// 空文字列
     ///
-    /// [`Self::default()`] と同値。const 文脈でも参照できるように
-    /// [`Default`] とは別に定数として提供する
+    /// [`Self::default()`] と同値
     pub const EMPTY: Self = Utf8String(String::new());
 
     /// 終端の null を含まない文字列を受け取って [`Utf8String`] インスタンスを作成する

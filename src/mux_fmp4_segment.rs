@@ -240,6 +240,12 @@ impl Fmp4SegmentMuxer {
     /// [`MuxError::Overflow`] を返す。
     /// エラー時は muxer の内部状態を変更しない。
     ///
+    /// `sidx` の `starts_with_sap` / `sap_type` は、EPT を採ったサンプル（参照トラックで
+    /// PTS が最小のサンプル。同値時は samples[] 内で先に出現したもの）の `keyframe` を基準にする。
+    /// `sap_type` はキーフレームを一律 `1`（SAP type 1 相当）、非キーフレームを `0` として扱う近似であり、
+    /// ISO/IEC 14496-12 が定義する SAP type 1〜6 の区別（open GoP の I フレームは本来 type 3 相当 等）は
+    /// 行わない。
+    ///
     /// このメソッドも [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同様に、
     /// 観測したトラック情報と sample entry を内部に蓄積する。
     ///
@@ -259,11 +265,6 @@ impl Fmp4SegmentMuxer {
             .filter(|s| s.track_kind == first_track_kind)
             .map(|s| s.duration as u64)
             .sum();
-        let first_sample_is_keyframe = samples
-            .iter()
-            .find(|s| s.track_kind == first_track_kind)
-            .map(|s| s.keyframe)
-            .unwrap_or(false);
         // build_media_segment_bytes 呼び出し前なので、ここでの decode_time は
         // 当該セグメント先頭の累積 DTS（未登録トラックなら 0）である。
         let decode_time = self
@@ -271,7 +272,9 @@ impl Fmp4SegmentMuxer {
             .iter()
             .find(|track| track.track_kind == first_track_kind)
             .map_or(0, |track| track.decode_time);
-        let earliest_presentation_time =
+        // ISO/IEC 14496-12 8.16.3.3 の starts_with_SAP は「参照される subsegment が
+        // SAP から始まる」の意味であり、EPT に対応するアクセスユニットが SAP かどうかが問われる。
+        let (earliest_presentation_time, sap_at_ept) =
             compute_earliest_presentation_time(samples, first_track_kind, decode_time)?;
 
         // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリ数を記録しておく。
@@ -314,8 +317,8 @@ impl Fmp4SegmentMuxer {
                 reference_type: false,
                 referenced_size,
                 subsegment_duration: subsegment_duration_u32,
-                starts_with_sap: first_sample_is_keyframe,
-                sap_type: if first_sample_is_keyframe { 1 } else { 0 },
+                starts_with_sap: sap_at_ept,
+                sap_type: u8::from(sap_at_ept),
                 sap_delta_time: 0,
             }],
         };
@@ -832,10 +835,13 @@ impl Fmp4SegmentMuxer {
     }
 }
 
-/// 参照トラックの各サンプルについて PTS を求め、その最小値を返す
+/// 参照トラックの各サンプルについて PTS を求め、その最小値と当該サンプルの `keyframe` を返す
 ///
 /// `DTS_i = decode_time + Σ_{k < i} duration_k`（当該トラックのサンプルのみ）、
 /// `PTS_i = DTS_i + composition_time_offset.unwrap_or(0)`。
+/// 戻り値は `(min_pts, sap_at_ept)` で、第 2 要素は `min_pts` を採ったサンプルの `keyframe`。
+/// PTS が同値のときは samples[] 内で先に出現したサンプルの `keyframe` を保持する
+/// （PTS が厳密に減少するときだけ第 2 要素を更新する）。
 /// PTS が負、あるいは PTS または累積 DTS が `u64` の表現範囲を外れた場合は
 /// [`MuxError::Overflow`] を返す。
 ///
@@ -845,9 +851,10 @@ fn compute_earliest_presentation_time(
     samples: &[Sample],
     track_kind: TrackKind,
     decode_time: u64,
-) -> Result<u64, MuxError> {
+) -> Result<(u64, bool), MuxError> {
     let mut dts = decode_time;
-    let mut min_pts: Option<i128> = None;
+    // (min_pts, EPT サンプルの keyframe) を追跡する
+    let mut min_pts: Option<(i128, bool)> = None;
 
     for sample in samples
         .iter()
@@ -856,15 +863,22 @@ fn compute_earliest_presentation_time(
         let cto = i128::from(sample.composition_time_offset.unwrap_or(0));
         // dts (u64) + cto (i64) は i128 の表現範囲を超え得ないため、単純加算でよい
         let pts = i128::from(dts) + cto;
-        min_pts = Some(min_pts.map_or(pts, |current| current.min(pts)));
+        match min_pts {
+            Some((current, _)) if pts >= current => {}
+            _ => {
+                min_pts = Some((pts, sample.keyframe));
+            }
+        }
         dts = dts
             .checked_add(u64::from(sample.duration))
             .ok_or(MuxError::Overflow)?;
     }
 
     // 呼び出し側は samples[0].track_kind を渡すため、当該 kind のサンプルは少なくとも 1 件ある。
-    let min_pts = min_pts.expect("bug: reference track must have at least one sample");
-    u64::try_from(min_pts).map_err(|_| MuxError::Overflow)
+    let (min_pts, sap_at_ept) =
+        min_pts.expect("bug: reference track must have at least one sample");
+    let min_pts = u64::try_from(min_pts).map_err(|_| MuxError::Overflow)?;
+    Ok((min_pts, sap_at_ept))
 }
 
 fn resolve_segment_tracks(

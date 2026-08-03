@@ -2,7 +2,7 @@
 
 - Priority: Medium
 - Created: 2026-07-30
-- Completed: YYYY-MM-DD
+- Completed: 2026-07-31
 - Model: claude-code claude-opus-4-7
 - Branch: feature/fix-fmp4-sidx-starts-with-sap
 - Polished: 2026-07-31
@@ -104,3 +104,22 @@ let sidx_box = SidxBox {
 - `compute_earliest_presentation_time` の doc に、戻り値第 2 要素が「`min_pts` を採ったサンプルの `keyframe`」であることと、PTS 同値時に samples[] 内で先のサンプルを採る挙動を追記する
 - `create_media_segment_metadata_with_sidx` の doc に、`starts_with_sap` / `sap_type` が EPT サンプル基準で決まること、および `sap_type` は「`keyframe` → `1`、非 `keyframe` → `0`」の近似で SAP type 1〜6 の厳密判定は行わないことを追記する
 - `CHANGES.md` の `## develop` に `[FIX]` エントリを追加する
+
+### レビュー時に加わった整理
+
+差分レビュー（`/review-diff-code`）を通じて、案 B の一貫性向上に直結する追加対応を反映する。
+
+- doc / コメントの整理:
+  - `create_media_segment_metadata_with_sidx` の doc で `sap_type` 近似の主体（キーフレームを SAP type 1 相当に丸める / open GoP の I フレームは本来 type 3 相当 等）を明示する
+  - `create_media_segment_metadata_with_sidx` 内および `SidxReference` 構築周辺の重複インラインコメントを削除し、doc に集約する
+  - `compute_earliest_presentation_time` 内の tie-break 説明コメントを 1 行の型注記に短縮する（詳細は関数 doc に集約）
+- 実装の書き換え:
+  - `sap_type: if sap_at_ept { 1 } else { 0 }` を `sap_type: u8::from(sap_at_ept)` に置き換える
+- テスト追加:
+  - `sidx_starts_with_sap_ties_prefer_first_occurrence`: PTS 同値時の「先勝ち」（`pts >= current` の厳密減少更新）を固定する回帰防止テスト
+  - 新規 4 テストに `assert_eq!(reference.sap_delta_time, 0)` を追加し、`sap_delta_time` 据置契約を固定する
+  - `sidx_starts_with_sap_matches_first_sample_keyframe`（PBT）: 任意入力の `keyframe: bool` に対して `starts_with_sap == samples[0].keyframe` と `sap_type == u8::from(samples[0].keyframe)` を検証する
+  - テスト内コメント「同じ配置」を「同じ配置パターン」に修正し参照先との誤読を避ける
+- `CHANGES.md` の表現:
+  - `sidx.starts_with_sap` を `sidx.references[0].starts_with_sap` に修正し、既存 [FIX] エントリの階層感覚と揃える
+  - narrative の英日混在「presentation 順先頭」を「表示順先頭」に置換する

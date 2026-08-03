@@ -730,7 +730,8 @@ where
 ///
 /// なお本ライブラリの [`crate::boxes::MdhdBox::decode`] は 5 ビットマスクで
 /// 防御的に読み取るため、decode 直後の値は必ず `0x60..=0x7F` に収まる。
-/// したがって decode 側の値を [`Self::new`] に通す経路は理論上必ず `Some` を返す。
+/// したがって decode 結果を [`Self::new`] に通す経路（crate 内の `expect`）は
+/// 理論上必ず `Some` を返す。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LanguageCode([u8; 3]);
 

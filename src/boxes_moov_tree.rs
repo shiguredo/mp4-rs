@@ -865,11 +865,10 @@ pub struct MdhdBox {
     /// ISO/IEC 14496-12 の MediaHeaderBox では各文字を `char - 0x60` した値を
     /// `unsigned int(5)` にパックする。各バイトが `0x60..=0x7F` に収まることは
     /// [`LanguageCode`] の構築時（[`LanguageCode::new`] / [`LanguageCode::from_ascii`]）に
-    /// 検証済みである。
+    /// 検証済みであるため、language 起因で encode が失敗することはない。
     ///
-    /// decode 側は 5 ビットマスクで防御的に読み取るため、必ず `0x60..=0x7F`
-    /// の値を返す。したがって decode 直後の値を再 encode するラウンドトリップは
-    /// 常に成功する。
+    /// decode は 5 ビットマスク後に [`LanguageCode::new`] へ通す。
+    /// マスク結果は常に有効範囲内のため、この経路で構築が失敗することはない。
     pub language: LanguageCode,
 }
 

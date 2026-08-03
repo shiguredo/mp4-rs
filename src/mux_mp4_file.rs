@@ -1367,16 +1367,14 @@ mod tests {
         assert!(!muxer.initial_boxes_bytes().is_empty());
     }
 
-    /// `TrackMetadata` を未指定のまま muxer を使ったときに生成される
-    /// `mdhd.language` / `hdlr.name` のバイト列を回帰防止として固定する。
+    /// [`TrackMetadata::default`] が未指定相当（`und` + 空 name）になることを固定する。
+    ///
+    /// [`TrackMetadata`] の「デフォルトは `und` + 空文字列」という契約を、
+    /// 型のデフォルト値レベルで回帰防止する。
     #[test]
     fn test_default_track_metadata_bytes() {
         let metadata = TrackMetadata::default();
-
-        // mdhd.language は `*b"und"`
         assert_eq!(metadata.language.as_bytes(), *b"und");
-
-        // hdlr.name は末尾 null 1 バイトのみ
         assert_eq!(metadata.name.into_null_terminated_bytes(), vec![0u8]);
     }
 

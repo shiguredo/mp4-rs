@@ -11,6 +11,11 @@
 
 ## develop
 
+- [ADD] VP8 ビットストリーム処理ユーティリティを追加する
+  - `bitstream::vp8::parse_frame_header` で uncompressed data chunk からフレーム種別・キーフレーム情報・first_partition_size を取得できる
+  - `bitstream::vp8::build_vp08_box` で `Vp8SampleEntryConfig` から `Vp08Box` を構築でき、VP8 仕様固定値 (profile / bit_depth / chroma_subsampling / codec_initialization_data) は自動的に埋められる
+  - @sile
+
 ### misc
 
 - [UPDATE] pbt を proptest から noprop に移行する

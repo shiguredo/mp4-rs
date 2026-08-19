@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use shiguredo_mp4::Decode;
 use shiguredo_mp4::aux::SampleTableAccessor;
 use shiguredo_mp4::boxes::StblBox;
-use shiguredo_mp4::Decode;
 use std::num::NonZeroU32;
 
 fuzz_target!(|data: &[u8]| {

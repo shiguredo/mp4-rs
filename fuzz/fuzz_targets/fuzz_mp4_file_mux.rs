@@ -17,10 +17,7 @@ fuzz_target!(|data: &[u8]| {
 
     // MP4 ファイルとしてデマルチプレクスを試みる
     let mut demuxer = Mp4FileDemuxer::new();
-    let input = Input {
-        position: 0,
-        data,
-    };
+    let input = Input { position: 0, data };
     demuxer.handle_input(input);
 
     let tracks = match demuxer.tracks() {

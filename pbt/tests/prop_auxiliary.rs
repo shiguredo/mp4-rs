@@ -4,7 +4,6 @@
 
 use std::num::NonZeroU32;
 
-use proptest::prelude::*;
 use shiguredo_mp4::{
     BoxSize, BoxType, Either,
     aux::{SampleTableAccessor, SampleTableAccessorError},
@@ -569,11 +568,20 @@ mod timestamp_tests {
 mod composition_time_offset_tests {
     use super::*;
 
-    proptest! {
-        #[test]
-        fn composition_time_offset_matches_ctts_entries(
-            entries in prop::collection::vec((1u32..5, -100i32..101), 1..6)
-        ) {
+    /// このモジュールの PBT ケース数
+    const CASES: usize = 200;
+
+    #[test]
+    fn composition_time_offset_matches_ctts_entries() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let n = noprop::sample_usize_in(ctx, 1..6);
+            let mut entries: Vec<(u32, i32)> = Vec::new();
+            for _ in 0..n {
+                let sample_count = noprop::sample_u64_in(ctx, 1..5) as u32;
+                let sample_offset = noprop::sample_u64_in(ctx, 0..201) as i32 - 100;
+                entries.push((sample_count, sample_offset));
+            }
             let sample_count: u32 = entries.iter().map(|(sample_count, _)| *sample_count).sum();
             let expected_offsets: Vec<i64> = entries
                 .iter()
@@ -632,9 +640,11 @@ mod composition_time_offset_tests {
                 let sample = accessor
                     .get_sample(nz(i as u32 + 1))
                     .expect("sample が見つからない");
-                prop_assert_eq!(sample.composition_time_offset(), Some(*expected_offset));
+                assert_eq!(sample.composition_time_offset(), Some(*expected_offset));
             }
-        }
+            Ok(())
+        })?;
+        Ok(())
     }
 
     #[test]
@@ -1110,16 +1120,18 @@ mod multiple_chunks_tests {
 
 // ===== Property-Based Testing =====
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+/// このファイルの主要 PBT ケース数（旧 `with_cases(100)` を維持）
+const CASES: usize = 100;
 
-    /// ランダムなタイムスタンプで get_sample_by_timestamp が正しく動作することを確認
-    #[test]
-    fn get_sample_by_timestamp_pbt(
-        sample_count in 1u32..50,
-        duration in 1u32..100,
-        timestamp_offset in 0u64..10000
-    ) {
+/// ランダムなタイムスタンプで get_sample_by_timestamp が正しく動作することを確認
+#[test]
+fn get_sample_by_timestamp_pbt() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let sample_count = noprop::sample_u64_in(ctx, 1..50) as u32;
+        let duration = noprop::sample_u64_in(ctx, 1..100) as u32;
+        let timestamp_offset = noprop::sample_u64_in(ctx, 0..10000);
+
         let stbl_box = StblBox {
             stsd_box: StsdBox {
                 entries: vec![dummy_sample_entry()],
@@ -1156,29 +1168,35 @@ proptest! {
         // 有効なタイムスタンプ範囲内でテスト
         let timestamp = timestamp_offset % total_duration;
         let sample = accessor.get_sample_by_timestamp(timestamp);
-        prop_assert!(sample.is_some(), "timestamp {} に対応する sample が見つかる", timestamp);
+        assert!(
+            sample.is_some(),
+            "timestamp {timestamp} に対応する sample が見つかる"
+        );
 
-        let sample = sample.expect("直前の prop_assert! で Some であることを確認済み");
+        let sample = sample.expect("直前の assert! で Some であることを確認済み");
         let sample_start = sample.timestamp();
         let sample_end = sample_start + sample.duration() as u64;
-        prop_assert!(
+        assert!(
             timestamp >= sample_start && timestamp < sample_end,
-            "timestamp {} は範囲 [{}, {}) 内である",
-            timestamp, sample_start, sample_end
+            "timestamp {timestamp} は範囲 [{sample_start}, {sample_end}) 内である",
         );
 
         // 範囲外のタイムスタンプ
         if total_duration < u64::MAX {
-            prop_assert!(accessor.get_sample_by_timestamp(total_duration).is_none());
+            assert!(accessor.get_sample_by_timestamp(total_duration).is_none());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// サンプルとチャンクの関係が一貫していることを確認
-    #[test]
-    fn sample_chunk_consistency(
-        samples_per_chunk in 1u32..10,
-        chunk_count in 1u32..10
-    ) {
+/// サンプルとチャンクの関係が一貫していることを確認
+#[test]
+fn sample_chunk_consistency() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let samples_per_chunk = noprop::sample_u64_in(ctx, 1..10) as u32;
+        let chunk_count = noprop::sample_u64_in(ctx, 1..10) as u32;
         let sample_count = samples_per_chunk * chunk_count;
 
         let stbl_box = StblBox {
@@ -1202,7 +1220,9 @@ proptest! {
                 entry_sizes: vec![100; sample_count as usize],
             },
             stco_or_co64_box: Either::A(StcoBox {
-                chunk_offsets: (0..chunk_count).map(|i| i * samples_per_chunk * 100).collect(),
+                chunk_offsets: (0..chunk_count)
+                    .map(|i| i * samples_per_chunk * 100)
+                    .collect(),
             }),
             stss_box: None,
             ctts_box: None,
@@ -1212,28 +1232,29 @@ proptest! {
         };
 
         let accessor = SampleTableAccessor::new(&stbl_box).expect("accessor の作成に失敗した");
-        prop_assert_eq!(accessor.sample_count(), sample_count);
-        prop_assert_eq!(accessor.chunk_count(), chunk_count);
+        assert_eq!(accessor.sample_count(), sample_count);
+        assert_eq!(accessor.chunk_count(), chunk_count);
 
         // 各サンプルが正しいチャンクに属していることを確認
         for i in 1..=sample_count {
             let sample = accessor.get_sample(nz(i)).expect("sample が見つからない");
             let expected_chunk = (i - 1) / samples_per_chunk + 1;
-            prop_assert_eq!(
+            assert_eq!(
                 sample.chunk().index().get(),
                 expected_chunk,
-                "sample {} は chunk {} に属する",
-                i, expected_chunk
+                "sample {i} は chunk {expected_chunk} に属する",
             );
         }
 
         // 各チャンクのサンプル数を確認
         for i in 1..=chunk_count {
             let chunk = accessor.get_chunk(nz(i)).expect("chunk が見つからない");
-            prop_assert_eq!(chunk.sample_count(), samples_per_chunk);
-            prop_assert_eq!(chunk.samples().count(), samples_per_chunk as usize);
+            assert_eq!(chunk.sample_count(), samples_per_chunk);
+            assert_eq!(chunk.samples().count(), samples_per_chunk as usize);
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 // ===== Display トレイトのテスト =====

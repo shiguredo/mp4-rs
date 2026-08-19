@@ -11,6 +11,11 @@
 
 ## develop
 
+### misc
+
+- [UPDATE] pbt を proptest から noprop に移行する
+  - @sile
+
 ## 2026.4.0
 
 - [CHANGE] `MdhdBox::language` の型を `[u8; 3]` から `LanguageCode` に置き換える

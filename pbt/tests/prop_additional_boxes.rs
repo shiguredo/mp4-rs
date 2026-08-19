@@ -1,10 +1,10 @@
 //! 追加の Box 構造体の Property-Based Testing
 //!
-//! proptest_boxes.rs と proptest_codec_boxes.rs でカバーされていない Box のテスト
+//! prop_boxes.rs と prop_codec_boxes.rs でカバーされていない Box のテスト
 
 use std::num::NonZeroU16;
 
-use proptest::prelude::*;
+use noprop::TestCaseContext;
 use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint, Utf8String,
     boxes::{
@@ -16,465 +16,469 @@ use shiguredo_mp4::{
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
 
-// ===== Strategy 定義 =====
+/// このファイルの PBT ケース数（旧 `with_cases(100)` を維持）
+const CASES: usize = 100;
 
-/// AudioSampleEntryFields を生成する Strategy
-fn arb_audio_sample_entry() -> impl Strategy<Value = AudioSampleEntryFields> {
-    (
-        1u16..=u16::MAX, // data_reference_index
-        1u16..=8u16,     // channelcount
-        any::<u16>(),    // samplesize
-        any::<u16>(),    // samplerate integer
-        any::<u16>(),    // samplerate fraction
-    )
-        .prop_map(
-            |(dri, channelcount, samplesize, sr_int, sr_frac)| AudioSampleEntryFields {
-                data_reference_index: NonZeroU16::new(dri)
-                    .expect("Strategy の値域が 1 以上なので非ゼロ"),
-                channelcount,
-                samplesize,
-                samplerate: FixedPointNumber::new(sr_int, sr_frac),
-            },
-        )
+/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+fn sample_vec<T>(
+    ctx: &mut TestCaseContext,
+    range: std::ops::Range<usize>,
+    mut elem: impl FnMut(&mut TestCaseContext) -> T,
+) -> Vec<T> {
+    let len = noprop::sample_usize_in(ctx, range);
+    let mut result = Vec::new();
+    for _ in 0..len {
+        result.push(elem(ctx));
+    }
+    result
 }
 
-/// VisualSampleEntryFields を生成する Strategy
-fn arb_visual_sample_entry() -> impl Strategy<Value = VisualSampleEntryFields> {
-    (
-        1u16..=u16::MAX,   // data_reference_index
-        1u16..=4096u16,    // width
-        1u16..=4096u16,    // height
-        any::<u16>(),      // horizresolution int
-        any::<u16>(),      // horizresolution frac
-        any::<u16>(),      // vertresolution int
-        any::<u16>(),      // vertresolution frac
-        any::<u16>(),      // frame_count
-        any::<[u8; 32]>(), // compressorname
-        any::<u16>(),      // depth
-    )
-        .prop_map(
-            |(
-                dri,
-                width,
-                height,
-                hr_int,
-                hr_frac,
-                vr_int,
-                vr_frac,
-                frame_count,
-                compressorname,
-                depth,
-            )| {
-                VisualSampleEntryFields {
-                    data_reference_index: NonZeroU16::new(dri)
-                        .expect("Strategy の値域が 1 以上なので非ゼロ"),
-                    width,
-                    height,
-                    horizresolution: FixedPointNumber::new(hr_int, hr_frac),
-                    vertresolution: FixedPointNumber::new(vr_int, vr_frac),
-                    frame_count,
-                    compressorname,
-                    depth,
-                }
-            },
-        )
+// ===== サンプラー定義 =====
+
+/// AudioSampleEntryFields を生成する
+fn arb_audio_sample_entry(ctx: &mut TestCaseContext) -> AudioSampleEntryFields {
+    let dri = noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16;
+    let channelcount = noprop::sample_u64_in(ctx, 1..=8) as u16;
+    let samplesize = noprop::sample_u16(ctx);
+    let sr_int = noprop::sample_u16(ctx);
+    let sr_frac = noprop::sample_u16(ctx);
+    AudioSampleEntryFields {
+        data_reference_index: NonZeroU16::new(dri).expect("サンプル値域が 1 以上なので非ゼロ"),
+        channelcount,
+        samplesize,
+        samplerate: FixedPointNumber::new(sr_int, sr_frac),
+    }
 }
 
-/// DopsBox を生成する Strategy
-fn arb_dops_box() -> impl Strategy<Value = DopsBox> {
-    (1u8..=8, any::<u16>(), any::<u32>(), any::<i16>()).prop_map(
-        |(output_channel_count, pre_skip, input_sample_rate, output_gain)| DopsBox {
-            output_channel_count,
-            pre_skip,
-            input_sample_rate,
-            output_gain,
+/// VisualSampleEntryFields を生成する
+fn arb_visual_sample_entry(ctx: &mut TestCaseContext) -> VisualSampleEntryFields {
+    let dri = noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16;
+    let width = noprop::sample_u64_in(ctx, 1..=4096) as u16;
+    let height = noprop::sample_u64_in(ctx, 1..=4096) as u16;
+    let hr_int = noprop::sample_u16(ctx);
+    let hr_frac = noprop::sample_u16(ctx);
+    let vr_int = noprop::sample_u16(ctx);
+    let vr_frac = noprop::sample_u16(ctx);
+    let frame_count = noprop::sample_u16(ctx);
+    let compressorname = noprop::sample_bytes::<32>(ctx);
+    let depth = noprop::sample_u16(ctx);
+    VisualSampleEntryFields {
+        data_reference_index: NonZeroU16::new(dri).expect("サンプル値域が 1 以上なので非ゼロ"),
+        width,
+        height,
+        horizresolution: FixedPointNumber::new(hr_int, hr_frac),
+        vertresolution: FixedPointNumber::new(vr_int, vr_frac),
+        frame_count,
+        compressorname,
+        depth,
+    }
+}
+
+/// DopsBox を生成する
+fn arb_dops_box(ctx: &mut TestCaseContext) -> DopsBox {
+    DopsBox {
+        output_channel_count: noprop::sample_u64_in(ctx, 1..=8) as u8,
+        pre_skip: noprop::sample_u16(ctx),
+        input_sample_rate: noprop::sample_u32(ctx),
+        output_gain: noprop::sample_i16(ctx),
+    }
+}
+
+/// EsdsBox (AAC) を生成する
+fn arb_esds_box(ctx: &mut TestCaseContext) -> EsdsBox {
+    let es_id = noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16;
+    let stream_priority = noprop::sample_u64_in(ctx, 0..32) as u8;
+    let max_bitrate = noprop::sample_u32(ctx);
+    let avg_bitrate = noprop::sample_u32(ctx);
+    let dec_specific_info = if noprop::sample_bool(ctx) {
+        let len = noprop::sample_usize_in(ctx, 0..20);
+        Some(noprop::sample_bytes_vec(ctx, len))
+    } else {
+        None
+    };
+    EsdsBox {
+        es: EsDescriptor {
+            es_id,
+            stream_priority: Uint::new(stream_priority),
+            depends_on_es_id: None,
+            url_string: None,
+            ocr_es_id: None,
+            dec_config_descr: DecoderConfigDescriptor {
+                object_type_indication: 0x40,
+                stream_type: Uint::new(0x05),
+                up_stream: Uint::new(0),
+                buffer_size_db: Uint::new(0),
+                max_bitrate,
+                avg_bitrate,
+                dec_specific_info: dec_specific_info.map(|payload| DecoderSpecificInfo { payload }),
+            },
+            sl_config_descr: SlConfigDescriptor,
         },
-    )
+    }
 }
 
-/// EsdsBox (AAC) を生成する Strategy
-fn arb_esds_box() -> impl Strategy<Value = EsdsBox> {
-    (
-        1u16..=u16::MAX,
-        0u8..32,
-        any::<u32>(),
-        any::<u32>(),
-        prop::option::of(prop::collection::vec(any::<u8>(), 0..20)),
-    )
-        .prop_map(
-            |(es_id, stream_priority, max_bitrate, avg_bitrate, dec_specific_info)| EsdsBox {
-                es: EsDescriptor {
-                    es_id,
-                    stream_priority: Uint::new(stream_priority),
-                    depends_on_es_id: None,
-                    url_string: None,
-                    ocr_es_id: None,
-                    dec_config_descr: DecoderConfigDescriptor {
-                        object_type_indication: 0x40,
-                        stream_type: Uint::new(0x05),
-                        up_stream: Uint::new(0),
-                        buffer_size_db: Uint::new(0),
-                        max_bitrate,
-                        avg_bitrate,
-                        dec_specific_info: dec_specific_info
-                            .map(|payload| DecoderSpecificInfo { payload }),
-                    },
-                    sl_config_descr: SlConfigDescriptor,
-                },
-            },
-        )
-}
-
-/// FlacMetadataBlock (STREAMINFO) を生成する Strategy
-fn arb_flac_streaminfo_block() -> impl Strategy<Value = FlacMetadataBlock> {
+/// FlacMetadataBlock (STREAMINFO) を生成する
+fn arb_flac_streaminfo_block(ctx: &mut TestCaseContext) -> FlacMetadataBlock {
     // STREAMINFO は 34 バイト固定
-    prop::collection::vec(any::<u8>(), 34..=34).prop_map(|block_data| FlacMetadataBlock {
+    let block_data = noprop::sample_bytes_vec(ctx, 34);
+    FlacMetadataBlock {
         last_metadata_block_flag: Uint::new(1),
         block_type: FlacMetadataBlock::BLOCK_TYPE_STREAMINFO,
         block_data,
-    })
+    }
 }
 
-/// DflaBox を生成する Strategy
-fn arb_dfla_box() -> impl Strategy<Value = DflaBox> {
-    arb_flac_streaminfo_block().prop_map(|streaminfo| DflaBox {
-        metadata_blocks: vec![streaminfo],
-    })
+/// DflaBox を生成する
+fn arb_dfla_box(ctx: &mut TestCaseContext) -> DflaBox {
+    DflaBox {
+        metadata_blocks: vec![arb_flac_streaminfo_block(ctx)],
+    }
 }
 
-/// AvccBox (Baseline) を生成する Strategy
-fn arb_avcc_box() -> impl Strategy<Value = AvccBox> {
-    (
-        prop_oneof![Just(66u8), Just(77u8), Just(88u8)],
-        any::<u8>(),
-        any::<u8>(),
-        0u8..4,
-        // SPS は unsigned int(5)（最大 31）、PPS は unsigned int(8)（最大 255）まで格納できる。
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..32),
-        prop::collection::vec(prop::collection::vec(any::<u8>(), 0..30), 0..256),
-    )
-        .prop_map(
-            |(profile, compat, level, length_size, sps_list, pps_list)| AvccBox {
-                avc_profile_indication: profile,
-                profile_compatibility: compat,
-                avc_level_indication: level,
-                length_size_minus_one: Uint::new(length_size),
-                sps_list,
-                pps_list,
-                chroma_format: None,
-                bit_depth_luma_minus8: None,
-                bit_depth_chroma_minus8: None,
-                sps_ext_list: vec![],
-            },
-        )
+/// AvccBox (Baseline) を生成する
+fn arb_avcc_box(ctx: &mut TestCaseContext) -> AvccBox {
+    let profile = noprop::sample_choice(ctx, &[66u8, 77u8, 88u8]);
+    let compat = noprop::sample_u8(ctx);
+    let level = noprop::sample_u8(ctx);
+    let length_size = noprop::sample_u64_in(ctx, 0..4) as u8;
+    // SPS は unsigned int(5)（最大 31）、PPS は unsigned int(8)（最大 255）まで格納できる。
+    let sps_list = sample_vec(ctx, 0..32, |ctx| {
+        let n = noprop::sample_usize_in(ctx, 0..30);
+        noprop::sample_bytes_vec(ctx, n)
+    });
+    let pps_list = sample_vec(ctx, 0..256, |ctx| {
+        let n = noprop::sample_usize_in(ctx, 0..30);
+        noprop::sample_bytes_vec(ctx, n)
+    });
+    AvccBox {
+        avc_profile_indication: profile,
+        profile_compatibility: compat,
+        avc_level_indication: level,
+        length_size_minus_one: Uint::new(length_size),
+        sps_list,
+        pps_list,
+        chroma_format: None,
+        bit_depth_luma_minus8: None,
+        bit_depth_chroma_minus8: None,
+        sps_ext_list: vec![],
+    }
 }
 
-/// HvccBox を生成する Strategy
-fn arb_hvcc_box() -> impl Strategy<Value = HvccBox> {
-    (
-        0u8..4,
-        any::<bool>(),
-        0u8..32,
-        any::<u32>(),
-        any::<u8>(),
-        0u8..4,
-    )
-        .prop_map(
-            |(profile_space, tier_flag, profile_idc, compat_flags, level_idc, length_size)| {
-                HvccBox {
-                    general_profile_space: Uint::new(profile_space),
-                    general_tier_flag: Uint::new(tier_flag as u8),
-                    general_profile_idc: Uint::new(profile_idc),
-                    general_profile_compatibility_flags: compat_flags,
-                    general_constraint_indicator_flags: Uint::new(0),
-                    general_level_idc: level_idc,
-                    min_spatial_segmentation_idc: Uint::new(0),
-                    parallelism_type: Uint::new(0),
-                    chroma_format_idc: Uint::new(1),
-                    bit_depth_luma_minus8: Uint::new(0),
-                    bit_depth_chroma_minus8: Uint::new(0),
-                    avg_frame_rate: 0,
-                    constant_frame_rate: Uint::new(0),
-                    num_temporal_layers: Uint::new(1),
-                    temporal_id_nested: Uint::new(1),
-                    length_size_minus_one: Uint::new(length_size),
-                    nalu_arrays: vec![],
-                }
-            },
-        )
+/// HvccBox を生成する
+fn arb_hvcc_box(ctx: &mut TestCaseContext) -> HvccBox {
+    let profile_space = noprop::sample_u64_in(ctx, 0..4) as u8;
+    let tier_flag = noprop::sample_bool(ctx);
+    let profile_idc = noprop::sample_u64_in(ctx, 0..32) as u8;
+    let compat_flags = noprop::sample_u32(ctx);
+    let level_idc = noprop::sample_u8(ctx);
+    let length_size = noprop::sample_u64_in(ctx, 0..4) as u8;
+    HvccBox {
+        general_profile_space: Uint::new(profile_space),
+        general_tier_flag: Uint::new(tier_flag as u8),
+        general_profile_idc: Uint::new(profile_idc),
+        general_profile_compatibility_flags: compat_flags,
+        general_constraint_indicator_flags: Uint::new(0),
+        general_level_idc: level_idc,
+        min_spatial_segmentation_idc: Uint::new(0),
+        parallelism_type: Uint::new(0),
+        chroma_format_idc: Uint::new(1),
+        bit_depth_luma_minus8: Uint::new(0),
+        bit_depth_chroma_minus8: Uint::new(0),
+        avg_frame_rate: 0,
+        constant_frame_rate: Uint::new(0),
+        num_temporal_layers: Uint::new(1),
+        temporal_id_nested: Uint::new(1),
+        length_size_minus_one: Uint::new(length_size),
+        nalu_arrays: vec![],
+    }
 }
 
-/// VpccBox を生成する Strategy
-fn arb_vpcc_box() -> impl Strategy<Value = VpccBox> {
-    (any::<u8>(), any::<u8>(), 0u8..16, 0u8..8, any::<bool>()).prop_map(
-        |(profile, level, bit_depth, chroma_subsampling, full_range)| VpccBox {
-            profile,
-            level,
-            bit_depth: Uint::new(bit_depth),
-            chroma_subsampling: Uint::new(chroma_subsampling),
-            video_full_range_flag: Uint::new(full_range as u8),
-            colour_primaries: 1,
-            transfer_characteristics: 1,
-            matrix_coefficients: 1,
-            codec_initialization_data: vec![],
-        },
-    )
+/// VpccBox を生成する
+fn arb_vpcc_box(ctx: &mut TestCaseContext) -> VpccBox {
+    let profile = noprop::sample_u8(ctx);
+    let level = noprop::sample_u8(ctx);
+    let bit_depth = noprop::sample_u64_in(ctx, 0..16) as u8;
+    let chroma_subsampling = noprop::sample_u64_in(ctx, 0..8) as u8;
+    let full_range = noprop::sample_bool(ctx);
+    VpccBox {
+        profile,
+        level,
+        bit_depth: Uint::new(bit_depth),
+        chroma_subsampling: Uint::new(chroma_subsampling),
+        video_full_range_flag: Uint::new(full_range as u8),
+        colour_primaries: 1,
+        transfer_characteristics: 1,
+        matrix_coefficients: 1,
+        codec_initialization_data: vec![],
+    }
 }
 
-/// Av1cBox を生成する Strategy
-fn arb_av1c_box() -> impl Strategy<Value = Av1cBox> {
-    (0u8..8, 0u8..32, any::<bool>()).prop_map(|(seq_profile, seq_level_idx_0, seq_tier_0)| {
-        Av1cBox {
-            seq_profile: Uint::new(seq_profile),
-            seq_level_idx_0: Uint::new(seq_level_idx_0),
-            seq_tier_0: Uint::new(seq_tier_0 as u8),
-            high_bitdepth: Uint::new(0),
-            twelve_bit: Uint::new(0),
-            monochrome: Uint::new(0),
-            chroma_subsampling_x: Uint::new(1),
-            chroma_subsampling_y: Uint::new(1),
-            chroma_sample_position: Uint::new(0),
-            initial_presentation_delay_minus_one: None,
-            config_obus: vec![],
-        }
-    })
+/// Av1cBox を生成する
+fn arb_av1c_box(ctx: &mut TestCaseContext) -> Av1cBox {
+    let seq_profile = noprop::sample_u64_in(ctx, 0..8) as u8;
+    let seq_level_idx_0 = noprop::sample_u64_in(ctx, 0..32) as u8;
+    let seq_tier_0 = noprop::sample_bool(ctx);
+    Av1cBox {
+        seq_profile: Uint::new(seq_profile),
+        seq_level_idx_0: Uint::new(seq_level_idx_0),
+        seq_tier_0: Uint::new(seq_tier_0 as u8),
+        high_bitdepth: Uint::new(0),
+        twelve_bit: Uint::new(0),
+        monochrome: Uint::new(0),
+        chroma_subsampling_x: Uint::new(1),
+        chroma_subsampling_y: Uint::new(1),
+        chroma_sample_position: Uint::new(0),
+        initial_presentation_delay_minus_one: None,
+        config_obus: vec![],
+    }
 }
 
-/// null 文字を含まない任意の UTF-8 文字列を生成する Strategy
+/// null 文字を含まない任意の UTF-8 文字列を生成する
 ///
 /// `Utf8String` は null 文字を含む文字列を受け入れないため、null 文字を除外する
-/// （`pbt/tests/prop_basic_types.rs:41` の `arb_utf8_string` と同じ正規表現）
-fn arb_utf8_string() -> impl Strategy<Value = String> {
-    "[^\x00]{0,100}"
+/// （`pbt/tests/prop_basic_types.rs` の `arb_utf8_string` と同じ生成方針）
+fn arb_utf8_string(ctx: &mut TestCaseContext) -> String {
+    let len = noprop::sample_usize_in(ctx, 0..=100);
+    let mut s = String::new();
+    while s.chars().count() < len {
+        let c = noprop::sample_char(ctx);
+        if c != '\0' {
+            s.push(c);
+        }
+    }
+    s
 }
 
-/// UnknownBox を生成する Strategy
+/// UnknownBox を生成する
 ///
 /// 必須子ボックスを持たない SampleEntry（例: StppBox）で子ボックス経路を
 /// PBT でカバーするために使う
-fn arb_unknown_box() -> impl Strategy<Value = UnknownBox> {
-    (any::<[u8; 4]>(), prop::collection::vec(any::<u8>(), 0..64)).prop_map(|(box_type, payload)| {
-        UnknownBox {
-            box_type: BoxType::Normal(box_type),
-            box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
-            payload,
-        }
-    })
+fn arb_unknown_box(ctx: &mut TestCaseContext) -> UnknownBox {
+    let box_type = noprop::sample_bytes::<4>(ctx);
+    let payload_len = noprop::sample_usize_in(ctx, 0..64);
+    let payload = noprop::sample_bytes_vec(ctx, payload_len);
+    UnknownBox {
+        box_type: BoxType::Normal(box_type),
+        box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
+        payload,
+    }
 }
 
-/// StppBox を生成する Strategy
+/// StppBox を生成する
 ///
 /// `namespace` / `schema_location` / `auxiliary_mime_types` の 3 フィールドを
 /// 独立に生成する（それぞれの空・非空パターンを網羅する）。
-/// StppBox は必須子ボックスを持たないため、`unknown_boxes` を Strategy 経由で
+/// StppBox は必須子ボックスを持たないため、`unknown_boxes` をサンプラー経由で
 /// 生成して decode / encode の子ボックス処理経路もカバーする
-fn arb_stpp_box() -> impl Strategy<Value = StppBox> {
-    (
-        1u16..=u16::MAX,                                // data_reference_index
-        arb_utf8_string(),                              // namespace
-        arb_utf8_string(),                              // schema_location
-        arb_utf8_string(),                              // auxiliary_mime_types
-        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
-    )
-        .prop_map(|(dri, ns, sl, am, unknown_boxes)| StppBox {
-            data_reference_index: NonZeroU16::new(dri)
-                .expect("Strategy の値域が 1 以上なので非ゼロ"),
-            namespace: Utf8String::new(&ns).expect("null 文字を含まない"),
-            schema_location: Utf8String::new(&sl).expect("null 文字を含まない"),
-            auxiliary_mime_types: Utf8String::new(&am).expect("null 文字を含まない"),
-            unknown_boxes,
-        })
+fn arb_stpp_box(ctx: &mut TestCaseContext) -> StppBox {
+    let dri = noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16;
+    let ns = arb_utf8_string(ctx);
+    let sl = arb_utf8_string(ctx);
+    let am = arb_utf8_string(ctx);
+    let unknown_boxes = sample_vec(ctx, 0..3, arb_unknown_box);
+    StppBox {
+        data_reference_index: NonZeroU16::new(dri).expect("サンプル値域が 1 以上なので非ゼロ"),
+        namespace: Utf8String::new(&ns).expect("null 文字を含まない"),
+        schema_location: Utf8String::new(&sl).expect("null 文字を含まない"),
+        auxiliary_mime_types: Utf8String::new(&am).expect("null 文字を含まない"),
+        unknown_boxes,
+    }
 }
 
-/// VttCBox の config を生成する Strategy
+/// VttCBox の config を生成する
 ///
-/// interior null と改行を含む任意の valid UTF-8 文字列を生成する。
-/// `.` は既定で null を含むが `\n` を除外するため、dotall フラグ `(?s)` を明示して
-/// 改行も含める
-fn arb_wvtt_config() -> impl Strategy<Value = String> {
-    "(?s).{0,100}"
+/// interior null と改行を含む任意の valid UTF-8 文字列を生成する（noprop の `sample_char` は
+/// 全 Unicode スカラーから引くため制約なし）
+fn arb_wvtt_config(ctx: &mut TestCaseContext) -> String {
+    let len = noprop::sample_usize_in(ctx, 0..=100);
+    let mut s = String::new();
+    for _ in 0..len {
+        s.push(noprop::sample_char(ctx));
+    }
+    s
 }
 
-/// VttCBox を生成する Strategy
-fn arb_vttc_box() -> impl Strategy<Value = VttCBox> {
-    arb_wvtt_config().prop_map(|config| VttCBox { config })
+/// VttCBox を生成する
+fn arb_vttc_box(ctx: &mut TestCaseContext) -> VttCBox {
+    VttCBox {
+        config: arb_wvtt_config(ctx),
+    }
 }
 
-/// WvttBox を生成する Strategy
+/// WvttBox を生成する
 ///
 /// `data_reference_index` と必須子 `vttc_box` に加えて 0-3 個の任意子ボックスを
 /// 混ぜて decode / encode の子ボックス処理経路もカバーする
-fn arb_wvtt_box() -> impl Strategy<Value = WvttBox> {
-    (
-        1u16..=u16::MAX,                                // data_reference_index
-        arb_vttc_box(),                                 // vttc_box
-        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
-    )
-        .prop_map(|(dri, vttc_box, unknown_boxes)| WvttBox {
-            data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
-            vttc_box,
-            unknown_boxes,
-        })
+fn arb_wvtt_box(ctx: &mut TestCaseContext) -> WvttBox {
+    let dri = noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16;
+    let vttc_box = arb_vttc_box(ctx);
+    let unknown_boxes = sample_vec(ctx, 0..3, arb_unknown_box);
+    WvttBox {
+        data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
+        vttc_box,
+        unknown_boxes,
+    }
 }
 
-/// BoxRecord を生成する Strategy
+/// BoxRecord を生成する
 ///
 /// `i16` 全域を許容する（3GPP TS 26.245 は値域を明示していない）
-fn arb_box_record() -> impl Strategy<Value = BoxRecord> {
-    (any::<i16>(), any::<i16>(), any::<i16>(), any::<i16>()).prop_map(
-        |(top, left, bottom, right)| BoxRecord {
-            top,
-            left,
-            bottom,
-            right,
-        },
-    )
+fn arb_box_record(ctx: &mut TestCaseContext) -> BoxRecord {
+    BoxRecord {
+        top: noprop::sample_i16(ctx),
+        left: noprop::sample_i16(ctx),
+        bottom: noprop::sample_i16(ctx),
+        right: noprop::sample_i16(ctx),
+    }
 }
 
-/// StyleRecord を生成する Strategy
+/// StyleRecord を生成する
 ///
 /// 各フィールドは仕様上のビットマスク / 値域制限をせず、全域を生成する
-fn arb_style_record() -> impl Strategy<Value = StyleRecord> {
-    (
-        any::<u16>(),     // start_char
-        any::<u16>(),     // end_char
-        any::<u16>(),     // font_id
-        any::<u8>(),      // face_style_flags
-        any::<u8>(),      // font_size
-        any::<[u8; 4]>(), // text_color_rgba
-    )
-        .prop_map(
-            |(start_char, end_char, font_id, face_style_flags, font_size, text_color_rgba)| {
-                StyleRecord {
-                    start_char,
-                    end_char,
-                    font_id,
-                    face_style_flags,
-                    font_size,
-                    text_color_rgba,
-                }
-            },
-        )
+fn arb_style_record(ctx: &mut TestCaseContext) -> StyleRecord {
+    StyleRecord {
+        start_char: noprop::sample_u16(ctx),
+        end_char: noprop::sample_u16(ctx),
+        font_id: noprop::sample_u16(ctx),
+        face_style_flags: noprop::sample_u8(ctx),
+        font_size: noprop::sample_u8(ctx),
+        text_color_rgba: noprop::sample_bytes::<4>(ctx),
+    }
 }
 
-/// `FontRecord::font_name` を生成する Strategy
+/// `FontRecord::font_name` を生成する
 ///
 /// Pascal string の長さ制約（0-255 バイト）に合わせて任意バイト列を生成する
-fn arb_font_name() -> impl Strategy<Value = Vec<u8>> {
-    prop::collection::vec(any::<u8>(), 0..=255)
+fn arb_font_name(ctx: &mut TestCaseContext) -> Vec<u8> {
+    let len = noprop::sample_usize_in(ctx, 0..=255);
+    noprop::sample_bytes_vec(ctx, len)
 }
 
-/// FontRecord を生成する Strategy
-fn arb_font_record() -> impl Strategy<Value = FontRecord> {
-    (any::<u16>(), arb_font_name())
-        .prop_map(|(font_id, font_name)| FontRecord { font_id, font_name })
+/// FontRecord を生成する
+fn arb_font_record(ctx: &mut TestCaseContext) -> FontRecord {
+    FontRecord {
+        font_id: noprop::sample_u16(ctx),
+        font_name: arb_font_name(ctx),
+    }
 }
 
-/// FtabBox を生成する Strategy
+/// FtabBox を生成する
 ///
 /// エントリー数は組み合わせ爆発回避のため 0-8 個に制限する。
 /// 0 個も許容してパーサ堅牢性のエッジケースを含める
-fn arb_ftab_box() -> impl Strategy<Value = FtabBox> {
-    prop::collection::vec(arb_font_record(), 0..=8).prop_map(|entries| FtabBox { entries })
+fn arb_ftab_box(ctx: &mut TestCaseContext) -> FtabBox {
+    let entries = sample_vec(ctx, 0..9, arb_font_record);
+    FtabBox { entries }
 }
 
-/// Tx3gBox を生成する Strategy
+/// Tx3gBox を生成する
 ///
 /// 本体固定サイズ 30 バイトと必須子 `ftab_box` に加えて 0-3 個の任意子ボックスを
 /// 混ぜて decode / encode の子ボックス処理経路もカバーする
-fn arb_tx3g_box() -> impl Strategy<Value = Tx3gBox> {
-    (
-        1u16..=u16::MAX,                                // data_reference_index
-        any::<u32>(),                                   // display_flags
-        any::<i8>(),                                    // horizontal_justification
-        any::<i8>(),                                    // vertical_justification
-        any::<[u8; 4]>(),                               // background_color_rgba
-        arb_box_record(),                               // default_text_box
-        arb_style_record(),                             // default_style
-        arb_ftab_box(),                                 // ftab_box
-        prop::collection::vec(arb_unknown_box(), 0..3), // unknown_boxes
-    )
-        .prop_map(
-            |(
-                dri,
-                display_flags,
-                horizontal_justification,
-                vertical_justification,
-                background_color_rgba,
-                default_text_box,
-                default_style,
-                ftab_box,
-                unknown_boxes,
-            )| Tx3gBox {
-                data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
-                display_flags,
-                horizontal_justification,
-                vertical_justification,
-                background_color_rgba,
-                default_text_box,
-                default_style,
-                ftab_box,
-                unknown_boxes,
-            },
-        )
+fn arb_tx3g_box(ctx: &mut TestCaseContext) -> Tx3gBox {
+    let dri = noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16;
+    let display_flags = noprop::sample_u32(ctx);
+    let horizontal_justification = noprop::sample_i8(ctx);
+    let vertical_justification = noprop::sample_i8(ctx);
+    let background_color_rgba = noprop::sample_bytes::<4>(ctx);
+    let default_text_box = arb_box_record(ctx);
+    let default_style = arb_style_record(ctx);
+    let ftab_box = arb_ftab_box(ctx);
+    let unknown_boxes = sample_vec(ctx, 0..3, arb_unknown_box);
+    Tx3gBox {
+        data_reference_index: NonZeroU16::new(dri).expect("dri は 1u16 以上のため NonZero"),
+        display_flags,
+        horizontal_justification,
+        vertical_justification,
+        background_color_rgba,
+        default_text_box,
+        default_style,
+        ftab_box,
+        unknown_boxes,
+    }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
+// ===== 単純な Box のテスト =====
 
-    // ===== 単純な Box のテスト =====
-
-    /// UnknownBox の encode/decode roundtrip
-    #[test]
-    fn unknown_box_roundtrip(
-        box_type in any::<[u8; 4]>(),
-        payload in prop::collection::vec(any::<u8>(), 0..100)
-    ) {
+/// UnknownBox の encode/decode roundtrip
+#[test]
+fn unknown_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let box_type = noprop::sample_bytes::<4>(ctx);
+        let payload = {
+            let n = noprop::sample_usize_in(ctx, 0..100);
+            noprop::sample_bytes_vec(ctx, n)
+        };
         let unknown = UnknownBox {
             box_type: BoxType::Normal(box_type),
             box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
             payload: payload.clone(),
         };
-        let encoded = unknown.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let encoded = unknown
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
         let (decoded, size) = UnknownBox::decode(&encoded)
             .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.payload, payload);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.payload, payload);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// FreeBox の encode/decode roundtrip
-    #[test]
-    fn free_box_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
-        let free = FreeBox { payload: payload.clone() };
+/// FreeBox の encode/decode roundtrip
+#[test]
+fn free_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let n = noprop::sample_usize_in(ctx, 0..100);
+        let payload = noprop::sample_bytes_vec(ctx, n);
+        let free = FreeBox {
+            payload: payload.clone(),
+        };
         let encoded = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, size) = FreeBox::decode(&encoded)
             .expect("直前にエンコードした有効な FreeBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.payload, payload);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.payload, payload);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// MdatBox の encode/decode roundtrip
-    #[test]
-    fn mdat_box_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..100)) {
-        let mdat = MdatBox { payload: payload.clone() };
+/// MdatBox の encode/decode roundtrip
+#[test]
+fn mdat_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let n = noprop::sample_usize_in(ctx, 0..100);
+        let payload = noprop::sample_bytes_vec(ctx, n);
+        let mdat = MdatBox {
+            payload: payload.clone(),
+        };
         let encoded = mdat.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, size) = MdatBox::decode(&encoded)
             .expect("直前にエンコードした有効な MdatBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.payload, payload);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.payload, payload);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== Audio Sample Entry Box のテスト =====
+// ===== Audio Sample Entry Box のテスト =====
 
-    /// OpusBox の encode/decode roundtrip
-    #[test]
-    fn opus_box_roundtrip(
-        audio in arb_audio_sample_entry(),
-        dops in arb_dops_box()
-    ) {
+/// OpusBox の encode/decode roundtrip
+#[test]
+fn opus_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let audio = arb_audio_sample_entry(ctx);
+        let dops = arb_dops_box(ctx);
         let opus = OpusBox {
             audio,
             dops_box: dops,
@@ -484,17 +488,24 @@ proptest! {
         let (decoded, size) = OpusBox::decode(&encoded)
             .expect("直前にエンコードした有効な OpusBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.audio.channelcount, opus.audio.channelcount);
-        prop_assert_eq!(decoded.dops_box.output_channel_count, opus.dops_box.output_channel_count);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.audio.channelcount, opus.audio.channelcount);
+        assert_eq!(
+            decoded.dops_box.output_channel_count,
+            opus.dops_box.output_channel_count
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Mp4aBox の encode/decode roundtrip
-    #[test]
-    fn mp4a_box_roundtrip(
-        audio in arb_audio_sample_entry(),
-        esds in arb_esds_box()
-    ) {
+/// Mp4aBox の encode/decode roundtrip
+#[test]
+fn mp4a_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let audio = arb_audio_sample_entry(ctx);
+        let esds = arb_esds_box(ctx);
         let mp4a = Mp4aBox {
             audio,
             esds_box: esds,
@@ -504,17 +515,21 @@ proptest! {
         let (decoded, size) = Mp4aBox::decode(&encoded)
             .expect("直前にエンコードした有効な Mp4aBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.audio.channelcount, mp4a.audio.channelcount);
-        prop_assert_eq!(decoded.esds_box.es.es_id, mp4a.esds_box.es.es_id);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.audio.channelcount, mp4a.audio.channelcount);
+        assert_eq!(decoded.esds_box.es.es_id, mp4a.esds_box.es.es_id);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// FlacBox の encode/decode roundtrip
-    #[test]
-    fn flac_box_roundtrip(
-        audio in arb_audio_sample_entry(),
-        dfla in arb_dfla_box()
-    ) {
+/// FlacBox の encode/decode roundtrip
+#[test]
+fn flac_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let audio = arb_audio_sample_entry(ctx);
+        let dfla = arb_dfla_box(ctx);
         let flac = FlacBox {
             audio,
             dfla_box: dfla,
@@ -524,31 +539,41 @@ proptest! {
         let (decoded, size) = FlacBox::decode(&encoded)
             .expect("直前にエンコードした有効な FlacBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.audio.channelcount, flac.audio.channelcount);
-        prop_assert_eq!(decoded.dfla_box.metadata_blocks.len(), 1);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.audio.channelcount, flac.audio.channelcount);
+        assert_eq!(decoded.dfla_box.metadata_blocks.len(), 1);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// DflaBox の encode/decode roundtrip
-    #[test]
-    fn dfla_box_roundtrip(dfla in arb_dfla_box()) {
+/// DflaBox の encode/decode roundtrip
+#[test]
+fn dfla_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let dfla = arb_dfla_box(ctx);
         let encoded = dfla.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, size) = DflaBox::decode(&encoded)
             .expect("直前にエンコードした有効な DflaBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.metadata_blocks.len(), dfla.metadata_blocks.len());
-        prop_assert_eq!(decoded.metadata_blocks[0].block_type.get(), 0);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.metadata_blocks.len(), dfla.metadata_blocks.len());
+        assert_eq!(decoded.metadata_blocks[0].block_type.get(), 0);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== Visual Sample Entry Box のテスト =====
+// ===== Visual Sample Entry Box のテスト =====
 
-    /// Avc1Box の encode/decode roundtrip
-    #[test]
-    fn avc1_box_roundtrip(
-        visual in arb_visual_sample_entry(),
-        avcc in arb_avcc_box()
-    ) {
+/// Avc1Box の encode/decode roundtrip
+#[test]
+fn avc1_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let visual = arb_visual_sample_entry(ctx);
+        let avcc = arb_avcc_box(ctx);
         let avc1 = Avc1Box {
             visual,
             avcc_box: avcc,
@@ -558,18 +583,25 @@ proptest! {
         let (decoded, size) = Avc1Box::decode(&encoded)
             .expect("直前にエンコードした有効な Avc1Box は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.visual.width, avc1.visual.width);
-        prop_assert_eq!(decoded.visual.height, avc1.visual.height);
-        prop_assert_eq!(decoded.avcc_box.avc_profile_indication, avc1.avcc_box.avc_profile_indication);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.visual.width, avc1.visual.width);
+        assert_eq!(decoded.visual.height, avc1.visual.height);
+        assert_eq!(
+            decoded.avcc_box.avc_profile_indication,
+            avc1.avcc_box.avc_profile_indication
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Hev1Box の encode/decode roundtrip
-    #[test]
-    fn hev1_box_roundtrip(
-        visual in arb_visual_sample_entry(),
-        hvcc in arb_hvcc_box()
-    ) {
+/// Hev1Box の encode/decode roundtrip
+#[test]
+fn hev1_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let visual = arb_visual_sample_entry(ctx);
+        let hvcc = arb_hvcc_box(ctx);
         let hev1 = Hev1Box {
             visual,
             hvcc_box: hvcc,
@@ -579,17 +611,21 @@ proptest! {
         let (decoded, size) = Hev1Box::decode(&encoded)
             .expect("直前にエンコードした有効な Hev1Box は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.visual.width, hev1.visual.width);
-        prop_assert_eq!(decoded.visual.height, hev1.visual.height);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.visual.width, hev1.visual.width);
+        assert_eq!(decoded.visual.height, hev1.visual.height);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Hvc1Box の encode/decode roundtrip
-    #[test]
-    fn hvc1_box_roundtrip(
-        visual in arb_visual_sample_entry(),
-        hvcc in arb_hvcc_box()
-    ) {
+/// Hvc1Box の encode/decode roundtrip
+#[test]
+fn hvc1_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let visual = arb_visual_sample_entry(ctx);
+        let hvcc = arb_hvcc_box(ctx);
         let hvc1 = Hvc1Box {
             visual,
             hvcc_box: hvcc,
@@ -599,17 +635,21 @@ proptest! {
         let (decoded, size) = Hvc1Box::decode(&encoded)
             .expect("直前にエンコードした有効な Hvc1Box は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.visual.width, hvc1.visual.width);
-        prop_assert_eq!(decoded.visual.height, hvc1.visual.height);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.visual.width, hvc1.visual.width);
+        assert_eq!(decoded.visual.height, hvc1.visual.height);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Vp08Box の encode/decode roundtrip
-    #[test]
-    fn vp08_box_roundtrip(
-        visual in arb_visual_sample_entry(),
-        vpcc in arb_vpcc_box()
-    ) {
+/// Vp08Box の encode/decode roundtrip
+#[test]
+fn vp08_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let visual = arb_visual_sample_entry(ctx);
+        let vpcc = arb_vpcc_box(ctx);
         let vp08 = Vp08Box {
             visual,
             vpcc_box: vpcc,
@@ -619,17 +659,21 @@ proptest! {
         let (decoded, size) = Vp08Box::decode(&encoded)
             .expect("直前にエンコードした有効な Vp08Box は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.visual.width, vp08.visual.width);
-        prop_assert_eq!(decoded.visual.height, vp08.visual.height);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.visual.width, vp08.visual.width);
+        assert_eq!(decoded.visual.height, vp08.visual.height);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Vp09Box の encode/decode roundtrip
-    #[test]
-    fn vp09_box_roundtrip(
-        visual in arb_visual_sample_entry(),
-        vpcc in arb_vpcc_box()
-    ) {
+/// Vp09Box の encode/decode roundtrip
+#[test]
+fn vp09_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let visual = arb_visual_sample_entry(ctx);
+        let vpcc = arb_vpcc_box(ctx);
         let vp09 = Vp09Box {
             visual,
             vpcc_box: vpcc,
@@ -639,17 +683,21 @@ proptest! {
         let (decoded, size) = Vp09Box::decode(&encoded)
             .expect("直前にエンコードした有効な Vp09Box は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.visual.width, vp09.visual.width);
-        prop_assert_eq!(decoded.visual.height, vp09.visual.height);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.visual.width, vp09.visual.width);
+        assert_eq!(decoded.visual.height, vp09.visual.height);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Av01Box の encode/decode roundtrip
-    #[test]
-    fn av01_box_roundtrip(
-        visual in arb_visual_sample_entry(),
-        av1c in arb_av1c_box()
-    ) {
+/// Av01Box の encode/decode roundtrip
+#[test]
+fn av01_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let visual = arb_visual_sample_entry(ctx);
+        let av1c = arb_av1c_box(ctx);
         let av01 = Av01Box {
             visual,
             av1c_box: av1c,
@@ -659,113 +707,166 @@ proptest! {
         let (decoded, size) = Av01Box::decode(&encoded)
             .expect("直前にエンコードした有効な Av01Box は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.visual.width, av01.visual.width);
-        prop_assert_eq!(decoded.visual.height, av01.visual.height);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.visual.width, av01.visual.width);
+        assert_eq!(decoded.visual.height, av01.visual.height);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== Subtitle Sample Entry Box のテスト =====
+// ===== Subtitle Sample Entry Box のテスト =====
 
-    /// StppBox の encode/decode roundtrip
-    ///
-    /// 3 フィールドすべてに任意の UTF-8 文字列（空文字列も含む）と、
-    /// 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
-    #[test]
-    fn stpp_box_roundtrip(stpp in arb_stpp_box()) {
+/// StppBox の encode/decode roundtrip
+///
+/// 3 フィールドすべてに任意の UTF-8 文字列（空文字列も含む）と、
+/// 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
+#[test]
+fn stpp_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let stpp = arb_stpp_box(ctx);
         let encoded = stpp.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, size) = StppBox::decode(&encoded)
             .expect("直前にエンコードした有効な StppBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.data_reference_index, stpp.data_reference_index);
-        prop_assert_eq!(&decoded.namespace, &stpp.namespace);
-        prop_assert_eq!(&decoded.schema_location, &stpp.schema_location);
-        prop_assert_eq!(&decoded.auxiliary_mime_types, &stpp.auxiliary_mime_types);
-        prop_assert_eq!(&decoded.unknown_boxes, &stpp.unknown_boxes);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.data_reference_index, stpp.data_reference_index);
+        assert_eq!(&decoded.namespace, &stpp.namespace);
+        assert_eq!(&decoded.schema_location, &stpp.schema_location);
+        assert_eq!(&decoded.auxiliary_mime_types, &stpp.auxiliary_mime_types);
+        assert_eq!(&decoded.unknown_boxes, &stpp.unknown_boxes);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// VttCBox の encode/decode roundtrip
-    ///
-    /// config は任意の UTF-8 文字列（空文字列・改行・interior null すべて含む）を
-    /// 割り当ててラウンドトリップを検証する
-    #[test]
-    fn vttc_box_roundtrip(vttc in arb_vttc_box()) {
+/// VttCBox の encode/decode roundtrip
+///
+/// config は任意の UTF-8 文字列（空文字列・改行・interior null すべて含む）を
+/// 割り当ててラウンドトリップを検証する
+#[test]
+fn vttc_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let vttc = arb_vttc_box(ctx);
         let encoded = vttc.encode_to_vec().expect("encode に失敗しない想定");
-        let (decoded, size) = VttCBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        let (decoded, size) =
+            VttCBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(&decoded.config, &vttc.config);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(&decoded.config, &vttc.config);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// WvttBox の encode/decode roundtrip
-    ///
-    /// 必須子 vttC と 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
-    #[test]
-    fn wvtt_box_roundtrip(wvtt in arb_wvtt_box()) {
+/// WvttBox の encode/decode roundtrip
+///
+/// 必須子 vttC と 0-3 個の任意の子ボックスを割り当ててラウンドトリップを検証する
+#[test]
+fn wvtt_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let wvtt = arb_wvtt_box(ctx);
         let encoded = wvtt.encode_to_vec().expect("encode に失敗しない想定");
-        let (decoded, size) = WvttBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        let (decoded, size) =
+            WvttBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.data_reference_index, wvtt.data_reference_index);
-        prop_assert_eq!(&decoded.vttc_box, &wvtt.vttc_box);
-        prop_assert_eq!(&decoded.unknown_boxes, &wvtt.unknown_boxes);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.data_reference_index, wvtt.data_reference_index);
+        assert_eq!(&decoded.vttc_box, &wvtt.vttc_box);
+        assert_eq!(&decoded.unknown_boxes, &wvtt.unknown_boxes);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// BoxRecord の encode/decode roundtrip
-    ///
-    /// `i16` 4 個の 8 バイト固定レコードを検証する
-    #[test]
-    fn box_record_roundtrip(record in arb_box_record()) {
+/// BoxRecord の encode/decode roundtrip
+///
+/// `i16` 4 個の 8 バイト固定レコードを検証する
+#[test]
+fn box_record_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let record = arb_box_record(ctx);
         let encoded = record.encode_to_vec().expect("encode に失敗しない想定");
-        prop_assert_eq!(encoded.len(), 8);
-        let (decoded, size) = BoxRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded, record);
-    }
+        assert_eq!(encoded.len(), 8);
+        let (decoded, size) =
+            BoxRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, record);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// StyleRecord の encode/decode roundtrip
-    ///
-    /// 12 バイト固定レコードのフィールド全域を検証する
-    #[test]
-    fn style_record_roundtrip(record in arb_style_record()) {
+/// StyleRecord の encode/decode roundtrip
+///
+/// 12 バイト固定レコードのフィールド全域を検証する
+#[test]
+fn style_record_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let record = arb_style_record(ctx);
         let encoded = record.encode_to_vec().expect("encode に失敗しない想定");
-        prop_assert_eq!(encoded.len(), 12);
-        let (decoded, size) = StyleRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded, record);
-    }
+        assert_eq!(encoded.len(), 12);
+        let (decoded, size) =
+            StyleRecord::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, record);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// FtabBox の encode/decode roundtrip
-    ///
-    /// 空エントリー・複数エントリー・font_name の長さ境界（0 / 255）を含めて検証する
-    #[test]
-    fn ftab_box_roundtrip(ftab in arb_ftab_box()) {
+/// FtabBox の encode/decode roundtrip
+///
+/// 空エントリー・複数エントリー・font_name の長さ境界（0 / 255）を含めて検証する
+#[test]
+fn ftab_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let ftab = arb_ftab_box(ctx);
         let encoded = ftab.encode_to_vec().expect("encode に失敗しない想定");
-        let (decoded, size) = FtabBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(&decoded.entries, &ftab.entries);
-    }
+        let (decoded, size) =
+            FtabBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        assert_eq!(size, encoded.len());
+        assert_eq!(&decoded.entries, &ftab.entries);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Tx3gBox の encode/decode roundtrip
-    ///
-    /// 本体固定 30 バイト + 必須子 ftab + 0-3 個の任意子ボックスを割り当てて
-    /// ラウンドトリップを検証する
-    #[test]
-    fn tx3g_box_roundtrip(tx3g in arb_tx3g_box()) {
+/// Tx3gBox の encode/decode roundtrip
+///
+/// 本体固定 30 バイト + 必須子 ftab + 0-3 個の任意子ボックスを割り当てて
+/// ラウンドトリップを検証する
+#[test]
+fn tx3g_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let tx3g = arb_tx3g_box(ctx);
         let encoded = tx3g.encode_to_vec().expect("encode に失敗しない想定");
-        let (decoded, size) = Tx3gBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
+        let (decoded, size) =
+            Tx3gBox::decode(&encoded).expect("自前で encode した結果は必ず decode 可能");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.data_reference_index, tx3g.data_reference_index);
-        prop_assert_eq!(decoded.display_flags, tx3g.display_flags);
-        prop_assert_eq!(decoded.horizontal_justification, tx3g.horizontal_justification);
-        prop_assert_eq!(decoded.vertical_justification, tx3g.vertical_justification);
-        prop_assert_eq!(decoded.background_color_rgba, tx3g.background_color_rgba);
-        prop_assert_eq!(decoded.default_text_box, tx3g.default_text_box);
-        prop_assert_eq!(decoded.default_style, tx3g.default_style);
-        prop_assert_eq!(&decoded.ftab_box, &tx3g.ftab_box);
-        prop_assert_eq!(&decoded.unknown_boxes, &tx3g.unknown_boxes);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.data_reference_index, tx3g.data_reference_index);
+        assert_eq!(decoded.display_flags, tx3g.display_flags);
+        assert_eq!(
+            decoded.horizontal_justification,
+            tx3g.horizontal_justification
+        );
+        assert_eq!(decoded.vertical_justification, tx3g.vertical_justification);
+        assert_eq!(decoded.background_color_rgba, tx3g.background_color_rgba);
+        assert_eq!(decoded.default_text_box, tx3g.default_text_box);
+        assert_eq!(decoded.default_style, tx3g.default_style);
+        assert_eq!(&decoded.ftab_box, &tx3g.ftab_box);
+        assert_eq!(&decoded.unknown_boxes, &tx3g.unknown_boxes);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 // ===== 境界値テスト =====
@@ -983,7 +1084,7 @@ mod root_box_tests {
     #[test]
     fn brand_debug_valid_utf8() {
         let brand = Brand::new(*b"isom");
-        let debug_str = format!("{:?}", brand);
+        let debug_str = format!("{brand:?}");
         assert!(debug_str.contains("isom"));
     }
 
@@ -991,7 +1092,7 @@ mod root_box_tests {
     #[test]
     fn brand_debug_invalid_utf8() {
         let brand = Brand::new([0xFF, 0xFE, 0x00, 0x01]);
-        let debug_str = format!("{:?}", brand);
+        let debug_str = format!("{brand:?}");
         // 無効な UTF-8 の場合はバイト配列として表示される
         assert!(debug_str.contains("Brand"));
     }

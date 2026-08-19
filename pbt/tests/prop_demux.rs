@@ -2,8 +2,11 @@
 //!
 //! 破損した MP4 データで無限ループが発生する問題を再現・検出するテスト
 
-use proptest::prelude::*;
+use noprop::TestCaseContext;
 use shiguredo_mp4::demux::{Input, Mp4FileDemuxer, RequiredInput, Sample};
+
+/// このファイルの PBT ケース数（旧 `with_cases(200)` を維持）
+const CASES: usize = 200;
 
 /// テスト用の簡易 MP4 風データ
 const TEST_MP4_H264: &[u8] = &[
@@ -18,6 +21,20 @@ const TEST_MP4_AAC: &[u8] = &[
 ];
 const TEST_MP4_AAC_FILE: &[u8] = include_bytes!("../../tests/testdata/beep-aac-audio.mp4");
 const TEST_MP4_H264_FILE: &[u8] = include_bytes!("../../tests/testdata/black-h264-video.mp4");
+
+/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+fn sample_vec<T>(
+    ctx: &mut TestCaseContext,
+    range: std::ops::Range<usize>,
+    mut elem: impl FnMut(&mut TestCaseContext) -> T,
+) -> Vec<T> {
+    let len = noprop::sample_usize_in(ctx, range);
+    let mut result = Vec::new();
+    for _ in 0..len {
+        result.push(elem(ctx));
+    }
+    result
+}
 
 /// 破損の種類
 #[derive(Debug, Clone, Copy)]
@@ -103,20 +120,32 @@ fn duration_to_ticks(duration: std::time::Duration, timescale: u32) -> u64 {
     secs_part + nanos_part
 }
 
-/// 破損タイプを生成する Strategy
-fn arb_corruption(data_len: usize) -> impl Strategy<Value = CorruptionType> {
-    prop_oneof![
-        // 単一バイト変更
-        (0..data_len, any::<u8>())
-            .prop_map(|(position, value)| CorruptionType::SingleByte { position, value }),
-        // ゼロ埋め
-        (0..data_len, 1usize..=64).prop_map(|(start, len)| CorruptionType::ZeroFill { start, len }),
-        // ランダム埋め
-        (0..data_len, any::<[u8; 8]>())
-            .prop_map(|(start, values)| CorruptionType::RandomFill { start, values }),
-        // 切り詰め（最低 8 バイトは残す）
-        (8usize..data_len).prop_map(|new_len| CorruptionType::Truncate { new_len }),
-    ]
+/// 破損タイプを生成する
+///
+/// 旧 `prop_oneof!` の 4 分岐を `sample_weighted_index` で等確率選択する。
+fn arb_corruption(ctx: &mut TestCaseContext, data_len: usize) -> CorruptionType {
+    match noprop::sample_weighted_index(ctx, &[1, 1, 1, 1]) {
+        0 => {
+            let position = noprop::sample_usize_in(ctx, 0..data_len);
+            let value = noprop::sample_u8(ctx);
+            CorruptionType::SingleByte { position, value }
+        }
+        1 => {
+            let start = noprop::sample_usize_in(ctx, 0..data_len);
+            let len = noprop::sample_usize_in(ctx, 1..=64);
+            CorruptionType::ZeroFill { start, len }
+        }
+        2 => {
+            let start = noprop::sample_usize_in(ctx, 0..data_len);
+            let values = noprop::sample_bytes::<8>(ctx);
+            CorruptionType::RandomFill { start, values }
+        }
+        _ => {
+            // 切り詰め（最低 8 バイトは残す）
+            let new_len = noprop::sample_usize_in(ctx, 8..data_len);
+            CorruptionType::Truncate { new_len }
+        }
+    }
 }
 
 /// Demuxer が無限ループに陥らないことを確認する
@@ -179,94 +208,127 @@ fn demux_with_loop_detection(data: &[u8], max_iterations: usize) -> Result<(), S
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(200))]
-
-    /// 破損した H264 MP4 で無限ループが発生しないことを確認
-    #[test]
-    fn corrupted_h264_mp4_no_infinite_loop(corruption in arb_corruption(TEST_MP4_H264.len())) {
+/// 破損した H264 MP4 で無限ループが発生しないことを確認
+#[test]
+fn corrupted_h264_mp4_no_infinite_loop() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let corruption = arb_corruption(ctx, TEST_MP4_H264.len());
         let corrupted = corrupt_mp4(TEST_MP4_H264, corruption);
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-    }
+        assert!(result.is_ok(), "エラー: {:?}", result.err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 破損した AAC MP4 で無限ループが発生しないことを確認
-    #[test]
-    fn corrupted_aac_mp4_no_infinite_loop(corruption in arb_corruption(TEST_MP4_AAC.len())) {
+/// 破損した AAC MP4 で無限ループが発生しないことを確認
+#[test]
+fn corrupted_aac_mp4_no_infinite_loop() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let corruption = arb_corruption(ctx, TEST_MP4_AAC.len());
         let corrupted = corrupt_mp4(TEST_MP4_AAC, corruption);
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-    }
+        assert!(result.is_ok(), "エラー: {:?}", result.err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 複数箇所を破損させた場合も無限ループが発生しないことを確認
-    #[test]
-    fn multi_corrupted_mp4_no_infinite_loop(
-        corruptions in prop::collection::vec(arb_corruption(TEST_MP4_H264.len()), 1..5)
-    ) {
+/// 複数箇所を破損させた場合も無限ループが発生しないことを確認
+#[test]
+fn multi_corrupted_mp4_no_infinite_loop() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let corruptions = sample_vec(ctx, 1..5, |ctx| arb_corruption(ctx, TEST_MP4_H264.len()));
         let mut data = TEST_MP4_H264.to_vec();
         for corruption in corruptions {
             data = corrupt_mp4(&data, corruption);
         }
         let result = demux_with_loop_detection(&data, 1000);
-        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-    }
+        assert!(result.is_ok(), "エラー: {:?}", result.err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ランダムバイト列で無限ループが発生しないことを確認
-    #[test]
-    fn random_bytes_no_infinite_loop(data in prop::collection::vec(any::<u8>(), 0..1024)) {
+/// ランダムバイト列で無限ループが発生しないことを確認
+#[test]
+fn random_bytes_no_infinite_loop() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let len = noprop::sample_usize_in(ctx, 0..1024);
+        let data = noprop::sample_bytes_vec(ctx, len);
         let result = demux_with_loop_detection(&data, 100);
-        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-    }
+        assert!(result.is_ok(), "エラー: {:?}", result.err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ボックスヘッダー付近の破損で無限ループが発生しないことを確認
-    #[test]
-    fn header_corruption_no_infinite_loop(
-        offset in 0usize..32,
-        value in any::<u8>()
-    ) {
-        let corruption = CorruptionType::SingleByte { position: offset, value };
+/// ボックスヘッダー付近の破損で無限ループが発生しないことを確認
+#[test]
+fn header_corruption_no_infinite_loop() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let offset = noprop::sample_usize_in(ctx, 0..32);
+        let value = noprop::sample_u8(ctx);
+        let corruption = CorruptionType::SingleByte {
+            position: offset,
+            value,
+        };
         let corrupted = corrupt_mp4(TEST_MP4_H264, corruption);
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-    }
+        assert!(result.is_ok(), "エラー: {:?}", result.err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// サイズフィールドを極端な値に破損させた場合も無限ループが発生しないことを確認
-    #[test]
-    fn extreme_size_corruption_no_infinite_loop(
-        size_bytes in prop::array::uniform4(any::<u8>())
-    ) {
+/// サイズフィールドを極端な値に破損させた場合も無限ループが発生しないことを確認
+#[test]
+fn extreme_size_corruption_no_infinite_loop() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let size_bytes = noprop::sample_bytes::<4>(ctx);
         // 最初の 4 バイト（ftyp のサイズフィールド）を破損
         let mut corrupted = TEST_MP4_H264.to_vec();
         if corrupted.len() >= 4 {
             corrupted[0..4].copy_from_slice(&size_bytes);
         }
         let result = demux_with_loop_detection(&corrupted, 1000);
-        prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-    }
+        assert!(result.is_ok(), "エラー: {:?}", result.err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// prev_sample() が next_sample() と往復できることを確認
-    #[test]
-    fn prev_sample_roundtrip(
-        file_choice in 0u8..2,
-        skip_samples in 0usize..20,
-        max_samples in 1usize..200
-    ) {
+/// prev_sample() が next_sample() と往復できることを確認
+#[test]
+fn prev_sample_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let file_choice = noprop::sample_u64_in(ctx, 0..2) as u8;
+        let skip_samples = noprop::sample_usize_in(ctx, 0..20);
+        let max_samples = noprop::sample_usize_in(ctx, 1..200);
+
         let data = if file_choice == 0 {
             TEST_MP4_AAC_FILE
         } else {
             TEST_MP4_H264_FILE
         };
-        let input = Input {
-            position: 0,
-            data,
-        };
+        let input = Input { position: 0, data };
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(input);
         let _ = demuxer.tracks().expect("tracks の取得に失敗した");
 
         let mut skipped = 0usize;
         while skipped < skip_samples {
-            match demuxer.next_sample().expect("次の sample の読み取りに失敗した") {
+            match demuxer
+                .next_sample()
+                .expect("次の sample の読み取りに失敗した")
+            {
                 Some(_) => {
                     skipped += 1;
                 }
@@ -275,51 +337,68 @@ proptest! {
         }
 
         let mut forward = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("次の sample の読み取りに失敗した") {
+        while let Some(sample) = demuxer
+            .next_sample()
+            .expect("次の sample の読み取りに失敗した")
+        {
             forward.push(sample_to_digest(&sample));
             if forward.len() >= max_samples {
                 break;
             }
         }
-        prop_assume!(!forward.is_empty());
+        if forward.is_empty() {
+            ctx.reject_case();
+        }
 
         let mut backward = Vec::new();
         for _ in 0..forward.len() {
-            let sample = demuxer.prev_sample().expect("前の sample の読み取りに失敗した");
-            prop_assert!(sample.is_some());
-            backward.push(sample_to_digest(sample.as_ref().expect("sample が欠落している")));
+            let sample = demuxer
+                .prev_sample()
+                .expect("前の sample の読み取りに失敗した");
+            assert!(sample.is_some());
+            backward.push(sample_to_digest(
+                sample.as_ref().expect("sample が欠落している"),
+            ));
         }
         backward.reverse();
-        prop_assert_eq!(backward.as_slice(), forward.as_slice());
+        assert_eq!(backward.as_slice(), forward.as_slice());
 
         let mut forward_again = Vec::new();
         for _ in 0..forward.len() {
-            let sample = demuxer.next_sample().expect("次の sample の読み取りに失敗した");
-            prop_assert!(sample.is_some());
-            forward_again.push(sample_to_digest(sample.as_ref().expect("sample が欠落している")));
+            let sample = demuxer
+                .next_sample()
+                .expect("次の sample の読み取りに失敗した");
+            assert!(sample.is_some());
+            forward_again.push(sample_to_digest(
+                sample.as_ref().expect("sample が欠落している"),
+            ));
         }
-        prop_assert_eq!(forward_again.as_slice(), forward.as_slice());
-    }
+        assert_eq!(forward_again.as_slice(), forward.as_slice());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// seek() 後に next_sample() が指定時刻を含むサンプルを返すことを確認
-    #[test]
-    fn seek_returns_sample_containing_position(
-        file_choice in 0u8..2,
-        seek_ticks_offset in 0u64..5_000u64
-    ) {
+/// seek() 後に next_sample() が指定時刻を含むサンプルを返すことを確認
+#[test]
+fn seek_returns_sample_containing_position() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let file_choice = noprop::sample_u64_in(ctx, 0..2) as u8;
+        let seek_ticks_offset = noprop::sample_u64_in(ctx, 0..5_000);
+
         let data = if file_choice == 0 {
             TEST_MP4_AAC_FILE
         } else {
             TEST_MP4_H264_FILE
         };
-        let input = Input {
-            position: 0,
-            data,
-        };
+        let input = Input { position: 0, data };
         let mut demuxer = Mp4FileDemuxer::new();
         demuxer.handle_input(input);
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した").to_vec();
-        prop_assume!(!tracks.is_empty());
+        if tracks.is_empty() {
+            ctx.reject_case();
+        }
 
         let max_duration = tracks
             .iter()
@@ -339,37 +418,49 @@ proptest! {
 
         if let Some(sample) = sample {
             let sample_seek_ticks = duration_to_ticks(seek_duration, sample.track.timescale.get());
-            prop_assert!(sample.timestamp <= sample_seek_ticks);
-            prop_assert!(sample_seek_ticks < sample.timestamp + u64::from(sample.duration));
+            assert!(sample.timestamp <= sample_seek_ticks);
+            assert!(sample_seek_ticks < sample.timestamp + u64::from(sample.duration));
         } else {
-            prop_assert!(!any_track_has_sample);
+            assert!(!any_track_has_sample);
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 mod boundary_tests {
     use super::*;
 
-    proptest! {
-        #[test]
-        fn fixed_boundary_inputs_no_infinite_loop(case in prop::sample::select(vec![
+    #[test]
+    fn fixed_boundary_inputs_no_infinite_loop() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        // 固定入力を等確率で選ぶ
+        let cases: Vec<Vec<u8>> = vec![
             Vec::new(),
             vec![0; 8],
             TEST_MP4_H264[..32.min(TEST_MP4_H264.len())].to_vec(),
             vec![0xFF; 256],
             vec![0x00; 256],
-        ])) {
-            let result = demux_with_loop_detection(&case, 100);
-            prop_assert!(result.is_ok(), "エラー: {:?}", result.err());
-        }
+        ];
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let idx = noprop::sample_usize_in(ctx, 0..cases.len());
+            let case = &cases[idx];
+            let result = demux_with_loop_detection(case, 100);
+            assert!(result.is_ok(), "エラー: {:?}", result.err());
+            Ok(())
+        })?;
+        Ok(())
     }
 }
 
 // ===== RequiredInput のテスト =====
 
 mod required_input_tests {
-    use proptest::prelude::*;
+    use noprop::TestCaseContext;
     use shiguredo_mp4::demux::{Input, RequiredInput};
+
+    /// このモジュールの PBT ケース数
+    const CASES: usize = 200;
 
     fn reference_is_satisfied_by(
         required: RequiredInput,
@@ -395,14 +486,33 @@ mod required_input_tests {
         end <= input_len as u64
     }
 
-    proptest! {
-        #[test]
-        fn is_satisfied_by_matches_reference_implementation(
-            required_position in any::<u64>(),
-            required_size in prop::option::of(0usize..2048),
-            input_position in any::<u64>(),
-            input_len in 0usize..2048,
-        ) {
+    /// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+    fn sample_vec<T>(
+        ctx: &mut TestCaseContext,
+        range: std::ops::Range<usize>,
+        mut elem: impl FnMut(&mut TestCaseContext) -> T,
+    ) -> Vec<T> {
+        let len = noprop::sample_usize_in(ctx, range);
+        let mut result = Vec::new();
+        for _ in 0..len {
+            result.push(elem(ctx));
+        }
+        result
+    }
+
+    #[test]
+    fn is_satisfied_by_matches_reference_implementation() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let required_position = noprop::sample_u64(ctx);
+            let required_size = if noprop::sample_bool(ctx) {
+                Some(noprop::sample_usize_in(ctx, 0..2048))
+            } else {
+                None
+            };
+            let input_position = noprop::sample_u64(ctx);
+            let input_len = noprop::sample_usize_in(ctx, 0..2048);
+
             let data = vec![0u8; input_len];
             let required = RequiredInput {
                 position: required_position,
@@ -413,71 +523,99 @@ mod required_input_tests {
                 data: &data,
             };
 
-            prop_assert_eq!(
+            assert_eq!(
                 required.is_satisfied_by(input),
                 reference_is_satisfied_by(required, input_position, input_len),
             );
-        }
+            Ok(())
+        })?;
+        Ok(())
+    }
 
-        #[test]
-        fn to_input_sets_position_and_data(
-            position in any::<u64>(),
-            size in prop::option::of(0usize..2048),
-            data in prop::collection::vec(any::<u8>(), 0..2048),
-        ) {
+    #[test]
+    fn to_input_sets_position_and_data() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let position = noprop::sample_u64(ctx);
+            let size = if noprop::sample_bool(ctx) {
+                Some(noprop::sample_usize_in(ctx, 0..2048))
+            } else {
+                None
+            };
+            let data = sample_vec(ctx, 0..2048, noprop::sample_u8);
+
             let required = RequiredInput { position, size };
             let input = required.to_input(&data);
 
-            prop_assert_eq!(input.position, position);
-            prop_assert_eq!(input.data, data.as_slice());
-        }
+            assert_eq!(input.position, position);
+            assert_eq!(input.data, data.as_slice());
+            Ok(())
+        })?;
+        Ok(())
     }
 }
 
 // ===== DemuxError のテスト =====
 
 mod demux_error_tests {
-    use proptest::prelude::*;
     use shiguredo_mp4::{
         aux::SampleTableAccessorError,
         demux::{DemuxError, RequiredInput},
     };
 
-    proptest! {
-        #[test]
-        fn demux_error_from_sample_table_error(chunk_count in any::<u32>()) {
+    /// このモジュールの PBT ケース数
+    const CASES: usize = 200;
+
+    #[test]
+    fn demux_error_from_sample_table_error() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let chunk_count = noprop::sample_u32(ctx);
             let error = SampleTableAccessorError::ChunksExistButNoSamples { chunk_count };
             let demux_error: DemuxError = error.into();
-            let debug_str = format!("{:?}", demux_error);
+            let debug_str = format!("{demux_error:?}");
 
-            prop_assert!(debug_str.contains(&chunk_count.to_string()));
-        }
+            assert!(debug_str.contains(&chunk_count.to_string()));
+            Ok(())
+        })?;
+        Ok(())
+    }
 
-        #[test]
-        fn demux_error_input_required(
-            position in any::<u64>(),
-            size in prop::option::of(0usize..2048),
-        ) {
+    #[test]
+    fn demux_error_input_required() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let position = noprop::sample_u64(ctx);
+            let size = if noprop::sample_bool(ctx) {
+                Some(noprop::sample_usize_in(ctx, 0..2048))
+            } else {
+                None
+            };
             let required = RequiredInput { position, size };
             let demux_error = DemuxError::InputRequired(required);
-            let debug_str = format!("{:?}", demux_error);
+            let debug_str = format!("{demux_error:?}");
 
-            prop_assert!(debug_str.contains(&position.to_string()));
-        }
+            assert!(debug_str.contains(&position.to_string()));
+            Ok(())
+        })?;
+        Ok(())
     }
 }
 
 mod handle_input_validation_tests {
-    use proptest::prelude::*;
     use shiguredo_mp4::demux::{DemuxError, Input, Mp4FileDemuxer};
 
     const TEST_MP4_AAC_FILE: &[u8] = include_bytes!("../../tests/testdata/beep-aac-audio.mp4");
 
-    proptest! {
-        #[test]
-        fn wrong_position_input_is_rejected(
-            wrong_position in 1u64..2048,
-        ) {
+    /// このモジュールの PBT ケース数
+    const CASES: usize = 200;
+
+    #[test]
+    fn wrong_position_input_is_rejected() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let wrong_position = noprop::sample_u64_in(ctx, 1..2048);
+
             let mut demuxer = Mp4FileDemuxer::new();
             let start = usize::try_from(wrong_position)
                 .ok()
@@ -490,16 +628,18 @@ mod handle_input_validation_tests {
 
             demuxer.handle_input(input);
 
-            prop_assert!(matches!(
-                demuxer.tracks(),
-                Err(DemuxError::DecodeError(_))
-            ));
-        }
+            assert!(matches!(demuxer.tracks(), Err(DemuxError::DecodeError(_))));
+            Ok(())
+        })?;
+        Ok(())
+    }
 
-        #[test]
-        fn insufficient_initial_input_is_rejected(
-            input_len in 0usize..8,
-        ) {
+    #[test]
+    fn insufficient_initial_input_is_rejected() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let input_len = noprop::sample_usize_in(ctx, 0..8);
+
             let mut demuxer = Mp4FileDemuxer::new();
             let input = Input {
                 position: 0,
@@ -508,10 +648,9 @@ mod handle_input_validation_tests {
 
             demuxer.handle_input(input);
 
-            prop_assert!(matches!(
-                demuxer.tracks(),
-                Err(DemuxError::DecodeError(_))
-            ));
-        }
+            assert!(matches!(demuxer.tracks(), Err(DemuxError::DecodeError(_))));
+            Ok(())
+        })?;
+        Ok(())
     }
 }

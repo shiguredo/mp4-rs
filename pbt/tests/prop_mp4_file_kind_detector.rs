@@ -2,13 +2,30 @@
 
 use std::num::NonZeroU32;
 
-use proptest::prelude::*;
+use noprop::TestCaseContext;
 use shiguredo_mp4::{
     TrackKind, Uint,
     boxes::{Avc1Box, AvccBox, SampleEntry, VisualSampleEntryFields},
     demux::{DemuxError, Input, Mp4FileKind, Mp4FileKindDetector},
     mux::{Fmp4SegmentMuxer, Mp4FileMuxer, Mp4FileMuxerOptions, Sample},
 };
+
+/// このファイルの PBT ケース数（旧 `with_cases(64)` を維持）
+const CASES: usize = 64;
+
+/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+fn sample_vec<T>(
+    ctx: &mut TestCaseContext,
+    range: std::ops::Range<usize>,
+    mut elem: impl FnMut(&mut TestCaseContext) -> T,
+) -> Vec<T> {
+    let len = noprop::sample_usize_in(ctx, range);
+    let mut result = Vec::new();
+    for _ in 0..len {
+        result.push(elem(ctx));
+    }
+    result
+}
 
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
     SampleEntry::Avc1(Avc1Box {
@@ -172,53 +189,62 @@ fn feed_detector(detector: &mut Mp4FileKindDetector, file_data: &[u8], extra_siz
     }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+#[test]
+fn detect_regular_mp4() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let faststart = noprop::sample_bool(ctx);
+        let sample_sizes = sample_vec(ctx, 1..8, |ctx| noprop::sample_usize_in(ctx, 1..2048));
+        let extra_sizes = sample_vec(ctx, 0..16, |ctx| noprop::sample_usize_in(ctx, 0..256));
 
-    #[test]
-    fn detect_regular_mp4(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        faststart in any::<bool>(),
-        sample_sizes in prop::collection::vec(1usize..2048, 1..8),
-        extra_sizes in prop::collection::vec(0usize..256, 0..16),
-    ) {
         let (file_data, _moov_offset) =
             build_regular_mp4_file_data(width, height, &sample_sizes, faststart);
         let mut detector = Mp4FileKindDetector::new();
         feed_detector(&mut detector, &file_data, &extra_sizes);
 
-        prop_assert_eq!(
+        assert_eq!(
             detector.file_kind().expect("file_kind に失敗した"),
             Some(Mp4FileKind::Mp4)
         );
-        prop_assert!(detector.required_input().is_none());
-    }
+        assert!(detector.required_input().is_none());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    #[test]
-    fn detect_fragmented_mp4(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        sample_sizes in prop::collection::vec(1usize..1024, 1..8),
-        extra_sizes in prop::collection::vec(0usize..256, 0..8),
-    ) {
+#[test]
+fn detect_fragmented_mp4() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let sample_sizes = sample_vec(ctx, 1..8, |ctx| noprop::sample_usize_in(ctx, 1..1024));
+        let extra_sizes = sample_vec(ctx, 0..8, |ctx| noprop::sample_usize_in(ctx, 0..256));
+
         let file_data = build_fragmented_mp4_file_data(width, height, &sample_sizes);
         let mut detector = Mp4FileKindDetector::new();
         feed_detector(&mut detector, &file_data, &extra_sizes);
 
-        prop_assert_eq!(
+        assert_eq!(
             detector.file_kind().expect("file_kind に失敗した"),
             Some(Mp4FileKind::FragmentedMp4)
         );
-        prop_assert!(detector.required_input().is_none());
-    }
+        assert!(detector.required_input().is_none());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    #[test]
-    fn non_faststart_mp4_stays_unknown_before_moov(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        sample_sizes in prop::collection::vec(1usize..2048, 1..8),
-    ) {
+#[test]
+fn non_faststart_mp4_stays_unknown_before_moov() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let sample_sizes = sample_vec(ctx, 1..8, |ctx| noprop::sample_usize_in(ctx, 1..2048));
+
         let (file_data, moov_offset) =
             build_regular_mp4_file_data(width, height, &sample_sizes, false);
         let mut detector = Mp4FileKindDetector::new();
@@ -230,35 +256,48 @@ proptest! {
 
             let start = required.position as usize;
             let end = start
-                .saturating_add(required.size.expect("実装バグ: detector は moov より前にサイズ付き入力を要求する"))
+                .saturating_add(
+                    required
+                        .size
+                        .expect("実装バグ: detector は moov より前にサイズ付き入力を要求する"),
+                )
                 .min(file_data.len());
             detector.handle_input(Input {
                 position: required.position,
                 data: &file_data[start..end],
             });
-            prop_assert_eq!(detector.file_kind().expect("file_kind に失敗した"), None);
+            assert_eq!(detector.file_kind().expect("file_kind に失敗した"), None);
         }
 
         feed_detector(&mut detector, &file_data, &[]);
-        prop_assert_eq!(
+        assert_eq!(
             detector.file_kind().expect("file_kind に失敗した"),
             Some(Mp4FileKind::Mp4)
         );
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    #[test]
-    fn eof_without_moov_returns_error(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        sample_sizes in prop::collection::vec(1usize..2048, 1..8),
-    ) {
+#[test]
+fn eof_without_moov_returns_error() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let sample_sizes = sample_vec(ctx, 1..8, |ctx| noprop::sample_usize_in(ctx, 1..2048));
+
         let (file_data, moov_offset) =
             build_regular_mp4_file_data(width, height, &sample_sizes, false);
         let truncated = &file_data[..moov_offset];
         let mut detector = Mp4FileKindDetector::new();
         feed_detector(&mut detector, truncated, &[]);
 
-        let err = detector.file_kind().expect_err("EOF without moov must fail");
-        prop_assert!(matches!(err, DemuxError::DecodeError(_)));
-    }
+        let err = detector
+            .file_kind()
+            .expect_err("EOF without moov must fail");
+        assert!(matches!(err, DemuxError::DecodeError(_)));
+        Ok(())
+    })?;
+    Ok(())
 }

@@ -4,7 +4,7 @@
 
 use std::num::{NonZeroU16, NonZeroU32};
 
-use proptest::prelude::*;
+use noprop::TestCaseContext;
 use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Either, Encode, FixedPointNumber, LanguageCode, Mp4FileTime,
     SampleFlags, TrackKind, Utf8String,
@@ -307,57 +307,92 @@ fn minimal_trak_box_subtitle(
     }
 }
 
-// ===== Strategy 定義 =====
+// ===== サンプラー定義 =====
 
-/// SttsEntry を生成する Strategy
-fn arb_stts_entry() -> impl Strategy<Value = SttsEntry> {
-    (any::<u32>(), any::<u32>()).prop_map(|(sample_count, sample_delta)| SttsEntry {
-        sample_count,
-        sample_delta,
-    })
+/// このファイルの主要 PBT ケース数（旧 `with_cases(50)` を維持）
+const CASES: usize = 50;
+
+/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+fn sample_vec<T>(
+    ctx: &mut TestCaseContext,
+    range: std::ops::Range<usize>,
+    mut elem: impl FnMut(&mut TestCaseContext) -> T,
+) -> Vec<T> {
+    let len = noprop::sample_usize_in(ctx, range);
+    let mut result = Vec::new();
+    for _ in 0..len {
+        result.push(elem(ctx));
+    }
+    result
 }
 
-/// StscEntry を生成する Strategy
-fn arb_stsc_entry() -> impl Strategy<Value = StscEntry> {
-    (1u32..=u32::MAX, any::<u32>(), 1u32..=u32::MAX).prop_map(
-        |(first_chunk, sample_per_chunk, sample_description_index)| StscEntry {
-            first_chunk: NonZeroU32::new(first_chunk)
-                .expect("Strategy の値域が 1 以上なので非ゼロ"),
-            sample_per_chunk,
-            sample_description_index: NonZeroU32::new(sample_description_index)
-                .expect("Strategy の値域が 1 以上なので非ゼロ"),
-        },
-    )
+/// SttsEntry を生成する
+fn arb_stts_entry(ctx: &mut TestCaseContext) -> SttsEntry {
+    SttsEntry {
+        sample_count: noprop::sample_u32(ctx),
+        sample_delta: noprop::sample_u32(ctx),
+    }
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
+/// StscEntry を生成する
+fn arb_stsc_entry(ctx: &mut TestCaseContext) -> StscEntry {
+    let first_chunk = noprop::sample_u64_in(ctx, 1..=u32::MAX as u64) as u32;
+    let sample_per_chunk = noprop::sample_u32(ctx);
+    let sample_description_index = noprop::sample_u64_in(ctx, 1..=u32::MAX as u64) as u32;
+    StscEntry {
+        first_chunk: NonZeroU32::new(first_chunk).expect("サンプル値域が 1 以上なので非ゼロ"),
+        sample_per_chunk,
+        sample_description_index: NonZeroU32::new(sample_description_index)
+            .expect("サンプル値域が 1 以上なので非ゼロ"),
+    }
+}
 
-    // ===== StblBox のテスト =====
+/// ISO-639-2/T の言語コード (a-z の 3 文字) を生成する
+fn arb_language_code_lower(ctx: &mut TestCaseContext) -> LanguageCode {
+    let bytes = [
+        noprop::sample_u64_in(ctx, 0x61..=0x7A) as u8,
+        noprop::sample_u64_in(ctx, 0x61..=0x7A) as u8,
+        noprop::sample_u64_in(ctx, 0x61..=0x7A) as u8,
+    ];
+    LanguageCode::new(bytes).expect("サンプル値域は有効な言語コード")
+}
 
-    /// StblBox の encode/decode roundtrip
-    #[test]
-    fn stbl_box_roundtrip(
-        stts_entries in prop::collection::vec(arb_stts_entry(), 0..10),
-        stsc_entries in prop::collection::vec(arb_stsc_entry(), 0..10),
-        stco_offsets in prop::collection::vec(any::<u32>(), 0..10),
-        stss_numbers in prop::collection::vec(1u32..=u32::MAX, 0..10)
-    ) {
+// ===== StblBox のテスト =====
+
+/// StblBox の encode/decode roundtrip
+#[test]
+fn stbl_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let stts_entries = sample_vec(ctx, 0..10, arb_stts_entry);
+        let stsc_entries = sample_vec(ctx, 0..10, arb_stsc_entry);
+        let stco_offsets = sample_vec(ctx, 0..10, noprop::sample_u32);
+        let stss_numbers = sample_vec(ctx, 0..10, |ctx| {
+            noprop::sample_u64_in(ctx, 1..=u32::MAX as u64) as u32
+        });
         let stbl = StblBox {
             stsd_box: minimal_stsd_box_audio(),
-            stts_box: SttsBox { entries: stts_entries.clone() },
+            stts_box: SttsBox {
+                entries: stts_entries.clone(),
+            },
             ctts_box: None,
             cslg_box: None,
-            stsc_box: StscBox { entries: stsc_entries.clone() },
-            stsz_box: StszBox::Variable { entry_sizes: vec![] },
-            stco_or_co64_box: Either::A(StcoBox { chunk_offsets: stco_offsets.clone() }),
+            stsc_box: StscBox {
+                entries: stsc_entries.clone(),
+            },
+            stsz_box: StszBox::Variable {
+                entry_sizes: vec![],
+            },
+            stco_or_co64_box: Either::A(StcoBox {
+                chunk_offsets: stco_offsets.clone(),
+            }),
             stss_box: if stss_numbers.is_empty() {
                 None
             } else {
                 Some(StssBox {
                     sample_numbers: stss_numbers
                         .iter()
-                        .map(|&n| NonZeroU32::new(n).expect("Strategy の値域が 1 以上なので非ゼロ"))
+                        .map(|&n| NonZeroU32::new(n).expect("サンプル値域が 1 以上なので非ゼロ"))
                         .collect(),
                 })
             },
@@ -368,28 +403,36 @@ proptest! {
         let (decoded, size) = StblBox::decode(&encoded)
             .expect("直前にエンコードした有効な StblBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.stts_box.entries.len(), stts_entries.len());
-        prop_assert_eq!(decoded.stsc_box.entries.len(), stsc_entries.len());
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.stts_box.entries.len(), stts_entries.len());
+        assert_eq!(decoded.stsc_box.entries.len(), stsc_entries.len());
         match &decoded.stco_or_co64_box {
-            Either::A(stco) => prop_assert_eq!(stco.chunk_offsets.clone(), stco_offsets),
-            Either::B(_) => prop_assert!(false, "StcoBox を期待したが Co64Box だった"),
+            Either::A(stco) => assert_eq!(stco.chunk_offsets.clone(), stco_offsets),
+            Either::B(_) => panic!("StcoBox を期待したが Co64Box だった"),
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// StblBox with Co64Box roundtrip
-    #[test]
-    fn stbl_box_co64_roundtrip(
-        co64_offsets in prop::collection::vec(any::<u64>(), 0..10)
-    ) {
+/// StblBox with Co64Box roundtrip
+#[test]
+fn stbl_box_co64_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let co64_offsets = sample_vec(ctx, 0..10, noprop::sample_u64);
         let stbl = StblBox {
             stsd_box: minimal_stsd_box_audio(),
             stts_box: minimal_stts_box(),
             ctts_box: None,
             cslg_box: None,
             stsc_box: minimal_stsc_box(),
-            stsz_box: StszBox::Variable { entry_sizes: vec![] },
-            stco_or_co64_box: Either::B(Co64Box { chunk_offsets: co64_offsets.clone() }),
+            stsz_box: StszBox::Variable {
+                entry_sizes: vec![],
+            },
+            stco_or_co64_box: Either::B(Co64Box {
+                chunk_offsets: co64_offsets.clone(),
+            }),
             stss_box: None,
             sdtp_box: None,
             unknown_boxes: vec![],
@@ -398,21 +441,25 @@ proptest! {
         let (decoded, size) = StblBox::decode(&encoded)
             .expect("直前にエンコードした有効な StblBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
+        assert_eq!(size, encoded.len());
         match &decoded.stco_or_co64_box {
-            Either::A(_) => prop_assert!(false, "Co64Box を期待したが StcoBox だった"),
-            Either::B(co64) => prop_assert_eq!(co64.chunk_offsets.clone(), co64_offsets),
+            Either::A(_) => panic!("Co64Box を期待したが StcoBox だった"),
+            Either::B(co64) => assert_eq!(co64.chunk_offsets.clone(), co64_offsets),
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== MinfBox のテスト =====
+// ===== MinfBox のテスト =====
 
-    /// MinfBox (audio) の encode/decode roundtrip
-    #[test]
-    fn minf_box_audio_roundtrip(
-        balance_int in any::<u8>(),
-        balance_frac in any::<u8>()
-    ) {
+/// MinfBox (audio) の encode/decode roundtrip
+#[test]
+fn minf_box_audio_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let balance_int = noprop::sample_u8(ctx);
+        let balance_frac = noprop::sample_u8(ctx);
         let minf = MinfBox {
             media_header: Some(MediaHeader::Smhd(SmhdBox {
                 balance: FixedPointNumber::new(balance_int, balance_frac),
@@ -425,21 +472,32 @@ proptest! {
         let (decoded, size) = MinfBox::decode(&encoded)
             .expect("直前にエンコードした有効な MinfBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
+        assert_eq!(size, encoded.len());
         match &decoded.media_header {
             Some(MediaHeader::Smhd(_smhd)) => {}
-            _ => prop_assert!(false, "SmhdBox を期待した"),
+            _ => panic!("SmhdBox を期待した"),
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// MinfBox (video) の encode/decode roundtrip
-    #[test]
-    fn minf_box_video_roundtrip(
-        graphicsmode in any::<u16>(),
-        opcolor in any::<[u16; 3]>()
-    ) {
+/// MinfBox (video) の encode/decode roundtrip
+#[test]
+fn minf_box_video_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let graphicsmode = noprop::sample_u16(ctx);
+        let opcolor = [
+            noprop::sample_u16(ctx),
+            noprop::sample_u16(ctx),
+            noprop::sample_u16(ctx),
+        ];
         let minf = MinfBox {
-            media_header: Some(MediaHeader::Vmhd(VmhdBox { graphicsmode, opcolor })),
+            media_header: Some(MediaHeader::Vmhd(VmhdBox {
+                graphicsmode,
+                opcolor,
+            })),
             dinf_box: minimal_dinf_box(),
             stbl_box: minimal_stbl_box_audio(),
             unknown_boxes: vec![],
@@ -448,28 +506,31 @@ proptest! {
         let (decoded, size) = MinfBox::decode(&encoded)
             .expect("直前にエンコードした有効な MinfBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
+        assert_eq!(size, encoded.len());
         match &decoded.media_header {
-            Some(MediaHeader::Vmhd(vmhd)) => prop_assert_eq!(vmhd.graphicsmode, graphicsmode),
-            _ => prop_assert!(false, "VmhdBox を期待した"),
+            Some(MediaHeader::Vmhd(vmhd)) => assert_eq!(vmhd.graphicsmode, graphicsmode),
+            _ => panic!("VmhdBox を期待した"),
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== MdiaBox のテスト =====
+// ===== MdiaBox のテスト =====
 
-    /// MdiaBox の encode/decode roundtrip
-    #[test]
-    fn mdia_box_roundtrip(
-        timescale in 1u32..=u32::MAX,
-        duration in any::<u64>(),
-        language in prop::array::uniform3(0x61u8..=0x7Au8)
-            .prop_map(|b| LanguageCode::new(b).expect("Strategy の値域は有効な言語コード"))
-    ) {
+/// MdiaBox の encode/decode roundtrip
+#[test]
+fn mdia_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let timescale = noprop::sample_u64_in(ctx, 1..=u32::MAX as u64) as u32;
+        let duration = noprop::sample_u64(ctx);
+        let language = arb_language_code_lower(ctx);
         let mdia = MdiaBox {
             mdhd_box: MdhdBox {
                 creation_time: Mp4FileTime::from_secs(0),
                 modification_time: Mp4FileTime::from_secs(0),
-                timescale: NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ"),
+                timescale: NonZeroU32::new(timescale).expect("サンプル値域が 1 以上なので非ゼロ"),
                 duration,
                 language,
             },
@@ -481,22 +542,26 @@ proptest! {
         let (decoded, size) = MdiaBox::decode(&encoded)
             .expect("直前にエンコードした有効な MdiaBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.mdhd_box.timescale.get(), timescale);
-        prop_assert_eq!(decoded.mdhd_box.duration, duration);
-        prop_assert_eq!(decoded.mdhd_box.language, language);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.mdhd_box.timescale.get(), timescale);
+        assert_eq!(decoded.mdhd_box.duration, duration);
+        assert_eq!(decoded.mdhd_box.language, language);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== TrakBox のテスト =====
+// ===== TrakBox のテスト =====
 
-    /// TrakBox の encode/decode roundtrip
-    #[test]
-    fn trak_box_roundtrip(
-        track_id in any::<u32>(),
-        duration in any::<u64>(),
-        layer in any::<i16>(),
-        alternate_group in any::<i16>()
-    ) {
+/// TrakBox の encode/decode roundtrip
+#[test]
+fn trak_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let track_id = noprop::sample_u32(ctx);
+        let duration = noprop::sample_u64(ctx);
+        let layer = noprop::sample_i16(ctx);
+        let alternate_group = noprop::sample_i16(ctx);
         let trak = TrakBox {
             tkhd_box: TkhdBox {
                 flag_track_enabled: true,
@@ -522,23 +587,27 @@ proptest! {
         let (decoded, size) = TrakBox::decode(&encoded)
             .expect("直前にエンコードした有効な TrakBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.tkhd_box.track_id, track_id);
-        prop_assert_eq!(decoded.tkhd_box.duration, duration);
-        prop_assert_eq!(decoded.tkhd_box.layer, layer);
-        prop_assert_eq!(decoded.tkhd_box.alternate_group, alternate_group);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.tkhd_box.track_id, track_id);
+        assert_eq!(decoded.tkhd_box.duration, duration);
+        assert_eq!(decoded.tkhd_box.layer, layer);
+        assert_eq!(decoded.tkhd_box.alternate_group, alternate_group);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    // ===== MoovBox のテスト =====
+// ===== MoovBox のテスト =====
 
-    /// MoovBox の encode/decode roundtrip
-    #[test]
-    fn moov_box_roundtrip(
-        timescale in 1u32..=u32::MAX,
-        duration in any::<u64>(),
-        next_track_id in any::<u32>(),
-        track_count in 1usize..=3
-    ) {
+/// MoovBox の encode/decode roundtrip
+#[test]
+fn moov_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let timescale = noprop::sample_u64_in(ctx, 1..=u32::MAX as u64) as u32;
+        let duration = noprop::sample_u64(ctx);
+        let next_track_id = noprop::sample_u32(ctx);
+        let track_count = noprop::sample_usize_in(ctx, 1..=3);
         let trak_boxes: Vec<TrakBox> = (1..=track_count)
             .map(|i| minimal_trak_box_audio(i as u32))
             .collect();
@@ -547,7 +616,7 @@ proptest! {
             mvhd_box: MvhdBox {
                 creation_time: Mp4FileTime::from_secs(0),
                 modification_time: Mp4FileTime::from_secs(0),
-                timescale: NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ"),
+                timescale: NonZeroU32::new(timescale).expect("サンプル値域が 1 以上なので非ゼロ"),
                 duration,
                 rate: MvhdBox::DEFAULT_RATE,
                 volume: MvhdBox::DEFAULT_VOLUME,
@@ -562,12 +631,14 @@ proptest! {
         let (decoded, size) = MoovBox::decode(&encoded)
             .expect("直前にエンコードした有効な MoovBox は必ずデコードできる");
 
-        prop_assert_eq!(size, encoded.len());
-        prop_assert_eq!(decoded.mvhd_box.timescale.get(), timescale);
-        prop_assert_eq!(decoded.mvhd_box.duration, duration);
-        prop_assert_eq!(decoded.mvhd_box.next_track_id, next_track_id);
-        prop_assert_eq!(decoded.trak_boxes.len(), track_count);
-    }
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.mvhd_box.timescale.get(), timescale);
+        assert_eq!(decoded.mvhd_box.duration, duration);
+        assert_eq!(decoded.mvhd_box.next_track_id, next_track_id);
+        assert_eq!(decoded.trak_boxes.len(), track_count);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 // ===== 境界値テスト =====

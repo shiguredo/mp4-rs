@@ -5,7 +5,7 @@
 
 use std::num::NonZeroU32;
 
-use proptest::prelude::*;
+use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
@@ -20,6 +20,20 @@ use shiguredo_mp4::{
 };
 
 mod common;
+
+/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+fn sample_vec<T>(
+    ctx: &mut TestCaseContext,
+    range: std::ops::Range<usize>,
+    mut elem: impl FnMut(&mut TestCaseContext) -> T,
+) -> Vec<T> {
+    let len = noprop::sample_usize_in(ctx, range);
+    let mut result = Vec::new();
+    for _ in 0..len {
+        result.push(elem(ctx));
+    }
+    result
+}
 
 /// テスト用の H.264 SampleEntry を作成
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -257,23 +271,26 @@ struct AudioSampleInfo {
     data_size: usize,
 }
 
-/// ビデオサンプル情報を生成する Strategy
-fn arb_video_sample_info() -> impl Strategy<Value = VideoSampleInfo> {
-    (any::<bool>(), 1u32..100, 100usize..10000).prop_map(|(keyframe, duration, data_size)| {
-        VideoSampleInfo {
-            keyframe,
-            duration,
-            data_size,
-        }
-    })
-}
-
-/// オーディオサンプル情報を生成する Strategy
-fn arb_audio_sample_info() -> impl Strategy<Value = AudioSampleInfo> {
-    (1u32..100, 100usize..5000).prop_map(|(duration, data_size)| AudioSampleInfo {
+/// ビデオサンプル情報を生成する
+fn arb_video_sample_info(ctx: &mut TestCaseContext) -> VideoSampleInfo {
+    let keyframe = noprop::sample_bool(ctx);
+    let duration = noprop::sample_u64_in(ctx, 1..100) as u32;
+    let data_size = noprop::sample_usize_in(ctx, 100..10000);
+    VideoSampleInfo {
+        keyframe,
         duration,
         data_size,
-    })
+    }
+}
+
+/// オーディオサンプル情報を生成する
+fn arb_audio_sample_info(ctx: &mut TestCaseContext) -> AudioSampleInfo {
+    let duration = noprop::sample_u64_in(ctx, 1..100) as u32;
+    let data_size = noprop::sample_usize_in(ctx, 100..5000);
+    AudioSampleInfo {
+        duration,
+        data_size,
+    }
 }
 
 /// 字幕サンプル情報
@@ -283,15 +300,17 @@ struct SubtitleSampleInfo {
     data_size: usize,
 }
 
-/// 字幕サンプル情報を生成する Strategy
+/// 字幕サンプル情報を生成する
 ///
 /// keyframe は Sample 型の doc コメントの推奨に従い true 固定として本構造体には持たせない。
 /// duration / data_size は音声サンプルと同型で、値域は字幕想定に合わせて狭める
-fn arb_subtitle_sample_info() -> impl Strategy<Value = SubtitleSampleInfo> {
-    (1u32..100, 100usize..2000).prop_map(|(duration, data_size)| SubtitleSampleInfo {
+fn arb_subtitle_sample_info(ctx: &mut TestCaseContext) -> SubtitleSampleInfo {
+    let duration = noprop::sample_u64_in(ctx, 1..100) as u32;
+    let data_size = noprop::sample_usize_in(ctx, 100..2000);
+    SubtitleSampleInfo {
         duration,
         data_size,
-    })
+    }
 }
 
 /// moov ボックスの尺に関する不変条件を検証する
@@ -302,11 +321,8 @@ fn arb_subtitle_sample_info() -> impl Strategy<Value = SubtitleSampleInfo> {
 ///
 /// demuxer は尺として `mdhd` しか読まないため、`tkhd` の単位の誤りは
 /// mux → demux のラウンドトリップでは検出できない。そのため moov ボックスを直接検証する
-fn assert_moov_duration_invariants(
-    moov_box: &MoovBox,
-    expected: &[([u8; 4], NonZeroU32, u64)],
-) -> Result<(), TestCaseError> {
-    prop_assert_eq!(
+fn assert_moov_duration_invariants(moov_box: &MoovBox, expected: &[([u8; 4], NonZeroU32, u64)]) {
+    assert_eq!(
         moov_box.trak_boxes.len(),
         expected.len(),
         "出力された trak の数が想定と一致しない"
@@ -322,14 +338,12 @@ fn assert_moov_duration_invariants(
             .expect("想定していないハンドラー種別の trak が出力された");
 
         let mdhd_box = &trak_box.mdia_box.mdhd_box;
-        prop_assert_eq!(
-            mdhd_box.timescale,
-            *expected_timescale,
+        assert_eq!(
+            mdhd_box.timescale, *expected_timescale,
             "mdhd の timescale が入力の timescale と一致しない"
         );
-        prop_assert_eq!(
-            mdhd_box.duration,
-            *expected_duration,
+        assert_eq!(
+            mdhd_box.duration, *expected_duration,
             "mdhd の duration が入力サンプルの尺の合計と一致しない"
         );
 
@@ -338,26 +352,25 @@ fn assert_moov_duration_invariants(
                 .div_ceil(mdhd_box.timescale.get() as u128),
         )
         .expect("この生成範囲では換算結果は必ず u64 に収まる");
-        prop_assert_eq!(
-            trak_box.tkhd_box.duration,
-            expected_tkhd_duration,
+        assert_eq!(
+            trak_box.tkhd_box.duration, expected_tkhd_duration,
             "tkhd の duration が mvhd の timescale 単位になっていない"
         );
     }
-
-    Ok(())
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(20))]
+/// このファイルの主要 PBT ブロックの共通ケース数（旧 `with_cases(20)` を維持）
+const CASES_MAIN: usize = 20;
 
-    /// Options で指定した language / name が mux → demux で復元される
-    #[test]
-    fn track_metadata_roundtrip(
-        video_meta in common::arb_track_metadata(),
-        audio_meta in common::arb_track_metadata(),
-        subtitle_meta in common::arb_track_metadata(),
-    ) {
+/// Options で指定した language / name が mux → demux で復元される
+#[test]
+fn track_metadata_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let video_meta = common::arb_track_metadata(ctx);
+        let audio_meta = common::arb_track_metadata(ctx);
+        let subtitle_meta = common::arb_track_metadata(ctx);
+
         let options = Mp4FileMuxerOptions {
             video_track: video_meta.clone(),
             audio_track: audio_meta.clone(),
@@ -425,15 +438,15 @@ proptest! {
             .expect("moov のエンコードに失敗した");
         let (decoded_moov, decoded_size) =
             MoovBox::decode(&moov_bytes).expect("エンコードした moov はデコードできる");
-        prop_assert_eq!(
+        assert_eq!(
             decoded_size,
             moov_bytes.len(),
             "moov の decode サイズがバイト列長と一致しない"
         );
-        prop_assert_eq!(decoded_moov.trak_boxes.len(), 3);
-        common::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta)?;
-        common::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta)?;
-        common::assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta)?;
+        assert_eq!(decoded_moov.trak_boxes.len(), 3);
+        common::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta);
+        common::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta);
+        common::assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta);
 
         // ファイルとしても demux できることを確認する
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
@@ -443,26 +456,30 @@ proptest! {
             data: &file_data,
         });
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 3);
-    }
+        assert_eq!(tracks.len(), 3);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ビデオのみの Mux → Demux roundtrip
-    #[test]
-    fn mux_demux_video_only_roundtrip(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        timescale in 1u32..90001,
-        samples in prop::collection::vec(arb_video_sample_info(), 1..20)
-    ) {
+/// ビデオのみの Mux → Demux roundtrip
+#[test]
+fn mux_demux_video_only_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let timescale = noprop::sample_u64_in(ctx, 1..90001) as u32;
+        let mut samples = sample_vec(ctx, 1..20, arb_video_sample_info);
+
         // 最初のサンプルは必ず keyframe にする
-        let mut samples = samples;
         if let Some(first) = samples.first_mut() {
             first.keyframe = true;
         }
 
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+        let timescale = NonZeroU32::new(timescale).expect("サンプル値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
         let mut sample_entry = Some(create_avc1_sample_entry(width, height));
@@ -479,8 +496,14 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("sample の追加に失敗した");
-            expected_samples.push((sample_info.keyframe, sample_info.duration, sample_info.data_size));
+            muxer
+                .append_sample(&sample)
+                .expect("sample の追加に失敗した");
+            expected_samples.push((
+                sample_info.keyframe,
+                sample_info.duration,
+                sample_info.data_size,
+            ));
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
         }
@@ -500,32 +523,42 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert!(matches!(tracks[0].kind, TrackKind::Video));
+        assert_eq!(tracks.len(), 1);
+        assert!(matches!(tracks[0].kind, TrackKind::Video));
 
         // サンプル数と属性を確認
         let mut actual_samples = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
             actual_samples.push((sample.keyframe, sample.duration, sample.data_size));
         }
-        prop_assert_eq!(actual_samples.len(), expected_samples.len());
-        for (i, (expected, actual)) in expected_samples.iter().zip(actual_samples.iter()).enumerate() {
-            prop_assert_eq!(expected.0, actual.0, "sample {} で keyframe が一致しない", i);
-            prop_assert_eq!(expected.1, actual.1, "sample {} で duration が一致しない", i);
-            prop_assert_eq!(expected.2, actual.2, "sample {} で data_size が一致しない", i);
+        assert_eq!(actual_samples.len(), expected_samples.len());
+        for (i, (expected, actual)) in expected_samples
+            .iter()
+            .zip(actual_samples.iter())
+            .enumerate()
+        {
+            assert_eq!(expected.0, actual.0, "sample {i} で keyframe が一致しない");
+            assert_eq!(expected.1, actual.1, "sample {i} で duration が一致しない");
+            assert_eq!(expected.2, actual.2, "sample {i} で data_size が一致しない");
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// オーディオのみの Mux → Demux roundtrip
-    #[test]
-    fn mux_demux_audio_only_roundtrip(
-        channel_count in 1u8..=8,
-        timescale in 1u32..48001,
-        samples in prop::collection::vec(arb_audio_sample_info(), 1..30)
-    ) {
+/// オーディオのみの Mux → Demux roundtrip
+#[test]
+fn mux_demux_audio_only_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let channel_count = noprop::sample_u64_in(ctx, 1..=8) as u8;
+        let timescale = noprop::sample_u64_in(ctx, 1..48001) as u32;
+        let samples = sample_vec(ctx, 1..30, arb_audio_sample_info);
+
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+        let timescale = NonZeroU32::new(timescale).expect("サンプル値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
         // 正規は keyframe = true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
@@ -543,7 +576,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("sample の追加に失敗した");
             expected_samples.push((sample_info.duration, sample_info.data_size));
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
@@ -552,7 +587,7 @@ proptest! {
         // ファイナライズ
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("finalize に失敗した");
-        prop_assert!(
+        assert!(
             finalized.moov_box().trak_boxes[0]
                 .mdia_box
                 .minf_box
@@ -573,35 +608,45 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert!(matches!(tracks[0].kind, TrackKind::Audio));
+        assert_eq!(tracks.len(), 1);
+        assert!(matches!(tracks[0].kind, TrackKind::Audio));
 
         // サンプル数と属性を確認
         // 入力は keyframe = false だが、stss 省略により demux ではすべて同期サンプルになる
         let mut actual_samples = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
-            prop_assert!(
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
+            assert!(
                 sample.keyframe,
                 "音声サンプルが同期サンプルとして復元されていない"
             );
             actual_samples.push((sample.duration, sample.data_size));
         }
-        prop_assert_eq!(actual_samples.len(), expected_samples.len());
-        for (i, (expected, actual)) in expected_samples.iter().zip(actual_samples.iter()).enumerate() {
-            prop_assert_eq!(expected.0, actual.0, "sample {} で duration が一致しない", i);
-            prop_assert_eq!(expected.1, actual.1, "sample {} で data_size が一致しない", i);
+        assert_eq!(actual_samples.len(), expected_samples.len());
+        for (i, (expected, actual)) in expected_samples
+            .iter()
+            .zip(actual_samples.iter())
+            .enumerate()
+        {
+            assert_eq!(expected.0, actual.0, "sample {i} で duration が一致しない");
+            assert_eq!(expected.1, actual.1, "sample {i} で data_size が一致しない");
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 字幕のみの Mux → Demux roundtrip
-    #[test]
-    fn mux_demux_subtitle_only_roundtrip(
-        timescale in 1u32..10001,
-        samples in prop::collection::vec(arb_subtitle_sample_info(), 1..15)
-    ) {
+/// 字幕のみの Mux → Demux roundtrip
+#[test]
+fn mux_demux_subtitle_only_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let timescale = noprop::sample_u64_in(ctx, 1..10001) as u32;
+        let samples = sample_vec(ctx, 1..15, arb_subtitle_sample_info);
+
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
-        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+        let timescale = NonZeroU32::new(timescale).expect("サンプル値域が 1 以上なので非ゼロ");
 
         // サンプルを追加
         let mut sample_entry = Some(create_stpp_sample_entry());
@@ -618,7 +663,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("subtitle sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("subtitle sample の追加に失敗した");
             expected_samples.push((sample_info.duration, sample_info.data_size));
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
@@ -639,38 +686,59 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert!(matches!(tracks[0].kind, TrackKind::Subtitle));
+        assert_eq!(tracks.len(), 1);
+        assert!(matches!(tracks[0].kind, TrackKind::Subtitle));
         // 投入した timescale が mdhd 経由でそのまま復元される
-        prop_assert_eq!(tracks[0].timescale, timescale);
+        assert_eq!(tracks[0].timescale, timescale);
 
         // サンプル数と属性を確認
         let mut actual_samples = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
-            prop_assert!(
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
+            assert!(
                 matches!(sample.track.kind, TrackKind::Subtitle),
                 "字幕以外のトラックは本テストの対象外"
             );
             // 字幕サンプルはすべて keyframe = true で投入しているので stss は生成されない
-            prop_assert!(sample.keyframe, "字幕サンプルが同期サンプルとして復元されていない");
+            assert!(
+                sample.keyframe,
+                "字幕サンプルが同期サンプルとして復元されていない"
+            );
             actual_samples.push((sample.duration, sample.data_size));
         }
-        prop_assert_eq!(actual_samples.len(), expected_samples.len());
-        for (i, (expected, actual)) in expected_samples.iter().zip(actual_samples.iter()).enumerate() {
-            prop_assert_eq!(expected.0, actual.0, "sample {} で duration が一致しない", i);
-            prop_assert_eq!(expected.1, actual.1, "sample {} で data_size が一致しない", i);
+        assert_eq!(actual_samples.len(), expected_samples.len());
+        for (i, (expected, actual)) in expected_samples
+            .iter()
+            .zip(actual_samples.iter())
+            .enumerate()
+        {
+            assert_eq!(expected.0, actual.0, "sample {i} で duration が一致しない");
+            assert_eq!(expected.1, actual.1, "sample {i} で data_size が一致しない");
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// composition_time_offset が `ctts` 経由で roundtrip される
-    #[test]
-    fn mux_demux_video_composition_time_offset_roundtrip(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        durations in prop::collection::vec(1u32..3001, 1..20),
-        composition_time_offsets in prop::collection::vec(prop::option::of(-3000i64..3001), 1..20),
-    ) {
-        prop_assume!(durations.len() == composition_time_offsets.len());
+/// composition_time_offset が `ctts` 経由で roundtrip される
+#[test]
+fn mux_demux_video_composition_time_offset_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let durations = sample_vec(ctx, 1..20, |ctx| noprop::sample_u64_in(ctx, 1..3001) as u32);
+        let composition_time_offsets = sample_vec(ctx, 1..20, |ctx| {
+            if noprop::sample_bool(ctx) {
+                Some(noprop::sample_u64_in(ctx, 0..6001) as i64 - 3000)
+            } else {
+                None
+            }
+        });
+
+        if durations.len() != composition_time_offsets.len() {
+            ctx.reject_case();
+        }
 
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
@@ -692,7 +760,9 @@ proptest! {
                 data_offset,
                 data_size: 128,
             };
-            muxer.append_sample(&sample).expect("sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("sample の追加に失敗した");
             data_offset += 128;
         }
 
@@ -717,19 +787,26 @@ proptest! {
             } else {
                 None
             };
-            prop_assert_eq!(sample.composition_time_offset, normalized);
+            assert_eq!(sample.composition_time_offset, normalized);
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 負の composition_time_offset を含む場合、ctts version 1 の表現範囲を超える正値はエラーになる
-    #[test]
-    fn mux_video_composition_time_offset_out_of_i32_range_for_ctts_v1(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        duration_a in 1u32..3001,
-        duration_b in 1u32..3001,
-        too_large_positive_cto in (i32::MAX as i64 + 1)..=(u32::MAX as i64),
-    ) {
+/// 負の composition_time_offset を含む場合、ctts version 1 の表現範囲を超える正値はエラーになる
+#[test]
+fn mux_video_composition_time_offset_out_of_i32_range_for_ctts_v1() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let duration_a = noprop::sample_u64_in(ctx, 1..3001) as u32;
+        let duration_b = noprop::sample_u64_in(ctx, 1..3001) as u32;
+        // (i32::MAX + 1)..=u32::MAX を i64 で表現。u64 として引いてから i64 に落とす
+        let too_large_positive_cto =
+            noprop::sample_u64_in(ctx, (i32::MAX as u64 + 1)..=(u32::MAX as u64)) as i64;
+
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let initial_data_offset = muxer.initial_boxes_bytes().len() as u64;
         let timescale = NonZeroU32::new(90_000).expect("非ゼロである");
@@ -762,20 +839,24 @@ proptest! {
             .expect("sample の追加に失敗した");
 
         let result = muxer.finalize();
-        prop_assert!(result.is_err());
-    }
+        assert!(result.is_err());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// ビデオ + オーディオの Mux → Demux roundtrip
-    #[test]
-    fn mux_demux_video_audio_roundtrip(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        channel_count in 1u8..=8,
-        video_samples in prop::collection::vec(arb_video_sample_info(), 1..10),
-        audio_samples in prop::collection::vec(arb_audio_sample_info(), 1..15)
-    ) {
+/// ビデオ + オーディオの Mux → Demux roundtrip
+#[test]
+fn mux_demux_video_audio_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let channel_count = noprop::sample_u64_in(ctx, 1..=8) as u8;
+        let mut video_samples = sample_vec(ctx, 1..10, arb_video_sample_info);
+        let audio_samples = sample_vec(ctx, 1..15, arb_audio_sample_info);
+
         // 最初のビデオサンプルは必ず keyframe にする
-        let mut video_samples = video_samples;
         if let Some(first) = video_samples.first_mut() {
             first.keyframe = true;
         }
@@ -800,7 +881,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("video sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("video sample の追加に失敗した");
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
         }
@@ -819,7 +902,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("audio sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("audio sample の追加に失敗した");
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
         }
@@ -829,7 +914,7 @@ proptest! {
         let finalized = muxer.finalize().expect("finalize に失敗した");
 
         // 音声トラック（2 本目）の stss が省略されていること
-        prop_assert!(
+        assert!(
             finalized.moov_box().trak_boxes[1]
                 .mdia_box
                 .minf_box
@@ -850,17 +935,18 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks.len(), 2);
 
         // サンプル数を確認
         // 音声は入力 keyframe = false だが、stss 省略により demux では同期サンプルになる
         let mut video_count = 0;
         let mut audio_count = 0;
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
             match sample.track.kind {
                 TrackKind::Video => video_count += 1,
                 TrackKind::Audio => {
-                    prop_assert!(
+                    assert!(
                         sample.keyframe,
                         "音声サンプルが同期サンプルとして復元されていない"
                     );
@@ -870,22 +956,26 @@ proptest! {
                 TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外"),
             }
         }
-        prop_assert_eq!(video_count, video_samples.len());
-        prop_assert_eq!(audio_count, audio_samples.len());
-    }
+        assert_eq!(video_count, video_samples.len());
+        assert_eq!(audio_count, audio_samples.len());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 映像 + 音声 + 字幕の 3 トラック Mux → Demux roundtrip
-    #[test]
-    fn mux_demux_video_audio_subtitle_roundtrip(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        channel_count in 1u8..=8,
-        video_samples in prop::collection::vec(arb_video_sample_info(), 1..10),
-        audio_samples in prop::collection::vec(arb_audio_sample_info(), 1..15),
-        subtitle_samples in prop::collection::vec(arb_subtitle_sample_info(), 1..10)
-    ) {
+/// 映像 + 音声 + 字幕の 3 トラック Mux → Demux roundtrip
+#[test]
+fn mux_demux_video_audio_subtitle_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let channel_count = noprop::sample_u64_in(ctx, 1..=8) as u8;
+        let mut video_samples = sample_vec(ctx, 1..10, arb_video_sample_info);
+        let audio_samples = sample_vec(ctx, 1..15, arb_audio_sample_info);
+        let subtitle_samples = sample_vec(ctx, 1..10, arb_subtitle_sample_info);
+
         // 最初の映像サンプルは必ず keyframe にする
-        let mut video_samples = video_samples;
         if let Some(first) = video_samples.first_mut() {
             first.keyframe = true;
         }
@@ -911,7 +1001,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("video sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("video sample の追加に失敗した");
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
         }
@@ -929,7 +1021,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("audio sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("audio sample の追加に失敗した");
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
         }
@@ -946,7 +1040,9 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("subtitle sample の追加に失敗した");
+            muxer
+                .append_sample(&sample)
+                .expect("subtitle sample の追加に失敗した");
             data_offset += sample_info.data_size as u64;
             total_data_size += sample_info.data_size;
         }
@@ -954,7 +1050,7 @@ proptest! {
         // ファイナライズ
         let initial_bytes = muxer.initial_boxes_bytes().to_vec();
         let finalized = muxer.finalize().expect("finalize に失敗した");
-        prop_assert!(
+        assert!(
             finalized.moov_box().trak_boxes[1]
                 .mdia_box
                 .minf_box
@@ -986,7 +1082,7 @@ proptest! {
                     subtitle_samples.iter().map(|s| s.duration as u64).sum(),
                 ),
             ],
-        )?;
+        );
 
         // ファイルデータを構築
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
@@ -999,39 +1095,40 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks.len(), 3);
 
         // trak は append_sample() の呼び出し順（映像 → 音声 → 字幕）で並び、
         // track_id もその順に 1 から振られる
-        prop_assert!(matches!(tracks[0].kind, TrackKind::Video));
-        prop_assert!(matches!(tracks[1].kind, TrackKind::Audio));
-        prop_assert!(matches!(tracks[2].kind, TrackKind::Subtitle));
-        prop_assert_eq!(tracks[0].track_id, 1);
-        prop_assert_eq!(tracks[1].track_id, 2);
-        prop_assert_eq!(tracks[2].track_id, 3);
+        assert!(matches!(tracks[0].kind, TrackKind::Video));
+        assert!(matches!(tracks[1].kind, TrackKind::Audio));
+        assert!(matches!(tracks[2].kind, TrackKind::Subtitle));
+        assert_eq!(tracks[0].track_id, 1);
+        assert_eq!(tracks[1].track_id, 2);
+        assert_eq!(tracks[2].track_id, 3);
 
         // トラックごとに別々の timescale が取り違えられずに復元される
-        prop_assert_eq!(tracks[0].timescale, video_timescale);
-        prop_assert_eq!(tracks[1].timescale, audio_timescale);
-        prop_assert_eq!(tracks[2].timescale, subtitle_timescale);
+        assert_eq!(tracks[0].timescale, video_timescale);
+        assert_eq!(tracks[1].timescale, audio_timescale);
+        assert_eq!(tracks[2].timescale, subtitle_timescale);
 
         // サンプル数を確認
         // 音声は入力 keyframe = false だが、stss 省略により demux では同期サンプルになる
         let mut video_count = 0;
         let mut audio_count = 0;
         let mut subtitle_count = 0;
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
             match sample.track.kind {
                 TrackKind::Video => video_count += 1,
                 TrackKind::Audio => {
-                    prop_assert!(
+                    assert!(
                         sample.keyframe,
                         "音声サンプルが同期サンプルとして復元されていない"
                     );
                     audio_count += 1;
                 }
                 TrackKind::Subtitle => {
-                    prop_assert!(
+                    assert!(
                         sample.keyframe,
                         "字幕サンプルが同期サンプルとして復元されていない"
                     );
@@ -1039,17 +1136,22 @@ proptest! {
                 }
             }
         }
-        prop_assert_eq!(video_count, video_samples.len());
-        prop_assert_eq!(audio_count, audio_samples.len());
-        prop_assert_eq!(subtitle_count, subtitle_samples.len());
-    }
+        assert_eq!(video_count, video_samples.len());
+        assert_eq!(audio_count, audio_samples.len());
+        assert_eq!(subtitle_count, subtitle_samples.len());
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 使用した SampleEntry に応じて ftyp compatible brands が更新される
-    #[test]
-    fn compatible_brands_follow_used_sample_entries(
-        codec_mask in 0u8..16,
-        reserved_moov_box_size in 0usize..4096
-    ) {
+/// 使用した SampleEntry に応じて ftyp compatible brands が更新される
+#[test]
+fn compatible_brands_follow_used_sample_entries() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let codec_mask = noprop::sample_u64_in(ctx, 0..16) as u8;
+        let reserved_moov_box_size = noprop::sample_usize_in(ctx, 0..4096);
+
         let options = Mp4FileMuxerOptions {
             reserved_moov_box_size,
             ..Default::default()
@@ -1058,19 +1160,22 @@ proptest! {
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
         let mut total_data_size = 0usize;
 
-        let append_video_sample = |muxer: &mut Mp4FileMuxer, data_offset: u64, sample_entry: SampleEntry| {
-            let sample = Sample {
-                track_kind: TrackKind::Video,
-                sample_entry: Some(sample_entry),
-                keyframe: true,
-                timescale: NonZeroU32::new(30).expect("timescale は非ゼロである"),
-                duration: 1,
-                composition_time_offset: None,
-                data_offset,
-                data_size: 256,
+        let append_video_sample =
+            |muxer: &mut Mp4FileMuxer, data_offset: u64, sample_entry: SampleEntry| {
+                let sample = Sample {
+                    track_kind: TrackKind::Video,
+                    sample_entry: Some(sample_entry),
+                    keyframe: true,
+                    timescale: NonZeroU32::new(30).expect("timescale は非ゼロである"),
+                    duration: 1,
+                    composition_time_offset: None,
+                    data_offset,
+                    data_size: 256,
+                };
+                muxer
+                    .append_sample(&sample)
+                    .expect("video sample の追加に失敗した");
             };
-            muxer.append_sample(&sample).expect("video sample の追加に失敗した");
-        };
 
         if codec_mask == 0 {
             let sample = Sample {
@@ -1111,7 +1216,7 @@ proptest! {
             }
         }
 
-        prop_assert_eq!(
+        assert_eq!(
             data_offset,
             muxer.initial_boxes_bytes().len() as u64 + total_data_size as u64
         );
@@ -1135,24 +1240,34 @@ proptest! {
             expected_brands.push(Brand::AV01);
         }
 
-        prop_assert_eq!(ftyp_box.major_brand, Brand::ISOM);
-        prop_assert_eq!(ftyp_box.compatible_brands, expected_brands);
-    }
+        assert_eq!(ftyp_box.major_brand, Brand::ISOM);
+        assert_eq!(ftyp_box.compatible_brands, expected_brands);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// advance_position を使用したビデオのみの Mux → Demux roundtrip
-    ///
-    /// サンプル間にランダムなギャップ（非サンプルデータ）を挿入し、
-    /// advance_position で位置を進めた上で正しく roundtrip することを検証する。
-    #[test]
-    fn mux_demux_video_with_advance_position_roundtrip(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        timescale in 1u32..90001,
-        samples in prop::collection::vec(arb_video_sample_info(), 1..20),
-        composition_time_offsets in prop::collection::vec(prop::option::of(-3000i64..3001), 1..20),
-        gaps in prop::collection::vec(0u64..256, 1..20),
-    ) {
-        let mut samples = samples;
+/// advance_position を使用したビデオのみの Mux → Demux roundtrip
+///
+/// サンプル間にランダムなギャップ（非サンプルデータ）を挿入し、
+/// advance_position で位置を進めた上で正しく roundtrip することを検証する。
+#[test]
+fn mux_demux_video_with_advance_position_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let timescale = noprop::sample_u64_in(ctx, 1..90001) as u32;
+        let mut samples = sample_vec(ctx, 1..20, arb_video_sample_info);
+        let composition_time_offsets = sample_vec(ctx, 1..20, |ctx| {
+            if noprop::sample_bool(ctx) {
+                Some(noprop::sample_u64_in(ctx, 0..6001) as i64 - 3000)
+            } else {
+                None
+            }
+        });
+        let gaps = sample_vec(ctx, 1..20, |ctx| noprop::sample_u64_in(ctx, 0..256));
+
         if let Some(first) = samples.first_mut() {
             first.keyframe = true;
         }
@@ -1160,7 +1275,7 @@ proptest! {
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let initial_len = muxer.initial_boxes_bytes().len() as u64;
         let mut data_offset = initial_len;
-        let timescale = NonZeroU32::new(timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+        let timescale = NonZeroU32::new(timescale).expect("サンプル値域が 1 以上なので非ゼロ");
 
         let mut sample_entry = Some(create_avc1_sample_entry(width, height));
         let mut expected_samples = Vec::new();
@@ -1172,7 +1287,9 @@ proptest! {
             let gap = gaps.get(i).copied().unwrap_or(0);
             if gap > 0 {
                 regions.push((data_offset, gap as usize));
-                muxer.advance_position(gap).expect("position の前進に失敗した");
+                muxer
+                    .advance_position(gap)
+                    .expect("position の前進に失敗した");
                 data_offset += gap;
             }
 
@@ -1187,8 +1304,14 @@ proptest! {
                 data_offset,
                 data_size: sample_info.data_size,
             };
-            muxer.append_sample(&sample).expect("sample の追加に失敗した");
-            expected_samples.push((sample_info.keyframe, sample_info.duration, sample_info.data_size));
+            muxer
+                .append_sample(&sample)
+                .expect("sample の追加に失敗した");
+            expected_samples.push((
+                sample_info.keyframe,
+                sample_info.duration,
+                sample_info.data_size,
+            ));
             expected_ctos.push(cto);
 
             regions.push((data_offset, sample_info.data_size));
@@ -1207,21 +1330,26 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert!(matches!(tracks[0].kind, TrackKind::Video));
+        assert_eq!(tracks.len(), 1);
+        assert!(matches!(tracks[0].kind, TrackKind::Video));
 
         let has_any_cto = expected_ctos.iter().any(Option::is_some);
         let mut actual_samples = Vec::new();
         let mut actual_ctos = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
             actual_samples.push((sample.keyframe, sample.duration, sample.data_size));
             actual_ctos.push(sample.composition_time_offset);
         }
-        prop_assert_eq!(actual_samples.len(), expected_samples.len());
-        for (i, (expected, actual)) in expected_samples.iter().zip(actual_samples.iter()).enumerate() {
-            prop_assert_eq!(expected.0, actual.0, "sample {} で keyframe が一致しない", i);
-            prop_assert_eq!(expected.1, actual.1, "sample {} で duration が一致しない", i);
-            prop_assert_eq!(expected.2, actual.2, "sample {} で data_size が一致しない", i);
+        assert_eq!(actual_samples.len(), expected_samples.len());
+        for (i, (expected, actual)) in expected_samples
+            .iter()
+            .zip(actual_samples.iter())
+            .enumerate()
+        {
+            assert_eq!(expected.0, actual.0, "sample {i} で keyframe が一致しない");
+            assert_eq!(expected.1, actual.1, "sample {i} で duration が一致しない");
+            assert_eq!(expected.2, actual.2, "sample {i} で data_size が一致しない");
         }
         for (i, (expected, actual)) in expected_ctos.iter().zip(actual_ctos.iter()).enumerate() {
             let normalized = if has_any_cto {
@@ -1229,26 +1357,39 @@ proptest! {
             } else {
                 None
             };
-            prop_assert_eq!(normalized, *actual, "sample {} で composition_time_offset が一致しない", i);
+            assert_eq!(
+                normalized, *actual,
+                "sample {i} で composition_time_offset が一致しない"
+            );
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// advance_position を使用したビデオ + オーディオの Mux → Demux roundtrip
-    ///
-    /// あわせて moov ボックスの `mvhd` / `tkhd` / `mdhd` の尺の整合も検証する
-    #[test]
-    fn mux_demux_video_audio_with_advance_position_roundtrip(
-        width in 16u16..1920,
-        height in 16u16..1080,
-        channel_count in 1u8..=8,
-        video_timescale in 1u32..90001,
-        audio_timescale in 1u32..48001,
-        video_samples in prop::collection::vec(arb_video_sample_info(), 1..10),
-        audio_samples in prop::collection::vec(arb_audio_sample_info(), 1..10),
-        video_ctos in prop::collection::vec(prop::option::of(-3000i64..3001), 1..10),
-        gaps in prop::collection::vec(0u64..256, 1..20),
-    ) {
-        let mut video_samples = video_samples;
+/// advance_position を使用したビデオ + オーディオの Mux → Demux roundtrip
+///
+/// あわせて moov ボックスの `mvhd` / `tkhd` / `mdhd` の尺の整合も検証する
+#[test]
+fn mux_demux_video_audio_with_advance_position_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
+        let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
+        let channel_count = noprop::sample_u64_in(ctx, 1..=8) as u8;
+        let video_timescale = noprop::sample_u64_in(ctx, 1..90001) as u32;
+        let audio_timescale = noprop::sample_u64_in(ctx, 1..48001) as u32;
+        let mut video_samples = sample_vec(ctx, 1..10, arb_video_sample_info);
+        let audio_samples = sample_vec(ctx, 1..10, arb_audio_sample_info);
+        let video_ctos = sample_vec(ctx, 1..10, |ctx| {
+            if noprop::sample_bool(ctx) {
+                Some(noprop::sample_u64_in(ctx, 0..6001) as i64 - 3000)
+            } else {
+                None
+            }
+        });
+        let gaps = sample_vec(ctx, 1..20, |ctx| noprop::sample_u64_in(ctx, 0..256));
+
         if let Some(first) = video_samples.first_mut() {
             first.keyframe = true;
         }
@@ -1256,9 +1397,9 @@ proptest! {
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
         let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
         let video_timescale =
-            NonZeroU32::new(video_timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+            NonZeroU32::new(video_timescale).expect("サンプル値域が 1 以上なので非ゼロ");
         let audio_timescale =
-            NonZeroU32::new(audio_timescale).expect("Strategy の値域が 1 以上なので非ゼロ");
+            NonZeroU32::new(audio_timescale).expect("サンプル値域が 1 以上なので非ゼロ");
 
         let mut video_entry = Some(create_avc1_sample_entry(width, height));
         let mut audio_entry = Some(create_opus_sample_entry(channel_count));
@@ -1276,7 +1417,9 @@ proptest! {
                 gap_idx += 1;
                 if gap > 0 {
                     regions.push((data_offset, gap as usize));
-                    muxer.advance_position(gap).expect("position の前進に失敗した");
+                    muxer
+                        .advance_position(gap)
+                        .expect("position の前進に失敗した");
                     data_offset += gap;
                 }
 
@@ -1291,7 +1434,9 @@ proptest! {
                     data_offset,
                     data_size: vs.data_size,
                 };
-                muxer.append_sample(&sample).expect("video sample の追加に失敗した");
+                muxer
+                    .append_sample(&sample)
+                    .expect("video sample の追加に失敗した");
                 expected_video.push((vs.keyframe, vs.duration, vs.data_size));
                 expected_video_ctos.push(cto);
                 regions.push((data_offset, vs.data_size));
@@ -1303,7 +1448,9 @@ proptest! {
                 gap_idx += 1;
                 if gap > 0 {
                     regions.push((data_offset, gap as usize));
-                    muxer.advance_position(gap).expect("position の前進に失敗した");
+                    muxer
+                        .advance_position(gap)
+                        .expect("position の前進に失敗した");
                     data_offset += gap;
                 }
 
@@ -1318,7 +1465,9 @@ proptest! {
                     data_offset,
                     data_size: aus.data_size,
                 };
-                muxer.append_sample(&sample).expect("audio sample の追加に失敗した");
+                muxer
+                    .append_sample(&sample)
+                    .expect("audio sample の追加に失敗した");
                 expected_audio.push((aus.duration, aus.data_size));
                 regions.push((data_offset, aus.data_size));
                 data_offset += aus.data_size as u64;
@@ -1329,7 +1478,7 @@ proptest! {
         let finalized = muxer.finalize().expect("finalize に失敗した");
 
         // 映像が先に append されるため音声は 2 本目。全 false 入力でも stss は省略される
-        prop_assert!(
+        assert!(
             finalized.moov_box().trak_boxes[1]
                 .mdia_box
                 .minf_box
@@ -1355,7 +1504,7 @@ proptest! {
                     expected_audio.iter().map(|s| s.0 as u64).sum(),
                 ),
             ],
-        )?;
+        );
 
         let file_data = build_hybrid_file_data(&initial_bytes, finalized, &regions);
 
@@ -1366,13 +1515,14 @@ proptest! {
         });
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks.len(), 2);
 
         let has_any_video_cto = expected_video_ctos.iter().any(Option::is_some);
         let mut actual_video = Vec::new();
         let mut actual_video_ctos = Vec::new();
         let mut actual_audio = Vec::new();
-        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した") {
+        while let Some(sample) = demuxer.next_sample().expect("sample の読み取りに失敗した")
+        {
             match sample.track.kind {
                 TrackKind::Video => {
                     actual_video.push((sample.keyframe, sample.duration, sample.data_size));
@@ -1380,7 +1530,7 @@ proptest! {
                 }
                 TrackKind::Audio => {
                     // 入力は keyframe = false だが、stss 省略により demux では同期サンプルになる
-                    prop_assert!(
+                    assert!(
                         sample.keyframe,
                         "音声サンプルが同期サンプルとして復元されていない"
                     );
@@ -1390,26 +1540,50 @@ proptest! {
                 TrackKind::Subtitle => unreachable!("字幕トラックは本テストの対象外"),
             }
         }
-        prop_assert_eq!(actual_video.len(), expected_video.len());
-        prop_assert_eq!(actual_audio.len(), expected_audio.len());
+        assert_eq!(actual_video.len(), expected_video.len());
+        assert_eq!(actual_audio.len(), expected_audio.len());
         for (i, (expected, actual)) in expected_video.iter().zip(actual_video.iter()).enumerate() {
-            prop_assert_eq!(expected.0, actual.0, "video の keyframe が {} で一致しない", i);
-            prop_assert_eq!(expected.1, actual.1, "video の duration が {} で一致しない", i);
-            prop_assert_eq!(expected.2, actual.2, "video の data_size が {} で一致しない", i);
+            assert_eq!(
+                expected.0, actual.0,
+                "video の keyframe が {i} で一致しない"
+            );
+            assert_eq!(
+                expected.1, actual.1,
+                "video の duration が {i} で一致しない"
+            );
+            assert_eq!(
+                expected.2, actual.2,
+                "video の data_size が {i} で一致しない"
+            );
         }
-        for (i, (expected, actual)) in expected_video_ctos.iter().zip(actual_video_ctos.iter()).enumerate() {
+        for (i, (expected, actual)) in expected_video_ctos
+            .iter()
+            .zip(actual_video_ctos.iter())
+            .enumerate()
+        {
             let normalized = if has_any_video_cto {
                 Some(expected.unwrap_or(0))
             } else {
                 None
             };
-            prop_assert_eq!(normalized, *actual, "video の composition_time_offset が {} で一致しない", i);
+            assert_eq!(
+                normalized, *actual,
+                "video の composition_time_offset が {i} で一致しない"
+            );
         }
         for (i, (expected, actual)) in expected_audio.iter().zip(actual_audio.iter()).enumerate() {
-            prop_assert_eq!(expected.0, actual.0, "audio の duration が {} で一致しない", i);
-            prop_assert_eq!(expected.1, actual.1, "audio の data_size が {} で一致しない", i);
+            assert_eq!(
+                expected.0, actual.0,
+                "audio の duration が {i} で一致しない"
+            );
+            assert_eq!(
+                expected.1, actual.1,
+                "audio の data_size が {i} で一致しない"
+            );
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 // ===== 境界値テスト =====
@@ -1507,48 +1681,65 @@ mod boundary_tests {
 mod estimate_moov_size_tests {
     use super::*;
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(100))]
+    /// このモジュールの PBT ケース数（旧 `with_cases(100)` を維持）
+    const CASES: usize = 100;
 
-        /// estimate_maximum_moov_box_size は非負の値を返す
-        #[test]
-        fn estimate_returns_non_negative(
-            track_counts in prop::collection::vec(0usize..10000, 0..10)
-        ) {
+    /// estimate_maximum_moov_box_size は非負の値を返す
+    #[test]
+    fn estimate_returns_non_negative() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let track_counts = sample_vec(ctx, 0..10, |ctx| noprop::sample_usize_in(ctx, 0..10000));
             let result = estimate_maximum_moov_box_size(&track_counts);
-            prop_assert!(result > 0 || track_counts.is_empty());
-        }
+            assert!(result > 0 || track_counts.is_empty());
+            Ok(())
+        })?;
+        Ok(())
+    }
 
-        /// estimate_maximum_moov_box_size はサンプル数に対して単調増加
-        #[test]
-        fn estimate_monotonically_increasing_with_samples(
-            base_count in 0usize..1000,
-            additional in 1usize..1000
-        ) {
+    /// estimate_maximum_moov_box_size はサンプル数に対して単調増加
+    #[test]
+    fn estimate_monotonically_increasing_with_samples() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let base_count = noprop::sample_usize_in(ctx, 0..1000);
+            let additional = noprop::sample_usize_in(ctx, 1..1000);
             let small = estimate_maximum_moov_box_size(&[base_count]);
             let large = estimate_maximum_moov_box_size(&[base_count + additional]);
-            prop_assert!(large >= small, "estimate は sample 数に応じて増加する");
-        }
+            assert!(large >= small, "estimate は sample 数に応じて増加する");
+            Ok(())
+        })?;
+        Ok(())
+    }
 
-        /// estimate_maximum_moov_box_size はトラック数に対して単調増加
-        #[test]
-        fn estimate_monotonically_increasing_with_tracks(
-            sample_count in 0usize..1000,
-            track_count in 1usize..10
-        ) {
+    /// estimate_maximum_moov_box_size はトラック数に対して単調増加
+    #[test]
+    fn estimate_monotonically_increasing_with_tracks() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let sample_count = noprop::sample_usize_in(ctx, 0..1000);
+            let track_count = noprop::sample_usize_in(ctx, 1..10);
             let single_track = estimate_maximum_moov_box_size(&[sample_count]);
             let multi_track: Vec<usize> = (0..track_count).map(|_| sample_count).collect();
             let result = estimate_maximum_moov_box_size(&multi_track);
-            prop_assert!(result >= single_track, "estimate は track 数に応じて増加する");
-        }
+            assert!(
+                result >= single_track,
+                "estimate は track 数に応じて増加する"
+            );
+            Ok(())
+        })?;
+        Ok(())
+    }
 
-        /// estimate_maximum_moov_box_size の結果は実際の moov サイズより大きい
-        #[test]
-        fn estimate_is_upper_bound(
-            video_sample_count in 1usize..50,
-            audio_sample_count in 1usize..50
-        ) {
-            let estimated = estimate_maximum_moov_box_size(&[video_sample_count, audio_sample_count]);
+    /// estimate_maximum_moov_box_size の結果は実際の moov サイズより大きい
+    #[test]
+    fn estimate_is_upper_bound() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        noprop::Runner::new(seed).run(CASES, |ctx| {
+            let video_sample_count = noprop::sample_usize_in(ctx, 1..50);
+            let audio_sample_count = noprop::sample_usize_in(ctx, 1..50);
+            let estimated =
+                estimate_maximum_moov_box_size(&[video_sample_count, audio_sample_count]);
 
             // 実際に Muxer で moov を生成してサイズを比較
             let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
@@ -1567,7 +1758,9 @@ mod estimate_moov_size_tests {
                     data_offset,
                     data_size: 100,
                 };
-                muxer.append_sample(&sample).expect("video sample の追加に失敗した");
+                muxer
+                    .append_sample(&sample)
+                    .expect("video sample の追加に失敗した");
                 data_offset += 100;
             }
 
@@ -1584,20 +1777,22 @@ mod estimate_moov_size_tests {
                     data_offset,
                     data_size: 50,
                 };
-                muxer.append_sample(&sample).expect("audio sample の追加に失敗した");
+                muxer
+                    .append_sample(&sample)
+                    .expect("audio sample の追加に失敗した");
                 data_offset += 50;
             }
 
             let finalized = muxer.finalize().expect("finalize に失敗した");
             let actual_moov_size = finalized.moov_box_size();
 
-            prop_assert!(
+            assert!(
                 estimated >= actual_moov_size,
-                "推定値 {} は実測値 {} 以上である",
-                estimated,
-                actual_moov_size
+                "推定値 {estimated} は実測値 {actual_moov_size} 以上である"
             );
-        }
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// 空のトラックリストの場合
@@ -1722,7 +1917,7 @@ mod mux_error_tests {
             expected: 100,
             actual: 200,
         };
-        let display_str = format!("{}", pos_error);
+        let display_str = format!("{pos_error}");
         assert!(display_str.contains("100"));
         assert!(display_str.contains("200"));
 
@@ -1730,12 +1925,12 @@ mod mux_error_tests {
         let missing_error = MuxError::MissingSampleEntry {
             track_kind: TrackKind::Video,
         };
-        let display_str = format!("{}", missing_error);
+        let display_str = format!("{missing_error}");
         assert!(display_str.contains("Video"));
 
         // AlreadyFinalized
         let finalized_error = MuxError::AlreadyFinalized;
-        let display_str = format!("{}", finalized_error);
+        let display_str = format!("{finalized_error}");
         assert!(display_str.contains("finalized"));
 
         // TimescaleMismatch
@@ -1744,7 +1939,7 @@ mod mux_error_tests {
             expected: NonZeroU32::new(48000).expect("timescale は非ゼロである"),
             actual: NonZeroU32::new(44100).expect("timescale は非ゼロである"),
         };
-        let display_str = format!("{}", timescale_error);
+        let display_str = format!("{timescale_error}");
         assert!(display_str.contains("Audio"));
         assert!(display_str.contains("48000"));
         assert!(display_str.contains("44100"));
@@ -1755,14 +1950,14 @@ mod mux_error_tests {
     #[test]
     fn mux_error_debug() {
         let error = MuxError::AlreadyFinalized;
-        let debug_str = format!("{:?}", error);
+        let debug_str = format!("{error:?}");
         assert!(debug_str.contains("finalized"));
 
         let pos_error = MuxError::PositionMismatch {
             expected: 100,
             actual: 200,
         };
-        let debug_str = format!("{:?}", pos_error);
+        let debug_str = format!("{pos_error:?}");
         assert!(debug_str.contains("mismatch"));
     }
 

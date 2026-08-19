@@ -3,7 +3,7 @@
 - Created: 2026-08-19
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-error-display-absolute-path
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-19
 
 ## 目的
 
@@ -64,5 +64,5 @@ InvalidData: ... (at /Users/voluntas/.cargo/registry/src/index.crates.io-6f17d22
 
 ## 補足
 
-- 本 issue は下流の mp4-py 側で観測された事象（mp4-py issue 0052）に対する上流対応。mp4-py 側では「バインド側で除去する」「コア側で Display を直す」の両案が挙がったが、根本原因が Display のフォーマットにある以上、コア側で直すのが筋という結論
-- `location` フィールドは `pub` のまま残すため、より詳細な情報が必要な下流は `err.location.file()` を直接読んで独自にフォーマットできる
+- 本 issue は下流バインディング（mp4-py 等）のエラーメッセージに絶対パスが露出している事象への上流対応。根本原因が `Display for Error` のフォーマットにあるため、下流での対症的な後処理ではなくコア側で直す方針とする
+- `location` フィールドは `pub` のまま残すため、より詳細な情報（フルパス）が必要な下流は `err.location.file()` を直接読んで独自にフォーマットできる

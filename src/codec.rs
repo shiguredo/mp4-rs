@@ -107,13 +107,32 @@ impl core::fmt::Display for Error {
             write!(f, "{:?}: {}", self.kind, self.reason)?;
         }
 
-        write!(f, " (at {}:{})", self.location.file(), self.location.line())?;
+        write!(
+            f,
+            " (at {}:{})",
+            shorten_source_path(self.location.file()),
+            self.location.line()
+        )?;
 
         Ok(())
     }
 }
 
 impl core::error::Error for Error {}
+
+// エラー表示用にソースパスを短縮する。
+//
+// crates.io 経由で依存として使われる場合、`core::panic::Location::file()` は
+// `.cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/src/<file>` のような
+// 絶対パスを返す。この文字列がそのままエラーメッセージに露出するとビルド環境のパスが
+// 下流に漏れるため、最後方の `src/` 以降だけを残してリポジトリ相対の見た目に揃える。
+// `src/` が見つからないパス（`build.rs` など）はフォールバックとして元の文字列をそのまま返す。
+fn shorten_source_path(file: &str) -> &str {
+    match file.rfind("src/") {
+        Some(pos) => &file[pos..],
+        None => file,
+    }
+}
 
 /// バイト列に変換可能な型を表現するためのトレイト
 pub trait Encode {
@@ -367,5 +386,47 @@ impl<T: Decode + Default + Copy, const N: usize> Decode for [T; N] {
         }
 
         Ok((items, offset))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shorten_source_path;
+
+    // crates.io 経由の絶対パス（`.cargo/registry/...` 形式）を渡した場合、
+    // 最後方の `src/` 以降だけが残ってビルド環境依存の接頭辞が消えることを確認する。
+    // ユーザーホームや実在アカウント名を含めないよう、パスは合成の値を使う。
+    #[test]
+    fn shorten_source_path_strips_cargo_registry_prefix() {
+        let input = "/home/user/.cargo/registry/src/index.crates.io-0123456789abcdef/shiguredo_mp4-2026.4.0/src/basic_types.rs";
+        assert_eq!(
+            shorten_source_path(input),
+            "src/basic_types.rs",
+            "crates.io 由来の絶対パスは最後方の src/ 以降だけが残るべき"
+        );
+    }
+
+    // 既にリポジトリ相対のローカルパス（`src/...`）を渡した場合、
+    // 入力と同じ文字列がそのまま返り、二重に短縮されないことを確認する。
+    #[test]
+    fn shorten_source_path_keeps_repository_relative_path() {
+        let input = "src/basic_types.rs";
+        assert_eq!(
+            shorten_source_path(input),
+            "src/basic_types.rs",
+            "src/ から始まる相対パスは変換前後で一致するべき"
+        );
+    }
+
+    // `src/` を含まない入力（`build.rs` など）を渡した場合、
+    // panic せずフォールバックとして元の文字列がそのまま返ることを確認する。
+    #[test]
+    fn shorten_source_path_falls_back_when_src_marker_is_missing() {
+        let input = "build.rs";
+        assert_eq!(
+            shorten_source_path(input),
+            "build.rs",
+            "src/ を含まない入力はフォールバックで元の文字列がそのまま返るべき"
+        );
     }
 }

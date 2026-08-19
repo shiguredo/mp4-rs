@@ -9,7 +9,7 @@
 
 `shiguredo_mp4::Error` の `Display` 実装が末尾に付加する発生位置情報から、ビルド環境固有の絶対パスを除去する。
 
-crates.io から依存として使われるとき、`Location::caller()` 由来の `Location::file()` はコンパイル時のフルパス（例: `/Users/voluntas/.cargo/registry/src/index.crates.io-.../shiguredo_mp4-2026.4.0/src/basic_types.rs`）を返す。この文字列がそのままエラーメッセージに流れることで、下流（mp4-py 等）のユーザーがビルド環境の絶対パスを目にすることになる。ユーザーには何の意味もなく、他人のマシンのユーザー名や `.cargo` のパス構造を露出してしまう。
+crates.io から依存として使われるとき、`Location::caller()` 由来の `Location::file()` はコンパイル時のフルパス（例: `/home/user/.cargo/registry/src/index.crates.io-.../shiguredo_mp4-2026.4.0/src/basic_types.rs`）を返す。この文字列がそのままエラーメッセージに流れることで、下流（mp4-py 等）のユーザーがビルド環境の絶対パスを目にすることになる。ユーザーには何の意味もなく、他人のマシンのユーザー名や `.cargo` のパス構造を露出してしまう。
 
 ## 現状
 
@@ -27,7 +27,7 @@ write!(f, " (at {}:{})", self.location.file(), self.location.line())?;
 その結果、たとえば mp4-py の `RuntimeError` メッセージに以下のような文字列が入り込む:
 
 ```
-InvalidData: ... (at /Users/voluntas/.cargo/registry/src/index.crates.io-6f17d22bba15001f/shiguredo_mp4-2026.4.0/src/basic_types.rs:461)
+InvalidData: ... (at /home/user/.cargo/registry/src/index.crates.io-0123456789abcdef/shiguredo_mp4-2026.4.0/src/basic_types.rs:461)
 ```
 
 ## 設計方針

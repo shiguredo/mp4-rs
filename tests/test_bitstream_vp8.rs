@@ -420,6 +420,45 @@ fn build_vp08_box_roundtrip() {
 }
 
 // ===== 実 VP8 keyframe fixture テスト =====
-//
-// libvpx で生成した実データ fixture は別途 `tests/testdata/` に追加する予定
-// (0065 の 対象外 に列挙。fixture 到着後に本ファイルに実データテストを追加する)
+
+/// libvpx (ffmpeg 経由) で生成した VP8 キーフレームの生バイト列
+///
+/// 生成コマンド (README にも記載する想定):
+///
+/// ```text
+/// ffmpeg -y -f lavfi -i color=black:size=320x240:duration=0.5:rate=30 \
+///     -c:v libvpx -b:v 100k -deadline good -cpu-used 0 /tmp/black-vp8.webm
+/// ffmpeg -y -i /tmp/black-vp8.webm -c copy -f ivf -vframes 1 /tmp/black-vp8-1frame.ivf
+/// dd if=/tmp/black-vp8-1frame.ivf of=tests/testdata/black-vp8-keyframe.vp8 \
+///     bs=1 skip=44
+/// ```
+///
+/// (最初の `ffmpeg` で VP8 を WebM で mux、次で 1 フレームだけ IVF に再パック、
+/// 最後の `dd` で IVF ヘッダー 32 + IVF フレームヘッダー 12 = 44 バイトを剥がして
+/// 生 VP8 キーフレームだけを取り出す)
+const REAL_VP8_KEYFRAME: &[u8] = include_bytes!("testdata/black-vp8-keyframe.vp8");
+
+/// 実 libvpx 出力のキーフレームを解析できることを確認する
+///
+/// 手動構築ケースが RFC 6386 のビット配置解釈と一致していても、実 libvpx の出力とは
+/// 別経路でズレることがあるので、実データで受理系のリグレッションを固定する
+#[test]
+fn real_libvpx_keyframe_parses() {
+    let header = parse_frame_header(REAL_VP8_KEYFRAME)
+        .expect("libvpx 生成の実 VP8 キーフレームは解析成功する");
+    assert_eq!(header.frame_type, Vp8FrameType::Key);
+    // 生成時の解像度 320x240 が復元される
+    let key = header
+        .keyframe
+        .expect("キーフレームは keyframe フィールドを持つ");
+    assert_eq!(key.width, 320);
+    assert_eq!(key.height, 240);
+    // libvpx v1.15 の VP8 出力は version = 0 / show_frame = true を書く
+    assert_eq!(header.version, 0);
+    assert!(header.show_frame);
+    // horiz / vert スケールは通常 0 (フレーム寸法どおり)
+    assert_eq!(key.horizontal_scale, 0);
+    assert_eq!(key.vertical_scale, 0);
+    // first_partition_size が入力サイズを超えないこと (parse 成功 = 境界内)
+    assert!((header.first_partition_size as usize) <= REAL_VP8_KEYFRAME.len() - 10);
+}

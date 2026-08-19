@@ -1,7 +1,7 @@
 # pbt を proptest から noprop に移行する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-19
 - Branch: feature/refactor-pbt-proptest-to-noprop
 - Polished: 2026-08-18
 
@@ -100,3 +100,22 @@ shiguredo-rust の「バージョン番号はマイナーバージョンまで�
 - `cargo test --workspace` が通り、pbt の全 PBT が noprop 経由で成功すること
 - `CHANGES.md` の `develop` の `### misc` サブセクションに 1 行のエントリが追加され、エントリ末尾に担当者行が付いていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`pbt/Cargo.toml` から `proptest` を除去し `noprop = "0.2"` を追加した上で、`pbt/tests/common.rs` と proptest 使用 12 ファイルを noprop の `Runner` / `TestCaseContext` / `sample_*` に書き換えた。あわせて次の点を実施した。
+
+- `common::arb_*` ヘルパを `fn(ctx: &mut TestCaseContext) -> T` の形に変更し、`assert_track_metadata` を `Result<(), TestCaseError>` から `assert_eq!` (パニック) 方式に書き換え、呼び出し側の `?` を除去した
+- 旧 `#![proptest_config(ProptestConfig::with_cases(N))]` の N をファイル単位 (またはモジュール単位) の `const CASES: usize = N;` として保持し、`Runner::new(seed).run(CASES, ...)` に渡すことで各 PBT のケース数を維持した
+- 旧 `prop_oneof!` の等確率選択は `sample_choice` / `sample_weighted_index`、境界値混在は `sample_with_boundaries(ctx, &[...], Ratio::new(k, n), sampler)` に置き換え、境界値ヒット率を保った
+- 各 PBT の失敗再現手段として `noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")` を全テスト冒頭に共通で導入した
+- 元コード内の `Strategy` などの proptest 用語を「サンプル値」などの中立な表現に、`prop_additional_boxes.rs` 冒頭の「`proptest_boxes.rs と proptest_codec_boxes.rs`」の誤記を「`prop_boxes.rs と prop_codec_boxes.rs`」に修正した
+- `prop_mux_demux.rs::mux_demux_video_composition_time_offset_roundtrip` は旧 `prop_assume!(len 一致)` を廃し、長さを 1 回だけ引いて両ベクトルに再利用する valid-by-construction 生成に置き換えた
+- `prop_fmp4_segment_mux_demux.rs` の 5 テストの `width1 == width2` 拒否は `sample_with_rejection` を用いた `sample_distinct_width` ヘルパーに置き換え、ケース全体拒否を局所リトライに縮小した
+- `CHANGES.md` の `develop` の `### misc` に `[UPDATE] pbt を proptest から noprop に移行する` エントリと担当者行を追加した
+
+検証結果:
+
+- `grep -rn "proptest" pbt/` が 0 件
+- `cargo test --workspace` の全テストが成功
+- `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` がすべて成功

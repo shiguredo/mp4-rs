@@ -35,6 +35,9 @@ jobs:
           toolchain: stable
 
       - run: cargo fmt --all --check
+      # fuzz は root の [workspace] で exclude されており `cargo fmt --all` の対象外なので個別に検査する
+      - run: cargo fmt --check
+        working-directory: fuzz
       - run: cargo check --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
       - run: cargo build --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
       - run: cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz

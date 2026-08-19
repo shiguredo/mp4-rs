@@ -727,17 +727,21 @@ fn mux_demux_video_composition_time_offset_roundtrip() -> noprop::TestResult {
     noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
         let width = noprop::sample_u64_in(ctx, 16..1920) as u16;
         let height = noprop::sample_u64_in(ctx, 16..1080) as u16;
-        let durations = sample_vec(ctx, 1..20, |ctx| noprop::sample_u64_in(ctx, 1..3001) as u32);
-        let composition_time_offsets = sample_vec(ctx, 1..20, |ctx| {
-            if noprop::sample_bool(ctx) {
+        // 旧 proptest 版は独立した 2 本の vec を引いた後に長さ一致を prop_assume で
+        // 要求していたが、noprop では長さを一度だけ引いて両方の生成に使うことで
+        // valid-by-construction に振り、ケース拒否を回避する
+        let n = noprop::sample_usize_in(ctx, 1..20);
+        let mut durations: Vec<u32> = Vec::new();
+        for _ in 0..n {
+            durations.push(noprop::sample_u64_in(ctx, 1..3001) as u32);
+        }
+        let mut composition_time_offsets: Vec<Option<i64>> = Vec::new();
+        for _ in 0..n {
+            composition_time_offsets.push(if noprop::sample_bool(ctx) {
                 Some(noprop::sample_u64_in(ctx, 0..6001) as i64 - 3000)
             } else {
                 None
-            }
-        });
-
-        if durations.len() != composition_time_offsets.len() {
-            ctx.reject_case();
+            });
         }
 
         let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");

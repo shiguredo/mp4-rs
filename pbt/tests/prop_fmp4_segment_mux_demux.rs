@@ -141,6 +141,19 @@ fn sample_vec<T>(
     result
 }
 
+/// `[64, 1921)` の範囲で `width1` と衝突しない `u16` を引く
+///
+/// 「異なる sample entry を作りたい」という前提条件は draw 時点で決まるため、
+/// noprop skill の指針に従い、ケース全体を捨てる `ctx.reject_case()` ではなく
+/// 局所リトライの `sample_with_rejection` を使う。値域は 1857 通りあるので
+/// 最大 4 回のリトライで実質確実に別の値を得られる
+fn sample_distinct_width(ctx: &mut TestCaseContext, width1: u16) -> u16 {
+    noprop::sample_with_rejection(ctx, 4, |ctx| {
+        let w = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        (w != width1).then_some(w)
+    })
+}
+
 fn video_segment_sample(
     sample_entry: &SampleEntry,
     sample: &TestSample,
@@ -1146,11 +1159,8 @@ fn sample_entry_uses_trex_default_index() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
-        let width2 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
         let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
-        if width1 == width2 {
-            ctx.reject_case();
-        }
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
@@ -1208,11 +1218,8 @@ fn sample_entry_prefers_tfhd_index() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
-        let width2 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
         let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
-        if width1 == width2 {
-            ctx.reject_case();
-        }
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
@@ -1277,12 +1284,9 @@ fn sample_entry_is_emitted_only_on_change() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
-        let width2 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
         let first_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
         let second_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
-        if width1 == width2 {
-            ctx.reject_case();
-        }
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
@@ -1401,12 +1405,9 @@ fn fmp4_file_demuxer_propagates_sample_entry_changes() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
-        let width2 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
         let first_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
         let second_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
-        if width1 == width2 {
-            ctx.reject_case();
-        }
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
@@ -1497,11 +1498,8 @@ fn invalid_sample_description_index_is_rejected() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
-        let width2 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
         let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
-        if width1 == width2 {
-            ctx.reject_case();
-        }
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");

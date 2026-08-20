@@ -12,7 +12,6 @@
 ## develop
 
 - [ADD] VP8 ビットストリーム処理ユーティリティ (`bitstream::vp8`) を追加する
-  - フレームヘッダー解析 (`parse_frame_header`) と `Vp08Box` 構築 (`build_vp08_box`) を提供する
   - @sile
 
 ### misc

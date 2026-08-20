@@ -1,7 +1,7 @@
 # VP8 ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-20
 - Branch: feature/add-vp8-bitstream-utilities
 - Polished: 2026-08-18
 
@@ -172,3 +172,29 @@ VP8 と VP9 の公開パーサー、フレームヘッダー型、設定型を�
 - 公開 API の rustdoc に解析範囲、導出できる値と呼び出し側が指定する値、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`src/bitstream.rs` と `src/bitstream/vp8.rs` を新設し、`bitstream::vp8` サブモジュール配下に以下の公開 API を追加した。
+
+- `Vp8FrameType` / `Vp8FrameHeader` / `Vp8KeyFrameInfo`: フレーム種別と uncompressed data chunk 情報の公開型
+- `parse_frame_header(&[u8]) -> Result<Vp8FrameHeader>`: uncompressed data chunk 解析。issue 記載のエラー条件すべてを `crate::Error` として拒否する
+- `Vp8SampleEntryConfig` と `build_vp08_box(&Vp8SampleEntryConfig) -> Vp08Box`: `Vp08Box` の構築
+
+### 設計方針からの変更点
+
+コードレビューを経て以下を issue から変更した。
+
+- `Vp8SampleEntryConfig::level` は削除し `VpccBox::level = 0` を関数側で固定 (VP Codec ISO Media File Format Binding の level テーブルは VP9 専用で VP8 で意味のある値が 0 のみ)
+- `Vp8SampleEntryConfig::data_reference_index` は削除し `VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX` を関数側で固定 (一般ケースが 1 固定。特殊な dref 構成が必要なら戻り値の `Vp08Box::visual` を書き換える)
+- `build_vp08_box` の戻り値は `Result<Vp08Box>` から `Vp08Box` に変更 (実装本体に `Err` を返す経路がないため)
+- `Vp8SampleEntryConfig` に色特性の頻出値定数 (BT.709 / BT.601 / Unspecified の各 3 種) を `pub const` で追加
+
+### テストと fuzz
+
+- 決定的テスト `tests/test_bitstream_vp8.rs`、noprop PBT `pbt/tests/prop_bitstream_vp8.rs`、実 libvpx fixture (ffmpeg 7.1.1 + libvpx 1.15.1 で生成した `tests/testdata/black-vp8-keyframe.vp8`)、fuzz target `fuzz/fuzz_targets/fuzz_bitstream_vp8.rs` を追加した
+- CI に fuzz ディレクトリの `cargo fmt --check` / `cargo check --all-targets` / `cargo clippy --all-targets -- -D warnings` を追加した (check / clippy は libfuzzer-sys が MinGW でビルドできないため Windows を除外)
+
+### 別 issue に切り分けた点
+
+コードレビュー中に検出した `Uint::new` の宣言ビット幅検証欠如は crate 全体に波及するリスクなので、issue 0078 として別途起票した。

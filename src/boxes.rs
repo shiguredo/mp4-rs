@@ -63,6 +63,7 @@ pub(crate) fn check_mandatory_box<T>(
 /// そもそも可変長サイズのボックスはトップレベル以外では禁止されており、
 /// また、トップレベルで使われる場合にも、実用上は mdat 以外で使われることはほぼないため、
 /// この制約が実際に問題となることはないという想定である。
+/// トップレベルの可変長サイズの未知 box を受理したい場合は [`UnknownBox::decode_top_level`] を使う。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnknownBox {
     /// ボックス種別
@@ -73,6 +74,26 @@ pub struct UnknownBox {
 
     /// ペイロード
     pub payload: Vec<u8>,
+}
+
+impl UnknownBox {
+    /// トップレベルの未知 box をデコードする
+    ///
+    /// [`UnknownBox::decode`] と異なり、可変長サイズ（[`BoxSize::VARIABLE_SIZE`]）を受理する。
+    /// 可変長サイズは ISO/IEC 14496-12 4.2 で「box がファイルの最後まで拡張される」を意味し、
+    /// ファイル末尾のトップレベル box に限り仕様上有効であるため、[`RootBox::decode`] の
+    /// 未知型分岐から使う。
+    pub fn decode_top_level(buf: &[u8]) -> Result<(Self, usize)> {
+        let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+        Ok((
+            Self {
+                box_type: header.box_type,
+                box_size: header.box_size,
+                payload: payload.to_vec(),
+            },
+            header.external_size() + payload.len(),
+        ))
+    }
 }
 
 impl Encode for UnknownBox {
@@ -89,15 +110,7 @@ impl Decode for UnknownBox {
         if header.box_size == BoxSize::VARIABLE_SIZE {
             return Err(Error::invalid_data("UnknownBox does not accept size=0"));
         }
-        let (_, payload) = BoxHeader::decode_header_and_payload(buf)?;
-        Ok((
-            Self {
-                box_type: header.box_type,
-                box_size: header.box_size,
-                payload: payload.to_vec(),
-            },
-            header.external_size() + payload.len(),
-        ))
+        Self::decode_top_level(buf)
     }
 }
 
@@ -345,7 +358,7 @@ impl Decode for RootBox {
             MoofBox::TYPE => MoofBox::decode(buf).map(|(b, n)| (RootBox::Moof(b), n)),
             MfraBox::TYPE => MfraBox::decode(buf).map(|(b, n)| (RootBox::Mfra(b), n)),
             SidxBox::TYPE => SidxBox::decode(buf).map(|(b, n)| (RootBox::Sidx(b), n)),
-            _ => UnknownBox::decode(buf).map(|(b, n)| (RootBox::Unknown(b), n)),
+            _ => UnknownBox::decode_top_level(buf).map(|(b, n)| (RootBox::Unknown(b), n)),
         }
     }
 }

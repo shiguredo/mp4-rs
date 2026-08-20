@@ -1,8 +1,11 @@
 //! `src/boxes.rs` の意図的なエラーパス・境界値に関する回帰テスト
 //!
 //! 正常系のラウンドトリップは `pbt/tests/prop_additional_boxes.rs` が担う。
-//! 本ファイルは PBT で安定して狙いにくい `UnknownBox` の size=0 拒否と、
-//! コンテナ box 内部の未知 box ループが size=0 で停止する挙動を固定する。
+//! 本ファイルは PBT で安定して狙いにくい `UnknownBox` の可変長サイズ
+//! （`BoxSize::VARIABLE_SIZE`）の扱いを以下の 3 経路で固定する:
+//! - `UnknownBox::decode` への直接入力（可変長サイズはエラーになる）
+//! - コンテナボックス（`stpp`）内部の未知ボックスループ（可変長サイズでエラーになる）
+//! - `RootBox` の未知型 top-level ボックス（可変長サイズを従来どおり受理する）
 
 mod unknown_box_size_zero {
     use shiguredo_mp4::{BoxSize, BoxType, Decode, ErrorKind, boxes::UnknownBox};
@@ -59,6 +62,30 @@ mod unknown_box_size_zero {
         let err = UnknownBox::decode(&buf).expect_err("largesize=0 はエラーになる");
         assert_eq!(err.kind, ErrorKind::InvalidData);
     }
+
+    /// `UnknownBox::decode_top_level` は size=0（`BoxSize::VARIABLE_SIZE`）を受理すること
+    ///
+    /// `RootBox::decode` の未知型分岐はこの関数を使うため、`UnknownBox::decode` の
+    /// 拒否との対比でトップレベルの許容を固定する
+    #[test]
+    fn decode_top_level_size_zero_succeeds() {
+        // size=0 (4) + type "xxxx" (4) + ペイロード 4 バイト
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(b"xxxx");
+        buf.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let (unknown, size) =
+            UnknownBox::decode_top_level(&buf).expect("decode_top_level は size=0 を受理する");
+        assert_eq!(size, buf.len());
+        assert_eq!(unknown.box_size, BoxSize::VARIABLE_SIZE);
+        assert_eq!(unknown.box_type, BoxType::Normal(*b"xxxx"));
+        assert_eq!(
+            unknown.payload,
+            &buf[8..],
+            "ペイロードはヘッダー直後からバッファ末尾までであること"
+        );
+    }
 }
 
 mod stpp_box_trailing_zero_padding {
@@ -98,18 +125,30 @@ mod stpp_box_trailing_zero_padding {
 }
 
 mod root_box_unknown_size_zero {
-    use shiguredo_mp4::{Decode, ErrorKind, boxes::RootBox};
+    use shiguredo_mp4::{BoxSize, Decode, boxes::RootBox};
 
-    /// `RootBox::decode` の未知型分岐は、size=0 の未知型 top-level box でエラーになること
+    /// `RootBox::decode` の未知型分岐は、size=0 の未知型 top-level box を従来どおり受理すること
     #[test]
-    fn unknown_type_size_zero_returns_invalid_data() {
-        // size=0 (4) + type "test" (4)
+    fn unknown_type_size_zero_succeeds() {
+        // size=0 (4) + type "test" (4) + ペイロード 4 バイト
         let mut buf = Vec::new();
         buf.extend_from_slice(&0u32.to_be_bytes());
         buf.extend_from_slice(b"test");
+        buf.extend_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
-        let err = RootBox::decode(&buf).expect_err("未知型 top-level の size=0 はエラーになる");
-        assert_eq!(err.kind, ErrorKind::InvalidData);
+        let (decoded, size) =
+            RootBox::decode(&buf).expect("未知型 top-level の size=0 は従来どおり成功する");
+        assert_eq!(size, buf.len());
+        let unknown = match decoded {
+            RootBox::Unknown(unknown) => unknown,
+            _ => panic!("未知型 top-level は RootBox::Unknown にデコードされる"),
+        };
+        assert_eq!(unknown.box_size, BoxSize::VARIABLE_SIZE);
+        assert_eq!(
+            unknown.payload,
+            &buf[8..],
+            "ペイロードはヘッダー直後からバッファ末尾までであること"
+        );
     }
 
     /// `RootBox::decode` の既知型分岐（`mdat`）は、size=0 を従来どおり受理すること

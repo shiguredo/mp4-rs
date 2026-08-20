@@ -126,12 +126,13 @@ fn keyframe_bit_layout_roundtrip() -> noprop::TestResult {
         // color_space は 0..=6 のみ (sRGB は subsampling 固定の別ケースなので separately)
         let color_space = noprop::sample_u64_in(ctx, 0..=6) as u8;
         let color_range = noprop::sample_u64_in(ctx, 0..=1) as u8;
-        // profile 1/3 は subsampling を可変にできる。(0,1) は仕様外なので除外
+        // profile 1/3 は 4:2:2 / 4:4:0 / 4:4:4 の 3 通り。
+        // (1,1) = 4:2:0 は VP9 spec Section 7.2.2 の bitstream conformance で不許可なので除外
         let (subsampling_x, subsampling_y) = if profile == 1 || profile == 3 {
             match noprop::sample_u64_in(ctx, 0..=2) {
-                0 => (1u8, 1u8),
-                1 => (1u8, 0u8),
-                _ => (0u8, 0u8),
+                0 => (1u8, 0u8), // 4:2:2
+                1 => (0u8, 1u8), // 4:4:0 (Binding に写せないので後続の build 側で拒否される)
+                _ => (0u8, 0u8), // 4:4:4
             }
         } else {
             (1u8, 1u8) // profile 0/2 は 4:2:0 固定
@@ -236,9 +237,10 @@ fn build_vp09_box_config_roundtrip() -> noprop::TestResult {
         let bit_depth_10_or_12_bit = noprop::sample_bool(ctx);
         let (subsampling_x, subsampling_y) = if profile == 1 || profile == 3 {
             match noprop::sample_u64_in(ctx, 0..=2) {
-                0 => (1u8, 1u8),
-                1 => (1u8, 0u8),
-                _ => (0u8, 0u8),
+                // build_vp09_box が Err にならない範囲 (4:2:2 / 4:4:4) に絞る。
+                // 4:4:0 は VP9 spec 上合法だが Binding に写せないため別テストで拒否を確認する
+                0 => (1u8, 0u8), // 4:2:2
+                _ => (0u8, 0u8), // 4:4:4
             }
         } else {
             (1u8, 1u8)
@@ -275,7 +277,7 @@ fn build_vp09_box_config_roundtrip() -> noprop::TestResult {
             width: noprop::sample_u64_in(ctx, 1..=1920) as u16,
             height: noprop::sample_u64_in(ctx, 1..=1080) as u16,
         };
-        let vp09 = build_vp09_box(&header, &config);
+        let vp09 = build_vp09_box(&header, &config).expect("有効な header は構築成功する");
 
         // ストリーム導出値の反映確認
         assert_eq!(vp09.vpcc_box.profile, profile);

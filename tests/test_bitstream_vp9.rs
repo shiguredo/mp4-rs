@@ -391,17 +391,41 @@ fn reject_color_config_reserved_zero_one() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// `subsampling_x = 0 && subsampling_y = 1` は仕様外組み合わせで拒否する
+/// profile 1/3 で `subsampling_x = 1 && subsampling_y = 1` (4:2:0) は仕様上許されないため拒否する
+///
+/// VP9 spec Section 7.2.2 の bitstream conformance と libvpx の
+/// "4:2:0 color not supported in profile 1 or 3" に対応する
 #[test]
-fn reject_forbidden_subsampling_combination() {
+fn reject_profile1_or_3_with_subsampling_420() {
+    for profile in [1u8, 3u8] {
+        let bytes = build_keyframe_bytes(KeyframeParams {
+            profile,
+            bit_depth_10_or_12_bit: Some(false),
+            subsampling_x: 1,
+            subsampling_y: 1,
+            ..KeyframeParams::valid()
+        });
+        let err = parse_frame_header(&bytes)
+            .expect_err(&format!("profile {profile} で 4:2:0 は拒否される"));
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+}
+
+/// profile 1 で 4:4:0 (subsampling_x=0, subsampling_y=1) は VP9 spec 上は合法なので受理する
+///
+/// VP Codec ISO Media File Format Binding には 4:4:0 に対応する値がないので
+/// `build_vp09_box` 側で Err になる (別テストで確認)
+#[test]
+fn accept_profile1_subsampling_440() {
     let bytes = build_keyframe_bytes(KeyframeParams {
         profile: 1,
         subsampling_x: 0,
         subsampling_y: 1,
         ..KeyframeParams::valid()
     });
-    let err = parse_frame_header(&bytes).expect_err("(0, 1) の subsampling は拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    let header = parse_frame_header(&bytes).expect("profile 1 4:4:0 は解析成功する");
+    assert_eq!(header.subsampling_x, 0);
+    assert_eq!(header.subsampling_y, 1);
 }
 
 /// sRGB (color_space=7) を profile 0 で使うと拒否する (profile 1 or 3 のみ許容)
@@ -435,7 +459,7 @@ fn build_vp09_box_fixed_and_derived_values() {
     let bytes = build_keyframe_bytes(KeyframeParams::valid());
     let header = parse_frame_header(&bytes).expect("キーフレーム解析");
     let config = default_config();
-    let vp09 = build_vp09_box(&header, &config);
+    let vp09 = build_vp09_box(&header, &config).expect("有効な header は構築成功する");
 
     // ストリーム導出値
     assert_eq!(vp09.vpcc_box.profile, 0);
@@ -487,8 +511,26 @@ fn build_vp09_box_chroma_subsampling_422() {
         ..KeyframeParams::valid()
     });
     let header = parse_frame_header(&bytes).expect("profile 1 4:2:2");
-    let vp09 = build_vp09_box(&header, &default_config());
+    let vp09 = build_vp09_box(&header, &default_config()).expect("有効な header は構築成功する");
     assert_eq!(vp09.vpcc_box.chroma_subsampling.get(), 2);
+}
+
+/// profile 1 の 4:4:0 header は Vp09Box に格納できないため Err を返す
+///
+/// VP9 spec では合法だが、VP Codec ISO Media File Format Binding の
+/// chroma_subsampling 3 ビット値に対応する値が存在しない
+#[test]
+fn build_vp09_box_rejects_440_subsampling() {
+    let bytes = build_keyframe_bytes(KeyframeParams {
+        profile: 1,
+        subsampling_x: 0,
+        subsampling_y: 1,
+        ..KeyframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("profile 1 4:4:0 は解析成功する");
+    let err = build_vp09_box(&header, &default_config())
+        .expect_err("4:4:0 は Vp09Box に格納不能なので Err");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
 /// profile 1 の 4:4:4 header が chroma_subsampling = 3 (4:4:4) に写る
@@ -501,7 +543,7 @@ fn build_vp09_box_chroma_subsampling_444() {
         ..KeyframeParams::valid()
     });
     let header = parse_frame_header(&bytes).expect("profile 1 4:4:4");
-    let vp09 = build_vp09_box(&header, &default_config());
+    let vp09 = build_vp09_box(&header, &default_config()).expect("有効な header は構築成功する");
     assert_eq!(vp09.vpcc_box.chroma_subsampling.get(), 3);
 }
 
@@ -514,7 +556,7 @@ fn build_vp09_box_srgb_full_range() {
         ..KeyframeParams::valid()
     });
     let header = parse_frame_header(&bytes).expect("sRGB キーフレーム");
-    let vp09 = build_vp09_box(&header, &default_config());
+    let vp09 = build_vp09_box(&header, &default_config()).expect("有効な header は構築成功する");
     assert_eq!(vp09.vpcc_box.video_full_range_flag, Uint::new(1));
     assert_eq!(vp09.vpcc_box.chroma_subsampling.get(), 3); // sRGB → 4:4:4
 }
@@ -532,7 +574,7 @@ fn build_vp09_box_config_colour_reflected() {
         width: 1920,
         height: 1080,
     };
-    let vp09 = build_vp09_box(&header, &config);
+    let vp09 = build_vp09_box(&header, &config).expect("有効な header は構築成功する");
     assert_eq!(vp09.vpcc_box.level, 31);
     assert_eq!(vp09.vpcc_box.colour_primaries, 9);
     assert_eq!(vp09.vpcc_box.transfer_characteristics, 14);
@@ -558,7 +600,7 @@ fn build_vp09_box_roundtrip() {
         width: 640,
         height: 480,
     };
-    let vp09 = build_vp09_box(&header, &config);
+    let vp09 = build_vp09_box(&header, &config).expect("有効な header は構築成功する");
     let encoded = vp09.encode_to_vec().expect("encode 成功");
     let (decoded, size) = Vp09Box::decode(&encoded).expect("decode 成功");
     assert_eq!(size, encoded.len());

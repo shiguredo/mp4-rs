@@ -227,7 +227,8 @@ impl Vp9SampleEntryConfig {
 /// - profile 3 の予約ビットが 0 でない
 /// - key frame / intra-only frame の `sync_code` が `0x49 0x83 0x42` と一致しない
 /// - color_config の予約ビットが 0 でない
-/// - `subsampling_x == 0 && subsampling_y == 1` (仕様外組み合わせ)
+/// - profile 1/3 で `subsampling_x == 1 && subsampling_y == 1` (4:2:0)
+///   (VP9 spec Section 7.2.2 の bitstream conformance で不許可)
 /// - profile と bit_depth / subsampling の組み合わせが仕様外
 ///   (profile 0/1 は 8-bit のみ、profile 0/2 は 4:2:0 のみ)
 /// - color_space が sRGB (7) なのに profile が 0 or 2 (sRGB は profile 1 or 3 のみ許容)
@@ -460,16 +461,20 @@ fn read_color_config(reader: &mut BitReader<'_>, profile: u8) -> Result<ColorCon
                     "VP9 color_config reserved_zero must be 0",
                 ));
             }
+            // VP9 spec Section 7.2.2 の bitstream conformance:
+            // profile 1/3 では subsampling_x == 1 && subsampling_y == 1 (4:2:0) が禁止
+            // (libvpx の read_bitdepth_colorspace_sampling も同様に
+            //  "4:2:0 color not supported in profile 1 or 3" として拒否している)
+            if sx == 1 && sy == 1 {
+                return Err(Error::invalid_input(
+                    "VP9 4:2:0 (subsampling 1,1) is not allowed in profile 1 or 3",
+                ));
+            }
             (sx, sy)
         } else {
-            // profile 0/2: 4:2:0 固定
+            // profile 0/2: 4:2:0 固定 (color_config には書かれない)
             (1, 1)
         };
-        if sx == 0 && sy == 1 {
-            return Err(Error::invalid_input(
-                "VP9 subsampling_x=0 subsampling_y=1 is not allowed",
-            ));
-        }
         (color_range, sx, sy)
     } else {
         // sRGB は profile 1 または 3 のみ許容、4:4:4 固定、full range 固定
@@ -552,14 +557,27 @@ fn read_render_size(reader: &mut BitReader<'_>) -> Result<Option<(u32, u32)>> {
 /// または `intra_only == true`) を渡すこと。inter frame の header では
 /// `bit_depth` / `color_space` / `color_range` / `subsampling_*` が 0
 /// プレースホルダになっており、そのまま渡すと `Vp09Box` に不正な値が入る
-pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) -> Vp09Box {
+///
+/// # エラー条件
+///
+/// `header.subsampling_x == 0 && header.subsampling_y == 1` (VP9 の 4:4:0) は
+/// VP Codec ISO Media File Format Binding の `chroma_subsampling` 3 ビット値に
+/// 対応値がないため `Vp09Box` に格納できず [`crate::Error`] を返す
+pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) -> Result<Vp09Box> {
     let chroma_subsampling_value = match (header.subsampling_x, header.subsampling_y) {
         (1, 1) => 1u8,
         (1, 0) => 2u8,
         (0, 0) => 3u8,
-        // (0, 1) は parse_frame_header で拒否済み。ここに到達したら仕様外呼び出しで、
-        // 最も安全な 4:4:4 (3) にフォールバックする
-        _ => 3u8,
+        (0, 1) => {
+            // VP9 spec では profile 1/3 で 4:4:0 は合法だが、VP Codec ISO Media
+            // File Format Binding の chroma_subsampling には 4:4:0 に対応する値が
+            // ないため Vp09Box には格納できない
+            return Err(Error::invalid_input(
+                "VP9 4:4:0 (subsampling 0,1) cannot be represented in VpccBox::chroma_subsampling",
+            ));
+        }
+        // subsampling_x / subsampling_y は parse_frame_header 経由なら常に 0 or 1
+        _ => unreachable!("subsampling_x / subsampling_y are 0 or 1"),
     };
 
     let vpcc_box = VpccBox {
@@ -587,11 +605,11 @@ pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) ->
         depth: VisualSampleEntryFields::DEFAULT_DEPTH,
     };
 
-    Vp09Box {
+    Ok(Vp09Box {
         visual,
         vpcc_box,
         unknown_boxes: Vec::new(),
-    }
+    })
 }
 
 /// VP9 uncompressed header の MSB-first ビット読み取り

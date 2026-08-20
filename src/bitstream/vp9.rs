@@ -104,7 +104,11 @@ pub struct Vp9FrameHeader {
     /// non-key frame で `intra_only` フラグが立っているかどうか。key frame では常に `false`
     pub intra_only: bool,
 
-    /// ビット深度 (8 / 10 / 12 のいずれか)。inter frame では header に含まれないため 0
+    /// ビット深度 (8 / 10 / 12 のいずれか)
+    ///
+    /// inter frame / `show_existing_frame` では header に含まれないため 0 プレースホルダ。
+    /// [`build_vp09_box`] はこの 0 を検出して Err を返し、代表フレームに使えないことを
+    /// 呼び出し側に伝える
     pub bit_depth: u8,
 
     /// 色空間 (0..=7)。VP9 spec Section 7.2.2 の CS_UNKNOWN..=CS_RGB。
@@ -560,10 +564,24 @@ fn read_render_size(reader: &mut BitReader<'_>) -> Result<Option<(u32, u32)>> {
 ///
 /// # エラー条件
 ///
-/// `header.subsampling_x == 0 && header.subsampling_y == 1` (VP9 の 4:4:0) は
-/// VP Codec ISO Media File Format Binding の `chroma_subsampling` 3 ビット値に
-/// 対応値がないため `Vp09Box` に格納できず [`crate::Error`] を返す
+/// - `header.bit_depth == 0` (inter frame や `show_existing_frame` 由来の
+///   プレースホルダ header は色情報を持たないので `Vp09Box` の代表フレームに使えない)
+/// - `header.subsampling_x == 0 && header.subsampling_y == 1` (VP9 の 4:4:0) は
+///   VP Codec ISO Media File Format Binding の `chroma_subsampling` 3 ビット値に
+///   対応値がないため `Vp09Box` に格納できない
+/// - `header.subsampling_x` / `header.subsampling_y` が 0 / 1 以外
+///   ([`Vp9FrameHeader`] は pub フィールドを持つので、parse を通さない手組み構築でも
+///   panic ではなく Err で拒否する)
 pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) -> Result<Vp09Box> {
+    if header.bit_depth == 0 {
+        // inter frame / show_existing_frame の header は色情報 (bit_depth 等) が
+        // 0 プレースホルダで書かれる。silent に vpcC へ流し込むと 4:4:4 として
+        // 誤って書き出してしまうので入り口で拒否する
+        return Err(Error::invalid_input(
+            "VP9 build_vp09_box requires a key or intra_only frame header \
+             (bit_depth == 0 indicates inter frame or show_existing_frame)",
+        ));
+    }
     let chroma_subsampling_value = match (header.subsampling_x, header.subsampling_y) {
         (1, 1) => 1u8,
         (1, 0) => 2u8,
@@ -576,8 +594,13 @@ pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) ->
                 "VP9 4:4:0 (subsampling 0,1) cannot be represented in VpccBox::chroma_subsampling",
             ));
         }
-        // subsampling_x / subsampling_y は parse_frame_header 経由なら常に 0 or 1
-        _ => unreachable!("subsampling_x / subsampling_y are 0 or 1"),
+        // Vp9FrameHeader は pub フィールドを持つため、parse を通さない構築で
+        // 2 以上が渡されうる。panic ではなく Err で防衛する
+        _ => {
+            return Err(Error::invalid_input(
+                "VP9 subsampling_x / subsampling_y must be 0 or 1",
+            ));
+        }
     };
 
     let vpcc_box = VpccBox {

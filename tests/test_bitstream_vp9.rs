@@ -961,6 +961,50 @@ fn interframe_color_fields_are_placeholder_zero() {
     assert_eq!(header.subsampling_y, 0);
 }
 
+/// inter frame の header (色情報が 0 プレースホルダ) を build_vp09_box に渡すと Err
+///
+/// silent に 4:4:4 として書き出さないよう入り口で拒否する
+#[test]
+fn build_vp09_box_rejects_inter_frame_header() {
+    let bytes = build_interframe_bytes(InterframeParams::valid());
+    let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
+    assert_eq!(header.bit_depth, 0); // inter は 0 プレースホルダ
+    let err = build_vp09_box(&header, &default_config())
+        .expect_err("inter frame header は build_vp09_box で拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// show_existing_frame の header (色情報なし) を build_vp09_box に渡すと Err
+#[test]
+fn build_vp09_box_rejects_show_existing_frame_header() {
+    // show_existing_frame パターンを手組み
+    let mut w = BitWriter::new();
+    w.push_bits(2, 2); // frame_marker
+    w.push_bit(0); // profile low
+    w.push_bit(0); // profile high
+    w.push_bit(1); // show_existing_frame = 1
+    w.push_bits(0, 3); // frame_to_show_map_idx = 0
+    let bytes = w.into_bytes();
+    let header = parse_frame_header(&bytes).expect("show_existing_frame は解析成功する");
+    assert_eq!(header.show_existing_frame, Some(0));
+    let err = build_vp09_box(&header, &default_config())
+        .expect_err("show_existing_frame header は build_vp09_box で拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// Vp9FrameHeader を手組みで subsampling_x/y に 2 以上を入れた場合、panic せず Err
+///
+/// pub フィールド経由の異常構築でも公開 API が panic しないことを担保する
+#[test]
+fn build_vp09_box_rejects_out_of_range_subsampling() {
+    let bytes = build_keyframe_bytes(KeyframeParams::valid());
+    let mut header = parse_frame_header(&bytes).expect("キーフレーム");
+    header.subsampling_x = 2; // 手組みで範囲外を入れる
+    let err = build_vp09_box(&header, &default_config())
+        .expect_err("範囲外 subsampling は panic ではなく Err で拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
 /// inter frame の render_size が frame_size と異なるときにその値が復元される
 #[test]
 fn interframe_render_size_different_is_preserved() {

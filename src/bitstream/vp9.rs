@@ -558,9 +558,10 @@ fn read_render_size(reader: &mut BitReader<'_>) -> Result<Option<(u32, u32)>> {
 /// # 前提
 ///
 /// `header` は色設定を確定できるフレーム (`frame_type == Vp9FrameType::Key`、
-/// または `intra_only == true`) を渡すこと。inter frame の header では
-/// `bit_depth` / `color_space` / `color_range` / `subsampling_*` が 0
-/// プレースホルダになっており、そのまま渡すと `Vp09Box` に不正な値が入る
+/// または `intra_only == true`) を渡すこと。inter frame や
+/// `show_existing_frame` の header では色情報 (`bit_depth` / `color_space` /
+/// `color_range` / `subsampling_*`) が 0 プレースホルダになっており、
+/// この関数は下記「エラー条件」で検出して `Err` を返す
 ///
 /// # エラー条件
 ///

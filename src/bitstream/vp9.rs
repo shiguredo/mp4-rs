@@ -231,7 +231,9 @@ impl Vp9SampleEntryConfig {
 /// - profile と bit_depth / subsampling の組み合わせが仕様外
 ///   (profile 0/1 は 8-bit のみ、profile 0/2 は 4:2:0 のみ)
 /// - color_space が sRGB (7) なのに profile が 0 or 2 (sRGB は profile 1 or 3 のみ許容)
-/// - key frame / intra-only frame の width または height が 0
+///
+/// なお `frame_width_minus_1` / `frame_height_minus_1` に +1 したものが frame の
+/// 幅・高さになる仕様上、0 寸法は表現不能なので専用のエラー分類は持たない
 ///
 /// # 対象外
 ///
@@ -497,18 +499,11 @@ fn read_color_config(reader: &mut BitReader<'_>, profile: u8) -> Result<ColorCon
 /// VP9 spec Section 6.2.3 の `frame_size` syntax を読む
 ///
 /// `frame_width_minus_1` / `frame_height_minus_1` はいずれも 16 ビット。
-/// +1 したものが `(width, height)` となり、0 寸法は仕様上ありえない
+/// +1 したものが `(width, height)` となり、値域は 1..=65536 で 0 寸法は表現不能
 fn read_frame_size(reader: &mut BitReader<'_>) -> Result<(u32, u32)> {
     let width_minus_1 = reader.read_bits(16)?;
     let height_minus_1 = reader.read_bits(16)?;
-    let width = width_minus_1 + 1;
-    let height = height_minus_1 + 1;
-    if width == 0 || height == 0 {
-        return Err(Error::invalid_input(
-            "VP9 frame_size width or height is zero",
-        ));
-    }
-    Ok((width, height))
+    Ok((width_minus_1 + 1, height_minus_1 + 1))
 }
 
 /// VP9 spec Section 6.2.4 の `render_size` syntax を読む

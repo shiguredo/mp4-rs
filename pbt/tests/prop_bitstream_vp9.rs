@@ -321,3 +321,287 @@ fn build_vp09_box_config_roundtrip() -> noprop::TestResult {
     })?;
     Ok(())
 }
+
+/// intra-only frame の bit builder (render_size なしで固定、色設定は profile > 0 のみ書き込まれる)
+struct IntraOnlyBits {
+    profile: u8,
+    error_resilient_mode: bool,
+    bit_depth_10_or_12_bit: bool,
+    color_space: u8,
+    color_range: u8,
+    subsampling_x: u8,
+    subsampling_y: u8,
+    refresh_frame_flags: u8,
+    frame_width: u32,
+    frame_height: u32,
+}
+
+fn build_intra_only_bytes(p: &IntraOnlyBits) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.push_bits(2, 2); // frame_marker
+    w.push_bit(p.profile & 1);
+    w.push_bit((p.profile >> 1) & 1);
+    if p.profile == 3 {
+        w.push_bit(0);
+    }
+    w.push_bit(0); // show_existing_frame
+    w.push_bit(1); // frame_type = 1 (NonKey)
+    w.push_bit(0); // show_frame = 0
+    w.push_bit(u8::from(p.error_resilient_mode));
+    w.push_bit(1); // intra_only = 1
+    if !p.error_resilient_mode {
+        w.push_bits(0, 2); // reset_frame_context
+    }
+    w.push_bytes(&[0x49, 0x83, 0x42]); // sync_code
+    if p.profile > 0 {
+        if p.profile >= 2 {
+            w.push_bit(u8::from(p.bit_depth_10_or_12_bit));
+        }
+        w.push_bits(u32::from(p.color_space), 3);
+        if p.color_space != 7 {
+            w.push_bit(p.color_range);
+            if p.profile == 1 || p.profile == 3 {
+                w.push_bit(p.subsampling_x);
+                w.push_bit(p.subsampling_y);
+                w.push_bit(0); // reserved_zero
+            }
+        } else {
+            w.push_bit(0); // reserved_zero (sRGB path)
+        }
+    }
+    w.push_bits(u32::from(p.refresh_frame_flags), 8);
+    w.push_bits((p.frame_width - 1) & 0xFFFF, 16);
+    w.push_bits((p.frame_height - 1) & 0xFFFF, 16);
+    w.push_bit(0); // render_and_frame_size_different = 0
+    w.into_bytes()
+}
+
+/// intra-only frame の profile / color / refresh_frame_flags / frame_size のビット配置往復
+///
+/// profile 0 では color_config が書かれず既定値、profile > 0 では color_config を経由する。
+/// error_resilient_mode の両値もサンプルする (reset_frame_context を書くかどうかの分岐)
+#[test]
+fn intra_only_bit_layout_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let profile = noprop::sample_u64_in(ctx, 0..=3) as u8;
+        let error_resilient_mode = noprop::sample_bool(ctx);
+        let bit_depth_10_or_12_bit = noprop::sample_bool(ctx);
+        // color_space は 0..=6 (sRGB は subsampling 固定なので別扱い)
+        let color_space = noprop::sample_u64_in(ctx, 0..=6) as u8;
+        let color_range = noprop::sample_u64_in(ctx, 0..=1) as u8;
+        // profile 1/3 は 4:2:2 / 4:4:4 (4:2:0 は spec 違反、4:4:0 は Vp09Box 化不能なので
+        // build_vp09_box_config_roundtrip と同じく除外)
+        let (subsampling_x, subsampling_y) = if profile == 1 || profile == 3 {
+            match noprop::sample_u64_in(ctx, 0..=1) {
+                0 => (1u8, 0u8), // 4:2:2
+                _ => (0u8, 0u8), // 4:4:4
+            }
+        } else {
+            (1u8, 1u8) // profile 0/2 は 4:2:0 固定
+        };
+        let refresh_frame_flags = noprop::sample_u8(ctx);
+        let frame_width = noprop::sample_u64_in(ctx, 1..=1920) as u32;
+        let frame_height = noprop::sample_u64_in(ctx, 1..=1080) as u32;
+
+        let params = IntraOnlyBits {
+            profile,
+            error_resilient_mode,
+            bit_depth_10_or_12_bit,
+            color_space,
+            color_range,
+            subsampling_x,
+            subsampling_y,
+            refresh_frame_flags,
+            frame_width,
+            frame_height,
+        };
+        let bytes = build_intra_only_bytes(&params);
+        let header = parse_frame_header(&bytes).expect("intra-only frame は解析成功する");
+
+        assert_eq!(header.frame_type, Vp9FrameType::NonKey);
+        assert!(header.intra_only);
+        assert!(!header.show_frame);
+        assert_eq!(header.profile, profile);
+        assert_eq!(header.error_resilient_mode, error_resilient_mode);
+        // profile 0 は color_config を書かない → デフォルト (8-bit / color 1 / range 0 / (1,1))
+        if profile == 0 {
+            assert_eq!(header.bit_depth, 8);
+            assert_eq!(header.color_space, 1);
+            assert_eq!(header.color_range, 0);
+            assert_eq!(header.subsampling_x, 1);
+            assert_eq!(header.subsampling_y, 1);
+        } else {
+            let expected_bit_depth = if profile >= 2 {
+                if bit_depth_10_or_12_bit { 12 } else { 10 }
+            } else {
+                8
+            };
+            assert_eq!(header.bit_depth, expected_bit_depth);
+            assert_eq!(header.color_space, color_space);
+            assert_eq!(header.color_range, color_range);
+            assert_eq!(header.subsampling_x, subsampling_x);
+            assert_eq!(header.subsampling_y, subsampling_y);
+        }
+        assert_eq!(
+            header.frame_size,
+            Vp9FrameSize::Resolved {
+                width: frame_width,
+                height: frame_height,
+            }
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// inter frame の bit builder (found_ref の break セマンティクスと intra_only=0 の分岐を含む)
+struct InterframeBits {
+    profile: u8,
+    show_frame: bool,
+    error_resilient_mode: bool,
+    refresh_frame_flags: u8,
+    ref_frame_idx: [u8; 3],
+    ref_frame_sign_bias: [u8; 3],
+    /// found_ref[i] が最初に true になった時点で残りは書かない (VP9 spec 6.2.5)
+    found_ref: [bool; 3],
+    /// found_ref すべて false のときだけ使う
+    frame_width: u32,
+    frame_height: u32,
+    render_and_frame_size_different: bool,
+    render_width: u32,
+    render_height: u32,
+}
+
+fn build_interframe_bytes(p: &InterframeBits) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.push_bits(2, 2); // frame_marker
+    w.push_bit(p.profile & 1);
+    w.push_bit((p.profile >> 1) & 1);
+    if p.profile == 3 {
+        w.push_bit(0);
+    }
+    w.push_bit(0); // show_existing_frame
+    w.push_bit(1); // frame_type = 1 (NonKey)
+    w.push_bit(u8::from(p.show_frame));
+    w.push_bit(u8::from(p.error_resilient_mode));
+    if !p.show_frame {
+        w.push_bit(0); // intra_only = 0 (inter)
+    }
+    if !p.error_resilient_mode {
+        w.push_bits(0, 2); // reset_frame_context
+    }
+    w.push_bits(u32::from(p.refresh_frame_flags), 8);
+    for i in 0..3 {
+        w.push_bits(u32::from(p.ref_frame_idx[i]), 3);
+        w.push_bit(p.ref_frame_sign_bias[i]);
+    }
+    let mut broke = false;
+    for i in 0..3 {
+        w.push_bit(u8::from(p.found_ref[i]));
+        if p.found_ref[i] {
+            broke = true;
+            break;
+        }
+    }
+    if !broke {
+        w.push_bits((p.frame_width - 1) & 0xFFFF, 16);
+        w.push_bits((p.frame_height - 1) & 0xFFFF, 16);
+    }
+    w.push_bit(u8::from(p.render_and_frame_size_different));
+    if p.render_and_frame_size_different {
+        w.push_bits((p.render_width - 1) & 0xFFFF, 16);
+        w.push_bits((p.render_height - 1) & 0xFFFF, 16);
+    }
+    w.into_bytes()
+}
+
+/// inter frame の各フィールドがビット配置往復する
+///
+/// - `found_ref` は 4 通り (全 0 / [0]=1 / [0,1]=[0,1] / [0,0,1]) を境界化して
+///   Resolved 経路 / UsesRefFrames の各スロット経路の両方を踏む
+/// - `show_frame` と `error_resilient_mode` の両値をサンプルし、`intra_only` /
+///   `reset_frame_context` の書き込み分岐を全部触る
+/// - `render_size` の有無も両値
+#[test]
+fn interframe_bit_layout_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let profile = noprop::sample_u64_in(ctx, 0..=3) as u8;
+        let show_frame = noprop::sample_bool(ctx);
+        let error_resilient_mode = noprop::sample_bool(ctx);
+        let refresh_frame_flags = noprop::sample_u8(ctx);
+        let ref_frame_idx = [
+            noprop::sample_u64_in(ctx, 0..=7) as u8,
+            noprop::sample_u64_in(ctx, 0..=7) as u8,
+            noprop::sample_u64_in(ctx, 0..=7) as u8,
+        ];
+        let ref_frame_sign_bias = [
+            noprop::sample_u64_in(ctx, 0..=1) as u8,
+            noprop::sample_u64_in(ctx, 0..=1) as u8,
+            noprop::sample_u64_in(ctx, 0..=1) as u8,
+        ];
+        // found_ref の 4 通りを境界化する: 全 0 / [true, _, _] / [false, true, _] / [false, false, true]
+        let found_ref: [bool; 3] = match noprop::sample_u64_in(ctx, 0..=3) {
+            0 => [false, false, false],
+            1 => [true, false, false],
+            2 => [false, true, false],
+            _ => [false, false, true],
+        };
+        let frame_width = noprop::sample_u64_in(ctx, 1..=1920) as u32;
+        let frame_height = noprop::sample_u64_in(ctx, 1..=1080) as u32;
+        let render_and_frame_size_different = noprop::sample_bool(ctx);
+        let render_width = noprop::sample_u64_in(ctx, 1..=1920) as u32;
+        let render_height = noprop::sample_u64_in(ctx, 1..=1080) as u32;
+
+        let params = InterframeBits {
+            profile,
+            show_frame,
+            error_resilient_mode,
+            refresh_frame_flags,
+            ref_frame_idx,
+            ref_frame_sign_bias,
+            found_ref,
+            frame_width,
+            frame_height,
+            render_and_frame_size_different,
+            render_width,
+            render_height,
+        };
+        let bytes = build_interframe_bytes(&params);
+        let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
+
+        assert_eq!(header.frame_type, Vp9FrameType::NonKey);
+        assert!(!header.intra_only);
+        assert_eq!(header.profile, profile);
+        assert_eq!(header.show_frame, show_frame);
+        assert_eq!(header.error_resilient_mode, error_resilient_mode);
+        // inter では color 系は 0 プレースホルダ
+        assert_eq!(header.bit_depth, 0);
+        assert_eq!(header.color_space, 0);
+        assert_eq!(header.color_range, 0);
+        assert_eq!(header.subsampling_x, 0);
+        assert_eq!(header.subsampling_y, 0);
+        // frame_size は found_ref の最初の true に対応するスロット、または Resolved
+        let expected_frame_size = if let Some(i) = found_ref.iter().position(|f| *f) {
+            Vp9FrameSize::UsesRefFrames {
+                ref_frame_slot: ref_frame_idx[i],
+            }
+        } else {
+            Vp9FrameSize::Resolved {
+                width: frame_width,
+                height: frame_height,
+            }
+        };
+        assert_eq!(header.frame_size, expected_frame_size);
+        // render_size
+        let expected_render = if render_and_frame_size_different {
+            Some((render_width, render_height))
+        } else {
+            None
+        };
+        assert_eq!(header.render_size, expected_render);
+        Ok(())
+    })?;
+    Ok(())
+}

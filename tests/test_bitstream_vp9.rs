@@ -669,3 +669,307 @@ fn real_libvpx_keyframe_parses() {
     assert_eq!(header.color_space, 0);
     assert_eq!(header.color_range, 0);
 }
+
+// ===== intra-only frame テスト =====
+
+/// intra-only frame の uncompressed header を組み立てる (render_size は無しで固定)
+struct IntraOnlyParams {
+    profile: u8,
+    error_resilient_mode: bool,
+    sync_code: [u8; 3],
+    bit_depth_10_or_12_bit: bool, // profile >= 2 のときのみ書き込む
+    color_space: u8,
+    color_range: u8,
+    subsampling_x: u8,
+    subsampling_y: u8,
+    refresh_frame_flags: u8,
+    frame_width: u32,
+    frame_height: u32,
+}
+
+impl IntraOnlyParams {
+    fn valid() -> Self {
+        Self {
+            profile: 0,
+            error_resilient_mode: false,
+            sync_code: [0x49, 0x83, 0x42],
+            bit_depth_10_or_12_bit: false,
+            color_space: 1,
+            color_range: 0,
+            subsampling_x: 1,
+            subsampling_y: 1,
+            refresh_frame_flags: 0,
+            frame_width: 320,
+            frame_height: 240,
+        }
+    }
+}
+
+fn build_intra_only_bytes(p: IntraOnlyParams) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.push_bits(2, 2); // frame_marker
+    w.push_bit(p.profile & 1);
+    w.push_bit((p.profile >> 1) & 1);
+    if p.profile == 3 {
+        w.push_bit(0);
+    }
+    w.push_bit(0); // show_existing_frame
+    w.push_bit(1); // frame_type = 1 (NonKey)
+    w.push_bit(0); // show_frame = 0
+    w.push_bit(u8::from(p.error_resilient_mode));
+    w.push_bit(1); // intra_only = 1
+    if !p.error_resilient_mode {
+        w.push_bits(0, 2); // reset_frame_context
+    }
+    w.push_bytes(&p.sync_code);
+    if p.profile > 0 {
+        if p.profile >= 2 {
+            w.push_bit(u8::from(p.bit_depth_10_or_12_bit));
+        }
+        w.push_bits(u32::from(p.color_space), 3);
+        if p.color_space != 7 {
+            w.push_bit(p.color_range);
+            if p.profile == 1 || p.profile == 3 {
+                w.push_bit(p.subsampling_x);
+                w.push_bit(p.subsampling_y);
+                w.push_bit(0); // reserved_zero
+            }
+        } else {
+            w.push_bit(0); // reserved_zero (sRGB path)
+        }
+    }
+    w.push_bits(u32::from(p.refresh_frame_flags), 8);
+    w.push_bits((p.frame_width - 1) & 0xFFFF, 16);
+    w.push_bits((p.frame_height - 1) & 0xFFFF, 16);
+    w.push_bit(0); // render_and_frame_size_different = 0
+    w.into_bytes()
+}
+
+/// profile 0 の intra-only frame は color_config を持たず、デフォルト値
+/// (bit_depth=8, color_space=1, color_range=0, subsampling=(1,1)) が入る
+#[test]
+fn intra_only_profile0_uses_default_color() {
+    let bytes = build_intra_only_bytes(IntraOnlyParams::valid());
+    let header = parse_frame_header(&bytes).expect("intra-only profile 0 は解析成功する");
+    assert_eq!(header.frame_type, Vp9FrameType::NonKey);
+    assert!(!header.show_frame);
+    assert!(header.intra_only);
+    assert_eq!(header.profile, 0);
+    // profile 0 の intra-only では color_config が書かれないのでデフォルトが入る
+    assert_eq!(header.bit_depth, 8);
+    assert_eq!(header.color_space, 1);
+    assert_eq!(header.color_range, 0);
+    assert_eq!(header.subsampling_x, 1);
+    assert_eq!(header.subsampling_y, 1);
+    assert_eq!(
+        header.frame_size,
+        Vp9FrameSize::Resolved {
+            width: 320,
+            height: 240,
+        }
+    );
+}
+
+/// profile 2 の intra-only frame は color_config を読み、bit_depth と color を復元する
+#[test]
+fn intra_only_profile2_reads_color_config() {
+    for (flag, expected_bit_depth) in [(false, 10u8), (true, 12u8)] {
+        let bytes = build_intra_only_bytes(IntraOnlyParams {
+            profile: 2,
+            bit_depth_10_or_12_bit: flag,
+            color_space: 5, // BT.2020
+            color_range: 1,
+            ..IntraOnlyParams::valid()
+        });
+        let header = parse_frame_header(&bytes).unwrap_or_else(|_| {
+            panic!("intra-only profile 2 の {expected_bit_depth}-bit は解析成功する")
+        });
+        assert!(header.intra_only);
+        assert_eq!(header.bit_depth, expected_bit_depth);
+        assert_eq!(header.color_space, 5);
+        assert_eq!(header.color_range, 1);
+    }
+}
+
+/// intra-only frame は error_resilient_mode でも parse できる (reset_frame_context を読み飛ばさない経路)
+#[test]
+fn intra_only_error_resilient_mode() {
+    let bytes = build_intra_only_bytes(IntraOnlyParams {
+        error_resilient_mode: true,
+        ..IntraOnlyParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("error_resilient=true の intra-only は解析成功");
+    assert!(header.intra_only);
+    assert!(header.error_resilient_mode);
+}
+
+/// intra-only frame の sync_code が不一致なら拒否する
+#[test]
+fn reject_intra_only_wrong_sync_code() {
+    let bytes = build_intra_only_bytes(IntraOnlyParams {
+        sync_code: [0x00, 0x00, 0x00],
+        ..IntraOnlyParams::valid()
+    });
+    let err = parse_frame_header(&bytes).expect_err("intra-only の sync_code 不一致は拒否");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+// ===== inter frame テスト =====
+
+/// inter frame の uncompressed header を組み立てる
+struct InterframeParams {
+    profile: u8,
+    show_frame: bool,
+    error_resilient_mode: bool,
+    refresh_frame_flags: u8,
+    ref_frame_idx: [u8; 3], // 各 0..=7
+    ref_frame_sign_bias: [u8; 3],
+    /// found_ref[i] が最初に true になった時点でその後の found_ref は書かない
+    /// (VP9 spec Section 6.2.5 の break セマンティクスと一致させる)
+    found_ref: [bool; 3],
+    /// found_ref すべて false のときのみ書き込まれる
+    frame_width: u32,
+    frame_height: u32,
+    render_and_frame_size_different: bool,
+    render_width: u32,
+    render_height: u32,
+}
+
+impl InterframeParams {
+    fn valid() -> Self {
+        Self {
+            profile: 0,
+            show_frame: true,
+            error_resilient_mode: false,
+            refresh_frame_flags: 0,
+            ref_frame_idx: [0, 1, 2],
+            ref_frame_sign_bias: [0, 0, 0],
+            found_ref: [false, false, false],
+            frame_width: 320,
+            frame_height: 240,
+            render_and_frame_size_different: false,
+            render_width: 0,
+            render_height: 0,
+        }
+    }
+}
+
+fn build_interframe_bytes(p: InterframeParams) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.push_bits(2, 2); // frame_marker
+    w.push_bit(p.profile & 1);
+    w.push_bit((p.profile >> 1) & 1);
+    if p.profile == 3 {
+        w.push_bit(0);
+    }
+    w.push_bit(0); // show_existing_frame
+    w.push_bit(1); // frame_type = 1 (NonKey)
+    w.push_bit(u8::from(p.show_frame));
+    w.push_bit(u8::from(p.error_resilient_mode));
+    if !p.show_frame {
+        w.push_bit(0); // intra_only = 0 (inter)
+    }
+    if !p.error_resilient_mode {
+        w.push_bits(0, 2); // reset_frame_context
+    }
+    w.push_bits(u32::from(p.refresh_frame_flags), 8);
+    for i in 0..3 {
+        w.push_bits(u32::from(p.ref_frame_idx[i]), 3);
+        w.push_bit(p.ref_frame_sign_bias[i]);
+    }
+    // frame_size_with_refs
+    let mut broke = false;
+    for i in 0..3 {
+        w.push_bit(u8::from(p.found_ref[i]));
+        if p.found_ref[i] {
+            broke = true;
+            break;
+        }
+    }
+    if !broke {
+        w.push_bits((p.frame_width - 1) & 0xFFFF, 16);
+        w.push_bits((p.frame_height - 1) & 0xFFFF, 16);
+    }
+    w.push_bit(u8::from(p.render_and_frame_size_different));
+    if p.render_and_frame_size_different {
+        w.push_bits((p.render_width - 1) & 0xFFFF, 16);
+        w.push_bits((p.render_height - 1) & 0xFFFF, 16);
+    }
+    w.into_bytes()
+}
+
+/// inter frame で found_ref[0] = true のとき、その slot (ref_frame_idx[0]) を UsesRefFrames に格納する
+#[test]
+fn interframe_uses_first_ref_slot() {
+    let bytes = build_interframe_bytes(InterframeParams {
+        ref_frame_idx: [5, 1, 2],
+        found_ref: [true, false, false],
+        ..InterframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
+    assert_eq!(header.frame_type, Vp9FrameType::NonKey);
+    assert!(!header.intra_only);
+    assert_eq!(
+        header.frame_size,
+        Vp9FrameSize::UsesRefFrames { ref_frame_slot: 5 }
+    );
+}
+
+/// inter frame で found_ref[1] = true (先頭 false) のときは 2 番目の ref_frame_idx を採用する
+#[test]
+fn interframe_uses_second_ref_slot() {
+    let bytes = build_interframe_bytes(InterframeParams {
+        ref_frame_idx: [0, 7, 3],
+        found_ref: [false, true, false],
+        ..InterframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
+    assert_eq!(
+        header.frame_size,
+        Vp9FrameSize::UsesRefFrames { ref_frame_slot: 7 }
+    );
+}
+
+/// inter frame で found_ref すべて false のときは明示的 frame_size を Resolved で読む
+#[test]
+fn interframe_all_zero_found_ref_reads_explicit_frame_size() {
+    let bytes = build_interframe_bytes(InterframeParams {
+        found_ref: [false, false, false],
+        frame_width: 1280,
+        frame_height: 720,
+        ..InterframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("found_ref 全 0 の inter frame は解析成功");
+    assert_eq!(
+        header.frame_size,
+        Vp9FrameSize::Resolved {
+            width: 1280,
+            height: 720,
+        }
+    );
+}
+
+/// inter frame の色設定 (bit_depth / color_space / color_range / subsampling) は header に無いので 0 プレースホルダで返る
+#[test]
+fn interframe_color_fields_are_placeholder_zero() {
+    let bytes = build_interframe_bytes(InterframeParams::valid());
+    let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
+    assert_eq!(header.bit_depth, 0);
+    assert_eq!(header.color_space, 0);
+    assert_eq!(header.color_range, 0);
+    assert_eq!(header.subsampling_x, 0);
+    assert_eq!(header.subsampling_y, 0);
+}
+
+/// inter frame の render_size が frame_size と異なるときにその値が復元される
+#[test]
+fn interframe_render_size_different_is_preserved() {
+    let bytes = build_interframe_bytes(InterframeParams {
+        render_and_frame_size_different: true,
+        render_width: 1920,
+        render_height: 1080,
+        ..InterframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("render_size 有り inter frame は解析成功");
+    assert_eq!(header.render_size, Some((1920, 1080)));
+}

@@ -15,7 +15,7 @@
 
 - [UPDATE] PBT を proptest から noprop に移行する
   - @sile
-- [FIX] `UnknownBox` のデコードで可変長ボックスを拒否する
+- [FIX] `UnknownBox` のデコードでトップレベル以外の可変長ボックスを拒否する
   - コンテナボックス内部の未知ボックスループが末尾のゼロ埋めを 1 個の `UnknownBox` として誤認識するのを防ぐ
   - トップレベルの未知ボックス（`RootBox` 経由）は従来どおり可変長ボックスを受理する
   - @sile

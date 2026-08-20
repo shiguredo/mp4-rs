@@ -1,7 +1,7 @@
 # エラーメッセージから絶対パスを除去する
 
 - Created: 2026-08-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-20
 - Branch: feature/fix-error-display-absolute-path
 - Polished: 2026-08-19
 
@@ -53,14 +53,15 @@ InvalidData: ... (at /home/user/.cargo/registry/src/index.crates.io-0123456789ab
 
 ## 解決方法
 
-- `src/codec.rs` の `impl core::fmt::Display for Error` にある `write!(f, " (at {}:{})", self.location.file(), self.location.line())?;` を、`location.file()` を「`src/` 以降の部分文字列」に整形してから出力する形に変更する
-  - 具体的には `location.file().rfind("src/")` などで `src/` の位置を最後方から検索し、見つかればそこから末尾までを使う。見つからなければ `location.file()` をそのまま使う
-  - Windows でパス区切りが `\` になるケースは考慮不要（プロジェクトは Unix 系前提。Windows 対応の必要が出た場合は別 issue とする）
-- 追加ユニットテスト（`src/codec.rs` のテストモジュール、または `tests/` に新規テストファイル）で、次の 3 パターンを検証する:
-  - 絶対パス入力（crates.io 形式を模した文字列）を `location.file()` として与えたときに、`Display` 出力が `src/...` から始まる相対パスになること
-  - もともと `src/...` 相対パスの入力を与えたときに、同じ出力になること（変換前後で一致）
-  - `src/` を含まない入力を与えたときに、フォールバックとして元の文字列がそのまま出力されること
-  - `Location::caller()` は直接コンストラクトできないため、テストでは `Error` の Display 出力全体を対象にせず、整形ロジックを切り出した内部関数（例: `fn shorten_source_path(file: &str) -> &str`）に対して検証する形にする
+- `src/codec.rs` に private 関数 `fn shorten_source_path(file: &str) -> &str` を追加した
+  - `file.rfind("src/")` で最後方の `src/` を検索し、見つかればそこから末尾までのスライスを返す。見つからなければ元の文字列をそのまま返す
+  - Windows のパス区切り `\` は今回のスコープ外とし、対応の必要が出た場合は別 issue で扱う
+- `impl core::fmt::Display for Error` の `write!(f, " (at {}:{})", self.location.file(), self.location.line())?;` を、`shorten_source_path(self.location.file())` 経由で出力する形に変更した
+- `src/codec.rs` の `#[cfg(test)] mod tests` に完了条件の 3 パターンをカバーする単体テストを追加した
+  - `shorten_source_path_strips_cargo_registry_prefix`: 合成した crates.io 形式の絶対パスから `src/basic_types.rs` だけが残ることを検証
+  - `shorten_source_path_keeps_repository_relative_path`: 既にリポジトリ相対の入力が変換前後で一致することを検証
+  - `shorten_source_path_falls_back_when_src_marker_is_missing`: `src/` を含まない入力（`build.rs`）で panic せずフォールバックする挙動を検証
+- `CHANGES.md` の `## develop / ### misc` に `[FIX]` エントリを追加した
 
 ## 補足
 

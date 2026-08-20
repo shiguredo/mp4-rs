@@ -3,7 +3,7 @@
 - Created: 2026-08-18
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-c-api-e2e-staticlib-resolution
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-20
 
 ## 目的
 

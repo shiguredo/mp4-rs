@@ -401,3 +401,32 @@ fn real_libvpx_keyframe_parses() {
     assert_eq!(key.horizontal_scale, 0);
     assert_eq!(key.vertical_scale, 0);
 }
+
+/// 手動構築の先頭 10 バイトが実 libvpx 出力と一致することを確認する
+///
+/// `parse_frame_header` と `build_keyframe_bytes` が同じビット配置解釈を共有していると、
+/// 両者だけを回すラウンドトリップは共通の思い違いがあっても通ってしまう。
+/// 実データの先頭 10 バイト (frame tag + start code + width + height) と自作 builder の
+/// 出力を直接突き合わせることで、この共通の思い違いを検出する。
+///
+/// fixture 生成時の設定値は `real_libvpx_keyframe_parses` で parse 経路と整合済み。
+/// `first_partition_size = 145` は fixture の frame tag `0x00 0x12 0x30` から
+/// bits 5..24 を切り出した実際の値
+#[test]
+fn real_libvpx_keyframe_matches_manual_build() {
+    let bytes = build_keyframe_bytes(KeyframeParams {
+        version: 0,
+        show_frame: true,
+        first_partition_size: 145,
+        width: 320,
+        horizontal_scale: 0,
+        height: 240,
+        vertical_scale: 0,
+        start_code: KEY_FRAME_START_CODE,
+    });
+    assert_eq!(
+        &bytes[..10],
+        &REAL_VP8_KEYFRAME[..10],
+        "手動構築の先頭 10 バイトが実 libvpx 出力とずれている (parser / builder のビット配置解釈が共通してずれている可能性)"
+    );
+}

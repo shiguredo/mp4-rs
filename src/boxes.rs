@@ -53,7 +53,16 @@ pub(crate) fn check_mandatory_box<T>(
 
 /// ペイロードの解釈方法が不明なボックスを保持するための構造体
 ///
-/// ペイロードは単なるバイト列として扱われる
+/// ペイロードは単なるバイト列として扱われる。
+///
+/// # NOTE
+///
+/// この構造体は、デコード時には可変長サイズ（[`BoxSize::VARIABLE_SIZE`]）のボックスを受理しない。
+/// これは「0 埋めされた不正な入力を、可変長サイズのボックスとしてデコードしてしまう」という誤認識を防ぐための制約である。
+///
+/// そもそも可変長サイズのボックスはトップレベル以外では禁止されており、
+/// また、トップレベルで使われる場合にも、実用上は mdat 以外で使われることはほぼないため、
+/// この制約が実際に問題となることはないという想定である。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnknownBox {
     /// ボックス種別
@@ -76,7 +85,11 @@ impl Encode for UnknownBox {
 
 impl Decode for UnknownBox {
     fn decode(buf: &[u8]) -> Result<(Self, usize)> {
-        let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+        let (header, _) = BoxHeader::decode(buf)?;
+        if header.box_size == BoxSize::VARIABLE_SIZE {
+            return Err(Error::invalid_data("UnknownBox does not accept size=0"));
+        }
+        let (_, payload) = BoxHeader::decode_header_and_payload(buf)?;
         Ok((
             Self {
                 box_type: header.box_type,

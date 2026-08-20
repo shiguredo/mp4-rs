@@ -15,6 +15,9 @@
 
 - [UPDATE] PBT を proptest から noprop に移行する
   - @sile
+- [FIX] `UnknownBox` のデコードで size=0 を拒否する
+  - コンテナ box 内部の未知 box ループが末尾のゼロ埋めを 1 個の未知 box として吸収するのを防ぐ
+  - @sile
 - [FIX] `Error` の `Display` 出力からビルド環境依存の絶対パスを除去する
   - `core::panic::Location::file()` が返すパスから最後方の `src/` 以降だけを残して表示する
   - @sile

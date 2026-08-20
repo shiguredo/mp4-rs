@@ -32,7 +32,7 @@ const KEY_FRAME_TAIL_SIZE: usize = 7;
 /// frame tag のバイト数
 const FRAME_TAG_SIZE: usize = 3;
 
-/// `Vp8FrameHeader::first_partition_size` の最大値 (19 ビット)
+/// [`Vp8FrameHeader::first_partition_size`] の最大値 (19 ビット)
 const FIRST_PARTITION_SIZE_MAX: u32 = (1 << 19) - 1;
 
 /// VP8 のフレーム種別
@@ -256,16 +256,16 @@ pub struct Vp8SampleEntryConfig {
 ///
 /// # 固定値
 ///
-/// - `VpccBox::profile` = 0 (VP8 は profile 0 のみ)
-/// - `VpccBox::bit_depth` = 8 (VP8 は 8-bit のみ)
-/// - `VpccBox::chroma_subsampling` = 1
+/// - [`VpccBox::profile`] = 0 (VP8 は profile 0 のみ)
+/// - [`VpccBox::bit_depth`] = 8 (VP8 は 8-bit のみ)
+/// - [`VpccBox::chroma_subsampling`] = 1
 ///   (VP8 は YUV 4:2:0 固定。VP Codec ISO Media File Format Binding の 3 ビット値では
 ///   0 = 4:2:0 vertical、1 = 4:2:0 colocated。VP8 仕様は chroma siting を規定しないため、
 ///   MP4 コンテナへ格納するときの既定値としてこの関数側で 1 (colocated) を採用する)
-/// - `VpccBox::codec_initialization_data` = 空バイト列
-/// - `VisualSampleEntryFields::horizresolution` / `vertresolution` / `frame_count` /
-///   `compressorname` / `depth`: `VisualSampleEntryFields` のデフォルト
-/// - `Vp08Box::unknown_boxes` = 空 `Vec`
+/// - [`VpccBox::codec_initialization_data`] = 空バイト列
+/// - [`VisualSampleEntryFields`] の `horizresolution` / `vertresolution` / `frame_count` /
+///   `compressorname` / `depth`: 同構造体のデフォルト
+/// - [`Vp08Box::unknown_boxes`] = 空 `Vec`
 ///
 /// # 呼び出し側指定値
 ///

@@ -18,7 +18,7 @@
 
 ### common.rs
 
-- `pbt/tests/common.rs` (49 行): `arb_language_code` / `arb_track_name` / `arb_track_metadata` / `assert_track_metadata` の 4 ヘルパを提供
+- `pbt/tests/common.rs` (57 行): `arb_language_code` / `arb_track_name` / `arb_track_metadata` / `assert_track_metadata` の 4 ヘルパを提供
 - `mod common;` 経由で `pbt/tests/prop_fmp4_segment_mux_demux.rs` と `pbt/tests/prop_mux_demux.rs` の 2 ファイルから参照されている
 - shiguredo-rust 「テスト間で共有するヘルパーは `tests/helpers/` に置くこと」規約に不適合
 
@@ -36,24 +36,31 @@
 - shiguredo-rust の「`mod.rs` を使わないこと」規約に照らすと `pbt/tests/helpers.rs` の単一ファイルが本筋
 - 参照側 2 ファイルの `mod common;` を `mod helpers;` に、`common::arb_*` を `helpers::arb_*` に書き換え
 
-### prop_ 命名違反ファイルの扱い
+### prop_ 命名違反ファイルの扱い (選択肢 B で確定)
 
-2 択で issue 内で決定する:
+「単体テストのファイル名は `tests/test_<module>.rs`」および「pbt 以下に unittest を
+書かないこと」の規約に厳密に従い、**選択肢 B** を採用する。
 
-- **選択肢 A**: PBT (encode/decode roundtrip 等) を追加して `prop_*` 命名を維持する
-  - `prop_boxes_moov_tree.rs`: 現状のツリー構築 unit test に加え、`MoovBox` ツリーの roundtrip PBT を追加
-  - `prop_boxes_sample_entry.rs`: 各 SampleEntry variant の追加 roundtrip PBT
-- **選択肢 B**: `test_` プレフィックスに rename して、本体 crate 側の `tests/` に移動する
-  - `pbt/` ワークスペースメンバーには置かない
-  - 実質的に単体テストなので本体 crate の integration test が本筋
+- `pbt/tests/prop_boxes_moov_tree.rs` → `tests/test_boxes_moov_tree.rs` (新規) に移動する
+- `pbt/tests/prop_boxes_sample_entry.rs` → 既存 `tests/test_boxes_sample_entry.rs` に合流する
+  - tests/ 内で同名のテストバイナリは 2 つ作れないため、既存の VpccBox 境界テスト
+    (73 行) に追記合流する
+  - 合流後は約 1730 行になるが、ファイル内の mod 分割が既にされているため
+    「テストファイルが長くなった場合は mod で分割」規約に適合する
 
-shiguredo-rust の「pbt 以下に unittest を書かないこと」規約に厳密に従うと B が本筋。ただし A の PBT 追加で `pbt/` に留める価値も評価対象。
+選択肢 A (PBT を追加して `prop_*` 命名を維持) は採用しない。
 
-### 選択肢の判断基準
+- 単体テストを pbt/ に残したままでは「pbt 以下に unittest を書かないこと」規約違反が解消しない
+- 対象ボックスの roundtrip PBT は `prop_boxes.rs` / `prop_container_boxes.rs` /
+  `prop_additional_boxes.rs` / `prop_codec_boxes.rs` で既にカバー済みのため、
+  選択肢 A で追加する roundtrip PBT は重複になる
 
-- 対象 SampleEntry / MoovBox tree の PBT 追加コスト (A の場合)
-- 本体 crate の integration test への影響 (B の場合、依存の増加や compile 時間)
-- shiguredo-rust 規約の厳密度と、既存の 2 ファイル数千行の重量
+### 選択肢の判断基準 (確定済み)
+
+- 対象 SampleEntry / MoovBox tree の PBT 追加コスト (A の場合): 不要 (既存 PBT でカバー済み)
+- 本体 crate の integration test への影響 (B の場合、依存の増加や compile 時間): 移動対象は
+  公開 API + std のみを使用するため、本体 crate への依存追加は不要
+- shiguredo-rust 規約の厳密度と、既存の 2 ファイル数千行の重量: 規約厳守で B に決定
 
 ## 対象外
 
@@ -64,6 +71,7 @@ shiguredo-rust の「pbt 以下に unittest を書かないこと」規約に厳
 ## 完了条件
 
 - `pbt/tests/common.rs` が `pbt/tests/helpers.rs` に配置換えされ、参照側 2 ファイルが更新されている
-- `pbt/tests/prop_boxes_moov_tree.rs` / `pbt/tests/prop_boxes_sample_entry.rs` の扱いが選択肢 A / B のいずれかで確定し、実装されている
-- `cargo test -p pbt --workspace` が通る
+- `pbt/tests/prop_boxes_moov_tree.rs` が `tests/test_boxes_moov_tree.rs` に移動している
+- `pbt/tests/prop_boxes_sample_entry.rs` の内容が `tests/test_boxes_sample_entry.rs` に合流し、元ファイルが削除されている
+- `cargo test --workspace` が通る
 - `grep -rn "mod common" pbt/tests/` が 0 件

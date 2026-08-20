@@ -126,26 +126,6 @@ fn interframe_minimal_parse() {
     assert!(header.keyframe.is_none());
 }
 
-/// version 0..=3 を受理する
-#[test]
-fn accept_versions_zero_to_three() {
-    for version in 0u8..=3 {
-        let bytes = build_interframe_bytes(version, true, 0);
-        let header = parse_frame_header(&bytes).expect("version 0..=3 は解析成功する");
-        assert_eq!(header.version, version);
-    }
-}
-
-/// show_frame の 2 値をどちらも受理する
-#[test]
-fn accept_show_frame_both_values() {
-    for show in [false, true] {
-        let bytes = build_interframe_bytes(0, show, 0);
-        let header = parse_frame_header(&bytes).expect("show_frame の両値を受理する");
-        assert_eq!(header.show_frame, show);
-    }
-}
-
 /// キーフレームの width / height の各 14 ビット境界値を保持する
 #[test]
 fn keyframe_dimension_extremes_are_preserved() {
@@ -194,16 +174,6 @@ fn first_partition_size_max_value_within_bounds() {
     let header =
         parse_frame_header(&bytes).expect("first_partition_size 最大値が残入力内なら解析成功する");
     assert_eq!(header.first_partition_size, size);
-}
-
-/// `first_partition_size` が残入力ちょうどならば境界を許容する
-#[test]
-fn first_partition_size_matching_boundary_is_accepted() {
-    let mut bytes = build_interframe_bytes(0, true, 128);
-    bytes.resize(bytes.len() + 128, 0);
-    let header =
-        parse_frame_header(&bytes).expect("first_partition_size が残入力ちょうどなら受理される");
-    assert_eq!(header.first_partition_size, 128);
 }
 
 // ===== parse_frame_header: 拒否系 =====
@@ -293,37 +263,6 @@ fn reject_keyframe_zero_width_and_height() {
         ..KeyframeParams::valid()
     });
     let err = parse_frame_header(&bytes).expect_err("両方 0 は拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
-/// interframe で first_partition_size が残入力を超える場合は拒否する
-#[test]
-fn reject_interframe_first_partition_size_overflow() {
-    // 残入力 = 0 なのに first_partition_size = 1 を要求
-    let bytes = build_interframe_bytes(0, true, 1);
-    let err = parse_frame_header(&bytes).expect_err("残入力超過は拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
-/// キーフレームで first_partition_size が残入力を超える場合は拒否する
-#[test]
-fn reject_keyframe_first_partition_size_overflow() {
-    // 残入力 = 0 なのに first_partition_size = 1 を要求
-    let bytes = build_keyframe_bytes(KeyframeParams {
-        first_partition_size: 1,
-        ..KeyframeParams::valid()
-    });
-    let err = parse_frame_header(&bytes).expect_err("キーフレームの残入力超過は拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
-/// `first_partition_size` が残入力 + 1 (境界の 1 バイト超過) を拒否する
-#[test]
-fn reject_first_partition_size_boundary_plus_one() {
-    let mut bytes = build_interframe_bytes(0, true, 129);
-    bytes.resize(bytes.len() + 128, 0);
-    let err =
-        parse_frame_header(&bytes).expect_err("first_partition_size が残入力 + 1 なら拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 

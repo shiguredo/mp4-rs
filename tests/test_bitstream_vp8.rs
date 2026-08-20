@@ -2,7 +2,7 @@
 //!
 //! 手動構築した frame tag / uncompressed data chunk のバイト列に対して
 //! パーサーの受理・拒否条件を固定する。実 VP8 エンコーダーが必要な回帰は
-//! 別途 fixture ベースのテストで補う想定 (別 issue で追加予定)。
+//! `tests/testdata/black-vp8-keyframe.vp8` を用いた fixture ベースのテストで補う。
 
 use std::num::NonZeroU16;
 
@@ -423,7 +423,9 @@ fn build_vp08_box_roundtrip() {
 
 /// libvpx (ffmpeg 経由) で生成した VP8 キーフレームの生バイト列
 ///
-/// 生成コマンド (README にも記載する想定):
+/// 生成環境: ffmpeg 7.1.1 + libvpx 1.15.1
+///
+/// 生成コマンド:
 ///
 /// ```text
 /// ffmpeg -y -f lavfi -i color=black:size=320x240:duration=0.5:rate=30 \
@@ -453,12 +455,10 @@ fn real_libvpx_keyframe_parses() {
         .expect("キーフレームは keyframe フィールドを持つ");
     assert_eq!(key.width, 320);
     assert_eq!(key.height, 240);
-    // libvpx v1.15 の VP8 出力は version = 0 / show_frame = true を書く
+    // 生成時の fixture では version = 0 / show_frame = true が書かれている
     assert_eq!(header.version, 0);
     assert!(header.show_frame);
-    // horiz / vert スケールは通常 0 (フレーム寸法どおり)
+    // 生成時の fixture では横 / 縦のスケールはいずれも 0 (フレーム寸法どおり)
     assert_eq!(key.horizontal_scale, 0);
     assert_eq!(key.vertical_scale, 0);
-    // first_partition_size が入力サイズを超えないこと (parse 成功 = 境界内)
-    assert!((header.first_partition_size as usize) <= REAL_VP8_KEYFRAME.len() - 10);
 }

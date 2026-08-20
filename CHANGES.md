@@ -15,6 +15,10 @@
 
 - [UPDATE] PBT を proptest から noprop に移行する
   - @sile
+- [UPDATE] `pbt/tests/` のテスト配置をコーディング規約に適合するよう整理する
+  - 共通ヘルパ `common.rs` を `helpers.rs` に配置換えする
+  - 単体テストのみの 2 ファイルを本体 crate の `tests/` に移動する
+  - @sile
 - [FIX] `UnknownBox` のデコードでトップレベル以外の可変長ボックスを拒否する
   - コンテナボックス内部の未知ボックスループが末尾のゼロ埋めを 1 個の `UnknownBox` として誤認識するのを防ぐ
   - トップレベルの未知ボックス（`RootBox` 経由）は従来どおり可変長ボックスを受理する

@@ -1,6 +1,6 @@
 //! PBT の共通ヘルパー
 //!
-//! 複数の integration test ファイルから `mod common;` 経由で参照する。
+//! 複数の integration test ファイルから `mod helpers;` 経由で参照する。
 
 use noprop::TestCaseContext;
 use shiguredo_mp4::boxes::TrakBox;

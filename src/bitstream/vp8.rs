@@ -275,7 +275,7 @@ pub struct Vp8SampleEntryConfig {
 ///
 /// - 特定利用側の慣習 (BT.709 / limited range など) を暗黙の固定値として持ち込まない。
 ///   色特性は呼び出し側が明示する
-pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Result<Vp08Box> {
+pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Vp08Box {
     let vpcc_box = VpccBox {
         // profile 0 は VP8 全体で共通
         profile: 0,
@@ -306,9 +306,9 @@ pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Result<Vp08Box> {
         depth: VisualSampleEntryFields::DEFAULT_DEPTH,
     };
 
-    Ok(Vp08Box {
+    Vp08Box {
         visual,
         vpcc_box,
         unknown_boxes: Vec::new(),
-    })
+    }
 }

@@ -211,7 +211,7 @@ fn build_vp08_box_config_roundtrip() -> noprop::TestResult {
             )
             .expect("サンプル値域が 1 以上なので非ゼロ"),
         };
-        let vp08 = build_vp08_box(&config).expect("config で構築成功");
+        let vp08 = build_vp08_box(&config);
 
         // config フィールドが反映されている
         assert_eq!(vp08.vpcc_box.level, level.unwrap_or(0));

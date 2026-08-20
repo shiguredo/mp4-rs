@@ -272,7 +272,7 @@ fn reject_keyframe_zero_width_and_height() {
 #[test]
 fn build_vp08_box_fixed_values() {
     let config = default_config();
-    let vp08 = build_vp08_box(&config).expect("デフォルト config で構築できる");
+    let vp08 = build_vp08_box(&config);
 
     // vpcC の固定値
     assert_eq!(vp08.vpcc_box.profile, 0);
@@ -317,7 +317,7 @@ fn build_vp08_box_propagates_config_fields() {
         height: 1080,
         data_reference_index: dri,
     };
-    let vp08 = build_vp08_box(&config).expect("config を反映できる");
+    let vp08 = build_vp08_box(&config);
     assert_eq!(vp08.vpcc_box.level, 31);
     assert_eq!(vp08.vpcc_box.video_full_range_flag, Uint::new(1));
     assert_eq!(vp08.vpcc_box.colour_primaries, 9);
@@ -333,7 +333,7 @@ fn build_vp08_box_propagates_config_fields() {
 fn build_vp08_box_level_none_maps_to_zero() {
     let mut config = default_config();
     config.level = None;
-    let vp08 = build_vp08_box(&config).expect("None level を受理");
+    let vp08 = build_vp08_box(&config);
     assert_eq!(vp08.vpcc_box.level, 0);
 }
 
@@ -351,7 +351,7 @@ fn build_vp08_box_roundtrip() {
         height: 480,
         data_reference_index: dri,
     };
-    let vp08 = build_vp08_box(&config).expect("構築成功");
+    let vp08 = build_vp08_box(&config);
     let encoded = vp08.encode_to_vec().expect("encode 成功");
     let (decoded, size) = Vp08Box::decode(&encoded).expect("decode 成功");
     assert_eq!(size, encoded.len());

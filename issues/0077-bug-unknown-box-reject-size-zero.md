@@ -1,7 +1,7 @@
 # UnknownBox のデコードで size=0 を原則拒否する
 
 - Created: 2026-08-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-20
 - Branch: feature/fix-unknown-box-reject-size-zero
 - Polished: {YYYY-MM-DD}
 

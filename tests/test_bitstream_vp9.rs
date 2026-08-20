@@ -572,3 +572,58 @@ fn vp9_frame_header_debug_does_not_panic() {
     let header = parse_frame_header(&bytes).expect("キーフレーム");
     let _ = format!("{header:?}");
 }
+
+// ===== 実 VP9 keyframe fixture テスト =====
+
+/// libvpx-vp9 (ffmpeg 経由) で生成した VP9 キーフレームの生バイト列
+///
+/// 生成環境: ffmpeg 7.1.1 + libvpx 1.15.1
+///
+/// 生成コマンド:
+///
+/// ```text
+/// ffmpeg -y -f lavfi -i color=black:size=320x240:duration=0.5:rate=30 \
+///     -c:v libvpx-vp9 -b:v 100k -deadline good -cpu-used 0 /tmp/black-vp9.webm
+/// ffmpeg -y -i /tmp/black-vp9.webm -c copy -f ivf -vframes 1 /tmp/black-vp9-1frame.ivf
+/// dd if=/tmp/black-vp9-1frame.ivf of=tests/testdata/black-vp9-keyframe.vp9 \
+///     bs=1 skip=44
+/// ```
+///
+/// (最初の `ffmpeg` で VP9 を WebM で mux、次で 1 フレームだけ IVF に再パック、
+/// 最後の `dd` で IVF ヘッダー 32 + IVF フレームヘッダー 12 = 44 バイトを剥がして
+/// 生 VP9 キーフレームだけを取り出す)
+const REAL_VP9_KEYFRAME: &[u8] = include_bytes!("testdata/black-vp9-keyframe.vp9");
+
+/// 実 libvpx-vp9 出力のキーフレームを解析できることを確認する
+///
+/// 手動構築ケースが VP9 spec のビット配置解釈と一致していても、実 libvpx-vp9 の
+/// 出力とは別経路でズレることがあるので、実データで受理系のリグレッションを固定する
+#[test]
+fn real_libvpx_keyframe_parses() {
+    let header = parse_frame_header(REAL_VP9_KEYFRAME)
+        .expect("libvpx-vp9 生成の実 VP9 キーフレームは解析成功する");
+    assert_eq!(header.frame_type, Vp9FrameType::Key);
+    assert_eq!(header.show_existing_frame, None);
+    // 生成時の profile / bit_depth / subsampling は既定 (profile 0 = 8-bit 4:2:0)
+    assert_eq!(header.profile, 0);
+    assert_eq!(header.bit_depth, 8);
+    assert_eq!(header.subsampling_x, 1);
+    assert_eq!(header.subsampling_y, 1);
+    // 生成時の解像度 320x240 が復元される
+    assert_eq!(
+        header.frame_size,
+        Vp9FrameSize::Resolved {
+            width: 320,
+            height: 240,
+        }
+    );
+    // 生成時の fixture では show_frame = true / error_resilient_mode = false / intra_only = false
+    assert!(header.show_frame);
+    assert!(!header.error_resilient_mode);
+    assert!(!header.intra_only);
+    // 生成時の fixture では render_size は frame_size と同一なので None
+    assert_eq!(header.render_size, None);
+    // 生成時の fixture では color_space = 0 (Unknown、libvpx-vp9 の既定)、color_range = 0 (studio swing)
+    assert_eq!(header.color_space, 0);
+    assert_eq!(header.color_range, 0);
+}

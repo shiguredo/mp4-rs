@@ -1,7 +1,7 @@
 //! `shiguredo_mp4::bitstream::vp9` の Property-Based Testing
 //!
 //! 手動構築の VP9 uncompressed header のビット配置を noprop サンプラーで
-//! ランダム生成し、`parse_frame_header` が RFC どおりに復元することを検証する。
+//! ランダム生成し、`parse_frame_header` が VP9 spec どおりに復元することを検証する。
 
 use shiguredo_mp4::{
     Decode, Encode,
@@ -112,8 +112,9 @@ fn build_keyframe_bytes(p: &KeyframeBits) -> Vec<u8> {
 ///
 /// - `profile` は 0..=3 の 4 値を境界化しつつ、profile ≥ 2 のときに 10/12-bit を切り替える
 /// - `color_space` は 0..=6 (sRGB=7 は別テスト) を境界化
-/// - `subsampling` は profile 1/3 で `(1,1)` / `(1,0)` / `(0,0)` の 3 通り、profile 0/2 は `(1,1)` 固定
-/// - `frame_width` / `frame_height` は 14 ビット境界 (`1` と `65536`) を境界指定
+/// - `subsampling` は profile 1/3 で `(1,0)` / `(0,1)` / `(0,0)` の 3 通り
+///   (4:2:0 (1,1) は VP9 spec で不許可、profile 0/2 は `(1,1)` 固定)
+/// - `frame_width` / `frame_height` は 16 ビット境界 (`1` と `65536`) を境界指定
 /// - `render_size` の有無は両値サンプル
 #[test]
 fn keyframe_bit_layout_roundtrip() -> noprop::TestResult {
@@ -123,7 +124,7 @@ fn keyframe_bit_layout_roundtrip() -> noprop::TestResult {
         let show_frame = noprop::sample_bool(ctx);
         let error_resilient_mode = noprop::sample_bool(ctx);
         let bit_depth_10_or_12_bit = noprop::sample_bool(ctx);
-        // color_space は 0..=6 のみ (sRGB は subsampling 固定の別ケースなので separately)
+        // color_space は 0..=6 のみ (sRGB=7 は subsampling 固定なので別テストで扱う)
         let color_space = noprop::sample_u64_in(ctx, 0..=6) as u8;
         let color_range = noprop::sample_u64_in(ctx, 0..=1) as u8;
         // profile 1/3 は 4:2:2 / 4:4:0 / 4:4:4 の 3 通り。

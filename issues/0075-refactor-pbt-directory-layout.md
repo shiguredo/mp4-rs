@@ -1,7 +1,7 @@
 # `pbt/` の shiguredo-rust 規約違反 (common.rs 配置 / `prop_` 命名) を解消する
 
 - Created: 2026-08-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-20
 - Branch: feature/refactor-pbt-directory-layout
 - Polished: {YYYY-MM-DD}
 
@@ -75,3 +75,20 @@
 - `pbt/tests/prop_boxes_sample_entry.rs` の内容が `tests/test_boxes_sample_entry.rs` に合流し、元ファイルが削除されている
 - `cargo test --workspace` が通る
 - `grep -rn "mod common" pbt/tests/` が 0 件
+
+## 解決方法
+
+設計方針の「選択肢 B」に従って実装した。
+
+1. `pbt/tests/common.rs` を `pbt/tests/helpers.rs` に配置換えした (git mv)
+   - 参照側の `pbt/tests/prop_mux_demux.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` の
+     `mod common;` を `mod helpers;` に、`common::` を `helpers::` に書き換えた
+2. `pbt/tests/prop_boxes_moov_tree.rs` を `tests/test_boxes_moov_tree.rs` に移動した (git mv)
+   - 先頭の doc コメントを単体テストの説明に修正した。コード本体は公開 API + std のみを
+     使用するため、本体 crate への依存追加は不要だった
+3. `pbt/tests/prop_boxes_sample_entry.rs` の内容を既存 `tests/test_boxes_sample_entry.rs`
+   に合流し、元ファイルを削除した
+   - tests/ 内で同名のテストバイナリは 2 つ作れないため、既存の VpccBox 境界テストに
+     追記合流した (合流後 1732 行。ファイル内 mod 分割済み)
+4. `cargo test --workspace` / `cargo fmt` / `cargo clippy --workspace --all-targets` が
+   全て通ることを確認した

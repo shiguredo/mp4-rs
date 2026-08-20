@@ -47,12 +47,12 @@ while offset < payload.len() {
 
 - 影響範囲は「`UnknownBox` のデコード時に size=0 が来た場合」に限定する。`BoxHeader::decode_header_and_payload` 自体の挙動は issue 0025 で確立された仕様（VARIABLE_SIZE をバッファ末尾扱い）を変更しない
 - したがって既知の top-level box（`MdatBox` など）が `decode_header_and_payload` 経由で size=0 を受理する挙動は影響を受けない
-- `RootBox::decode`（`src/boxes.rs`）は未知の box_type に対して `UnknownBox::decode` を呼んで `RootBox::Unknown(...)` を作っている。これは **本来 top-level で size=0 を許容すべき数少ない経路** なので、そのために `UnknownBox` に「size=0 許容モード」の別デコード関数（例: `UnknownBox::decode_top_level`）を追加するかを検討する
+- `RootBox::decode`（`src/boxes.rs`）は未知の box_type に対して `UnknownBox::decode_top_level` を呼んで `RootBox::Unknown(...)` を作る。`RootBox::decode` は **top-level で size=0 を許容すべき数少ない経路** であり、`UnknownBox::decode` の strict 化とは別に `UnknownBox::decode_top_level` を追加して従来どおり size=0 を受理させる
 
-「別関数を追加するか」の判断ポイント:
+`decode_top_level` を追加する理由:
 
-- 未知型かつ size=0 な top-level box が実運用でどれだけ出現するか、`RootBox` の入力として実際に降ってくるかは不明。要件として明確に必要でなければ、まずは **`UnknownBox::decode` を strict にするだけ** に留め、`RootBox::decode` の未知型分岐で size=0 を許したいケースが実データで見つかった時点で別関数を追加するのが安全（YAGNI）
-- ただし現状 `RootBox` を経由する読み込みは既知の box 型が中心で、未知型 + size=0 な top-level は理論上のケース。issue 側では「別関数の追加はスコープ外、必要になれば別 issue で扱う」と明記して、まずは strict 側で入れる
+- 末尾にゼロパディング（8 バイト以上）を持つ実ファイルは `Mp4File::decode`（`RootBox::decode` 経由）で従来は末尾を 1 個の未知 box として吸収して成功していた。`UnknownBox::decode` を strict にしただけではこのパターンがエラーになり、実ファイルの互換性を損なう
+- 一方、コンテナ内部（`stpp` 等の unknown_boxes ループ）の size=0 は仕様上ありえず、本 issue の検出対象。トップレベルとコンテナ内部で扱いを分ける
 
 ### 他実装
 
@@ -63,32 +63,34 @@ issue 0025 の調査で示されたように、GPAC / mp4parse-rust は size=0 �
 - `UnknownBox::decode` に対して先頭 4 バイトが `0x00000000` のバッファを与えたとき、エラー（`InvalidData` 相当）を返すこと
 - 上記に伴い、コンテナ box 内部の `while offset < payload.len() { UnknownBox::decode_at(...)? }` パターンで、末尾ゼロ埋めが 4 バイト以上あった場合にループがエラーで停止すること
 - `RootBox::decode` の既知型分岐（`MdatBox` などの top-level size=0 が意味を持つ box）は従来どおり成功すること
-- `RootBox::decode` の未知型分岐（`UnknownBox::decode` を呼ぶ経路）は、size=0 の未知型 top-level box が来た場合には従来と挙動が変わりエラーになる。これは受け入れる（後述の受け入れ根拠を参照）
+- `RootBox::decode` の未知型分岐（`UnknownBox::decode_top_level` を呼ぶ経路）は、size=0 の未知型 top-level box を従来どおり受理すること
 - 影響を受ける可能性のあるコンテナ box（`StppBox` を含む `src/boxes_sample_entry.rs` の末尾 unknown_boxes loop、`src/boxes_fmp4.rs` の末尾 unknown_boxes loop、`src/boxes_moov_tree.rs` の該当箇所）の既存テストが引き続き通ること
 - 上記挙動の変化をカバーする回帰テストを追加すること
 
 （本 issue が保証するのは「先頭 4 バイトが `0x00000000` のパターンだけ検出する」ところまでで、末尾に非ゼロ size の壊れたバイト列（例: `[0x00, 0x00, 0x00, 0x08, b'x', b'x', b'x', b'x']`）が並ぶケースは対象外。これは `UnknownBox` の設計上、任意の未知 type / size を受け入れるため避けられない）
 
-### 未知型 top-level + size=0 の受け入れ根拠
+### 未知型 top-level + size=0 を許容する理由
 
-- ISO/IEC 14496-12 4.2 の size==0 の意味は「box が file の最後まで拡張される」であり、実質的な用途は先頭付近で全長を確定させたくない大きな box（実運用ではほぼ `mdat` 一択）
-- mp4-rs 自身の書き出しでも、`Mp4FileMuxer` の `mdat` ヘッダー以外はどの box も `finalize_box_size` で確定サイズに書き換える運用（`src/mux_mp4_file.rs`、`BoxHeader::new_variable_size` の各利用箇所）
-- したがって「未知の box_type かつ size=0 の top-level box」は実運用ではまず出てこない。要件が確認されたときに別 issue で「size=0 許容の top-level 用デコード関数」を追加する方針で十分
+- ISO/IEC 14496-12 4.2 の size==0 の意味は「box が file の最後まで拡張される」であり、ファイル末尾のトップレベル box に限り仕様上有効
+- 本 issue の検出対象はコンテナ内部（unknown_boxes ループ）のゼロ埋めであり、トップレベル末尾のゼロパディングは対象外
+- `Mp4File::decode`（`RootBox::decode` 経由）で末尾ゼロパディングを持つ実ファイルが読めなくなる互換リスクを避けるため、`UnknownBox::decode_top_level` で従来どおり受理する
 
 ## 解決方法
 
 - `src/boxes.rs` の `impl Decode for UnknownBox` を修正し、`BoxHeader::decode_header_and_payload` 呼び出し前後で `header.box_size == BoxSize::VARIABLE_SIZE` を判定してエラー（`Error::invalid_data("UnknownBox does not accept size=0")` 相当）を返す
   - 実装順序としては `BoxHeader::decode` だけ先に行い、`box_size` を確認してから `decode_header_and_payload` を呼ぶ形にすれば、size=0 を判別してからペイロードを取りに行けて自然
-- `UnknownBox` の docstring に「size=0 は受理しない。top-level で size=0 の未知 box を受けたい場合は別途 API を用意する（現時点では未対応）」と明記する
+- `UnknownBox` の docstring に「`UnknownBox::decode` は size=0 を受理しない。トップレベルの可変長サイズの未知 box を受理したい場合は `UnknownBox::decode_top_level` を使う」と明記する
+- `UnknownBox::decode_top_level` を追加し、`RootBox::decode` の未知型分岐から使う
 - 回帰テスト（`src/boxes.rs` のテストモジュール、または `tests/` に新規テストファイル）で以下を検証する
   - `UnknownBox::decode` に size=0 のバッファ（例: `[0x00, 0x00, 0x00, 0x00, b'x', b'x', b'x', b'x']` の後にペイロード）を与えたときにエラーになること
   - `UnknownBox::decode` に size=8（ヘッダーのみで空ペイロード）のバッファを与えたときに成功すること（回帰確認）
+  - `UnknownBox::decode_top_level` に size=0 のバッファを与えたときに成功すること
   - コンテナ経由のシナリオとして、`StppBox::decode` に「先頭 8 バイトの予約領域と data_reference_index の後、3 つの null 終端空文字列に続いてゼロ埋めが 4 バイト以上並ぶ」ペイロードを与えたときにエラーになること（size=0 パターン限定の再現テスト。ペイロード全体を `stpp` box として組み立ててデコードする）
+  - `RootBox::decode` に size=0 の未知型 top-level box を与えたときに成功すること（従来どおりの挙動）
 - `CHANGES.md` の `## develop` に `[FIX]` エントリを追加する
 
 ## スコープ外
 
-- 「未知の top-level box に size=0 を許容する別デコード API（`UnknownBox::decode_top_level` 等）」の追加は本 issue のスコープ外とする。実運用で必要になった時点で別 issue で扱う
 - 既知型で size=0 を許容している経路（`MdatBox` など）の挙動変更は行わない
 - `BoxHeader::decode_header_and_payload` そのものの挙動変更は行わない（issue 0025 で確立された挙動を維持）
 - 末尾ゼロ埋めを許容側に倒す（tolerant parsing）方針は取らない。方針としては「壊れた入力のうち size=0 パターンだけを検出する」側を選ぶ

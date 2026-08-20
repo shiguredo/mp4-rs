@@ -91,7 +91,7 @@ mod unknown_box_size_zero {
 mod stpp_box_trailing_zero_padding {
     use shiguredo_mp4::{Decode, ErrorKind, boxes::StppBox};
 
-    /// `StppBox::decode` で、末尾のゼロ埋めが size=0 の未知 box として読める長さ（8 バイト以上）あるとエラーになること
+    /// `StppBox::decode` で、末尾のゼロ埋めが size=0 の未知ボックスとして読める長さ（8 バイト以上）あるとエラーになること
     ///
     /// 3 つの null 終端空文字列（namespace / schema_location / auxiliary_mime_types）を
     /// 正常に消費した後、残ったゼロパディングが `UnknownBox` の size=0 として
@@ -127,7 +127,7 @@ mod stpp_box_trailing_zero_padding {
 mod root_box_unknown_size_zero {
     use shiguredo_mp4::{BoxSize, Decode, boxes::RootBox};
 
-    /// `RootBox::decode` の未知型分岐は、size=0 の未知型 top-level box を従来どおり受理すること
+    /// `RootBox::decode` の未知型分岐は、size=0 の未知型 top-level ボックスを従来どおり受理すること
     #[test]
     fn unknown_type_size_zero_succeeds() {
         // size=0 (4) + type "test" (4) + ペイロード 4 バイト

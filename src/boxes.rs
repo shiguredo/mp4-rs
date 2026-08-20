@@ -63,7 +63,7 @@ pub(crate) fn check_mandatory_box<T>(
 /// そもそも可変長サイズのボックスはトップレベル以外では禁止されており、
 /// また、トップレベルで使われる場合にも、実用上は mdat 以外で使われることはほぼないため、
 /// この制約が実際に問題となることはないという想定である。
-/// トップレベルの可変長サイズの未知 box を受理したい場合は [`UnknownBox::decode_top_level`] を使う。
+/// トップレベルの可変長サイズの未知ボックスを受理したい場合は [`UnknownBox::decode_top_level`] を使う。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnknownBox {
     /// ボックス種別
@@ -77,12 +77,11 @@ pub struct UnknownBox {
 }
 
 impl UnknownBox {
-    /// トップレベルの未知 box をデコードする
+    /// トップレベルの未知ボックスをデコードする
     ///
     /// [`UnknownBox::decode`] と異なり、可変長サイズ（[`BoxSize::VARIABLE_SIZE`]）を受理する。
-    /// 可変長サイズは ISO/IEC 14496-12 4.2 で「box がファイルの最後まで拡張される」を意味し、
-    /// ファイル末尾のトップレベル box に限り仕様上有効であるため、[`RootBox::decode`] の
-    /// 未知型分岐から使う。
+    /// 可変長サイズは ISO/IEC 14496-12 4.2 で「ボックスがファイルの最後まで拡張される」を意味し、
+    /// ファイル末尾のトップレベルボックスに限り仕様上有効である。
     pub fn decode_top_level(buf: &[u8]) -> Result<(Self, usize)> {
         let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
         Ok((

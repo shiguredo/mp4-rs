@@ -215,8 +215,9 @@ fn reject_keyframe_bad_start_code() {
             start_code,
             ..KeyframeParams::valid()
         });
-        let err = parse_frame_header(&bytes)
-            .expect_err("開始コード不一致は拒否される (start_code={start_code:?})");
+        let err = parse_frame_header(&bytes).expect_err(&format!(
+            "開始コード不一致は拒否される (start_code={start_code:?})"
+        ));
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 }
@@ -226,8 +227,8 @@ fn reject_keyframe_bad_start_code() {
 fn reject_reserved_version() {
     for version in 4u8..=7 {
         let bytes = build_interframe_bytes(version, true, 0);
-        let err =
-            parse_frame_header(&bytes).expect_err("version {version} は未定義なので拒否される");
+        let err = parse_frame_header(&bytes)
+            .expect_err(&format!("version {version} は未定義なので拒否される"));
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 }

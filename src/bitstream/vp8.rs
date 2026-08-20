@@ -11,7 +11,6 @@
 //!   VP8 / VP9 共通の binding)
 
 use alloc::vec::Vec;
-use core::num::NonZeroU16;
 
 use crate::{
     Error, Result, Uint,
@@ -219,7 +218,6 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp8FrameHeader> {
 ///   呼び出し側が明示する
 /// - `width` / `height`: 対象サンプルエントリーが参照する全サンプルを収容できる値。
 ///   単一キーフレームの値を無条件にトラック全体の値にしないため呼び出し側が集約する
-/// - `data_reference_index`: `dref` エントリー参照
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Vp8SampleEntryConfig {
     /// 映像レンジフラグ (`true` = full-range、`false` = limited-range)
@@ -234,14 +232,40 @@ pub struct Vp8SampleEntryConfig {
     /// マトリックス係数 (ISO/IEC 23001-8 の `MatrixCoefficients`)
     pub matrix_coefficients: u8,
 
-    /// トラック全体の幅上限 (`VisualSampleEntryFields::width`)
+    /// トラック全体の幅上限 ([`VisualSampleEntryFields::width`] に対応)
     pub width: u16,
 
-    /// トラック全体の高さ上限 (`VisualSampleEntryFields::height`)
+    /// トラック全体の高さ上限 ([`VisualSampleEntryFields::height`] に対応)
     pub height: u16,
+}
 
-    /// `dref` 内のエントリーを 1-based で指す (`VisualSampleEntryFields::data_reference_index`)
-    pub data_reference_index: NonZeroU16,
+impl Vp8SampleEntryConfig {
+    /// BT.709 系の `colour_primaries` (ISO/IEC 23001-8 Table 2 の 1 = ITU-R BT.709-6)
+    pub const COLOUR_PRIMARIES_BT709: u8 = 1;
+
+    /// BT.709 系の `transfer_characteristics` (ISO/IEC 23001-8 Table 3 の 1 = ITU-R BT.709-6)
+    pub const TRANSFER_CHARACTERISTICS_BT709: u8 = 1;
+
+    /// BT.709 系の `matrix_coefficients` (ISO/IEC 23001-8 Table 4 の 1 = ITU-R BT.709-6)
+    pub const MATRIX_COEFFICIENTS_BT709: u8 = 1;
+
+    /// BT.601 系の `colour_primaries` (ISO/IEC 23001-8 Table 2 の 6 = SMPTE 170M)
+    pub const COLOUR_PRIMARIES_BT601: u8 = 6;
+
+    /// BT.601 系の `transfer_characteristics` (ISO/IEC 23001-8 Table 3 の 6 = SMPTE 170M)
+    pub const TRANSFER_CHARACTERISTICS_BT601: u8 = 6;
+
+    /// BT.601 系の `matrix_coefficients` (ISO/IEC 23001-8 Table 4 の 6 = SMPTE 170M)
+    pub const MATRIX_COEFFICIENTS_BT601: u8 = 6;
+
+    /// `colour_primaries` の Unspecified (ISO/IEC 23001-8 Table 2 の 2 = Unspecified)
+    pub const COLOUR_PRIMARIES_UNSPECIFIED: u8 = 2;
+
+    /// `transfer_characteristics` の Unspecified (ISO/IEC 23001-8 Table 3 の 2 = Unspecified)
+    pub const TRANSFER_CHARACTERISTICS_UNSPECIFIED: u8 = 2;
+
+    /// `matrix_coefficients` の Unspecified (ISO/IEC 23001-8 Table 4 の 2 = Unspecified)
+    pub const MATRIX_COEFFICIENTS_UNSPECIFIED: u8 = 2;
 }
 
 /// VP8 用の [`Vp08Box`] を構築する
@@ -262,6 +286,10 @@ pub struct Vp8SampleEntryConfig {
 /// - [`VpccBox::codec_initialization_data`] = 空バイト列
 /// - [`VisualSampleEntryFields`] の `horizresolution` / `vertresolution` / `frame_count` /
 ///   `compressorname` / `depth`: 同構造体のデフォルト
+/// - [`VisualSampleEntryFields::data_reference_index`] =
+///   [`VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX`]
+///   (自ファイル参照の単一 `dref` エントリー。特殊な dref 構成が必要な場合は
+///   戻り値の [`Vp08Box::visual`] のフィールドを書き換える)
 /// - [`Vp08Box::unknown_boxes`] = 空 `Vec`
 ///
 /// # 呼び出し側指定値
@@ -293,7 +321,7 @@ pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Vp08Box {
     };
 
     let visual = VisualSampleEntryFields {
-        data_reference_index: config.data_reference_index,
+        data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
         width: config.width,
         height: config.height,
         horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,

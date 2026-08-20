@@ -3,8 +3,6 @@
 //! 手動構築の VP8 フレームバイト列を生成し、`parse_frame_header` が
 //! frame tag / uncompressed data chunk のビット配置を正しく復元することを検証する。
 
-use std::num::NonZeroU16;
-
 use shiguredo_mp4::{
     Decode, Encode,
     bitstream::vp8::{Vp8FrameType, Vp8SampleEntryConfig, build_vp08_box, parse_frame_header},
@@ -200,10 +198,6 @@ fn build_vp08_box_config_roundtrip() -> noprop::TestResult {
             matrix_coefficients: noprop::sample_u8(ctx),
             width: noprop::sample_u64_in(ctx, 1..=1920) as u16,
             height: noprop::sample_u64_in(ctx, 1..=1080) as u16,
-            data_reference_index: NonZeroU16::new(
-                noprop::sample_u64_in(ctx, 1..=u16::MAX as u64) as u16
-            )
-            .expect("サンプル値域が 1 以上なので非ゼロ"),
         };
         let vp08 = build_vp08_box(&config);
 
@@ -223,10 +217,6 @@ fn build_vp08_box_config_roundtrip() -> noprop::TestResult {
         );
         assert_eq!(vp08.visual.width, config.width);
         assert_eq!(vp08.visual.height, config.height);
-        assert_eq!(
-            vp08.visual.data_reference_index,
-            config.data_reference_index
-        );
 
         // VP8 の仕様固定値
         assert_eq!(vp08.vpcc_box.profile, 0);

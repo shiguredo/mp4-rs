@@ -4,8 +4,6 @@
 //! パーサーの受理・拒否条件を固定する。実 VP8 エンコーダーが必要な回帰は
 //! `tests/testdata/black-vp8-keyframe.vp8` を用いた fixture ベースのテストで補う。
 
-use std::num::NonZeroU16;
-
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, Uint,
     bitstream::vp8::{Vp8FrameType, Vp8SampleEntryConfig, build_vp08_box, parse_frame_header},
@@ -89,7 +87,6 @@ fn default_config() -> Vp8SampleEntryConfig {
         matrix_coefficients: 1,
         width: 320,
         height: 240,
-        data_reference_index: NonZeroU16::MIN,
     }
 }
 
@@ -299,6 +296,10 @@ fn build_vp08_box_fixed_values() {
         VisualSampleEntryFields::NULL_COMPRESSORNAME
     );
     assert_eq!(vp08.visual.depth, VisualSampleEntryFields::DEFAULT_DEPTH);
+    assert_eq!(
+        vp08.visual.data_reference_index,
+        VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX
+    );
 
     // unknown_boxes は常に空
     assert!(vp08.unknown_boxes.is_empty());
@@ -307,7 +308,6 @@ fn build_vp08_box_fixed_values() {
 /// `Vp8SampleEntryConfig` の各フィールドが `Vp08Box` に反映される
 #[test]
 fn build_vp08_box_propagates_config_fields() {
-    let dri = NonZeroU16::new(3).expect("3 は非ゼロ");
     let config = Vp8SampleEntryConfig {
         video_full_range_flag: true,
         colour_primaries: 9,
@@ -315,7 +315,6 @@ fn build_vp08_box_propagates_config_fields() {
         matrix_coefficients: 9,
         width: 1920,
         height: 1080,
-        data_reference_index: dri,
     };
     let vp08 = build_vp08_box(&config);
     assert_eq!(vp08.vpcc_box.video_full_range_flag, Uint::new(1));
@@ -324,13 +323,11 @@ fn build_vp08_box_propagates_config_fields() {
     assert_eq!(vp08.vpcc_box.matrix_coefficients, 9);
     assert_eq!(vp08.visual.width, 1920);
     assert_eq!(vp08.visual.height, 1080);
-    assert_eq!(vp08.visual.data_reference_index, dri);
 }
 
 /// 構築した `Vp08Box` が encode → decode でラウンドトリップする
 #[test]
 fn build_vp08_box_roundtrip() {
-    let dri = NonZeroU16::new(2).expect("2 は非ゼロ");
     let config = Vp8SampleEntryConfig {
         video_full_range_flag: false,
         colour_primaries: 1,
@@ -338,7 +335,6 @@ fn build_vp08_box_roundtrip() {
         matrix_coefficients: 1,
         width: 640,
         height: 480,
-        data_reference_index: dri,
     };
     let vp08 = build_vp08_box(&config);
     let encoded = vp08.encode_to_vec().expect("encode 成功");

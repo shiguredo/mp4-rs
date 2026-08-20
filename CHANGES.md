@@ -15,7 +15,7 @@
 
 - [UPDATE] PBT を proptest から noprop に移行する
   - @sile
-- [UPDATE] `pbt/tests/` のテスト配置を shiguredo-rust 規約に適合するよう整理する
+- [UPDATE] `pbt/tests/` のテスト配置をコーディング規約に適合するよう整理する
   - 共通ヘルパ `common.rs` を `helpers.rs` に配置換えする
   - 単体テストのみの 2 ファイルを本体 crate の `tests/` に移動する
   - @sile

@@ -11,6 +11,9 @@
 
 ## develop
 
+- [ADD] VP8 ビットストリーム処理ユーティリティ (`bitstream::vp8`) を追加する
+  - @sile
+
 ### misc
 
 - [UPDATE] PBT を proptest から noprop に移行する

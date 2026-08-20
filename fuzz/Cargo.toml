@@ -504,6 +504,13 @@ name = "fuzz_sample_table_accessor"
 path = "fuzz_targets/fuzz_sample_table_accessor.rs"
 test = false
 
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_bitstream_vp8"
+path = "fuzz_targets/fuzz_bitstream_vp8.rs"
+test = false
+
 [dependencies]
 # cargo-fuzz 用の fuzz ターゲットランタイム
 libfuzzer-sys = "0.4"

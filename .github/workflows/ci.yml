@@ -35,10 +35,21 @@ jobs:
           toolchain: stable
 
       - run: cargo fmt --all --check
+      # fuzz は root の [workspace] で exclude されており `cargo *` の対象外なので個別に検査する
+      - run: cargo fmt --check
+        working-directory: fuzz
       - run: cargo check --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
+      # libfuzzer-sys の Windows 用 C++ 部は MinGW GCC でビルドできないため
+      # fuzz の check / clippy は Windows 以外で回す
+      - if: runner.os != 'Windows'
+        run: cargo check --all-targets
+        working-directory: fuzz
       - run: cargo build --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
       - run: cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
       - run: cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings
+      - if: runner.os != 'Windows'
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: fuzz
       - run: cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
         env:
           RUSTDOCFLAGS: "-D warnings"

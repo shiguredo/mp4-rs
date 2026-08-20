@@ -2,7 +2,6 @@
 //!
 //! VP8 フレームの uncompressed data chunk 部分を解析し、キーフレーム判定、
 //! 解像度、`vp08` / `vpcC` の構築に必要なストリーム情報を得る API を提供する。
-//! 圧縮ヘッダーやマクロブロックの解析は行わない。
 //!
 //! 参照仕様は以下のとおり。
 //!
@@ -85,10 +84,18 @@ pub struct Vp8KeyFrameInfo {
     /// フレーム高さ (14 ビット値。1..=16383)
     pub height: u16,
 
-    /// 水平方向のスケール (2 ビット値。0..=3)
+    /// 水平方向のスケール指定 (2 ビット値。0..=3)
+    ///
+    /// RFC 6386 Section 9.1 の `horizontal_scale` に対応。値は表示サイズを
+    /// `width` から拡大するときの比率選択で、0 = 1/1、1 = 5/4、2 = 5/3、3 = 2/1 を意味する。
+    /// `width` 自体はスケール適用前の内部フレーム解像度なので、実表示幅は
+    /// `width` にこの比率を乗じた値になる
     pub horizontal_scale: u8,
 
-    /// 垂直方向のスケール (2 ビット値。0..=3)
+    /// 垂直方向のスケール指定 (2 ビット値。0..=3)
+    ///
+    /// RFC 6386 Section 9.1 の `vertical_scale` に対応。値の意味は
+    /// [`Vp8KeyFrameInfo::horizontal_scale`] と同じで、`height` に対して同一の比率テーブルが適用される
     pub vertical_scale: u8,
 }
 
@@ -127,7 +134,7 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp8FrameHeader> {
     let show_frame = ((tag >> 4) & 0x1) != 0;
     let first_partition_size = (tag >> 5) & FIRST_PARTITION_SIZE_MAX;
 
-    // version 4..=7 は RFC 6386 では未定義。将来の拡張と誤認せず入り口で拒否する
+    // 未定義値は将来の拡張と誤認しないよう入り口で保守的に拒否する
     if version >= 4 {
         return Err(Error::invalid_input("VP8 version 4..=7 is reserved"));
     }
@@ -253,8 +260,8 @@ pub struct Vp8SampleEntryConfig {
 /// - `VpccBox::bit_depth` = 8 (VP8 は 8-bit のみ)
 /// - `VpccBox::chroma_subsampling` = 1
 ///   (VP8 は YUV 4:2:0 固定。VP Codec ISO Media File Format Binding の 3 ビット値では
-///   0 = 4:2:0 vertical、1 = 4:2:0 colocated。VP8 は chroma siting を規定しないため
-///   本 crate の既存 fixture と揃えて 1 を採用する)
+///   0 = 4:2:0 vertical、1 = 4:2:0 colocated。VP8 仕様は chroma siting を規定しないため、
+///   MP4 コンテナへ格納するときの既定値としてこの関数側で 1 (colocated) を採用する)
 /// - `VpccBox::codec_initialization_data` = 空バイト列
 /// - `VisualSampleEntryFields::horizresolution` / `vertresolution` / `frame_count` /
 ///   `compressorname` / `depth`: `VisualSampleEntryFields` のデフォルト
@@ -266,8 +273,8 @@ pub struct Vp8SampleEntryConfig {
 ///
 /// # 対象外
 ///
-/// - Hisui など個別プロジェクトに閉じた典型値 (BT.709 / limited range など) を
-///   暗黙の固定値として持ち込まない。色特性は呼び出し側が明示する
+/// - 特定利用側の慣習 (BT.709 / limited range など) を暗黙の固定値として持ち込まない。
+///   色特性は呼び出し側が明示する
 pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Result<Vp08Box> {
     let vpcc_box = VpccBox {
         // profile 0 は VP8 全体で共通
@@ -277,8 +284,8 @@ pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Result<Vp08Box> {
         level: config.level.unwrap_or(0),
         // bit_depth は VP8 全体で 8 固定
         bit_depth: Uint::new(8),
-        // chroma_subsampling は VP8 全体で 4:2:0。値の 1 (colocated) を採用する理由は
-        // 関数の doc コメントおよび 0065 issue 参照
+        // chroma_subsampling は VP8 全体で 4:2:0。値 1 (colocated) を採用する根拠は
+        // 関数の doc コメント参照
         chroma_subsampling: Uint::new(1),
         video_full_range_flag: Uint::new(u8::from(config.video_full_range_flag)),
         colour_primaries: config.colour_primaries,

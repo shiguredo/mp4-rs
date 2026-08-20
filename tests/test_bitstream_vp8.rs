@@ -83,7 +83,6 @@ fn build_interframe_bytes(version: u8, show_frame: bool, first_partition_size: u
 
 fn default_config() -> Vp8SampleEntryConfig {
     Vp8SampleEntryConfig {
-        level: None,
         video_full_range_flag: false,
         colour_primaries: 1,
         transfer_characteristics: 1,
@@ -277,6 +276,7 @@ fn build_vp08_box_fixed_values() {
 
     // vpcC の固定値
     assert_eq!(vp08.vpcc_box.profile, 0);
+    assert_eq!(vp08.vpcc_box.level, 0);
     assert_eq!(vp08.vpcc_box.bit_depth.get(), 8);
     assert_eq!(vp08.vpcc_box.chroma_subsampling.get(), 1);
     assert!(vp08.vpcc_box.codec_initialization_data.is_empty());
@@ -309,7 +309,6 @@ fn build_vp08_box_fixed_values() {
 fn build_vp08_box_propagates_config_fields() {
     let dri = NonZeroU16::new(3).expect("3 は非ゼロ");
     let config = Vp8SampleEntryConfig {
-        level: Some(31),
         video_full_range_flag: true,
         colour_primaries: 9,
         transfer_characteristics: 16,
@@ -319,7 +318,6 @@ fn build_vp08_box_propagates_config_fields() {
         data_reference_index: dri,
     };
     let vp08 = build_vp08_box(&config);
-    assert_eq!(vp08.vpcc_box.level, 31);
     assert_eq!(vp08.vpcc_box.video_full_range_flag, Uint::new(1));
     assert_eq!(vp08.vpcc_box.colour_primaries, 9);
     assert_eq!(vp08.vpcc_box.transfer_characteristics, 16);
@@ -329,21 +327,11 @@ fn build_vp08_box_propagates_config_fields() {
     assert_eq!(vp08.visual.data_reference_index, dri);
 }
 
-/// `level: None` は VpccBox の level に 0 (unspecified) として書き込まれる
-#[test]
-fn build_vp08_box_level_none_maps_to_zero() {
-    let mut config = default_config();
-    config.level = None;
-    let vp08 = build_vp08_box(&config);
-    assert_eq!(vp08.vpcc_box.level, 0);
-}
-
 /// 構築した `Vp08Box` が encode → decode でラウンドトリップする
 #[test]
 fn build_vp08_box_roundtrip() {
     let dri = NonZeroU16::new(2).expect("2 は非ゼロ");
     let config = Vp8SampleEntryConfig {
-        level: Some(10),
         video_full_range_flag: false,
         colour_primaries: 1,
         transfer_characteristics: 1,

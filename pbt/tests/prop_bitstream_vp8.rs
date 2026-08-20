@@ -193,13 +193,7 @@ fn first_partition_size_boundary() -> noprop::TestResult {
 fn build_vp08_box_config_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let level = if noprop::sample_bool(ctx) {
-            Some(noprop::sample_u8(ctx))
-        } else {
-            None
-        };
         let config = Vp8SampleEntryConfig {
-            level,
             video_full_range_flag: noprop::sample_bool(ctx),
             colour_primaries: noprop::sample_u8(ctx),
             transfer_characteristics: noprop::sample_u8(ctx),
@@ -214,7 +208,6 @@ fn build_vp08_box_config_roundtrip() -> noprop::TestResult {
         let vp08 = build_vp08_box(&config);
 
         // config フィールドが反映されている
-        assert_eq!(vp08.vpcc_box.level, level.unwrap_or(0));
         assert_eq!(
             vp08.vpcc_box.video_full_range_flag.get(),
             u8::from(config.video_full_range_flag),

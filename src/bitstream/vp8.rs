@@ -211,11 +211,9 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp8FrameHeader> {
 /// [`Vp08Box`] の構築に必要な、ストリームから一意に決まらない設定値
 ///
 /// VP8 仕様および VP Codec ISO Media File Format Binding から確定する値
-/// (profile / bit_depth / chroma_subsampling / codec_initialization_data) は
+/// (profile / level / bit_depth / chroma_subsampling / codec_initialization_data) は
 /// [`build_vp08_box`] 側で固定するため、本構造体には含めない。
 ///
-/// - `level`: 単一フレームから確定できないため `Option`。`None` の場合は
-///   ISO/IEC 14496-15 の慣例に合わせて 0 (unspecified) を書き込む
 /// - `colour_primaries` / `transfer_characteristics` / `matrix_coefficients` /
 ///   `video_full_range_flag`: VP8 の color_space / clamping_type と一意対応しないため
 ///   呼び出し側が明示する
@@ -224,9 +222,6 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp8FrameHeader> {
 /// - `data_reference_index`: `dref` エントリー参照
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Vp8SampleEntryConfig {
-    /// VP コーデックのレベル (`None` は unspecified を意味し、`vpcC.level` に 0 が入る)
-    pub level: Option<u8>,
-
     /// 映像レンジフラグ (`true` = full-range、`false` = limited-range)
     pub video_full_range_flag: bool,
 
@@ -257,6 +252,8 @@ pub struct Vp8SampleEntryConfig {
 /// # 固定値
 ///
 /// - [`VpccBox::profile`] = 0 (VP8 は profile 0 のみ)
+/// - [`VpccBox::level`] = 0 (VP Codec ISO Media File Format Binding の level テーブルは
+///   VP9 専用で VP8 に対応する定義がないため、常に 0 = Undefined)
 /// - [`VpccBox::bit_depth`] = 8 (VP8 は 8-bit のみ)
 /// - [`VpccBox::chroma_subsampling`] = 1
 ///   (VP8 は YUV 4:2:0 固定。VP Codec ISO Media File Format Binding の 3 ビット値では
@@ -279,9 +276,9 @@ pub fn build_vp08_box(config: &Vp8SampleEntryConfig) -> Vp08Box {
     let vpcc_box = VpccBox {
         // profile 0 は VP8 全体で共通
         profile: 0,
-        // level は 1 フレームから決まらないので呼び出し側指定を使う。
-        // None (unspecified) は 0 で表す
-        level: config.level.unwrap_or(0),
+        // level は VP Codec ISO Media File Format Binding の table が VP9 専用で
+        // VP8 に対応する定義がないため常に 0 (Undefined) 固定
+        level: 0,
         // bit_depth は VP8 全体で 8 固定
         bit_depth: Uint::new(8),
         // chroma_subsampling は VP8 全体で 4:2:0。値 1 (colocated) を採用する根拠は

@@ -120,14 +120,15 @@ impl core::fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
-// エラー表示用にソースパスを短縮する。
-//
-// crates.io 経由で依存として使われる場合、`core::panic::Location::file()` は
-// `.cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/src/<file>` のような
-// 絶対パスを返す。この文字列がそのままエラーメッセージに露出するとビルド環境のパスが
-// 下流に漏れるため、最後方の `src/` 以降だけを残してリポジトリ相対の見た目に揃える。
-// `src/` が見つからないパス（`build.rs` など）はフォールバックとして元の文字列をそのまま返す。
+/// エラー表示用にソースパスを短縮する。
+///
+/// 最後方の `src/` 以降だけを残してリポジトリ相対の見た目に揃える。
+/// `src/` が見つからないパス（`build.rs` など）はフォールバックとして元の文字列をそのまま返す。
 fn shorten_source_path(file: &str) -> &str {
+    // crates.io 経由で依存として使われる場合、`core::panic::Location::file()` は
+    // `.cargo/registry/src/index.crates.io-<hash>/<crate>-<version>/src/<file>` のような
+    // 絶対パスを返す。この文字列がそのままエラーメッセージに露出するとビルド環境のパスが
+    // 下流に漏れるため、末尾側の `src/` を境目にして手前を捨てる。
     match file.rfind("src/") {
         Some(pos) => &file[pos..],
         None => file,
@@ -395,7 +396,6 @@ mod tests {
 
     // crates.io 経由の絶対パス（`.cargo/registry/...` 形式）を渡した場合、
     // 最後方の `src/` 以降だけが残ってビルド環境依存の接頭辞が消えることを確認する。
-    // ユーザーホームや実在アカウント名を含めないよう、パスは合成の値を使う。
     #[test]
     fn shorten_source_path_strips_cargo_registry_prefix() {
         let input = "/home/user/.cargo/registry/src/index.crates.io-0123456789abcdef/shiguredo_mp4-2026.4.0/src/basic_types.rs";

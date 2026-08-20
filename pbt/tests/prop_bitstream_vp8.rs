@@ -61,22 +61,29 @@ fn build_interframe_bytes(version: u8, show_frame: bool, first_partition_size: u
 /// キーフレームの全 4 フィールド (version, show_frame, width, height) が
 /// frame tag / uncompressed data chunk のビット配置どおりに復元されることを検証する
 ///
-/// - `version` は 0..=3 の 4 値を境界化し (`sample_with_boundaries`)、他は任意
+/// - `version` は 0..=3 の 4 値 (値域が小さいので一様サンプルで全値到達)
 /// - `first_partition_size` は 19 ビット全域だが、payload を付けないので 0 に固定する
 ///   (`first_partition_size = 0` は残入力 0 と一致するので受理される)
-/// - width / height は 1..=16383 (0 は拒否経路のため別テストで扱う)
+/// - width / height は 1..=0x3FFF (14 ビット境界を境界指定でヒット率を担保)
 /// - scale は 0..=3 の 4 値
 #[test]
 fn keyframe_bit_layout_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let version =
-            noprop::sample_with_boundaries(ctx, &[0u8, 3], noprop::Ratio::one_nth(2), |ctx| {
-                noprop::sample_u64_in(ctx, 0..=3) as u8
-            });
+        let version = noprop::sample_u64_in(ctx, 0..=3) as u8;
         let show_frame = noprop::sample_bool(ctx);
-        let width = noprop::sample_u64_in(ctx, 1..=0x3FFF) as u16;
-        let height = noprop::sample_u64_in(ctx, 1..=0x3FFF) as u16;
+        let width = noprop::sample_with_boundaries(
+            ctx,
+            &[1u16, 0x3FFF],
+            noprop::Ratio::one_nth(4),
+            |ctx| noprop::sample_u64_in(ctx, 1..=0x3FFF) as u16,
+        );
+        let height = noprop::sample_with_boundaries(
+            ctx,
+            &[1u16, 0x3FFF],
+            noprop::Ratio::one_nth(4),
+            |ctx| noprop::sample_u64_in(ctx, 1..=0x3FFF) as u16,
+        );
         let horizontal_scale = noprop::sample_u64_in(ctx, 0..=3) as u8;
         let vertical_scale = noprop::sample_u64_in(ctx, 0..=3) as u8;
 
@@ -116,11 +123,15 @@ fn interframe_bit_layout_roundtrip() -> noprop::TestResult {
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let version = noprop::sample_u64_in(ctx, 0..=3) as u8;
         let show_frame = noprop::sample_bool(ctx);
-        // 19 ビット全域を使うと payload 生成が高コストなので、境界値と現実的な範囲を組み合わせる
-        let first_partition_size =
-            noprop::sample_with_boundaries(ctx, &[0u32, 1, 128], noprop::Ratio::new(3, 4), |ctx| {
-                noprop::sample_u64_in(ctx, 0..=1024) as u32
-            });
+        // 19 ビット全域を使うと payload 生成が高コストなので、内側は現実的な範囲に絞り、
+        // 仕様上限 `FIRST_PARTITION_SIZE_MAX` を境界指定で明示的にヒットさせる
+        // (MAX を踏むケースでは 524287 バイトの payload を確保する)
+        let first_partition_size = noprop::sample_with_boundaries(
+            ctx,
+            &[0u32, 1, 128, FIRST_PARTITION_SIZE_MAX],
+            noprop::Ratio::new(3, 4),
+            |ctx| noprop::sample_u64_in(ctx, 0..=1024) as u32,
+        );
 
         let mut bytes = build_interframe_bytes(version, show_frame, first_partition_size);
         // 残入力 = first_partition_size ちょうどになるよう payload を付ける
@@ -141,7 +152,10 @@ fn interframe_bit_layout_roundtrip() -> noprop::TestResult {
 ///
 /// interframe / キーフレームの両方で境界動作を確認する。
 /// noprop skill の「境界値ヒット率を保つ」指針に沿って `sample_with_boundaries`
-/// で `payload_len` の 0 / 1 / 128 を確実に踏む
+/// で `payload_len` の 0 / 1 / 128 を確実に踏む。
+/// 128 は payload 生成コストを抑えるための任意サンプル値であり、真の 19 ビット MAX
+/// (`FIRST_PARTITION_SIZE_MAX`) の残入力境界は tests/ 側の
+/// `first_partition_size_max_value_within_bounds` で単体検証している
 #[test]
 fn first_partition_size_boundary() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;

@@ -13,7 +13,10 @@
 
 ### misc
 
-- [UPDATE] pbt を proptest から noprop に移行する
+- [UPDATE] PBT を proptest から noprop に移行する
+  - @sile
+- [FIX] `Error` の `Display` 出力からビルド環境依存の絶対パスを除去する
+  - `core::panic::Location::file()` が返すパスから最後方の `src/` 以降だけを残して表示する
   - @sile
 
 ## 2026.4.0

@@ -1,7 +1,7 @@
 # エラーメッセージから絶対パスを除去する
 
 - Created: 2026-08-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-20
 - Branch: feature/fix-error-display-absolute-path
 - Polished: 2026-08-19
 
@@ -9,7 +9,7 @@
 
 `shiguredo_mp4::Error` の `Display` 実装が末尾に付加する発生位置情報から、ビルド環境固有の絶対パスを除去する。
 
-crates.io から依存として使われるとき、`Location::caller()` 由来の `Location::file()` はコンパイル時のフルパス（例: `/Users/voluntas/.cargo/registry/src/index.crates.io-.../shiguredo_mp4-2026.4.0/src/basic_types.rs`）を返す。この文字列がそのままエラーメッセージに流れることで、下流（mp4-py 等）のユーザーがビルド環境の絶対パスを目にすることになる。ユーザーには何の意味もなく、他人のマシンのユーザー名や `.cargo` のパス構造を露出してしまう。
+crates.io から依存として使われるとき、`Location::caller()` 由来の `Location::file()` はコンパイル時のフルパス（例: `/home/user/.cargo/registry/src/index.crates.io-.../shiguredo_mp4-2026.4.0/src/basic_types.rs`）を返す。この文字列がそのままエラーメッセージに流れることで、下流（mp4-py 等）のユーザーがビルド環境の絶対パスを目にすることになる。ユーザーには何の意味もなく、他人のマシンのユーザー名や `.cargo` のパス構造を露出してしまう。
 
 ## 現状
 
@@ -27,7 +27,7 @@ write!(f, " (at {}:{})", self.location.file(), self.location.line())?;
 その結果、たとえば mp4-py の `RuntimeError` メッセージに以下のような文字列が入り込む:
 
 ```
-InvalidData: ... (at /Users/voluntas/.cargo/registry/src/index.crates.io-6f17d22bba15001f/shiguredo_mp4-2026.4.0/src/basic_types.rs:461)
+InvalidData: ... (at /home/user/.cargo/registry/src/index.crates.io-0123456789abcdef/shiguredo_mp4-2026.4.0/src/basic_types.rs:461)
 ```
 
 ## 設計方針
@@ -53,14 +53,15 @@ InvalidData: ... (at /Users/voluntas/.cargo/registry/src/index.crates.io-6f17d22
 
 ## 解決方法
 
-- `src/codec.rs` の `impl core::fmt::Display for Error` にある `write!(f, " (at {}:{})", self.location.file(), self.location.line())?;` を、`location.file()` を「`src/` 以降の部分文字列」に整形してから出力する形に変更する
-  - 具体的には `location.file().rfind("src/")` などで `src/` の位置を最後方から検索し、見つかればそこから末尾までを使う。見つからなければ `location.file()` をそのまま使う
-  - Windows でパス区切りが `\` になるケースは考慮不要（プロジェクトは Unix 系前提。Windows 対応の必要が出た場合は別 issue とする）
-- 追加ユニットテスト（`src/codec.rs` のテストモジュール、または `tests/` に新規テストファイル）で、次の 3 パターンを検証する:
-  - 絶対パス入力（crates.io 形式を模した文字列）を `location.file()` として与えたときに、`Display` 出力が `src/...` から始まる相対パスになること
-  - もともと `src/...` 相対パスの入力を与えたときに、同じ出力になること（変換前後で一致）
-  - `src/` を含まない入力を与えたときに、フォールバックとして元の文字列がそのまま出力されること
-  - `Location::caller()` は直接コンストラクトできないため、テストでは `Error` の Display 出力全体を対象にせず、整形ロジックを切り出した内部関数（例: `fn shorten_source_path(file: &str) -> &str`）に対して検証する形にする
+- `src/codec.rs` に private 関数 `fn shorten_source_path(file: &str) -> &str` を追加した
+  - `file.rfind("src/")` で最後方の `src/` を検索し、見つかればそこから末尾までのスライスを返す。見つからなければ元の文字列をそのまま返す
+  - Windows のパス区切り `\` は今回のスコープ外とし、対応の必要が出た場合は別 issue で扱う
+- `impl core::fmt::Display for Error` の `write!(f, " (at {}:{})", self.location.file(), self.location.line())?;` を、`shorten_source_path(self.location.file())` 経由で出力する形に変更した
+- `src/codec.rs` の `#[cfg(test)] mod tests` に完了条件の 3 パターンをカバーする単体テストを追加した
+  - `shorten_source_path_strips_cargo_registry_prefix`: 合成した crates.io 形式の絶対パスから `src/basic_types.rs` だけが残ることを検証
+  - `shorten_source_path_keeps_repository_relative_path`: 既にリポジトリ相対の入力が変換前後で一致することを検証
+  - `shorten_source_path_falls_back_when_src_marker_is_missing`: `src/` を含まない入力（`build.rs`）で panic せずフォールバックする挙動を検証
+- `CHANGES.md` の `## develop / ### misc` に `[FIX]` エントリを追加した
 
 ## 補足
 

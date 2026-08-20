@@ -19,7 +19,7 @@ use shiguredo_mp4::{
     },
 };
 
-mod common;
+mod helpers;
 
 /// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
 fn sample_vec<T>(
@@ -367,9 +367,9 @@ const CASES_MAIN: usize = 20;
 fn track_metadata_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
-        let video_meta = common::arb_track_metadata(ctx);
-        let audio_meta = common::arb_track_metadata(ctx);
-        let subtitle_meta = common::arb_track_metadata(ctx);
+        let video_meta = helpers::arb_track_metadata(ctx);
+        let audio_meta = helpers::arb_track_metadata(ctx);
+        let subtitle_meta = helpers::arb_track_metadata(ctx);
 
         let options = Mp4FileMuxerOptions {
             video_track: video_meta.clone(),
@@ -444,9 +444,9 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             "moov の decode サイズがバイト列長と一致しない"
         );
         assert_eq!(decoded_moov.trak_boxes.len(), 3);
-        common::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta);
-        common::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta);
-        common::assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta);
+        helpers::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta);
+        helpers::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta);
+        helpers::assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta);
 
         // ファイルとしても demux できることを確認する
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);

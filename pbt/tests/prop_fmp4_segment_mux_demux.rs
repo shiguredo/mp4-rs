@@ -16,7 +16,7 @@ use shiguredo_mp4::{
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
-mod common;
+mod helpers;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 const AUDIO_TIMESCALE: u32 = 48_000;
@@ -364,9 +364,9 @@ const CASES: usize = 256;
 fn track_metadata_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let video_meta = common::arb_track_metadata(ctx);
-        let audio_meta = common::arb_track_metadata(ctx);
-        let subtitle_meta = common::arb_track_metadata(ctx);
+        let video_meta = helpers::arb_track_metadata(ctx);
+        let audio_meta = helpers::arb_track_metadata(ctx);
+        let subtitle_meta = helpers::arb_track_metadata(ctx);
 
         let options = SegmentMuxerOptions {
             video_track: video_meta.clone(),
@@ -420,9 +420,9 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             "moov の decode サイズがバイト列長と一致しない"
         );
         assert_eq!(moov_box.trak_boxes.len(), 3);
-        common::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta);
-        common::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta);
-        common::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta);
+        helpers::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta);
+        helpers::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta);
+        helpers::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta);
 
         // demuxer でも init を受理できることを確認する
         let mut demuxer = Fmp4SegmentDemuxer::new();

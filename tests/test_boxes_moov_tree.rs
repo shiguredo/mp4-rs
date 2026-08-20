@@ -1,4 +1,8 @@
-//! `src/boxes_moov_tree.rs` に定義される moov ツリー配下ボックスの Property-Based Testing
+//! `src/boxes_moov_tree.rs` に定義される moov ツリー配下ボックスの境界値・BaseBox 単体テスト
+//!
+//! 正常系のラウンドトリップは `pbt/tests/prop_boxes.rs` / `pbt/tests/prop_container_boxes.rs`
+//! が担う。本ファイルは PBT では安定して狙いにくい境界値（`u32::MAX` を超える
+//! 64 ビット系の値など）と、各ボックスの `BaseBox` 実装を固定する。
 
 // ===== boxes_moov_tree.rs 系ボックスの境界値・バリアント違いテスト =====
 

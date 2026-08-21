@@ -181,7 +181,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                     if k > (u64::MAX - base) / s {
                         let j = (u64::MAX - base) / s;
                         // j < k <= u32::MAX なので j は u32 に収まり、先頭サンプルインデックス
-                        // との和は sample_count 以下になる（前述の stsc 突き合わせで保障済み）
+                        // との和は sample_count 以下になる（前述の stsc 突き合わせで保証済み）
                         let sample_index = NonZeroU32::new(
                             this.sample_index_offsets[chunk_index].get() + j as u32,
                         )
@@ -566,11 +566,15 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
 
     /// サンプルが属するチャンクの情報を返す
     pub fn chunk(&self) -> ChunkAccessor<'a, T> {
+        // sample_per_chunk == 0 のチャンクがあると sample_index_offsets に同一値が連続する。
+        // binary_search は重複時の戻りを未規定とするため、index 以下の最右要素を
+        // partition_point で明示的に選ぶ（空チャンクを挟んでも実サンプル側のチャンクになる）。
         let i = self
             .sample_table
             .sample_index_offsets
-            .binary_search(&self.index)
-            .unwrap_or_else(|i| i - 1);
+            .partition_point(|x| *x <= self.index)
+            .checked_sub(1)
+            .expect("有効なサンプルには必ず属するチャンクがある");
         let chunk_index = NonZeroU32::MIN.saturating_add(i as u32);
         self.sample_table
             .get_chunk(chunk_index)

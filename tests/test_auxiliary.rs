@@ -558,3 +558,116 @@ fn fixed_max_sample_count_succeeds_without_allocation() {
         );
     }
 }
+
+/// `sample_per_chunk == 0` の空チャンクを挟んでも Fixed / Variable の
+/// `data_offset()` が一致すること
+///
+/// 空チャンクがあると `sample_index_offsets` に同一値が連続する。
+/// Fixed の `data_offset()` は `chunk()` 経由でチャンク先頭を引くため、
+/// 重複時に空チャンク側を選ぶとオフセットがずれる。
+/// `chunk()` が index 以下の最右を選ぶことで Variable（prefix-sum）と一致することを固定する。
+#[test]
+fn fixed_and_variable_data_offset_match_with_empty_chunk() {
+    fn nz(v: u32) -> NonZeroU32 {
+        NonZeroU32::new(v).expect("テスト入力のインデックスは非ゼロ")
+    }
+
+    let stsc_box = StscBox {
+        entries: vec![
+            StscEntry {
+                first_chunk: nz(1),
+                sample_per_chunk: 2,
+                sample_description_index: nz(1),
+            },
+            StscEntry {
+                first_chunk: nz(2),
+                sample_per_chunk: 0,
+                sample_description_index: nz(1),
+            },
+            StscEntry {
+                first_chunk: nz(3),
+                sample_per_chunk: 2,
+                sample_description_index: nz(1),
+            },
+        ],
+    };
+    // 空チャンクのオフセットは実サンプル側と意図的にずらす
+    let chunk_offsets = vec![100, 999, 200];
+    let sample_count = 4u32;
+    let sample_size = 10u32;
+
+    let build = |stsz_box: StszBox| StblBox {
+        stsd_box: stsd_box(),
+        stts_box: SttsBox {
+            entries: vec![SttsEntry {
+                sample_count,
+                sample_delta: 1,
+            }],
+        },
+        ctts_box: None,
+        cslg_box: None,
+        stsc_box: stsc_box.clone(),
+        stsz_box,
+        stco_or_co64_box: Either::A(StcoBox {
+            chunk_offsets: chunk_offsets.clone(),
+        }),
+        stss_box: None,
+        sdtp_box: None,
+        unknown_boxes: Vec::new(),
+    };
+
+    let fixed_stbl = build(StszBox::Fixed {
+        sample_size: nz(sample_size),
+        sample_count,
+    });
+    let variable_stbl = build(StszBox::Variable {
+        entry_sizes: vec![sample_size; sample_count as usize],
+    });
+    let fixed =
+        SampleTableAccessor::new(&fixed_stbl).expect("空チャンクを含む正当な Fixed は成功する");
+    let variable = SampleTableAccessor::new(&variable_stbl)
+        .expect("空チャンクを含む正当な Variable は成功する");
+
+    for i in 1..=sample_count {
+        let index = nz(i);
+        let fixed_offset = fixed
+            .get_sample(index)
+            .expect("sample_count 以内なので取得できる")
+            .data_offset();
+        let variable_offset = variable
+            .get_sample(index)
+            .expect("sample_count 以内なので取得できる")
+            .data_offset();
+        assert_eq!(
+            fixed_offset, variable_offset,
+            "sample {i} の data_offset が Fixed と Variable で一致すること"
+        );
+        // 空チャンク (offset 999) を選んでいないこと
+        assert_ne!(
+            fixed_offset, 999,
+            "sample {i} が空チャンクのオフセットを返していないこと"
+        );
+    }
+
+    // 期待値そのものも固定する（チャンク1: 100,110 / チャンク3: 200,210）
+    assert_eq!(
+        fixed.get_sample(nz(1)).expect("bug").data_offset(),
+        100,
+        "先頭チャンクの 1 サンプル目"
+    );
+    assert_eq!(
+        fixed.get_sample(nz(2)).expect("bug").data_offset(),
+        110,
+        "先頭チャンクの 2 サンプル目"
+    );
+    assert_eq!(
+        fixed.get_sample(nz(3)).expect("bug").data_offset(),
+        200,
+        "空チャンクの次のチャンクの 1 サンプル目"
+    );
+    assert_eq!(
+        fixed.get_sample(nz(4)).expect("bug").data_offset(),
+        210,
+        "空チャンクの次のチャンクの 2 サンプル目"
+    );
+}

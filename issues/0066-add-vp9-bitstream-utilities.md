@@ -1,7 +1,7 @@
 # VP9 ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-21
 - Branch: feature/add-vp9-bitstream-utilities
 - Polished: 2026-08-20
 
@@ -214,3 +214,31 @@ VP8 と VP9 の公開パーサー、フレームヘッダー型、設定型を�
 - 公開 API の rustdoc に「固定値 / ストリーム導出値 / 呼び出し側指定値」の 3 分類、参照フレーム未解決状態 (`Vp9FrameSize::UsesRefFrames`) の解決方法、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`src/bitstream.rs` に `pub mod vp9` を追加し、`src/bitstream/vp9.rs` に以下の公開 API を追加した。
+
+- `Vp9FrameType` / `Vp9FrameHeader` / `Vp9FrameSize`: uncompressed header の公開型
+- `parse_frame_header(&[u8]) -> Result<Vp9FrameHeader>`: uncompressed header を `render_size` まで解析する。参照フレーム寸法が必要な経路は `Vp9FrameSize::UsesRefFrames` として型で保持し、context 引数は取らない
+- `Vp9SampleEntryConfig` と `build_vp09_box(&Vp9FrameHeader, &Vp9SampleEntryConfig) -> Result<Vp09Box>`: `Vp09Box` の構築。profile / bit_depth / chroma_subsampling / video_full_range_flag は header から写し、level / 色特性 / width / height は呼び出し側指定、codec_initialization_data と `VisualSampleEntryFields` の既定値は関数側で固定する
+- 色特性の頻出値定数 (BT.709 / BT.601 / BT.2020 / sRGB / Unspecified の各 3 種) を `Vp9SampleEntryConfig` の `pub const` として提供する
+
+VP8 との共通公開型、共通トレイト、共通パーサーは追加していない。`BitReader` も `vp9.rs` 内の非公開型に留めた。
+
+### 設計方針からの変更点
+
+コードレビューを経て以下を issue から変更した。
+
+- `Vp9SampleEntryConfig::level` は `Option<u8>` ではなく `u8`。0 は `LEVEL_UNDEFINED` (Undefined)。`None` と `Some(0)` が同じ出力になる区別をなくした
+- `build_vp09_box` の戻り値は `Result<Vp09Box>`。手組み header の不正な `bit_depth` / `color_range` / `profile` / subsampling、および色情報のない inter / show_existing header (`bit_depth == 0`) を Err で拒否する
+- `Vp9FrameSize` に `NotPresent` を追加し、`show_existing_frame` 経路を 0 埋めの `Resolved` で表さない
+- `Vp9FrameHeader::refresh_frame_flags` を公開する (キーは `0xFF`、show_existing は `0`、intra-only / inter は読み値)。`UsesRefFrames` は最初に立った `found_ref` のスロット 1 個 (`ref_frame_slot`) を返す
+- `frame_size` / `render_size` の辺は VP9 spec の 1..=65536 に合わせて `u32`
+- profile と bit_depth / subsampling の組み合わせは構文上の代入で表現し、parse のエラー条件にはしない (profile 0/1 は 8-bit 固定、profile 0/2 は 4:2:0 固定)
+- ゼロ寸法は `frame_width_minus_1` + 1 の構文上表現不能なので専用エラーを持たない。`subsampling_x == 0 && subsampling_y == 1` (4:4:0) は parse では拒否せず、`vpcC` に対応値がないため `build_vp09_box` で拒否する
+- intra-only の profile 0 では spec が `color_range` を代入しないため、Binding の既定 (studio swing = 0) を入れる
+
+### テストと fuzz
+
+- 決定的テスト `tests/test_bitstream_vp9.rs`、noprop PBT `pbt/tests/prop_bitstream_vp9.rs`、実 libvpx fixture (ffmpeg 7.1.1 + libvpx 1.15.1 で生成した `tests/testdata/black-vp9-keyframe.vp9`)、fuzz target `fuzz/fuzz_targets/fuzz_bitstream_vp9.rs` を追加した

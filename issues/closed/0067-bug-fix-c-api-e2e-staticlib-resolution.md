@@ -1,9 +1,9 @@
 # C API E2E テストが現在の staticlib をリンクするようにする
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-20
 - Branch: feature/fix-c-api-e2e-staticlib-resolution
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-20
 
 ## 目的
 
@@ -62,3 +62,17 @@ cargo test -p c-api --test e2e test_simple_mux_demux -- --exact --nocapture
 - MSVC とそれ以外の staticlib 名の違いを処理できること
 - 新しい外部依存、モック、スタブを追加していないこと
 - `cargo fmt --all -- --check`、`cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings`、`cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz --no-deps` が通ること
+
+## 解決方法
+
+`crates/c-api/tests/e2e.rs` に、現在実行中のテスト実行ファイルが置かれている成果物ディレクトリを返す `get_artifact_dir`、そのディレクトリにある staticlib のパスを返す `get_staticlib_path`、C コンパイラーが生成する実行ファイルの出力パスを返す `get_exe_output_path` を追加した。
+
+`test_c_examples_compile` と `test_simple_mux_demux` は、プロジェクトルート基準の `target/debug/libmp4.a` 固定をやめ、`get_staticlib_path()` が返す現在の `cargo test` で生成された staticlib をリンクする。staticlib 名は MSVC では `mp4.lib`、それ以外では `libmp4.a` とし、C 実行ファイルの出力先も Windows では `.exe` を付けた名前で同じ成果物ディレクトリへ置く。
+
+次の検証で完了条件をすべて満たすことを確認した。
+
+- 空の `CARGO_TARGET_DIR` を指定した状態で `cargo test -p c-api --test e2e` だけで 2 件の E2E テストが成功する
+- 通常の `cargo test --workspace` が成功する
+- build → test の順序でも成功する
+- 古い top-level staticlib の有無や内容がテスト結果に影響しない
+- `cargo fmt --all -- --check`、`cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings`、`cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz --no-deps` が通る

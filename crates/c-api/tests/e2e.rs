@@ -1,15 +1,47 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+// 現在実行中のテスト実行ファイルが置かれている成果物ディレクトリを返す
+// 同じ cargo test で生成された staticlib や C コンパイラの出力先として使う
+fn get_artifact_dir() -> PathBuf {
+    let current_exe = std::env::current_exe().expect("テスト実行ファイルのパスを取得できない");
+    current_exe
+        .parent()
+        .expect("テスト実行ファイルの親ディレクトリを取得できない")
+        .to_path_buf()
+}
+
+// 現在の cargo test が生成した staticlib のパスを返す
+fn get_staticlib_path() -> PathBuf {
+    let artifact_dir = get_artifact_dir();
+    // staticlib 名はターゲットによって異なり、MSVC では mp4.lib、それ以外では libmp4.a になる
+    #[cfg(target_env = "msvc")]
+    let lib_name = "mp4.lib";
+    #[cfg(not(target_env = "msvc"))]
+    let lib_name = "libmp4.a";
+    artifact_dir.join(lib_name)
+}
+
+// コンパイルした C 実行ファイルの出力パスを返す
+fn get_exe_output_path(name: &str) -> PathBuf {
+    let artifact_dir = get_artifact_dir();
+    // Windows では実行ファイルに .exe 拡張子が付く
+    #[cfg(target_os = "windows")]
+    let exe_name = format!("{name}.exe");
+    #[cfg(not(target_os = "windows"))]
+    let exe_name = name.to_string();
+    artifact_dir.join(exe_name)
+}
+
 #[test]
 fn test_c_examples_compile() {
     let project_root = get_project_root();
-    let lib_path = project_root.join("target/debug/libmp4.a");
+    let lib_path = get_staticlib_path();
 
     // ライブラリファイルが存在することを確認
     assert!(
         lib_path.exists(),
-        "libmp4.a が {} に見つからない。先に `cargo build` を実行すること",
+        "staticlib が {} に見つからない。cargo test のビルドが正常に完了している必要があります",
         lib_path.display()
     );
 
@@ -38,9 +70,7 @@ fn test_c_examples_compile() {
             .file_stem()
             .expect("ファイル stem の取得に失敗した")
             .to_string_lossy();
-        let output_path = project_root
-            .join("target/debug")
-            .join(format!("{}", example_name));
+        let output_path = get_exe_output_path(&example_name);
 
         // C コンパイラでビルド
         let mut cmd = Command::new("cc");
@@ -67,12 +97,12 @@ fn test_c_examples_compile() {
 #[test]
 fn test_simple_mux_demux() {
     let project_root = get_project_root();
-    let lib_path = project_root.join("target/debug/libmp4.a");
+    let lib_path = get_staticlib_path();
 
     // ライブラリファイルが存在することを確認
     assert!(
         lib_path.exists(),
-        "libmp4.a が {} に見つからない。先に `cargo build` を実行すること",
+        "staticlib が {} に見つからない。cargo test のビルドが正常に完了している必要があります",
         lib_path.display()
     );
 
@@ -83,7 +113,7 @@ fn test_simple_mux_demux() {
         c_file.display()
     );
 
-    let output_path = project_root.join("target/debug").join("simple_mux_demux");
+    let output_path = get_exe_output_path("simple_mux_demux");
 
     // C ファイルをコンパイル
     let mut cmd = Command::new("cc");

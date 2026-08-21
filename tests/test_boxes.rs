@@ -166,3 +166,168 @@ mod root_box_unknown_size_zero {
         assert_eq!(size, buf.len());
     }
 }
+
+// ===== pbt/tests/prop_additional_boxes.rs の root_box_tests から移動 =====
+
+// ===== RootBox のテスト =====
+
+mod root_box_tests {
+    use shiguredo_mp4::{
+        BaseBox, BoxSize, BoxType, Decode, Encode,
+        boxes::{Brand, FreeBox, MdatBox, RootBox, UnknownBox},
+    };
+
+    /// RootBox::Free の encode/decode roundtrip
+    #[test]
+    fn root_box_free_roundtrip() {
+        let free = FreeBox {
+            payload: vec![0u8; 100],
+        };
+        let root = RootBox::Free(free);
+
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
+
+        assert_eq!(size, encoded.len());
+        assert!(matches!(decoded, RootBox::Free(_)));
+        assert_eq!(decoded.box_type(), FreeBox::TYPE);
+        assert!(!decoded.is_unknown_box());
+
+        // children() のテスト
+        assert_eq!(decoded.children().count(), 0);
+    }
+
+    /// RootBox::Mdat の encode/decode roundtrip
+    #[test]
+    fn root_box_mdat_roundtrip() {
+        let mdat = MdatBox {
+            payload: vec![1, 2, 3, 4, 5],
+        };
+        let root = RootBox::Mdat(mdat);
+
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
+
+        assert_eq!(size, encoded.len());
+        assert!(matches!(decoded, RootBox::Mdat(_)));
+        assert_eq!(decoded.box_type(), MdatBox::TYPE);
+        assert!(!decoded.is_unknown_box());
+    }
+
+    /// RootBox::Unknown の encode/decode roundtrip
+    #[test]
+    fn root_box_unknown_roundtrip() {
+        let unknown = UnknownBox {
+            box_type: BoxType::Normal(*b"test"),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 10),
+            payload: vec![0u8; 10],
+        };
+        let root = RootBox::Unknown(unknown);
+
+        let encoded = root.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = RootBox::decode(&encoded)
+            .expect("直前にエンコードした有効な RootBox は必ずデコードできる");
+
+        assert_eq!(size, encoded.len());
+        assert!(matches!(decoded, RootBox::Unknown(_)));
+        assert_eq!(decoded.box_type(), BoxType::Normal(*b"test"));
+        assert!(decoded.is_unknown_box());
+    }
+
+    /// Brand の Debug 実装テスト: 有効な UTF-8
+    #[test]
+    fn brand_debug_valid_utf8() {
+        let brand = Brand::new(*b"isom");
+        let debug_str = format!("{brand:?}");
+        assert!(debug_str.contains("isom"));
+    }
+
+    /// Brand の Debug 実装テスト: 無効な UTF-8
+    #[test]
+    fn brand_debug_invalid_utf8() {
+        let brand = Brand::new([0xFF, 0xFE, 0x00, 0x01]);
+        let debug_str = format!("{brand:?}");
+        // 無効な UTF-8 の場合はバイト配列として表示される
+        assert!(debug_str.contains("Brand"));
+    }
+
+    /// Brand の各定数のテスト
+    #[test]
+    fn brand_constants() {
+        assert_eq!(Brand::ISOM.get(), *b"isom");
+        assert_eq!(Brand::AVC1.get(), *b"avc1");
+        assert_eq!(Brand::ISO2.get(), *b"iso2");
+        assert_eq!(Brand::MP71.get(), *b"mp71");
+        assert_eq!(Brand::ISO3.get(), *b"iso3");
+        assert_eq!(Brand::ISO4.get(), *b"iso4");
+        assert_eq!(Brand::ISO5.get(), *b"iso5");
+        assert_eq!(Brand::ISO6.get(), *b"iso6");
+        assert_eq!(Brand::ISO7.get(), *b"iso7");
+        assert_eq!(Brand::ISO8.get(), *b"iso8");
+        assert_eq!(Brand::ISO9.get(), *b"iso9");
+        assert_eq!(Brand::ISOA.get(), *b"isoa");
+        assert_eq!(Brand::ISOB.get(), *b"isob");
+        assert_eq!(Brand::RELO.get(), *b"relo");
+        assert_eq!(Brand::MP41.get(), *b"mp41");
+        assert_eq!(Brand::AV01.get(), *b"av01");
+    }
+
+    /// Brand の encode/decode roundtrip
+    #[test]
+    fn brand_roundtrip() {
+        let brand = Brand::new(*b"test");
+        let encoded = brand.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) =
+            Brand::decode(&encoded).expect("直前にエンコードした有効な Brand は必ずデコードできる");
+
+        assert_eq!(size, 4);
+        assert_eq!(decoded.get(), *b"test");
+    }
+}
+
+// ===== pbt/tests/prop_additional_boxes.rs の boundary_tests (Free/Mdat/Unknown) から移動 =====
+
+mod additional_boxes_boundary_tests {
+    use shiguredo_mp4::{
+        BoxSize, BoxType, Decode, Encode,
+        boxes::{FreeBox, MdatBox, UnknownBox},
+    };
+
+    /// UnknownBox: 空のペイロード
+    #[test]
+    fn unknown_box_empty_payload() {
+        let unknown = UnknownBox {
+            box_type: BoxType::Normal(*b"test"),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 0),
+            payload: vec![],
+        };
+        let encoded = unknown
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = UnknownBox::decode(&encoded)
+            .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
+        assert!(decoded.payload.is_empty());
+    }
+
+    /// FreeBox: 空のペイロード
+    #[test]
+    fn free_box_empty_payload() {
+        let free = FreeBox { payload: vec![] };
+        let encoded = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = FreeBox::decode(&encoded)
+            .expect("直前にエンコードした有効な FreeBox は必ずデコードできる");
+        assert!(decoded.payload.is_empty());
+    }
+
+    /// MdatBox: 空のペイロード
+    #[test]
+    fn mdat_box_empty_payload() {
+        let mdat = MdatBox { payload: vec![] };
+        let encoded = mdat.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = MdatBox::decode(&encoded)
+            .expect("直前にエンコードした有効な MdatBox は必ずデコードできる");
+        assert!(decoded.payload.is_empty());
+    }
+}

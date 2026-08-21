@@ -1727,3 +1727,893 @@ mod sample_entry_tests {
         assert_eq!(tx3g.ftab_box.entries[0].font_name, b"Serif");
     }
 }
+
+// ===== pbt/tests/prop_basic_types.rs の codec_box_boundary_tests から移動 =====
+
+/// コーデックボックスの境界値テスト (feature/fix-infinite-loop で修正された問題)
+mod codec_box_boundary_tests {
+    use shiguredo_mp4::{Decode, boxes::HvccBox, boxes::VpccBox};
+
+    /// HvccBox: NAL unit length がペイロード境界を超える場合のテスト
+    ///
+    /// 修正前: panic (slice index out of bounds)
+    /// 修正後: Error を返す
+    #[test]
+    fn hvcc_box_nal_unit_length_exceeds_payload() {
+        // 最小限の有効な HvccBox ヘッダー + 不正な NAL unit length
+        let mut buf = Vec::new();
+
+        // BoxHeader: size=0 (可変長), type="hvcC"
+        buf.extend_from_slice(&0u32.to_be_bytes()); // size = 0 (variable)
+        buf.extend_from_slice(b"hvcC");
+
+        // configuration_version = 1
+        buf.push(1);
+        // general_profile_space(2) | general_tier_flag(1) | general_profile_idc(5) = 0
+        buf.push(0);
+        // general_profile_compatibility_flags (4 bytes)
+        buf.extend_from_slice(&[0u8; 4]);
+        // general_constraint_indicator_flags (6 bytes)
+        buf.extend_from_slice(&[0u8; 6]);
+        // general_level_idc
+        buf.push(0);
+        // reserved(4) | min_spatial_segmentation_idc(12) (2 bytes)
+        buf.extend_from_slice(&[0xF0, 0x00]);
+        // reserved(6) | parallelism_type(2)
+        buf.push(0xFC);
+        // reserved(6) | chroma_format_idc(2)
+        buf.push(0xFC);
+        // reserved(5) | bit_depth_luma_minus8(3)
+        buf.push(0xF8);
+        // reserved(5) | bit_depth_chroma_minus8(3)
+        buf.push(0xF8);
+        // avg_frame_rate (2 bytes)
+        buf.extend_from_slice(&[0, 0]);
+        // constant_frame_rate(2) | num_temporal_layers(3) | temporal_id_nested(1) | length_size_minus_one(2)
+        buf.push(0);
+        // num_of_arrays = 1 (1つの NALU 配列)
+        buf.push(1);
+
+        // NALU array
+        // array_completeness(1) | reserved(1) | nal_unit_type(6)
+        buf.push(0);
+        // num_nalus = 1
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        // nal_unit_length = 0xFFFF (ペイロードを大幅に超える値)
+        buf.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        // 実際の NAL unit データは 0 バイト (境界を超えている)
+
+        let result = HvccBox::decode(&buf);
+        // 修正後はエラーを返すはず (panic しない)
+        assert!(
+            result.is_err(),
+            "HvccBox は NAL unit 長が payload を超える場合にエラーを返す: 実際は {result:?}"
+        );
+    }
+
+    /// HvccBox: NAL unit length がペイロード境界を超える場合
+    ///
+    /// ボックスサイズを固定して、ペイロードが正確に計算されるケース
+    /// NAL unit length が不正な場合は Error を返す
+    #[test]
+    fn hvcc_box_nal_unit_length_exceeds_payload_with_fixed_size() {
+        // ボックスサイズを固定して、ペイロードが正確に計算されるようにする
+        let mut buf = Vec::new();
+
+        // configuration_version = 1
+        buf.push(1);
+        // general_profile_space(2) | general_tier_flag(1) | general_profile_idc(5) = 0
+        buf.push(0);
+        // general_profile_compatibility_flags (4 bytes)
+        buf.extend_from_slice(&[0u8; 4]);
+        // general_constraint_indicator_flags (6 bytes)
+        buf.extend_from_slice(&[0u8; 6]);
+        // general_level_idc
+        buf.push(0);
+        // reserved(4) | min_spatial_segmentation_idc(12) (2 bytes)
+        buf.extend_from_slice(&[0xF0, 0x00]);
+        // reserved(6) | parallelism_type(2)
+        buf.push(0xFC);
+        // reserved(6) | chroma_format_idc(2)
+        buf.push(0xFC);
+        // reserved(5) | bit_depth_luma_minus8(3)
+        buf.push(0xF8);
+        // reserved(5) | bit_depth_chroma_minus8(3)
+        buf.push(0xF8);
+        // avg_frame_rate (2 bytes)
+        buf.extend_from_slice(&[0, 0]);
+        // constant_frame_rate(2) | num_temporal_layers(3) | temporal_id_nested(1) | length_size_minus_one(2)
+        buf.push(0);
+        // num_of_arrays = 1 (1つの NALU 配列)
+        buf.push(1);
+
+        // NALU array
+        // array_completeness(1) | reserved(1) | nal_unit_type(6)
+        buf.push(0);
+        // num_nalus = 1
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        // nal_unit_length = 0xFFFF (ペイロードを大幅に超える値)
+        buf.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        // 実際の NAL unit データは 0 バイト (境界を超えている)
+
+        // ペイロードサイズを計算
+        let payload_size = buf.len();
+
+        // BoxHeader を先頭に付加
+        let mut full_buf = Vec::new();
+        let box_size = (8 + payload_size) as u32; // 8 = BoxHeader サイズ
+        full_buf.extend_from_slice(&box_size.to_be_bytes());
+        full_buf.extend_from_slice(b"hvcC");
+        full_buf.extend_from_slice(&buf);
+
+        let result = HvccBox::decode(&full_buf);
+        // 修正前は panic、修正後はエラーを返すはず
+        assert!(
+            result.is_err(),
+            "HvccBox は NAL unit 長が payload を超える場合にエラーを返す: 実際は {result:?}"
+        );
+    }
+
+    /// VpccBox: codec_init_size がペイロード境界を超える場合のテスト
+    ///
+    /// 修正前: panic (slice index out of bounds)
+    /// 修正後: Error を返す
+    #[test]
+    fn vpcc_box_codec_init_size_exceeds_payload() {
+        // 最小限の有効な VpccBox ヘッダー + 不正な codec_init_size
+        let mut buf = Vec::new();
+
+        // BoxHeader: size=0 (可変長), type="vpcC"
+        buf.extend_from_slice(&0u32.to_be_bytes()); // size = 0 (variable)
+        buf.extend_from_slice(b"vpcC");
+
+        // FullBoxHeader: version=1, flags=0
+        buf.push(1); // version
+        buf.extend_from_slice(&[0, 0, 0]); // flags
+
+        // profile
+        buf.push(0);
+        // level
+        buf.push(0);
+        // bit_depth(4) | chroma_subsampling(3) | video_full_range_flag(1)
+        buf.push(0);
+        // colour_primaries
+        buf.push(0);
+        // transfer_characteristics
+        buf.push(0);
+        // matrix_coefficients
+        buf.push(0);
+        // codec_init_size = 0xFFFF (ペイロードを大幅に超える値)
+        buf.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        // 実際の codec_initialization_data は 0 バイト (境界を超えている)
+
+        let result = VpccBox::decode(&buf);
+        // 修正後はエラーを返すはず (panic しない)
+        assert!(
+            result.is_err(),
+            "VpccBox は codec_init_size が payload を超える場合にエラーを返す"
+        );
+    }
+
+    /// VpccBox: codec_init_size がペイロード境界を超える場合
+    ///
+    /// ボックスサイズを固定して、ペイロードが正確に計算されるケース
+    /// codec_init_size が不正な場合は Error を返す
+    #[test]
+    fn vpcc_box_codec_init_size_exceeds_payload_with_fixed_size() {
+        // ボックスサイズを固定して、ペイロードが正確に計算されるようにする
+        let mut buf = Vec::new();
+
+        // FullBoxHeader: version=1, flags=0
+        buf.push(1); // version
+        buf.extend_from_slice(&[0, 0, 0]); // flags
+
+        // profile
+        buf.push(0);
+        // level
+        buf.push(0);
+        // bit_depth(4) | chroma_subsampling(3) | video_full_range_flag(1)
+        buf.push(0);
+        // colour_primaries
+        buf.push(0);
+        // transfer_characteristics
+        buf.push(0);
+        // matrix_coefficients
+        buf.push(0);
+        // codec_init_size = 0xFFFF (ペイロードを大幅に超える値)
+        buf.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        // 実際の codec_initialization_data は 0 バイト (境界を超えている)
+
+        // ペイロードサイズを計算
+        let payload_size = buf.len();
+
+        // BoxHeader を先頭に付加
+        let mut full_buf = Vec::new();
+        let box_size = (8 + payload_size) as u32; // 8 = BoxHeader サイズ
+        full_buf.extend_from_slice(&box_size.to_be_bytes());
+        full_buf.extend_from_slice(b"vpcC");
+        full_buf.extend_from_slice(&buf);
+
+        let result = VpccBox::decode(&full_buf);
+        // 修正前は panic、修正後はエラーを返すはず
+        assert!(
+            result.is_err(),
+            "VpccBox は codec_init_size が payload を超える場合にエラーを返す: 実際は {result:?}"
+        );
+    }
+}
+
+// ===== pbt/tests/prop_additional_boxes.rs の boundary_tests (SampleEntry) から移動 =====
+
+mod additional_sample_entry_boundary_tests {
+    use std::num::NonZeroU16;
+
+    use shiguredo_mp4::{
+        Decode, Encode, FixedPointNumber, Uint,
+        boxes::{
+            AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, EsdsBox, Mp4aBox, OpusBox,
+            VisualSampleEntryFields,
+        },
+        descriptors::{
+            DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
+        },
+    };
+
+    /// OpusBox: 最小構成
+    #[test]
+    fn opus_box_minimal() {
+        let opus = OpusBox {
+            audio: AudioSampleEntryFields {
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
+                channelcount: 2,
+                samplesize: 16,
+                samplerate: FixedPointNumber::new(48000, 0),
+            },
+            dops_box: DopsBox {
+                output_channel_count: 2,
+                pre_skip: 312,
+                input_sample_rate: 48000,
+                output_gain: 0,
+            },
+            unknown_boxes: vec![],
+        };
+        let encoded = opus.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = OpusBox::decode(&encoded)
+            .expect("直前にエンコードした有効な OpusBox は必ずデコードできる");
+        assert_eq!(decoded.audio.channelcount, 2);
+        assert_eq!(decoded.dops_box.output_channel_count, 2);
+    }
+
+    /// Mp4aBox: AAC-LC 設定
+    #[test]
+    fn mp4a_box_aac_lc() {
+        let mp4a = Mp4aBox {
+            audio: AudioSampleEntryFields {
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
+                channelcount: 2,
+                samplesize: 16,
+                samplerate: FixedPointNumber::new(48000, 0),
+            },
+            esds_box: EsdsBox {
+                es: EsDescriptor {
+                    es_id: 1,
+                    stream_priority: Uint::new(0),
+                    depends_on_es_id: None,
+                    url_string: None,
+                    ocr_es_id: None,
+                    dec_config_descr: DecoderConfigDescriptor {
+                        object_type_indication: 0x40,
+                        stream_type: Uint::new(0x05),
+                        up_stream: Uint::new(0),
+                        buffer_size_db: Uint::new(0),
+                        max_bitrate: 128000,
+                        avg_bitrate: 128000,
+                        dec_specific_info: Some(DecoderSpecificInfo {
+                            payload: vec![0x11, 0x90],
+                        }),
+                    },
+                    sl_config_descr: SlConfigDescriptor,
+                },
+            },
+            unknown_boxes: vec![],
+        };
+        let encoded = mp4a.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Mp4aBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Mp4aBox は必ずデコードできる");
+        assert_eq!(
+            decoded.esds_box.es.dec_config_descr.object_type_indication,
+            0x40
+        );
+    }
+
+    /// Avc1Box: 1080p H.264 Baseline Profile
+    #[test]
+    fn avc1_box_1080p() {
+        let avc1 = Avc1Box {
+            visual: VisualSampleEntryFields {
+                data_reference_index: NonZeroU16::new(1).expect("1 は非ゼロ"),
+                width: 1920,
+                height: 1080,
+                horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+                vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+                frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+                compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+                depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+            },
+            avcc_box: AvccBox {
+                avc_profile_indication: 66, // Baseline Profile
+                profile_compatibility: 0,
+                avc_level_indication: 40,
+                length_size_minus_one: Uint::new(3),
+                sps_list: vec![],
+                pps_list: vec![],
+                chroma_format: None,
+                bit_depth_luma_minus8: None,
+                bit_depth_chroma_minus8: None,
+                sps_ext_list: vec![],
+            },
+            unknown_boxes: vec![],
+        };
+        let encoded = avc1.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Avc1Box::decode(&encoded)
+            .expect("直前にエンコードした有効な Avc1Box は必ずデコードできる");
+        assert_eq!(decoded.visual.width, 1920);
+        assert_eq!(decoded.visual.height, 1080);
+    }
+}
+
+// ===== pbt/tests/prop_codec_boxes.rs の単体テストから移動 =====
+
+// ===== 境界値テスト =====
+
+mod codec_boxes_boundary_tests {
+    use shiguredo_mp4::{
+        Decode, Encode, Uint,
+        boxes::{Av1cBox, AvccBox, DopsBox, EsdsBox, HvccBox, VpccBox},
+        descriptors::{
+            DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
+        },
+    };
+
+    /// AvccBox: 空の SPS/PPS リスト
+    #[test]
+    fn avcc_box_empty_lists() {
+        let avcc = AvccBox {
+            avc_profile_indication: 66,
+            profile_compatibility: 0,
+            avc_level_indication: 30,
+            length_size_minus_one: Uint::new(3),
+            sps_list: vec![],
+            pps_list: vec![],
+            chroma_format: None,
+            bit_depth_luma_minus8: None,
+            bit_depth_chroma_minus8: None,
+            sps_ext_list: vec![],
+        };
+        let encoded = avcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = AvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な AvccBox は必ずデコードできる");
+        assert!(decoded.sps_list.is_empty());
+        assert!(decoded.pps_list.is_empty());
+    }
+
+    /// AvccBox: PPS が 32 個でもエンコードできる
+    ///
+    /// `numOfPictureParameterSets` は `unsigned int(8)`（最大 255）であり、
+    /// SPS の上限 31 と同じ値で拒否してはならないことを回帰として固定する。
+    /// 各 PPS のバイト列を index 由来にすることで、順序入れ替わりや隣接データの
+    /// 混線も検知できるようにする。
+    #[test]
+    fn avcc_box_pps_count_32() {
+        let avcc = AvccBox {
+            avc_profile_indication: 66,
+            profile_compatibility: 0,
+            avc_level_indication: 30,
+            length_size_minus_one: Uint::new(3),
+            sps_list: vec![],
+            pps_list: (0..32u8).map(|i| vec![i; 10]).collect(),
+            chroma_format: None,
+            bit_depth_luma_minus8: None,
+            bit_depth_chroma_minus8: None,
+            sps_ext_list: vec![],
+        };
+        let encoded = avcc
+            .encode_to_vec()
+            .expect("PPS 32 個は numOfPictureParameterSets の上限内なのでエンコードできる");
+        let (decoded, _) = AvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な AvccBox は必ずデコードできる");
+        assert_eq!(decoded.pps_list, avcc.pps_list);
+    }
+
+    /// HvccBox: 空の NALU 配列
+    #[test]
+    fn hvcc_box_empty_nalu_arrays() {
+        let hvcc = HvccBox {
+            general_profile_space: Uint::new(0),
+            general_tier_flag: Uint::new(0),
+            general_profile_idc: Uint::new(1),
+            general_profile_compatibility_flags: 0,
+            general_constraint_indicator_flags: Uint::new(0),
+            general_level_idc: 93,
+            min_spatial_segmentation_idc: Uint::new(0),
+            parallelism_type: Uint::new(0),
+            chroma_format_idc: Uint::new(1),
+            bit_depth_luma_minus8: Uint::new(0),
+            bit_depth_chroma_minus8: Uint::new(0),
+            avg_frame_rate: 0,
+            constant_frame_rate: Uint::new(0),
+            num_temporal_layers: Uint::new(1),
+            temporal_id_nested: Uint::new(1),
+            length_size_minus_one: Uint::new(3),
+            nalu_arrays: vec![],
+        };
+        let encoded = hvcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = HvccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な HvccBox は必ずデコードできる");
+        assert!(decoded.nalu_arrays.is_empty());
+    }
+
+    /// VpccBox: 空の codec_initialization_data
+    #[test]
+    fn vpcc_box_empty_init_data() {
+        let vpcc = VpccBox {
+            profile: 0,
+            level: 10,
+            bit_depth: Uint::new(8),
+            chroma_subsampling: Uint::new(1),
+            video_full_range_flag: Uint::new(0),
+            colour_primaries: 1,
+            transfer_characteristics: 1,
+            matrix_coefficients: 1,
+            codec_initialization_data: vec![],
+        };
+        let encoded = vpcc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = VpccBox::decode(&encoded)
+            .expect("直前にエンコードした有効な VpccBox は必ずデコードできる");
+        assert!(decoded.codec_initialization_data.is_empty());
+    }
+
+    /// Av1cBox: initial_presentation_delay なし
+    #[test]
+    fn av1c_box_no_delay() {
+        let av1c = Av1cBox {
+            seq_profile: Uint::new(0),
+            seq_level_idx_0: Uint::new(8),
+            seq_tier_0: Uint::new(0),
+            high_bitdepth: Uint::new(0),
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),
+            chroma_subsampling_y: Uint::new(1),
+            chroma_sample_position: Uint::new(0),
+            initial_presentation_delay_minus_one: None,
+            config_obus: vec![],
+        };
+        let encoded = av1c.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Av1cBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Av1cBox は必ずデコードできる");
+        assert!(decoded.initial_presentation_delay_minus_one.is_none());
+    }
+
+    /// Av1cBox: initial_presentation_delay あり
+    #[test]
+    fn av1c_box_with_delay() {
+        let av1c = Av1cBox {
+            seq_profile: Uint::new(0),
+            seq_level_idx_0: Uint::new(8),
+            seq_tier_0: Uint::new(0),
+            high_bitdepth: Uint::new(0),
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),
+            chroma_subsampling_y: Uint::new(1),
+            chroma_sample_position: Uint::new(0),
+            initial_presentation_delay_minus_one: Some(Uint::new(4)),
+            config_obus: vec![],
+        };
+        let encoded = av1c.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = Av1cBox::decode(&encoded)
+            .expect("直前にエンコードした有効な Av1cBox は必ずデコードできる");
+        assert_eq!(
+            decoded
+                .initial_presentation_delay_minus_one
+                .map(|u| u.get()),
+            Some(4)
+        );
+    }
+
+    /// DopsBox: 最小構成 (mono)
+    #[test]
+    fn dops_box_mono() {
+        let dops = DopsBox {
+            output_channel_count: 1,
+            pre_skip: 312,
+            input_sample_rate: 48000,
+            output_gain: 0,
+        };
+        let encoded = dops.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DopsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DopsBox は必ずデコードできる");
+        assert_eq!(decoded.output_channel_count, 1);
+        assert_eq!(decoded.pre_skip, 312);
+        assert_eq!(decoded.input_sample_rate, 48000);
+    }
+
+    /// DopsBox: ステレオ
+    #[test]
+    fn dops_box_stereo() {
+        let dops = DopsBox {
+            output_channel_count: 2,
+            pre_skip: 312,
+            input_sample_rate: 48000,
+            output_gain: -256,
+        };
+        let encoded = dops.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = DopsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な DopsBox は必ずデコードできる");
+        assert_eq!(decoded.output_channel_count, 2);
+        assert_eq!(decoded.output_gain, -256);
+    }
+
+    /// EsdsBox: AAC-LC 設定
+    #[test]
+    fn esds_box_aac_lc() {
+        let esds = EsdsBox {
+            es: EsDescriptor {
+                es_id: 1,
+                stream_priority: Uint::new(0),
+                depends_on_es_id: None,
+                url_string: None,
+                ocr_es_id: None,
+                dec_config_descr: DecoderConfigDescriptor {
+                    object_type_indication: 0x40, // Audio ISO/IEC 14496-3
+                    stream_type: Uint::new(0x05), // AudioStream
+                    up_stream: Uint::new(0),
+                    buffer_size_db: Uint::new(0),
+                    max_bitrate: 128000,
+                    avg_bitrate: 128000,
+                    dec_specific_info: Some(DecoderSpecificInfo {
+                        payload: vec![0x11, 0x90], // AAC-LC, 48kHz, stereo
+                    }),
+                },
+                sl_config_descr: SlConfigDescriptor,
+            },
+        };
+        let encoded = esds.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = EsdsBox::decode(&encoded)
+            .expect("直前にエンコードした有効な EsdsBox は必ずデコードできる");
+        assert_eq!(decoded.es.dec_config_descr.object_type_indication, 0x40);
+        assert_eq!(decoded.es.dec_config_descr.max_bitrate, 128000);
+    }
+}
+
+// ===== AvccBox のエラーパステスト =====
+
+mod avcc_error_tests {
+    use shiguredo_mp4::{Decode, Encode, Uint, boxes::AvccBox};
+
+    /// AvccBox: 32個以上の SPS でエンコードエラー
+    #[test]
+    fn avcc_box_too_many_sps() {
+        let avcc = AvccBox {
+            avc_profile_indication: 66,
+            profile_compatibility: 0,
+            avc_level_indication: 30,
+            length_size_minus_one: Uint::new(3),
+            sps_list: (0..32).map(|_| vec![0u8; 10]).collect(),
+            pps_list: vec![],
+            chroma_format: None,
+            bit_depth_luma_minus8: None,
+            bit_depth_chroma_minus8: None,
+            sps_ext_list: vec![],
+        };
+        let result = avcc.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: 256個以上の PPS でエンコードエラー (u8 超過)
+    #[test]
+    fn avcc_box_too_many_pps() {
+        let avcc = AvccBox {
+            avc_profile_indication: 66,
+            profile_compatibility: 0,
+            avc_level_indication: 30,
+            length_size_minus_one: Uint::new(3),
+            sps_list: vec![],
+            pps_list: (0..256).map(|_| vec![0u8; 10]).collect(),
+            chroma_format: None,
+            bit_depth_luma_minus8: None,
+            bit_depth_chroma_minus8: None,
+            sps_ext_list: vec![],
+        };
+        let result = avcc.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: High profile で chroma_format が欠落
+    #[test]
+    fn avcc_box_missing_chroma_format() {
+        let avcc = AvccBox {
+            avc_profile_indication: 100, // High profile
+            profile_compatibility: 0,
+            avc_level_indication: 40,
+            length_size_minus_one: Uint::new(3),
+            sps_list: vec![],
+            pps_list: vec![],
+            chroma_format: None, // 欠落
+            bit_depth_luma_minus8: Some(Uint::new(0)),
+            bit_depth_chroma_minus8: Some(Uint::new(0)),
+            sps_ext_list: vec![],
+        };
+        let result = avcc.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: High profile で bit_depth_luma_minus8 が欠落
+    #[test]
+    fn avcc_box_missing_bit_depth_luma() {
+        let avcc = AvccBox {
+            avc_profile_indication: 100, // High profile
+            profile_compatibility: 0,
+            avc_level_indication: 40,
+            length_size_minus_one: Uint::new(3),
+            sps_list: vec![],
+            pps_list: vec![],
+            chroma_format: Some(Uint::new(1)),
+            bit_depth_luma_minus8: None, // 欠落
+            bit_depth_chroma_minus8: Some(Uint::new(0)),
+            sps_ext_list: vec![],
+        };
+        let result = avcc.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: High profile で bit_depth_chroma_minus8 が欠落
+    #[test]
+    fn avcc_box_missing_bit_depth_chroma() {
+        let avcc = AvccBox {
+            avc_profile_indication: 100, // High profile
+            profile_compatibility: 0,
+            avc_level_indication: 40,
+            length_size_minus_one: Uint::new(3),
+            sps_list: vec![],
+            pps_list: vec![],
+            chroma_format: Some(Uint::new(1)),
+            bit_depth_luma_minus8: Some(Uint::new(0)),
+            bit_depth_chroma_minus8: None, // 欠落
+            sps_ext_list: vec![],
+        };
+        let result = avcc.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: 不正なバージョンでのデコードエラー
+    #[test]
+    fn avcc_box_invalid_version() {
+        // avcC ボックスヘッダ + 不正なバージョン (2)
+        let data = [
+            0x00, 0x00, 0x00, 0x10, // size = 16
+            b'a', b'v', b'c', b'C', // box type
+            0x02, // configuration_version = 2 (不正)
+            0x42, // avc_profile_indication = 66
+            0x00, // profile_compatibility
+            0x1E, // avc_level_indication = 30
+            0xFF, // length_size_minus_one = 3
+            0xE0, // sps_count = 0
+            0x00, // pps_count = 0
+        ];
+        let result = AvccBox::decode(&data);
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: SPS データがペイロード境界を超過
+    #[test]
+    fn avcc_box_sps_exceeds_boundary() {
+        let data = [
+            0x00, 0x00, 0x00, 0x10, // size = 16
+            b'a', b'v', b'c', b'C', // box type
+            0x01, // configuration_version = 1
+            0x42, // avc_profile_indication = 66
+            0x00, // profile_compatibility
+            0x1E, // avc_level_indication = 30
+            0xFF, // length_size_minus_one = 3
+            0xE1, // sps_count = 1
+            0x00, 0xFF, // sps_size = 255 (境界超過)
+        ];
+        let result = AvccBox::decode(&data);
+        assert!(result.is_err());
+    }
+
+    /// AvccBox: PPS データがペイロード境界を超過
+    #[test]
+    fn avcc_box_pps_exceeds_boundary() {
+        let data = [
+            0x00, 0x00, 0x00, 0x12, // size = 18
+            b'a', b'v', b'c', b'C', // box type
+            0x01, // configuration_version = 1
+            0x42, // avc_profile_indication = 66
+            0x00, // profile_compatibility
+            0x1E, // avc_level_indication = 30
+            0xFF, // length_size_minus_one = 3
+            0xE0, // sps_count = 0
+            0x01, // pps_count = 1
+            0x00, 0xFF, // pps_size = 255 (境界超過)
+        ];
+        let result = AvccBox::decode(&data);
+        assert!(result.is_err());
+    }
+}
+
+// ===== HvccBox のエラーパステスト =====
+
+mod hvcc_error_tests {
+    use shiguredo_mp4::{
+        Decode, Encode, Uint,
+        boxes::{HvccBox, HvccNalUintArray},
+    };
+
+    /// HvccBox: 256個以上の NALU arrays でエンコードエラー
+    #[test]
+    fn hvcc_box_too_many_nalu_arrays() {
+        let hvcc = HvccBox {
+            general_profile_space: Uint::new(0),
+            general_tier_flag: Uint::new(0),
+            general_profile_idc: Uint::new(1),
+            general_profile_compatibility_flags: 0,
+            general_constraint_indicator_flags: Uint::new(0),
+            general_level_idc: 93,
+            min_spatial_segmentation_idc: Uint::new(0),
+            parallelism_type: Uint::new(0),
+            chroma_format_idc: Uint::new(1),
+            bit_depth_luma_minus8: Uint::new(0),
+            bit_depth_chroma_minus8: Uint::new(0),
+            avg_frame_rate: 0,
+            constant_frame_rate: Uint::new(0),
+            num_temporal_layers: Uint::new(1),
+            temporal_id_nested: Uint::new(1),
+            length_size_minus_one: Uint::new(3),
+            nalu_arrays: (0..256)
+                .map(|_| HvccNalUintArray {
+                    array_completeness: Uint::new(1),
+                    nal_unit_type: Uint::new(32),
+                    nalus: vec![],
+                })
+                .collect(),
+        };
+        let result = hvcc.encode_to_vec();
+        assert!(result.is_err());
+    }
+
+    /// HvccBox: 不正なバージョンでのデコードエラー
+    #[test]
+    fn hvcc_box_invalid_version() {
+        // hvcC ボックスヘッダ + 不正なバージョン (2)
+        let data = [
+            0x00, 0x00, 0x00, 0x1C, // size = 28
+            b'h', b'v', b'c', b'C', // box type
+            0x02, // configuration_version = 2 (不正)
+            0x01, // general_profile_space + general_tier_flag + general_profile_idc
+            0x00, 0x00, 0x00, 0x00, // general_profile_compatibility_flags
+            0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, // general_constraint_indicator_flags (48 bits)
+            0x5D, // general_level_idc
+            0xF0, 0x00, // min_spatial_segmentation_idc
+            0xFC, // parallelism_type
+            0xFD, // chroma_format_idc
+            0xF8, // bit_depth_luma_minus8
+            0xF8, // bit_depth_chroma_minus8
+            0x00, 0x00, // avg_frame_rate
+            0x0F, // constant_frame_rate + num_temporal_layers + temporal_id_nested + length_size_minus_one
+            0x00, // num_of_arrays
+        ];
+        let result = HvccBox::decode(&data);
+        assert!(result.is_err());
+    }
+
+    /// HvccBox: general_constraint_indicator_flags がペイロード境界を超過
+    #[test]
+    fn hvcc_box_constraint_flags_exceeds_boundary() {
+        let data = [
+            0x00, 0x00, 0x00, 0x0E, // size = 14 (小さすぎ)
+            b'h', b'v', b'c', b'C', // box type
+            0x01, // configuration_version = 1
+            0x01, // general_profile_space + general_tier_flag + general_profile_idc
+            0x00, 0x00, 0x00,
+            0x00, // general_profile_compatibility_flags
+                  // general_constraint_indicator_flags の 6 バイトがない
+        ];
+        let result = HvccBox::decode(&data);
+        assert!(result.is_err());
+    }
+
+    /// HvccBox: NAL unit データがペイロード境界を超過
+    #[test]
+    fn hvcc_box_nalu_exceeds_boundary() {
+        let data = [
+            0x00, 0x00, 0x00, 0x20, // size = 32
+            b'h', b'v', b'c', b'C', // box type
+            0x01, // configuration_version = 1
+            0x01, // general_profile_space + general_tier_flag + general_profile_idc
+            0x00, 0x00, 0x00, 0x00, // general_profile_compatibility_flags
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // general_constraint_indicator_flags
+            0x5D, // general_level_idc
+            0xF0, 0x00, // min_spatial_segmentation_idc
+            0xFC, // parallelism_type
+            0xFD, // chroma_format_idc
+            0xF8, // bit_depth_luma_minus8
+            0xF8, // bit_depth_chroma_minus8
+            0x00, 0x00, // avg_frame_rate
+            0x0F, // constant_frame_rate + etc.
+            0x01, // num_of_arrays = 1
+            0xA0, // array_completeness + nal_unit_type
+            0x00, 0x01, // num_nalus = 1
+            0x00, 0xFF, // nal_unit_length = 255 (境界超過)
+        ];
+        let result = HvccBox::decode(&data);
+        assert!(result.is_err());
+    }
+}
+
+// ===== DflaBox のエラーパステスト =====
+
+mod dfla_error_tests {
+    use shiguredo_mp4::{Decode, boxes::DflaBox};
+
+    /// DflaBox: 不正なバージョンでのデコードエラー
+    #[test]
+    fn dfla_box_invalid_version() {
+        // dfLa ボックスヘッダ + FullBox header (version = 1)
+        let data = [
+            0x00, 0x00, 0x00, 0x0C, // size = 12
+            b'd', b'f', b'L', b'a', // box type
+            0x01, // version = 1 (不正、0 のみ許可)
+            0x00, 0x00, 0x00, // flags
+        ];
+        let result = DflaBox::decode(&data);
+        assert!(result.is_err());
+    }
+}
+
+// ===== DopsBox のエラーパステスト =====
+
+mod dops_error_tests {
+    use shiguredo_mp4::{Decode, boxes::DopsBox};
+
+    /// DopsBox: 不正なバージョンでのデコードエラー
+    #[test]
+    fn dops_box_invalid_version() {
+        // dOps ボックスヘッダ + 不正なバージョン
+        let data = [
+            0x00, 0x00, 0x00, 0x14, // size = 20
+            b'd', b'O', b'p', b's', // box type
+            0x01, // version = 1 (不正、0 のみ許可)
+            0x02, // output_channel_count
+            0x01, 0x38, // pre_skip
+            0x00, 0x00, 0xBB, 0x80, // input_sample_rate
+            0x00, 0x00, // output_gain
+            0x00, // channel_mapping_family
+        ];
+        let result = DopsBox::decode(&data);
+        assert!(result.is_err());
+    }
+}
+
+// ===== EsdsBox のエラーパステスト =====
+
+mod esds_error_tests {
+    use shiguredo_mp4::{Decode, boxes::EsdsBox};
+
+    /// EsdsBox: 不正なバージョンでのデコードエラー
+    #[test]
+    fn esds_box_invalid_version() {
+        // esds ボックスヘッダ + FullBox header (version = 1)
+        let data = [
+            0x00, 0x00, 0x00, 0x0C, // size = 12
+            b'e', b's', b'd', b's', // box type
+            0x01, // version = 1 (不正、0 のみ許可)
+            0x00, 0x00, 0x00, // flags
+        ];
+        let result = EsdsBox::decode(&data);
+        assert!(result.is_err());
+    }
+}

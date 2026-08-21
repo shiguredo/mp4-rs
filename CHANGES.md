@@ -33,6 +33,9 @@
 
 ### misc
 
+- [UPDATE] `pbt/tests/` に混在していた単体テストを本体 crate の `tests/` へ移す
+  - noprop を使わない固定入力・エラーパス・境界値テストを `tests/test_*.rs` に配置する
+  - @sile
 - [UPDATE] PBT を proptest から noprop に移行する
   - @sile
 - [UPDATE] `pbt/tests/` のテスト配置をコーディング規約に適合するよう整理する

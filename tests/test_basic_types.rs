@@ -212,3 +212,136 @@ mod utf8_string_default {
         assert_eq!(Utf8String::default().get(), "");
     }
 }
+
+// ===== pbt/tests/prop_basic_types.rs の boundary_tests 固定入力から移動 =====
+
+mod boundary_tests_from_prop_basic_types {
+    use shiguredo_mp4::{
+        BoxHeader, BoxSize, BoxType, Decode, Encode, ErrorKind, FullBoxFlags, Mp4FileTime,
+        Utf8String,
+    };
+
+    #[test]
+    fn full_box_flags_zero() {
+        let flags = FullBoxFlags::empty();
+        assert_eq!(flags.get(), 0);
+
+        for i in 0..24 {
+            assert!(!flags.is_set(i));
+        }
+    }
+
+    #[test]
+    fn full_box_flags_max() {
+        let flags = FullBoxFlags::new(0x00FF_FFFF);
+        assert_eq!(flags.get(), 0x00FF_FFFF);
+
+        for i in 0..24 {
+            assert!(flags.is_set(i));
+        }
+    }
+
+    #[test]
+    fn full_box_flags_overflow_ignored() {
+        // 24 ビットを超える値は切り捨てられる
+        let flags = FullBoxFlags::new(0xFFFF_FFFF);
+        // エンコード後は 24 ビットに収まる
+        let encoded = flags.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        assert_eq!(encoded.len(), 3);
+
+        let (decoded, _) = FullBoxFlags::decode(&encoded)
+            .expect("直前にエンコードした 3 バイト表現は必ずデコードできる");
+        assert_eq!(decoded.get(), 0x00FF_FFFF);
+    }
+
+    #[test]
+    fn box_size_variable() {
+        assert_eq!(BoxSize::VARIABLE_SIZE.get(), 0);
+        assert_eq!(BoxSize::LARGE_VARIABLE_SIZE.get(), 0);
+    }
+
+    #[test]
+    fn box_size_variable_external_sizes() {
+        assert_eq!(BoxSize::VARIABLE_SIZE.external_size(), 4);
+        assert_eq!(BoxSize::LARGE_VARIABLE_SIZE.external_size(), 12);
+    }
+
+    #[test]
+    fn utf8_string_empty() {
+        let s = Utf8String::new("").expect("空文字列は null を含まないので有効");
+        let encoded = s.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        assert_eq!(encoded, vec![0]);
+
+        let (decoded, size) = Utf8String::decode(&encoded)
+            .expect("直前にエンコードした null 終端 UTF-8 は必ずデコードできる");
+        assert_eq!(size, 1);
+        assert_eq!(decoded.get(), "");
+    }
+
+    #[test]
+    fn utf8_string_only_null() {
+        // null のみのバイト列
+        let buf = [0u8];
+        let (decoded, size) =
+            Utf8String::decode(&buf).expect("null のみは空文字列として有効にデコードできる");
+        assert_eq!(size, 1);
+        assert_eq!(decoded.get(), "");
+    }
+
+    #[test]
+    fn utf8_string_invalid_utf8() {
+        // 不正な UTF-8 シーケンス (null 終端あり)
+        let buf = [0xFF, 0xFE, 0x00];
+        let result = Utf8String::decode(&buf);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn mp4_file_time_unix_epoch() {
+        let time = Mp4FileTime::from_unix_time(core::time::Duration::from_secs(0));
+        // 1904/1/1 から 1970/1/1 までの秒数
+        assert_eq!(time.as_secs(), 2082844800);
+    }
+
+    #[test]
+    fn mp4_file_time_max() {
+        let time = Mp4FileTime::from_secs(u64::MAX);
+        assert_eq!(time.as_secs(), u64::MAX);
+    }
+
+    #[test]
+    fn box_header_min_size() {
+        assert_eq!(BoxHeader::MIN_SIZE, 8);
+    }
+
+    #[test]
+    fn box_header_max_size() {
+        // 4 (size) + 8 (extended size) + 4 (type) + 16 (uuid)
+        assert_eq!(BoxHeader::MAX_SIZE, 32);
+    }
+
+    #[test]
+    fn box_header_size_zero_means_variable() {
+        // サイズ 0 は可変長ボックスを意味する
+        let header = BoxHeader {
+            box_type: BoxType::Normal(*b"mdat"),
+            box_size: BoxSize::VARIABLE_SIZE,
+        };
+        assert_eq!(header.box_size.get(), 0);
+    }
+
+    #[test]
+    fn box_header_decode_extended_size() {
+        // サイズフィールドが 1 の場合、拡張サイズを使用
+        let mut buf = vec![0u8; 16];
+        buf[0..4].copy_from_slice(&1u32.to_be_bytes()); // size = 1 (extended)
+        buf[4..8].copy_from_slice(b"test");
+        buf[8..16].copy_from_slice(&0x100000001u64.to_be_bytes()); // 4GB + 1
+
+        let (header, size) =
+            BoxHeader::decode(&buf).expect("組み立てた 16 バイトの拡張サイズヘッダーは有効");
+        assert_eq!(size, 16);
+        assert!(matches!(header.box_size, BoxSize::U64(0x100000001)));
+    }
+}

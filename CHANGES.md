@@ -38,6 +38,7 @@
 - [UPDATE] `pbt/tests/` のテスト配置をコーディング規約に適合するよう整理する
   - 共通ヘルパ `common.rs` を `helpers.rs` に配置換えする
   - 単体テストのみの 2 ファイルを本体 crate の `tests/` に移動する
+  - `prop_*.rs` に混在していた単体テストを `tests/test_*.rs` へ移す
   - @sile
 
 ## 2026.4.0

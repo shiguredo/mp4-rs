@@ -43,15 +43,31 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             acc_duration += entry.sample_delta as u64 * entry.sample_count as u64;
         }
 
-        if let StszBox::Variable { entry_sizes } = &stbl_box_ref.stsz_box
-            && entry_sizes.len() != sample_count as usize
-        {
-            // stts と stsz でサンプル数が異なる
-            return Err(SampleTableAccessorError::InconsistentSampleCount {
-                stts_sample_count: sample_count,
-                other_box_type: StszBox::TYPE,
-                other_sample_count: entry_sizes.len() as u32,
-            });
+        // Variable / Fixed のいずれでも stts 合計と stsz のサンプル数を突き合わせる。
+        // Fixed はワイヤ上の sample_count を、Variable は entry_sizes.len() を使う。
+        // stsc 検査より前に置くことで、同時に食い違うときの表面化順序を両バリアントで揃える。
+        match &stbl_box_ref.stsz_box {
+            StszBox::Variable { entry_sizes } => {
+                if entry_sizes.len() != sample_count as usize {
+                    return Err(SampleTableAccessorError::InconsistentSampleCount {
+                        stts_sample_count: sample_count,
+                        other_box_type: StszBox::TYPE,
+                        other_sample_count: entry_sizes.len() as u32,
+                    });
+                }
+            }
+            StszBox::Fixed {
+                sample_count: stsz_sample_count,
+                ..
+            } => {
+                if *stsz_sample_count != sample_count {
+                    return Err(SampleTableAccessorError::InconsistentSampleCount {
+                        stts_sample_count: sample_count,
+                        other_box_type: StszBox::TYPE,
+                        other_sample_count: *stsz_sample_count,
+                    });
+                }
+            }
         }
 
         let sample_composition_offsets = if let Some(ctts_box) = &stbl_box_ref.ctts_box {

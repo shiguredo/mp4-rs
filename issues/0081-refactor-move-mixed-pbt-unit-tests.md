@@ -1,7 +1,7 @@
 # `pbt/` に混在する単体テストを `tests/` へ移す
 
 - Created: 2026-08-21
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-21
 - Branch: feature/refactor-move-mixed-pbt-unit-tests
 - Polished: {YYYY-MM-DD}
 
@@ -65,4 +65,14 @@ mod ごと移動できないため、単体テスト関数だけを切り出す�
 
 ## 解決方法
 
-（実装後に追記する）
+設計方針どおり、noprop を使わない単体テストを `tests/test_*.rs` へ移し、`pbt/tests/prop_*.rs` には PBT のみを残した。
+
+1. `prop_auxiliary.rs` の単体テスト mod（`error_cases` 等）と混在 mod 内の固定入力 1 件を `tests/test_auxiliary.rs` へ合流した
+2. `prop_basic_types.rs` の固定入力境界値を `tests/test_basic_types.rs` へ、`codec_box_boundary_tests` を `tests/test_boxes_sample_entry.rs` へ移した
+3. `prop_boxes.rs` / `prop_container_boxes.rs` の `boundary_tests` を `tests/test_boxes_moov_tree.rs` へ移した（container 側は必要な `minimal_*` ヘルパを移動先へ複製し、PBT 側で不要になった字幕用ヘルパは削除した）
+4. `prop_additional_boxes.rs` を分割し、Free/Mdat/Unknown/RootBox/Brand 系は `tests/test_boxes.rs`、SampleEntry 固定例は `tests/test_boxes_sample_entry.rs` へ移した
+5. `prop_codec_boxes.rs` の境界値・エラーパスを `tests/test_boxes_sample_entry.rs` へ移した
+6. `prop_descriptors.rs` の単体テストを新設 `tests/test_descriptors.rs` へ移した
+7. `prop_fmp4_boxes.rs` の `boundary_tests` を `tests/test_boxes_fmp4.rs` へ移した
+8. `prop_mux_demux.rs` の境界値・estimate 固定入力・mux エラーパスを新設 `tests/test_mux_mp4_file.rs` へ移した（必要なサンプルエントリ構築ヘルパを複製した）
+9. `cargo test --workspace` / `cargo fmt` / `cargo clippy --workspace --all-targets` が通ることを確認した

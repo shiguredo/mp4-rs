@@ -32,7 +32,7 @@ fn nz(i: u32) -> NonZeroU32 {
 mod error_cases {
     use super::*;
 
-    /// stts と stsz でサンプル数が異なるケース
+    /// stts と stsz (Variable) でサンプル数が異なるケース
     #[test]
     fn inconsistent_sample_count_stts_vs_stsz() {
         let stbl_box = StblBox {
@@ -73,6 +73,69 @@ mod error_cases {
             ),
             "InconsistentSampleCount エラーを期待したが {:?} だった",
             result
+        );
+    }
+
+    /// stts と stsz (Fixed) でサンプル数が異なるケース
+    ///
+    /// Variable 経路の `inconsistent_sample_count_stts_vs_stsz` では Fixed の
+    /// `sample_count` 突き合わせを捕捉できないため、別テストで検証する。
+    #[test]
+    fn inconsistent_sample_count_stts_vs_stsz_fixed() {
+        let stbl_box = StblBox {
+            stsd_box: StsdBox {
+                entries: vec![dummy_sample_entry()],
+            },
+            stts_box: SttsBox {
+                entries: vec![SttsEntry {
+                    sample_count: 1_000_000,
+                    sample_delta: 1,
+                }],
+            },
+            stsc_box: StscBox {
+                entries: vec![StscEntry {
+                    first_chunk: nz(1),
+                    sample_per_chunk: 1_000_000,
+                    sample_description_index: nz(1),
+                }],
+            },
+            // stts 合計 100 万に対して Fixed.sample_count を 0 にする
+            stsz_box: StszBox::Fixed {
+                sample_size: NonZeroU32::new(1).expect("1 は非ゼロなので失敗しない"),
+                sample_count: 0,
+            },
+            stco_or_co64_box: Either::A(StcoBox {
+                chunk_offsets: vec![0],
+            }),
+            stss_box: None,
+            ctts_box: None,
+            cslg_box: None,
+            sdtp_box: None,
+            unknown_boxes: Vec::new(),
+        };
+
+        let result = SampleTableAccessor::new(&stbl_box);
+        let Err(SampleTableAccessorError::InconsistentSampleCount {
+            stts_sample_count,
+            other_box_type,
+            other_sample_count,
+        }) = result
+        else {
+            panic!("InconsistentSampleCount が返るはずが、実際は {result:?} だった");
+        };
+
+        assert_eq!(
+            stts_sample_count, 1_000_000,
+            "stts 由来のサンプル数がそのまま報告されること"
+        );
+        assert_eq!(
+            other_box_type,
+            StszBox::TYPE,
+            "食い違いが検出されたボックスが stsz であること"
+        );
+        assert_eq!(
+            other_sample_count, 0,
+            "Fixed.sample_count の値が other_sample_count に入ること"
         );
     }
 

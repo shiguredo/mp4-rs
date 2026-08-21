@@ -26,6 +26,10 @@
   - `data_offset()` を算術で算出し、`new` はオーバーフロー検出のみ行う
   - 従来はわずか数バイトの `stsz` から最大約 34 GB の確保に到達できた
   - @sile
+- [FIX] `SampleTableAccessor::new` が `StszBox::Fixed` の `sample_count` を `stts` 合計と突き合わせるようにする
+  - `Variable` と同様に不一致なら `InconsistentSampleCount` を返す
+  - これまで `Fixed` では食い違っていても素通りしていた
+  - @sile
 
 ### misc
 

@@ -1,7 +1,7 @@
 # StszBox::Fixed の sample_count が stts の合計と突き合わされていない
 
 - Created: 2026-08-21
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-21
 - Branch: feature/fix-stsz-fixed-sample-count-validation
 - Polished: {YYYY-MM-DD}
 
@@ -43,3 +43,11 @@
 ## 関連 issue
 
 - `SampleTableAccessor::new` のメモリ増幅（別 issue）: 独立している。本 issue を修正しても、攻撃者は `stsz.Fixed.sample_count` を `stts` 合計に一致させればメモリ増幅の経路にそのまま到達できるため、本 issue はメモリ増幅の緩和策にはならない。両者は目的（整合性検証の網羅 / メモリ確保のオーダー抑制）が異なる別カテゴリの修正として分ける
+
+## 解決方法
+
+- `SampleTableAccessor::new` の `stsz` 検証を `match` に広げ、`StszBox::Fixed` でも `sample_count` を `stts` 合計と突き合わせるようにした
+  - 不一致時は既存の `InconsistentSampleCount`（`other_box_type: StszBox::TYPE`、`other_sample_count` に `Fixed.sample_count`）を返す
+  - 検査位置は従来の `Variable` と同じく `stsc` より前のままにした
+- `pbt/tests/prop_auxiliary.rs` に `inconsistent_sample_count_stts_vs_stsz_fixed` を追加し、Fixed 不一致が `InconsistentSampleCount` になることを検証した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した

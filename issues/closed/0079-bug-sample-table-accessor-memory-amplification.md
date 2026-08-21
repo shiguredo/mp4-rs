@@ -1,7 +1,7 @@
 # SampleTableAccessor::new が入力サイズと乖離した sample_data_offsets を eager に確保する
 
 - Created: 2026-08-21
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-21
 - Branch: feature/fix-sample-table-accessor-memory-amplification
 - Polished: {YYYY-MM-DD}
 
@@ -67,3 +67,14 @@
 ## 関連 issue
 
 - `StszBox::Fixed { sample_count }` の未検証（別 issue）: 独立している。あちらを修正しても、攻撃者は `stsz.Fixed.sample_count` を `stts` 合計に一致させれば本 issue のメモリ増幅に到達できる（本 issue の再現も一致させた値を使っている）。目的（メモリ確保のオーダー抑制 / 整合性検証の網羅）が異なるため別 issue に分ける
+
+## 解決方法
+
+- `SampleTableAccessor::new` の `StszBox::Fixed` 経路で `sample_data_offsets` テーブルを構築しないようにした
+  - チャンク単位で `k > (u64::MAX - base) / s` により `u64` overflow を検出し、従来の eager ループと同一の `SampleDataOffsetOverflow`（`sample_index` / `accumulated_offset` / `sample_data_size`）を返す
+  - `Variable` 経路は従来どおり prefix-sum テーブルを構築する
+- `SampleAccessor::data_offset` の Fixed 経路を `base + チャンク内序数 × sample_size` の算術算出に変更した
+- `SampleAccessor::chunk` は `sample_index_offsets` の探索を `binary_search` から `partition_point` に切り替え、`sample_per_chunk == 0` で同一値が連続しても index 以下の最右（実サンプル側チャンク）を返すようにした
+- `tests/test_auxiliary.rs` に Fixed 経路の overflow 2 ケース、巨大 `sample_count` での成功、空チャンクを挟む Fixed/Variable の `data_offset` 一致テストを追加した
+- `pbt/tests/prop_auxiliary.rs` に Fixed / Variable の `data_offset` 差分 PBT（複数 `stsc`・非単調チャンクオフセットのカバレッジゲート付き）を追加した
+- `CHANGES.md` の `## develop` に `[FIX]` エントリを追記した

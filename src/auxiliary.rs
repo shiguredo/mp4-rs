@@ -164,8 +164,55 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             sample_data_offsets: Vec::new(),
         };
 
+        // Fixed はテーブルを持たず overflow 検出のみ。Variable は prefix-sum を構築する。
+        // 詳細は各メソッド先頭のコメントを参照。
+        if let StszBox::Fixed { sample_size, .. } = &this.stbl_box().stsz_box {
+            this.validate_fixed_sample_data_offsets(*sample_size)?;
+        } else {
+            this.sample_data_offsets = this.build_variable_sample_data_offsets()?;
+        }
+
+        Ok(this)
+    }
+
+    // stsz が Fixed のときは全サンプル同一サイズなので、sample_data_offsets
+    // テーブルを構築せず data_offset() を算術で算出する。テーブルを構築すると
+    // 入力サイズ（stsz はワイヤ上 8 バイト）と乖離した最大約 34 GB の確保に
+    // 到達できるためである。このパスではオーバーフロー検出だけをチャンク単位で
+    // 行う（チャンク数は stco / co64 の配列長に等しく、入力サイズに比例する）。
+    fn validate_fixed_sample_data_offsets(
+        &self,
+        sample_size: NonZeroU32,
+    ) -> Result<(), SampleTableAccessorError> {
+        let s = sample_size.get() as u64;
+        for (chunk_index, chunk) in self.chunks().enumerate() {
+            let base = chunk.offset();
+            let k = chunk.sample_count() as u64;
+            // eager ループは、チャンク内の floor((u64::MAX - base) / s) + 1 番目
+            // （0 始まりの j 番目）のサンプルで最初にオーバーフローする。
+            // 判定は k > (u64::MAX - base) / s で済み、s >= 1 なので除算は安全
+            if k > (u64::MAX - base) / s {
+                let j = (u64::MAX - base) / s;
+                // j < k <= u32::MAX なので j は u32 に収まり、先頭サンプルインデックス
+                // との和は sample_count 以下になる（前述の stsc 突き合わせで保証済み）
+                let sample_index =
+                    NonZeroU32::new(self.sample_index_offsets[chunk_index].get() + j as u32)
+                        .expect("overflowing sample index is always within sample_count");
+                return Err(SampleTableAccessorError::SampleDataOffsetOverflow {
+                    sample_index,
+                    accumulated_offset: base + j * s,
+                    sample_data_size: sample_size.get(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // Variable は entry_sizes がワイヤ上にサンプル数比例で存在するため、
+    // prefix-sum テーブルを構築しても入力サイズから大きく乖離しない。
+    fn build_variable_sample_data_offsets(&self) -> Result<Vec<u64>, SampleTableAccessorError> {
         let mut sample_data_offsets = Vec::new();
-        for chunk in this.chunks() {
+        for chunk in self.chunks() {
             let mut offset = chunk.offset();
             for sample in chunk.samples() {
                 sample_data_offsets.push(offset);
@@ -178,9 +225,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                 )?;
             }
         }
-        this.sample_data_offsets = sample_data_offsets;
-
-        Ok(this)
+        Ok(sample_data_offsets)
     }
 
     /// トラック内のサンプルの数を取得する
@@ -467,8 +512,22 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
     }
 
     /// サンプルデータのファイル内でのバイト位置を返す
+    // `stsz` が `Fixed` の場合は、チャンク先頭オフセットにチャンク内序数 × サンプルサイズを
+    // 足して算出する（`new` がオーバーフローを検出済みのため加算は安全）。
+    // `stsz` が `Variable` の場合は、`new` が構築した prefix-sum テーブルを参照する。
     pub fn data_offset(&self) -> u64 {
-        self.sample_table.sample_data_offsets[self.index.get() as usize - 1]
+        let idx = self.index.get() - 1;
+        match &self.sample_table.stbl_box().stsz_box {
+            StszBox::Fixed { sample_size, .. } => {
+                let chunk = self.chunk();
+                let first_sample_index =
+                    self.sample_table.sample_index_offsets[chunk.index().get() as usize - 1];
+                chunk.offset()
+                    + (self.index.get() - first_sample_index.get()) as u64
+                        * sample_size.get() as u64
+            }
+            StszBox::Variable { .. } => self.sample_table.sample_data_offsets[idx as usize],
+        }
     }
 
     /// サンプルが同期サンプルかどうかを判定する
@@ -516,11 +575,15 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
 
     /// サンプルが属するチャンクの情報を返す
     pub fn chunk(&self) -> ChunkAccessor<'a, T> {
+        // sample_per_chunk == 0 のチャンクがあると sample_index_offsets に同一値が連続する。
+        // binary_search は重複時の戻りを未規定とするため、index 以下の最右要素を
+        // partition_point で明示的に選ぶ（空チャンクを挟んでも実サンプル側のチャンクになる）。
         let i = self
             .sample_table
             .sample_index_offsets
-            .binary_search(&self.index)
-            .unwrap_or_else(|i| i - 1);
+            .partition_point(|x| *x <= self.index)
+            .checked_sub(1)
+            .expect("valid sample always belongs to a chunk");
         let chunk_index = NonZeroU32::MIN.saturating_add(i as u32);
         self.sample_table
             .get_chunk(chunk_index)

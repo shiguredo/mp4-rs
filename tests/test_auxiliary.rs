@@ -367,3 +367,307 @@ fn display_of_new_variants_matches_spec() {
         "SampleDataOffsetOverflow の Display 出力が仕様と一致すること"
     );
 }
+
+/// `StszBox::Fixed` 経路でサンプルデータのオフセット累計が u64 を超えるケース
+/// （1 チャンク 3 サンプル）
+///
+/// `chunk_offsets[0] = u64::MAX - 1` にサイズ 1 のサンプルを 2 つ足した
+/// `u64::MAX` を累計として持ち、3 サンプル目の先頭位置を求める 2 サンプル目末尾の
+/// 加算がオーバーフローする。`Fixed` ではテーブルを構築せずチャンク単位の
+/// 判定だけで検出するため、`sample_data_offsets` を 3 要素作らない。
+///
+/// `stsz` が `Variable` の既存テスト（`sample_data_offset_overflow_multi_sample_chunk`）と
+/// 同じ入力構成・同じ期待値で、`Fixed` 経路の回帰を捕捉する。
+#[test]
+fn fixed_sample_data_offset_overflow_multi_sample_chunk() {
+    let stbl_box = StblBox {
+        stsd_box: stsd_box(),
+        stts_box: SttsBox {
+            entries: vec![SttsEntry {
+                sample_count: 3,
+                sample_delta: 1,
+            }],
+        },
+        ctts_box: None,
+        cslg_box: None,
+        stsc_box: StscBox {
+            entries: vec![StscEntry {
+                first_chunk: NonZeroU32::MIN,
+                sample_per_chunk: 3,
+                sample_description_index: NonZeroU32::MIN,
+            }],
+        },
+        stsz_box: StszBox::Fixed {
+            sample_size: NonZeroU32::new(1).expect("1 は非ゼロなので失敗しない"),
+            sample_count: 3,
+        },
+        stco_or_co64_box: Either::B(Co64Box {
+            chunk_offsets: vec![u64::MAX - 1],
+        }),
+        stss_box: None,
+        sdtp_box: None,
+        unknown_boxes: Vec::new(),
+    };
+
+    let result = SampleTableAccessor::new(&stbl_box);
+    let Err(SampleTableAccessorError::SampleDataOffsetOverflow {
+        sample_index,
+        accumulated_offset,
+        sample_data_size,
+    }) = result
+    else {
+        panic!("SampleDataOffsetOverflow が返るはずが、実際は {result:?} だった");
+    };
+
+    assert_eq!(
+        sample_index,
+        NonZeroU32::new(2).expect("bug"),
+        "オーバーフロー時点のサンプルインデックスが 2 であること"
+    );
+    assert_eq!(
+        accumulated_offset,
+        u64::MAX,
+        "オーバーフロー直前の累計バイト位置が u64::MAX であること"
+    );
+    assert_eq!(
+        sample_data_size, 1,
+        "加算しようとしたサンプルサイズが 1 であること"
+    );
+}
+
+/// `StszBox::Fixed` 経路でサンプルデータのオフセット累計が u64 を超えるケース
+/// （1 チャンク 1 サンプル）
+///
+/// 唯一のサンプルの値はすべて正常に算出され、その直後に次サンプル用の開始位置を
+/// 求めるための末尾の加算だけがオーバーフローする。「格納は正常だが末尾の加算だけ
+/// オーバーフロー」のケースでも `Err` を返す仕様を、`Fixed` 経路でも満たすことの
+/// 回帰テストである。
+#[test]
+fn fixed_sample_data_offset_overflow_single_sample_chunk_tail() {
+    let stbl_box = StblBox {
+        stsd_box: stsd_box(),
+        stts_box: SttsBox {
+            entries: vec![SttsEntry {
+                sample_count: 1,
+                sample_delta: 1,
+            }],
+        },
+        ctts_box: None,
+        cslg_box: None,
+        stsc_box: StscBox {
+            entries: vec![StscEntry {
+                first_chunk: NonZeroU32::MIN,
+                sample_per_chunk: 1,
+                sample_description_index: NonZeroU32::MIN,
+            }],
+        },
+        stsz_box: StszBox::Fixed {
+            sample_size: NonZeroU32::new(1).expect("1 は非ゼロなので失敗しない"),
+            sample_count: 1,
+        },
+        stco_or_co64_box: Either::B(Co64Box {
+            chunk_offsets: vec![u64::MAX],
+        }),
+        stss_box: None,
+        sdtp_box: None,
+        unknown_boxes: Vec::new(),
+    };
+
+    let result = SampleTableAccessor::new(&stbl_box);
+    let Err(SampleTableAccessorError::SampleDataOffsetOverflow {
+        sample_index,
+        accumulated_offset,
+        sample_data_size,
+    }) = result
+    else {
+        panic!("SampleDataOffsetOverflow が返るはずが、実際は {result:?} だった");
+    };
+
+    assert_eq!(
+        sample_index,
+        NonZeroU32::new(1).expect("bug"),
+        "捨てられる末尾加算でも sample_index は 1 になること"
+    );
+    assert_eq!(
+        accumulated_offset,
+        u64::MAX,
+        "オーバーフロー直前の累計バイト位置が u64::MAX であること"
+    );
+    assert_eq!(
+        sample_data_size, 1,
+        "加算しようとしたサンプルサイズが 1 であること"
+    );
+}
+
+/// `StszBox::Fixed` で `sample_count = u32::MAX - 1` を宣言しても
+/// `new` が即座に成功し、算術的に正しい `data_offset()` を返すこと
+///
+/// 修正前は `sample_data_offsets` を約 34 GB 確保しようとして abort（確保失敗）する。
+/// 修正後はテーブルを構築しないため、サンプル数に比例した確保なしで成功する。
+/// `data_offset()` が `base + チャンク内序数 × sample_size` で算出されることを
+/// 先頭・途中・末尾のサンプルで照合する。
+#[test]
+fn fixed_max_sample_count_succeeds_without_allocation() {
+    const MAX_COUNT: u32 = u32::MAX - 1;
+    let stbl_box = StblBox {
+        stsd_box: stsd_box(),
+        stts_box: SttsBox {
+            entries: vec![SttsEntry {
+                sample_count: MAX_COUNT,
+                sample_delta: 1,
+            }],
+        },
+        ctts_box: None,
+        cslg_box: None,
+        stsc_box: StscBox {
+            entries: vec![StscEntry {
+                first_chunk: NonZeroU32::MIN,
+                sample_per_chunk: MAX_COUNT,
+                sample_description_index: NonZeroU32::MIN,
+            }],
+        },
+        stsz_box: StszBox::Fixed {
+            sample_size: NonZeroU32::new(1).expect("1 は非ゼロなので失敗しない"),
+            sample_count: MAX_COUNT,
+        },
+        stco_or_co64_box: Either::A(StcoBox {
+            chunk_offsets: vec![0],
+        }),
+        stss_box: None,
+        sdtp_box: None,
+        unknown_boxes: Vec::new(),
+    };
+
+    let accessor =
+        SampleTableAccessor::new(&stbl_box).expect("Fixed なら確保なしでアクセサを作れる");
+
+    assert_eq!(
+        accessor.sample_count(),
+        MAX_COUNT,
+        "サンプル数が保持されること"
+    );
+
+    for sample_index in [1u32, 1000, MAX_COUNT] {
+        let sample = accessor
+            .get_sample(NonZeroU32::new(sample_index).expect("1 以上なので非ゼロ"))
+            .expect("sample_count 以内のサンプルは取得できる");
+        assert_eq!(
+            sample.data_offset(),
+            (sample_index - 1) as u64,
+            "sample {sample_index} の data_offset が算術で算出されること"
+        );
+    }
+}
+
+/// `sample_per_chunk == 0` の空チャンクを挟んでも Fixed / Variable の
+/// `data_offset()` が一致すること
+///
+/// 空チャンクがあると `sample_index_offsets` に同一値が連続する。
+/// Fixed の `data_offset()` は `chunk()` 経由でチャンク先頭を引くため、
+/// 重複時に空チャンク側を選ぶとオフセットがずれる。
+/// `chunk()` が index 以下の最右を選ぶことで Variable（prefix-sum）と一致することを固定する。
+#[test]
+fn fixed_and_variable_data_offset_match_with_empty_chunk() {
+    fn nz(v: u32) -> NonZeroU32 {
+        NonZeroU32::new(v).expect("テスト入力のインデックスは非ゼロ")
+    }
+
+    let stsc_box = StscBox {
+        entries: vec![
+            StscEntry {
+                first_chunk: nz(1),
+                sample_per_chunk: 2,
+                sample_description_index: nz(1),
+            },
+            StscEntry {
+                first_chunk: nz(2),
+                sample_per_chunk: 0,
+                sample_description_index: nz(1),
+            },
+            StscEntry {
+                first_chunk: nz(3),
+                sample_per_chunk: 2,
+                sample_description_index: nz(1),
+            },
+        ],
+    };
+    // 空チャンクのオフセットは実サンプル側と意図的にずらす
+    let chunk_offsets = vec![100, 999, 200];
+    let sample_count = 4u32;
+    let sample_size = 10u32;
+
+    let build = |stsz_box: StszBox| StblBox {
+        stsd_box: stsd_box(),
+        stts_box: SttsBox {
+            entries: vec![SttsEntry {
+                sample_count,
+                sample_delta: 1,
+            }],
+        },
+        ctts_box: None,
+        cslg_box: None,
+        stsc_box: stsc_box.clone(),
+        stsz_box,
+        stco_or_co64_box: Either::A(StcoBox {
+            chunk_offsets: chunk_offsets.clone(),
+        }),
+        stss_box: None,
+        sdtp_box: None,
+        unknown_boxes: Vec::new(),
+    };
+
+    let fixed_stbl = build(StszBox::Fixed {
+        sample_size: nz(sample_size),
+        sample_count,
+    });
+    let variable_stbl = build(StszBox::Variable {
+        entry_sizes: vec![sample_size; sample_count as usize],
+    });
+    let fixed =
+        SampleTableAccessor::new(&fixed_stbl).expect("空チャンクを含む正当な Fixed は成功する");
+    let variable = SampleTableAccessor::new(&variable_stbl)
+        .expect("空チャンクを含む正当な Variable は成功する");
+
+    for i in 1..=sample_count {
+        let index = nz(i);
+        let fixed_offset = fixed
+            .get_sample(index)
+            .expect("sample_count 以内なので取得できる")
+            .data_offset();
+        let variable_offset = variable
+            .get_sample(index)
+            .expect("sample_count 以内なので取得できる")
+            .data_offset();
+        assert_eq!(
+            fixed_offset, variable_offset,
+            "sample {i} の data_offset が Fixed と Variable で一致すること"
+        );
+        // 空チャンク (offset 999) を選んでいないこと
+        assert_ne!(
+            fixed_offset, 999,
+            "sample {i} が空チャンクのオフセットを返していないこと"
+        );
+    }
+
+    // 期待値そのものも固定する（チャンク1: 100,110 / チャンク3: 200,210）
+    assert_eq!(
+        fixed.get_sample(nz(1)).expect("bug").data_offset(),
+        100,
+        "先頭チャンクの 1 サンプル目"
+    );
+    assert_eq!(
+        fixed.get_sample(nz(2)).expect("bug").data_offset(),
+        110,
+        "先頭チャンクの 2 サンプル目"
+    );
+    assert_eq!(
+        fixed.get_sample(nz(3)).expect("bug").data_offset(),
+        200,
+        "空チャンクの次のチャンクの 1 サンプル目"
+    );
+    assert_eq!(
+        fixed.get_sample(nz(4)).expect("bug").data_offset(),
+        210,
+        "空チャンクの次のチャンクの 2 サンプル目"
+    );
+}

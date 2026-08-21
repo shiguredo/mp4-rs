@@ -127,7 +127,9 @@ Sample implementations using WebAssembly are available on GitHub Pages.
 - 3GPP TS 26.245
 - [VP Codec ISO Media File Format Binding](https://www.webmproject.org/vp9/mp4/)
 - [RFC 6386: VP8 Data Format and Decoding Guide](https://www.rfc-editor.org/rfc/rfc6386)
+- [VP9 Bitstream and Decoding Process Specification](https://www.webmproject.org/vp9/)
 - [AV1 Codec ISO Media File Format Binding](https://aomediacodec.github.io/av1-isobmff/)
+- [AV1 Bitstream & Decoding Process Specification](https://aomediacodec.github.io/av1-spec/)
 - [Encapsulation of Opus in ISO Base Media File Format](https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html)
 - [Encapsulation of FLAC in ISO Base Media File Format](https://github.com/xiph/flac/blob/master/doc/isoflac.txt)
 

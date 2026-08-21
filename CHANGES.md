@@ -20,6 +20,10 @@
 - [FIX] `Error` の `Display` 出力からビルド環境依存の絶対パスを除去する
   - `core::panic::Location::file()` が返すパスから最後方の `src/` 以降だけを残して表示する
   - @sile
+- [FIX] `StszBox::Fixed` で `SampleTableAccessor::new` がサンプル数に比例するメモリを確保しないようにする
+  - `data_offset()` を算術で算出し、`new` はオーバーフロー検出のみ行う
+  - 従来はわずか数バイトの `stsz` から最大約 34 GB の確保に到達できた
+  - @sile
 
 ### misc
 

@@ -1322,3 +1322,117 @@ mod error_display_tests {
         assert!(msg.contains("5"));
     }
 }
+
+// ===== Fixed / Variable 差分テスト =====
+
+mod fixed_variable_differential_tests {
+    use super::*;
+
+    /// このモジュールの PBT ケース数
+    const CASES: usize = 200;
+
+    /// 同一の論理テーブルを `Fixed { sample_size: s }` と
+    /// `Variable { entry_sizes: vec![s; n] }` の 2 通りで構築し、
+    /// 全サンプルの `data_offset()` が一致することを検証する
+    ///
+    /// `Fixed` の `data_offset()` は `sample_index_offsets` からチャンク先頭
+    /// インデックスを引いて `base + チャンク内序数 × s` で算出するため、
+    /// 均一な 1 チャンクだけではチャンク境界のずれを検出できない。そこで
+    /// `stsc` は `sample_per_chunk` が異なる複数エントリを、チャンクオフセットは
+    /// 単調増加でない配置を含むよう生成する。どちらのクラスにも到達したことを
+    /// カバレッジゲートで保証する。
+    #[test]
+    fn fixed_and_variable_data_offset_match() -> noprop::TestResult {
+        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+        let multi_entry_cases = std::cell::Cell::new(0usize);
+        let non_monotonic_cases = std::cell::Cell::new(0usize);
+        let mut runner = noprop::Runner::new(seed);
+
+        runner.run(CASES, |ctx| {
+            let chunk_count = noprop::sample_usize_in(ctx, 1..=10);
+            let sample_per_chunk: Vec<u32> = (0..chunk_count)
+                .map(|_| noprop::sample_usize_in(ctx, 1..=10) as u32)
+                .collect();
+            let sample_count: u32 = sample_per_chunk.iter().sum();
+
+            // チャンクオフセットは単調増加でない配置を含むよう非ソートで生成する
+            let chunk_offsets: Vec<u32> = (0..chunk_count)
+                .map(|_| noprop::sample_u64_in(ctx, 0..1 << 30) as u32)
+                .collect();
+
+            let sample_size = noprop::sample_usize_in(ctx, 1..=1000) as u32;
+
+            let build = |stsz_box: StszBox| StblBox {
+                stsd_box: StsdBox {
+                    entries: vec![dummy_sample_entry()],
+                },
+                stts_box: SttsBox {
+                    entries: vec![SttsEntry {
+                        sample_count,
+                        sample_delta: 1,
+                    }],
+                },
+                stsc_box: StscBox {
+                    entries: sample_per_chunk
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &spc)| StscEntry {
+                            first_chunk: nz(i as u32 + 1),
+                            sample_per_chunk: spc,
+                            sample_description_index: nz(1),
+                        })
+                        .collect(),
+                },
+                stsz_box,
+                stco_or_co64_box: Either::A(StcoBox {
+                    chunk_offsets: chunk_offsets.clone(),
+                }),
+                stss_box: None,
+                ctts_box: None,
+                cslg_box: None,
+                sdtp_box: None,
+                unknown_boxes: Vec::new(),
+            };
+
+            let fixed_stbl = build(StszBox::Fixed {
+                sample_size: NonZeroU32::new(sample_size).expect("sample_size は非ゼロ"),
+                sample_count,
+            });
+            let fixed = SampleTableAccessor::new(&fixed_stbl)
+                .expect("正当な入力なので Fixed 経路は成功する");
+            let variable_stbl = build(StszBox::Variable {
+                entry_sizes: vec![sample_size; sample_count as usize],
+            });
+            let variable = SampleTableAccessor::new(&variable_stbl)
+                .expect("正当な入力なので Variable 経路は成功する");
+
+            for i in 1..=sample_count {
+                let fixed_sample = fixed.get_sample(nz(i)).expect("sample が見つかる");
+                let variable_sample = variable.get_sample(nz(i)).expect("sample が見つかる");
+                assert_eq!(
+                    fixed_sample.data_offset(),
+                    variable_sample.data_offset(),
+                    "sample {i} の data_offset が Fixed と Variable で一致すること"
+                );
+            }
+
+            if sample_per_chunk.windows(2).any(|w| w[0] != w[1]) {
+                multi_entry_cases.set(multi_entry_cases.get() + 1);
+            }
+            if chunk_offsets.windows(2).any(|w| w[0] > w[1]) {
+                non_monotonic_cases.set(non_monotonic_cases.get() + 1);
+            }
+            Ok(())
+        })?;
+
+        assert!(
+            multi_entry_cases.get() > 0,
+            "sample_per_chunk が異なる複数エントリのケースが 1 回も生成されなかった\n{runner}"
+        );
+        assert!(
+            non_monotonic_cases.get() > 0,
+            "チャンクオフセットが単調増加でないケースが 1 回も生成されなかった\n{runner}"
+        );
+        Ok(())
+    }
+}

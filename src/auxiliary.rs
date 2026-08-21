@@ -164,20 +164,55 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             sample_data_offsets: Vec::new(),
         };
 
-        let mut sample_data_offsets = Vec::new();
-        for chunk in this.chunks() {
-            let mut offset = chunk.offset();
-            for sample in chunk.samples() {
-                sample_data_offsets.push(offset);
-                offset = offset.checked_add(sample.data_size() as u64).ok_or(
-                    SampleTableAccessorError::SampleDataOffsetOverflow {
-                        sample_index: sample.index(),
-                        accumulated_offset: offset,
-                        sample_data_size: sample.data_size(),
-                    },
-                )?;
+        // stsz が Fixed のときは全サンプル同一サイズなので、sample_data_offsets
+        // テーブルを構築せず data_offset() を算術で算出する。テーブルを構築すると
+        // 入力サイズ（stsz はワイヤ上 8 バイト）と乖離した最大約 34 GB の確保に
+        // 到達できるためである。このパスではオーバーフロー検出だけをチャンク単位で
+        // 行う（チャンク数は stco / co64 の配列長に等しく、入力サイズに比例する）。
+        let sample_data_offsets = match &this.stbl_box().stsz_box {
+            StszBox::Fixed { sample_size, .. } => {
+                let s = sample_size.get() as u64;
+                for (chunk_index, chunk) in this.chunks().enumerate() {
+                    let base = chunk.offset();
+                    let k = chunk.sample_count() as u64;
+                    // eager ループは、チャンク内の floor((u64::MAX - base) / s) + 1 番目
+                    // （0 始まりの j 番目）のサンプルで最初にオーバーフローする。
+                    // 判定は k > (u64::MAX - base) / s で済み、s >= 1 なので除算は安全
+                    if k > (u64::MAX - base) / s {
+                        let j = (u64::MAX - base) / s;
+                        // j < k <= u32::MAX なので j は u32 に収まり、先頭サンプルインデックス
+                        // との和は sample_count 以下になる（前述の stsc 突き合わせで保障済み）
+                        let sample_index = NonZeroU32::new(
+                            this.sample_index_offsets[chunk_index].get() + j as u32,
+                        )
+                        .expect("オーバーフローするサンプルは必ずサンプル数以内にある");
+                        return Err(SampleTableAccessorError::SampleDataOffsetOverflow {
+                            sample_index,
+                            accumulated_offset: base + j * s,
+                            sample_data_size: sample_size.get(),
+                        });
+                    }
+                }
+                Vec::new()
             }
-        }
+            StszBox::Variable { .. } => {
+                let mut sample_data_offsets = Vec::new();
+                for chunk in this.chunks() {
+                    let mut offset = chunk.offset();
+                    for sample in chunk.samples() {
+                        sample_data_offsets.push(offset);
+                        offset = offset.checked_add(sample.data_size() as u64).ok_or(
+                            SampleTableAccessorError::SampleDataOffsetOverflow {
+                                sample_index: sample.index(),
+                                accumulated_offset: offset,
+                                sample_data_size: sample.data_size(),
+                            },
+                        )?;
+                    }
+                }
+                sample_data_offsets
+            }
+        };
         this.sample_data_offsets = sample_data_offsets;
 
         Ok(this)
@@ -467,8 +502,23 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
     }
 
     /// サンプルデータのファイル内でのバイト位置を返す
+    ///
+    /// `stsz` が `Fixed` の場合は、チャンク先頭オフセットにチャンク内序数 × サンプルサイズを
+    /// 足して算出する（`new` がオーバーフローを検出済みのため加算は安全）。
+    /// `stsz` が `Variable` の場合は、`new` が構築した prefix-sum テーブルを参照する。
     pub fn data_offset(&self) -> u64 {
-        self.sample_table.sample_data_offsets[self.index.get() as usize - 1]
+        let idx = self.index.get() - 1;
+        match &self.sample_table.stbl_box().stsz_box {
+            StszBox::Fixed { sample_size, .. } => {
+                let chunk = self.chunk();
+                let first_sample_index =
+                    self.sample_table.sample_index_offsets[chunk.index().get() as usize - 1];
+                chunk.offset()
+                    + (self.index.get() - first_sample_index.get()) as u64
+                        * sample_size.get() as u64
+            }
+            StszBox::Variable { .. } => self.sample_table.sample_data_offsets[idx as usize],
+        }
     }
 
     /// サンプルが同期サンプルかどうかを判定する

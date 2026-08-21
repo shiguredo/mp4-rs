@@ -702,15 +702,17 @@ impl Decode for ElstBox {
             let mut entries = Vec::new();
             let count = u32::decode_at(payload, &mut offset)?;
             for _ in 0..count {
-                let edit_duration;
-                let media_time;
-                if full_header.version == 1 {
-                    edit_duration = u64::decode_at(payload, &mut offset)?;
-                    media_time = i64::decode_at(payload, &mut offset)?;
+                let (edit_duration, media_time) = if full_header.version == 1 {
+                    (
+                        u64::decode_at(payload, &mut offset)?,
+                        i64::decode_at(payload, &mut offset)?,
+                    )
                 } else {
-                    edit_duration = u32::decode_at(payload, &mut offset)? as u64;
-                    media_time = i32::decode_at(payload, &mut offset)? as i64;
-                }
+                    (
+                        u32::decode_at(payload, &mut offset)? as u64,
+                        i32::decode_at(payload, &mut offset)? as i64,
+                    )
+                };
                 let media_rate = FixedPointNumber::decode_at(payload, &mut offset)?;
                 entries.push(ElstEntry {
                     edit_duration,

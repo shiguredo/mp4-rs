@@ -172,6 +172,7 @@ fn keyframe_profile0_minimal_parse() {
     assert!(header.show_frame);
     assert!(!header.error_resilient_mode);
     assert!(!header.intra_only);
+    assert_eq!(header.refresh_frame_flags, 0xFF);
     assert_eq!(header.bit_depth, 8);
     assert_eq!(header.color_space, 1);
     assert_eq!(header.color_range, 0);
@@ -318,6 +319,8 @@ fn show_existing_frame_captures_map_idx() {
             parse_frame_header(&bytes).expect("show_existing_frame は末尾で追加 read せず成功する");
         assert_eq!(header.show_existing_frame, Some(idx));
         assert_eq!(header.profile, 0);
+        assert_eq!(header.refresh_frame_flags, 0);
+        assert_eq!(header.frame_size, Vp9FrameSize::NotPresent);
     }
 }
 
@@ -388,6 +391,22 @@ fn reject_color_config_reserved_zero_one() {
         ..KeyframeParams::valid()
     });
     let err = parse_frame_header(&bytes).expect_err("color_config reserved_zero=1 は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// sRGB 経路の color_config reserved_zero が 1 なら拒否する
+///
+/// 非 sRGB の reserved_zero 拒否とは別分岐 (profile 1/3 で color_space=7 のとき
+/// reserved_zero 1 ビットだけを読む)
+#[test]
+fn reject_srgb_color_config_reserved_zero_one() {
+    let bytes = build_keyframe_bytes(KeyframeParams {
+        profile: 1,
+        color_space: 7,
+        write_reserved_zero: Some(1),
+        ..KeyframeParams::valid()
+    });
+    let err = parse_frame_header(&bytes).expect_err("sRGB 経路の reserved_zero=1 は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -649,6 +668,7 @@ fn real_libvpx_keyframe_parses() {
     // 生成時の profile / bit_depth / subsampling は既定 (profile 0 = 8-bit 4:2:0)
     assert_eq!(header.profile, 0);
     assert_eq!(header.bit_depth, 8);
+    assert_eq!(header.refresh_frame_flags, 0xFF);
     assert_eq!(header.subsampling_x, 1);
     assert_eq!(header.subsampling_y, 1);
     // 生成時の解像度 320x240 が復元される
@@ -672,7 +692,7 @@ fn real_libvpx_keyframe_parses() {
 
 // ===== intra-only frame テスト =====
 
-/// intra-only frame の uncompressed header を組み立てる (render_size は無しで固定)
+/// intra-only frame の uncompressed header を組み立てる
 struct IntraOnlyParams {
     profile: u8,
     error_resilient_mode: bool,
@@ -685,6 +705,9 @@ struct IntraOnlyParams {
     refresh_frame_flags: u8,
     frame_width: u32,
     frame_height: u32,
+    render_and_frame_size_different: bool,
+    render_width: u32,
+    render_height: u32,
 }
 
 impl IntraOnlyParams {
@@ -701,6 +724,9 @@ impl IntraOnlyParams {
             refresh_frame_flags: 0,
             frame_width: 320,
             frame_height: 240,
+            render_and_frame_size_different: false,
+            render_width: 0,
+            render_height: 0,
         }
     }
 }
@@ -741,7 +767,11 @@ fn build_intra_only_bytes(p: IntraOnlyParams) -> Vec<u8> {
     w.push_bits(u32::from(p.refresh_frame_flags), 8);
     w.push_bits((p.frame_width - 1) & 0xFFFF, 16);
     w.push_bits((p.frame_height - 1) & 0xFFFF, 16);
-    w.push_bit(0); // render_and_frame_size_different = 0
+    w.push_bit(u8::from(p.render_and_frame_size_different));
+    if p.render_and_frame_size_different {
+        w.push_bits((p.render_width - 1) & 0xFFFF, 16);
+        w.push_bits((p.render_height - 1) & 0xFFFF, 16);
+    }
     w.into_bytes()
 }
 
@@ -768,6 +798,36 @@ fn intra_only_profile0_uses_default_color() {
             height: 240,
         }
     );
+    assert_eq!(header.refresh_frame_flags, 0);
+}
+
+/// profile 0 の intra-only header で `build_vp09_box` が成功する
+///
+/// rustdoc は intra_only を sample entry の代表フレームとして認めており、
+/// profile 0 では color_config が無くても既定の bit_depth=8 が入る
+#[test]
+fn build_vp09_box_accepts_intra_only_header() {
+    let bytes = build_intra_only_bytes(IntraOnlyParams::valid());
+    let header = parse_frame_header(&bytes).expect("intra-only profile 0 は解析成功する");
+    let vp09 =
+        build_vp09_box(&header, &default_config()).expect("intra-only header は構築成功する");
+    assert_eq!(vp09.vpcc_box.profile, 0);
+    assert_eq!(vp09.vpcc_box.bit_depth.get(), 8);
+    assert_eq!(vp09.vpcc_box.chroma_subsampling.get(), 1);
+}
+
+/// intra-only frame の render_size が frame_size と異なるときにその値が復元される
+#[test]
+fn intra_only_render_size_different_is_preserved() {
+    let bytes = build_intra_only_bytes(IntraOnlyParams {
+        render_and_frame_size_different: true,
+        render_width: 1920,
+        render_height: 1080,
+        ..IntraOnlyParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("render_size 有り intra-only は解析成功");
+    assert!(header.intra_only);
+    assert_eq!(header.render_size, Some((1920, 1080)));
 }
 
 /// profile 2 の intra-only frame は color_config を読み、bit_depth と color を復元する
@@ -801,6 +861,17 @@ fn intra_only_error_resilient_mode() {
     let header = parse_frame_header(&bytes).expect("error_resilient=true の intra-only は解析成功");
     assert!(header.intra_only);
     assert!(header.error_resilient_mode);
+}
+
+/// intra-only frame の `refresh_frame_flags` が header から復元される
+#[test]
+fn intra_only_refresh_frame_flags_are_preserved() {
+    let bytes = build_intra_only_bytes(IntraOnlyParams {
+        refresh_frame_flags: 0xA5,
+        ..IntraOnlyParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("intra-only は解析成功する");
+    assert_eq!(header.refresh_frame_flags, 0xA5);
 }
 
 /// intra-only frame の sync_code が不一致なら拒否する
@@ -961,6 +1032,17 @@ fn interframe_color_fields_are_placeholder_zero() {
     assert_eq!(header.subsampling_y, 0);
 }
 
+/// inter frame の `refresh_frame_flags` が header から復元される
+#[test]
+fn interframe_refresh_frame_flags_are_preserved() {
+    let bytes = build_interframe_bytes(InterframeParams {
+        refresh_frame_flags: 0x3C,
+        ..InterframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
+    assert_eq!(header.refresh_frame_flags, 0x3C);
+}
+
 /// inter frame の header (色情報が 0 プレースホルダ) を build_vp09_box に渡すと Err
 ///
 /// silent に 4:4:4 として書き出さないよう入り口で拒否する
@@ -1002,6 +1084,42 @@ fn build_vp09_box_rejects_out_of_range_subsampling() {
     header.subsampling_x = 2; // 手組みで範囲外を入れる
     let err = build_vp09_box(&header, &default_config())
         .expect_err("範囲外 subsampling は panic ではなく Err で拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// Vp9FrameHeader を手組みで bit_depth に 8/10/12 以外を入れた場合、panic せず Err
+#[test]
+fn build_vp09_box_rejects_invalid_bit_depth() {
+    let bytes = build_keyframe_bytes(KeyframeParams::valid());
+    for bit_depth in [9u8, 16, 255] {
+        let mut header = parse_frame_header(&bytes).expect("キーフレーム");
+        header.bit_depth = bit_depth;
+        let err = build_vp09_box(&header, &default_config()).expect_err(&format!(
+            "bit_depth={bit_depth} は panic ではなく Err で拒否される"
+        ));
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+}
+
+/// Vp9FrameHeader を手組みで color_range に 2 以上を入れた場合、panic せず Err
+#[test]
+fn build_vp09_box_rejects_invalid_color_range() {
+    let bytes = build_keyframe_bytes(KeyframeParams::valid());
+    let mut header = parse_frame_header(&bytes).expect("キーフレーム");
+    header.color_range = 2;
+    let err = build_vp09_box(&header, &default_config())
+        .expect_err("範囲外 color_range は panic ではなく Err で拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// Vp9FrameHeader を手組みで profile に 4 以上を入れた場合、panic せず Err
+#[test]
+fn build_vp09_box_rejects_invalid_profile() {
+    let bytes = build_keyframe_bytes(KeyframeParams::valid());
+    let mut header = parse_frame_header(&bytes).expect("キーフレーム");
+    header.profile = 4;
+    let err = build_vp09_box(&header, &default_config())
+        .expect_err("範囲外 profile は panic ではなく Err で拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 

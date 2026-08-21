@@ -174,6 +174,7 @@ fn keyframe_bit_layout_roundtrip() -> noprop::TestResult {
         assert_eq!(header.show_frame, show_frame);
         assert_eq!(header.error_resilient_mode, error_resilient_mode);
         assert!(!header.intra_only);
+        assert_eq!(header.refresh_frame_flags, 0xFF);
         let expected_bit_depth = if profile >= 2 {
             if bit_depth_10_or_12_bit { 12 } else { 10 }
         } else {
@@ -223,6 +224,8 @@ fn show_existing_frame_map_idx_roundtrip() -> noprop::TestResult {
         let header = parse_frame_header(&bytes).expect("show_existing_frame は解析成功する");
         assert_eq!(header.show_existing_frame, Some(idx));
         assert_eq!(header.profile, profile);
+        assert_eq!(header.refresh_frame_flags, 0);
+        assert_eq!(header.frame_size, Vp9FrameSize::NotPresent);
         Ok(())
     })?;
     Ok(())
@@ -425,7 +428,7 @@ fn intra_only_bit_layout_roundtrip() -> noprop::TestResult {
         assert!(!header.show_frame);
         assert_eq!(header.profile, profile);
         assert_eq!(header.error_resilient_mode, error_resilient_mode);
-        // profile 0 は color_config を書かない → デフォルト (8-bit / color 1 / range 0 / (1,1))
+        assert_eq!(header.refresh_frame_flags, refresh_frame_flags);
         if profile == 0 {
             assert_eq!(header.bit_depth, 8);
             assert_eq!(header.color_space, 1);
@@ -577,6 +580,7 @@ fn interframe_bit_layout_roundtrip() -> noprop::TestResult {
         assert_eq!(header.profile, profile);
         assert_eq!(header.show_frame, show_frame);
         assert_eq!(header.error_resilient_mode, error_resilient_mode);
+        assert_eq!(header.refresh_frame_flags, refresh_frame_flags);
         // inter では color 系は 0 プレースホルダ
         assert_eq!(header.bit_depth, 0);
         assert_eq!(header.color_space, 0);

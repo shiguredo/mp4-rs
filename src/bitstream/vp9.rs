@@ -32,6 +32,18 @@ const FRAME_SYNC_CODE: [u8; 3] = [0x49, 0x83, 0x42];
 /// 常に full range 扱いになり、chroma subsampling が 4:4:4 固定になる
 const COLOR_SPACE_SRGB: u8 = 7;
 
+/// キーフレームの `refresh_frame_flags`
+///
+/// VP9 spec Section 6.2 ではキーフレーム経路で `refresh_frame_flags = 0xFF` を
+/// 代入するだけで、この 8 ビットはストリームに現れない
+const REFRESH_FRAME_FLAGS_ALL: u8 = 0xFF;
+
+/// `show_existing_frame` の `refresh_frame_flags`
+///
+/// VP9 spec Section 6.2 では show_existing 経路で `refresh_frame_flags = 0` を
+/// 代入する。参照スロットは更新しない
+const REFRESH_FRAME_FLAGS_NONE: u8 = 0;
+
 /// VP9 のフレーム種別
 ///
 /// VP9 spec Section 6.2 の `frame_type` フィールドに対応する
@@ -48,7 +60,8 @@ pub enum Vp9FrameType {
 /// inter frame の `frame_size_with_refs` 経路 (VP9 spec Section 6.2.5) では、
 /// 現在のフレームヘッダーだけからは frame_size が確定できず、
 /// 参照スロットの寸法を借用する。この場合は [`Vp9FrameSize::UsesRefFrames`] を返し、
-/// 呼び出し側が参照フレームの寸法テーブルから解決する
+/// 呼び出し側が参照フレームの寸法テーブルから解決する。
+/// テーブルの更新には [`Vp9FrameHeader::refresh_frame_flags`] を使う
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Vp9FrameSize {
     /// key / intra-only / inter で `frame_size_with_refs` の found_ref がすべて 0 だった場合の解決済みサイズ
@@ -62,21 +75,28 @@ pub enum Vp9FrameSize {
     ///
     /// `ref_frame_slot` は `refresh_frame_flags` で管理される 8 スロット
     /// (0..=7) の中の参照インデックス。呼び出し側は自身が保持する参照フレームサイズテーブル
-    /// (スロットごとの `(width, height)`) から該当スロットの寸法を読み出す
+    /// (スロットごとの `(width, height)`) から該当スロットの寸法を読み出す。
+    /// 現在フレームのデコード後にどのスロットを更新するかは
+    /// [`Vp9FrameHeader::refresh_frame_flags`] を見る
     UsesRefFrames {
         /// 参照フレームスロットのインデックス (0..=7)
         ref_frame_slot: u8,
     },
+    /// `show_existing_frame` 経路。`frame_size` 構文が header に含まれない
+    ///
+    /// 寸法は `show_existing_frame` が指す復元済みフレーム側を使う。
+    /// 0 埋めの [`Vp9FrameSize::Resolved`] では表さない
+    NotPresent,
 }
 
 /// VP9 の uncompressed header から取得できるフレーム情報
 ///
 /// VP9 spec Section 6.2 (`uncompressed_header`) の解析結果を保持する。
 ///
-/// `show_existing_frame` が `Some` の場合、それ以外の色・寸法・error_resilient_mode
-/// などのフィールドは header に含まれないため未定義扱いとする (呼び出し側は
-/// `show_existing_frame` を先に判定して、参照する既存フレームを別ルートで
-/// 特定すること)。
+/// `show_existing_frame` が `Some` の場合、`frame_size` は [`Vp9FrameSize::NotPresent`]、
+/// `refresh_frame_flags` は 0 になる。色設定や error_resilient_mode などは header に
+/// 含まれないため未定義扱いとする (呼び出し側は `show_existing_frame` を先に判定して、
+/// 参照する既存フレームを別ルートで特定すること)。
 ///
 /// また non-key かつ非 intra_only の inter frame では、色設定 (`bit_depth` /
 /// `color_space` / `color_range` / `subsampling_x` / `subsampling_y`) が header
@@ -89,7 +109,10 @@ pub struct Vp9FrameHeader {
     pub profile: u8,
 
     /// Some(0..=7) なら該当インデックスの復元済みフレームを表示する
-    /// (このフレーム自体は新しいピクセルを持たない)。それ以外のフィールドは未定義扱い
+    /// (このフレーム自体は新しいピクセルを持たない)
+    ///
+    /// この経路では `frame_size` は [`Vp9FrameSize::NotPresent`]、
+    /// `refresh_frame_flags` は 0。色設定などは header に含まれないため未定義扱い
     pub show_existing_frame: Option<u8>,
 
     /// フレーム種別 (キーフレーム / non-key frame)
@@ -103,6 +126,15 @@ pub struct Vp9FrameHeader {
 
     /// non-key frame で `intra_only` フラグが立っているかどうか。key frame では常に `false`
     pub intra_only: bool,
+
+    /// どの参照スロット (0..=7) を現在フレームで更新するか (VP9 spec Section 6.2 / 8.10)
+    ///
+    /// - キーフレーム: ストリームに含まれず常に `0xFF` (全スロット更新)
+    /// - `show_existing_frame`: 常に `0` (更新なし)
+    /// - intra-only / inter: header から読んだ 8 ビット値
+    ///
+    /// [`Vp9FrameSize::UsesRefFrames`] を解く呼び出し側は、この値で寸法テーブルを更新する
+    pub refresh_frame_flags: u8,
 
     /// ビット深度 (8 / 10 / 12 のいずれか)
     ///
@@ -126,7 +158,11 @@ pub struct Vp9FrameHeader {
     /// 垂直方向 chroma subsampling (0 or 1)。inter frame では header に含まれないため 0
     pub subsampling_y: u8,
 
-    /// フレームサイズ (`frame_size_with_refs` 経路では未解決状態)
+    /// フレームサイズ
+    ///
+    /// - key / intra-only / 明示サイズの inter: [`Vp9FrameSize::Resolved`]
+    /// - `frame_size_with_refs` で参照寸法を借用: [`Vp9FrameSize::UsesRefFrames`]
+    /// - `show_existing_frame`: [`Vp9FrameSize::NotPresent`]
     pub frame_size: Vp9FrameSize,
 
     /// `(render_width, render_height)`。header に含まれない場合 (`render_and_frame_size_different == 0`) は `None`
@@ -233,8 +269,6 @@ impl Vp9SampleEntryConfig {
 /// - color_config の予約ビットが 0 でない
 /// - profile 1/3 で `subsampling_x == 1 && subsampling_y == 1` (4:2:0)
 ///   (VP9 spec Section 7.2.2 の bitstream conformance で不許可)
-/// - profile と bit_depth / subsampling の組み合わせが仕様外
-///   (profile 0/1 は 8-bit のみ、profile 0/2 は 4:2:0 のみ)
 /// - color_space が sRGB (7) なのに profile が 0 or 2 (sRGB は profile 1 or 3 のみ許容)
 ///
 /// なお `frame_width_minus_1` / `frame_height_minus_1` に +1 したものが frame の
@@ -268,7 +302,8 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
     let show_existing_frame_bit = reader.read_bit()?;
     if show_existing_frame_bit != 0 {
         // show_existing_frame の場合は frame_to_show_map_idx (3 ビット) を読んで終了。
-        // 他フィールドは header に含まれないので既定値で埋める
+        // frame_size は header に含まれないので NotPresent。refresh_frame_flags は
+        // spec 上 0。色設定などは 0 プレースホルダ
         let frame_to_show_map_idx = reader.read_bits(3)? as u8;
         return Ok(Vp9FrameHeader {
             profile,
@@ -277,15 +312,13 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
             show_frame: true,
             error_resilient_mode: false,
             intra_only: false,
+            refresh_frame_flags: REFRESH_FRAME_FLAGS_NONE,
             bit_depth: 0,
             color_space: 0,
             color_range: 0,
             subsampling_x: 0,
             subsampling_y: 0,
-            frame_size: Vp9FrameSize::Resolved {
-                width: 0,
-                height: 0,
-            },
+            frame_size: Vp9FrameSize::NotPresent,
             render_size: None,
         });
     }
@@ -312,6 +345,7 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
                 show_frame,
                 error_resilient_mode,
                 intra_only: false,
+                refresh_frame_flags: REFRESH_FRAME_FLAGS_ALL,
                 bit_depth: color.bit_depth,
                 color_space: color.color_space,
                 color_range: color.color_range,
@@ -350,7 +384,7 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
                         subsampling_y: 1,
                     }
                 };
-                let _refresh_frame_flags = reader.read_bits(8)?;
+                let refresh_frame_flags = reader.read_bits(8)? as u8;
                 let (width, height) = read_frame_size(&mut reader)?;
                 let render_size = read_render_size(&mut reader)?;
                 Ok(Vp9FrameHeader {
@@ -360,6 +394,7 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
                     show_frame,
                     error_resilient_mode,
                     intra_only: true,
+                    refresh_frame_flags,
                     bit_depth: color.bit_depth,
                     color_space: color.color_space,
                     color_range: color.color_range,
@@ -369,7 +404,7 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
                     render_size,
                 })
             } else {
-                let _refresh_frame_flags = reader.read_bits(8)?;
+                let refresh_frame_flags = reader.read_bits(8)? as u8;
                 // 参照フレームインデックス 3 個と sign_bias 3 個を読む
                 let mut ref_frame_idx = [0u8; 3];
                 for slot in ref_frame_idx.iter_mut() {
@@ -406,6 +441,7 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
                     show_frame,
                     error_resilient_mode,
                     intra_only: false,
+                    refresh_frame_flags,
                     bit_depth: 0,
                     color_space: 0,
                     color_range: 0,
@@ -443,6 +479,9 @@ fn read_frame_sync_code(reader: &mut BitReader<'_>) -> Result<()> {
 }
 
 /// VP9 spec Section 7.2.2 の `color_config` syntax を読む
+///
+/// profile 0/1 の bit_depth は構文上 8 固定、profile 0/2 の subsampling は
+/// 構文上 4:2:0 固定で、これらの組み合わせはエラーではなく代入で表現する
 fn read_color_config(reader: &mut BitReader<'_>, profile: u8) -> Result<ColorConfig> {
     let bit_depth = if profile >= 2 {
         // profile 2/3: 10-bit または 12-bit を 1 ビットで選択
@@ -567,6 +606,9 @@ fn read_render_size(reader: &mut BitReader<'_>) -> Result<Option<(u32, u32)>> {
 ///
 /// - `header.bit_depth == 0` (inter frame や `show_existing_frame` 由来の
 ///   プレースホルダ header は色情報を持たないので `Vp09Box` の代表フレームに使えない)
+/// - `header.bit_depth` が 8 / 10 / 12 以外
+/// - `header.color_range` が 0 / 1 以外
+/// - `header.profile` が 0..=3 以外
 /// - `header.subsampling_x == 0 && header.subsampling_y == 1` (VP9 の 4:4:0) は
 ///   VP Codec ISO Media File Format Binding の `chroma_subsampling` 3 ビット値に
 ///   対応値がないため `Vp09Box` に格納できない
@@ -582,6 +624,18 @@ pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) ->
             "VP9 build_vp09_box requires a key or intra_only frame header \
              (bit_depth == 0 indicates inter frame or show_existing_frame)",
         ));
+    }
+    if header.bit_depth != 8 && header.bit_depth != 10 && header.bit_depth != 12 {
+        // Uint<u8, 4, 4> に 16 以上を渡すと encode 時に debug panic する。
+        // Binding の bitDepth は 8 / 10 / 12 のみなので、手組みの範囲外値は Err
+        return Err(Error::invalid_input("VP9 bit_depth must be 8, 10, or 12"));
+    }
+    if header.color_range > 1 {
+        // Uint<u8, 1> に 2 以上を渡すと chroma_subsampling 側のビットを侵食する
+        return Err(Error::invalid_input("VP9 color_range must be 0 or 1"));
+    }
+    if header.profile > 3 {
+        return Err(Error::invalid_input("VP9 profile must be 0..=3"));
     }
     let chroma_subsampling_value = match (header.subsampling_x, header.subsampling_y) {
         (1, 1) => 1u8,

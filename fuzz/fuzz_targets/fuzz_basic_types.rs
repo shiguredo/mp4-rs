@@ -47,7 +47,9 @@ fuzz_target!(|data: &[u8]| {
         // `from_flags` に流し、同一ビット位置の重複を含む任意入力に対する
         // パニック安全性（OR 畳み込みが加算オーバーフローを起こさないこと）を検証する。
         let items: Vec<(usize, bool)> = data[12..]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| {
                 let pos = u32::from_be_bytes([c[0], c[1], c[2], c[3]]) as usize;
                 (pos, true)

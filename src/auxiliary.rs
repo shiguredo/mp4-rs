@@ -164,58 +164,68 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
             sample_data_offsets: Vec::new(),
         };
 
-        // stsz が Fixed のときは全サンプル同一サイズなので、sample_data_offsets
-        // テーブルを構築せず data_offset() を算術で算出する。テーブルを構築すると
-        // 入力サイズ（stsz はワイヤ上 8 バイト）と乖離した最大約 34 GB の確保に
-        // 到達できるためである。このパスではオーバーフロー検出だけをチャンク単位で
-        // 行う（チャンク数は stco / co64 の配列長に等しく、入力サイズに比例する）。
-        let sample_data_offsets = match &this.stbl_box().stsz_box {
-            StszBox::Fixed { sample_size, .. } => {
-                let s = sample_size.get() as u64;
-                for (chunk_index, chunk) in this.chunks().enumerate() {
-                    let base = chunk.offset();
-                    let k = chunk.sample_count() as u64;
-                    // eager ループは、チャンク内の floor((u64::MAX - base) / s) + 1 番目
-                    // （0 始まりの j 番目）のサンプルで最初にオーバーフローする。
-                    // 判定は k > (u64::MAX - base) / s で済み、s >= 1 なので除算は安全
-                    if k > (u64::MAX - base) / s {
-                        let j = (u64::MAX - base) / s;
-                        // j < k <= u32::MAX なので j は u32 に収まり、先頭サンプルインデックス
-                        // との和は sample_count 以下になる（前述の stsc 突き合わせで保証済み）
-                        let sample_index = NonZeroU32::new(
-                            this.sample_index_offsets[chunk_index].get() + j as u32,
-                        )
-                        .expect("overflowing sample index is always within sample_count");
-                        return Err(SampleTableAccessorError::SampleDataOffsetOverflow {
-                            sample_index,
-                            accumulated_offset: base + j * s,
-                            sample_data_size: sample_size.get(),
-                        });
-                    }
-                }
-                Vec::new()
-            }
-            StszBox::Variable { .. } => {
-                let mut sample_data_offsets = Vec::new();
-                for chunk in this.chunks() {
-                    let mut offset = chunk.offset();
-                    for sample in chunk.samples() {
-                        sample_data_offsets.push(offset);
-                        offset = offset.checked_add(sample.data_size() as u64).ok_or(
-                            SampleTableAccessorError::SampleDataOffsetOverflow {
-                                sample_index: sample.index(),
-                                accumulated_offset: offset,
-                                sample_data_size: sample.data_size(),
-                            },
-                        )?;
-                    }
-                }
-                sample_data_offsets
-            }
-        };
-        this.sample_data_offsets = sample_data_offsets;
+        // Fixed はテーブルを持たず overflow 検出のみ。Variable は prefix-sum を構築する。
+        // 詳細は各メソッド先頭のコメントを参照。
+        if let StszBox::Fixed { sample_size, .. } = &this.stbl_box().stsz_box {
+            this.validate_fixed_sample_data_offsets(*sample_size)?;
+        } else {
+            this.sample_data_offsets = this.build_variable_sample_data_offsets()?;
+        }
 
         Ok(this)
+    }
+
+    // stsz が Fixed のときは全サンプル同一サイズなので、sample_data_offsets
+    // テーブルを構築せず data_offset() を算術で算出する。テーブルを構築すると
+    // 入力サイズ（stsz はワイヤ上 8 バイト）と乖離した最大約 34 GB の確保に
+    // 到達できるためである。このパスではオーバーフロー検出だけをチャンク単位で
+    // 行う（チャンク数は stco / co64 の配列長に等しく、入力サイズに比例する）。
+    fn validate_fixed_sample_data_offsets(
+        &self,
+        sample_size: NonZeroU32,
+    ) -> Result<(), SampleTableAccessorError> {
+        let s = sample_size.get() as u64;
+        for (chunk_index, chunk) in self.chunks().enumerate() {
+            let base = chunk.offset();
+            let k = chunk.sample_count() as u64;
+            // eager ループは、チャンク内の floor((u64::MAX - base) / s) + 1 番目
+            // （0 始まりの j 番目）のサンプルで最初にオーバーフローする。
+            // 判定は k > (u64::MAX - base) / s で済み、s >= 1 なので除算は安全
+            if k > (u64::MAX - base) / s {
+                let j = (u64::MAX - base) / s;
+                // j < k <= u32::MAX なので j は u32 に収まり、先頭サンプルインデックス
+                // との和は sample_count 以下になる（前述の stsc 突き合わせで保証済み）
+                let sample_index =
+                    NonZeroU32::new(self.sample_index_offsets[chunk_index].get() + j as u32)
+                        .expect("overflowing sample index is always within sample_count");
+                return Err(SampleTableAccessorError::SampleDataOffsetOverflow {
+                    sample_index,
+                    accumulated_offset: base + j * s,
+                    sample_data_size: sample_size.get(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // Variable は entry_sizes がワイヤ上にサンプル数比例で存在するため、
+    // prefix-sum テーブルを構築しても入力サイズから大きく乖離しない。
+    fn build_variable_sample_data_offsets(&self) -> Result<Vec<u64>, SampleTableAccessorError> {
+        let mut sample_data_offsets = Vec::new();
+        for chunk in self.chunks() {
+            let mut offset = chunk.offset();
+            for sample in chunk.samples() {
+                sample_data_offsets.push(offset);
+                offset = offset.checked_add(sample.data_size() as u64).ok_or(
+                    SampleTableAccessorError::SampleDataOffsetOverflow {
+                        sample_index: sample.index(),
+                        accumulated_offset: offset,
+                        sample_data_size: sample.data_size(),
+                    },
+                )?;
+            }
+        }
+        Ok(sample_data_offsets)
     }
 
     /// トラック内のサンプルの数を取得する

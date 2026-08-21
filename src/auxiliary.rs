@@ -185,7 +185,7 @@ impl<T: AsRef<StblBox>> SampleTableAccessor<T> {
                         let sample_index = NonZeroU32::new(
                             this.sample_index_offsets[chunk_index].get() + j as u32,
                         )
-                        .expect("オーバーフローするサンプルは必ずサンプル数以内にある");
+                        .expect("overflowing sample index is always within sample_count");
                         return Err(SampleTableAccessorError::SampleDataOffsetOverflow {
                             sample_index,
                             accumulated_offset: base + j * s,
@@ -502,10 +502,9 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
     }
 
     /// サンプルデータのファイル内でのバイト位置を返す
-    ///
-    /// `stsz` が `Fixed` の場合は、チャンク先頭オフセットにチャンク内序数 × サンプルサイズを
-    /// 足して算出する（`new` がオーバーフローを検出済みのため加算は安全）。
-    /// `stsz` が `Variable` の場合は、`new` が構築した prefix-sum テーブルを参照する。
+    // `stsz` が `Fixed` の場合は、チャンク先頭オフセットにチャンク内序数 × サンプルサイズを
+    // 足して算出する（`new` がオーバーフローを検出済みのため加算は安全）。
+    // `stsz` が `Variable` の場合は、`new` が構築した prefix-sum テーブルを参照する。
     pub fn data_offset(&self) -> u64 {
         let idx = self.index.get() - 1;
         match &self.sample_table.stbl_box().stsz_box {
@@ -574,7 +573,7 @@ impl<'a, T: AsRef<StblBox>> SampleAccessor<'a, T> {
             .sample_index_offsets
             .partition_point(|x| *x <= self.index)
             .checked_sub(1)
-            .expect("有効なサンプルには必ず属するチャンクがある");
+            .expect("valid sample always belongs to a chunk");
         let chunk_index = NonZeroU32::MIN.saturating_add(i as u32);
         self.sample_table
             .get_chunk(chunk_index)

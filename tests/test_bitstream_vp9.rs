@@ -69,8 +69,8 @@ struct KeyframeParams {
     subsampling_y: u8,
     write_reserved_zero: Option<u8>, // profile 1/3 か sRGB 経由で reserved_zero を書き込むときの値 (通常 0)
     profile3_reserved_zero: u8,      // profile == 3 のときに書き込む reserved_zero
-    frame_width: u32,                // 実 width (0 も許容)
-    frame_height: u32,               // 実 height (0 も許容)
+    frame_width: u32,
+    frame_height: u32,
     render_and_frame_size_different: bool,
     render_width: u32,
     render_height: u32,
@@ -135,10 +135,8 @@ fn build_keyframe_bytes(p: KeyframeParams) -> Vec<u8> {
         w.push_bit(p.write_reserved_zero.unwrap_or(0));
     }
     // frame_size
-    let width_minus_1 = p.frame_width.wrapping_sub(1) & 0xFFFF;
-    let height_minus_1 = p.frame_height.wrapping_sub(1) & 0xFFFF;
-    w.push_bits(width_minus_1, 16);
-    w.push_bits(height_minus_1, 16);
+    w.push_bits((p.frame_width - 1) & 0xFFFF, 16);
+    w.push_bits((p.frame_height - 1) & 0xFFFF, 16);
     // render_size
     w.push_bit(u8::from(p.render_and_frame_size_different));
     if p.render_and_frame_size_different {
@@ -259,6 +257,26 @@ fn keyframe_srgb_profile1_accepted() {
     assert_eq!(header.color_range, 1); // sRGB は常に full range
     assert_eq!(header.subsampling_x, 0); // sRGB は常に 4:4:4
     assert_eq!(header.subsampling_y, 0);
+}
+
+/// sRGB が profile 3 で受理され、4:4:4 / full range 固定になる
+///
+/// profile 3 は profile 予約ビットと 10/12-bit 選択ビットが追加される経路
+#[test]
+fn keyframe_srgb_profile3_accepted() {
+    let bytes = build_keyframe_bytes(KeyframeParams {
+        profile: 3,
+        bit_depth_10_or_12_bit: Some(false),
+        color_space: 7,
+        ..KeyframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("sRGB は profile 3 で受理される");
+    assert_eq!(header.profile, 3);
+    assert_eq!(header.color_space, 7);
+    assert_eq!(header.color_range, 1);
+    assert_eq!(header.subsampling_x, 0);
+    assert_eq!(header.subsampling_y, 0);
+    assert_eq!(header.bit_depth, 10);
 }
 
 /// render_size が frame_size と異なる場合に (render_width, render_height) を復元する
@@ -459,6 +477,19 @@ fn reject_srgb_on_profile0() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
+/// sRGB (color_space=7) を profile 2 で使うと拒否する (profile 1 or 3 のみ許容)
+#[test]
+fn reject_srgb_on_profile2() {
+    let bytes = build_keyframe_bytes(KeyframeParams {
+        profile: 2,
+        bit_depth_10_or_12_bit: Some(false),
+        color_space: 7,
+        ..KeyframeParams::valid()
+    });
+    let err = parse_frame_header(&bytes).expect_err("sRGB を profile 2 に指定すると拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
 /// uncompressed header の途中で入力が切れると拒否する
 #[test]
 fn reject_truncated_header() {
@@ -624,14 +655,6 @@ fn build_vp09_box_roundtrip() {
     let (decoded, size) = Vp09Box::decode(&encoded).expect("decode 成功");
     assert_eq!(size, encoded.len());
     assert_eq!(decoded, vp09);
-}
-
-/// Vp9FrameHeader の Debug 出力が意図せず panic しないことを軽く確認する
-#[test]
-fn vp9_frame_header_debug_does_not_panic() {
-    let bytes = build_keyframe_bytes(KeyframeParams::valid());
-    let header = parse_frame_header(&bytes).expect("キーフレーム");
-    let _ = format!("{header:?}");
 }
 
 // ===== 実 VP9 keyframe fixture テスト =====

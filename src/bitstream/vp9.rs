@@ -98,11 +98,11 @@ pub enum Vp9FrameSize {
 /// 含まれないため未定義扱いとする (呼び出し側は `show_existing_frame` を先に判定して、
 /// 参照する既存フレームを別ルートで特定すること)。
 ///
-/// また non-key かつ非 intra_only の inter frame では、色設定 (`bit_depth` /
-/// `color_space` / `color_range` / `subsampling_x` / `subsampling_y`) が header
-/// に含まれない (前フレームから継承される仕様) ため、これらは 0 プレースホルダで
-/// 埋められる。[`build_vp09_box`] を呼ぶ利用者は `frame_type == Vp9FrameType::Key` か
-/// `intra_only == true` のフレームを sample entry の代表として選ぶこと
+/// non-key かつ非 intra_only の inter frame でも色設定は header に含まれず 0 になる。
+/// `color_space == 0` は CS_UNKNOWN として合法、`color_range == 0` は studio swing
+/// として合法なので、プレースホルダの 0 と区別できない。色を [`build_vp09_box`] や
+/// vpcC に使うときは `frame_type == Vp9FrameType::Key` か `intra_only == true` の
+/// 代表フレームだけを見ること。`bit_depth == 0` だけは合法値でないため番人になる
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Vp9FrameHeader {
     /// profile (0..=3)
@@ -136,26 +136,33 @@ pub struct Vp9FrameHeader {
     /// [`Vp9FrameSize::UsesRefFrames`] を解く呼び出し側は、この値で寸法テーブルを更新する
     pub refresh_frame_flags: u8,
 
-    /// ビット深度 (8 / 10 / 12 のいずれか)
+    /// ビット深度。キー / intra-only では 8 / 10 / 12
     ///
-    /// inter frame / `show_existing_frame` では header に含まれないため 0 プレースホルダ。
-    /// [`build_vp09_box`] はこの 0 を検出して Err を返し、代表フレームに使えないことを
-    /// 呼び出し側に伝える
+    /// inter frame / `show_existing_frame` では header に含まれないため 0。
+    /// 0 は VP9 の合法な bit_depth ではないので、色情報が無いことの番人になる。
+    /// [`build_vp09_box`] はこの 0 を検出して Err を返す
     pub bit_depth: u8,
 
-    /// 色空間 (0..=7)。VP9 spec Section 7.2.2 の CS_UNKNOWN..=CS_RGB。
-    /// inter frame では header に含まれないため 0
+    /// 色空間 (0..=7)。VP9 spec Section 7.2.2 の CS_UNKNOWN..=CS_RGB
+    ///
+    /// キー / intra-only で color_config を読んだときの 0 は CS_UNKNOWN として合法。
+    /// inter / `show_existing_frame` の 0 はプレースホルダで、CS_UNKNOWN と区別できない
     pub color_space: u8,
 
-    /// 色レンジ (0 = studio swing、1 = full swing)。
-    /// color_space が sRGB のときは常に 1。inter frame では header に含まれないため 0
+    /// 色レンジ (0 = studio swing、1 = full swing)
+    ///
+    /// color_space が sRGB のときは常に 1。
+    /// intra-only の profile 0 では VP9 spec Section 6.2 が `color_range` を代入しないため、
+    /// Binding の `video_full_range_flag` 既定 (studio swing = 0) を入れる。
+    /// inter / `show_existing_frame` の 0 はプレースホルダで、studio swing と区別できない
     pub color_range: u8,
 
     /// 水平方向 chroma subsampling (0 or 1)。color_space が sRGB のときは常に 0。
-    /// inter frame では header に含まれないため 0
+    /// inter / `show_existing_frame` では header に含まれないため 0
     pub subsampling_x: u8,
 
-    /// 垂直方向 chroma subsampling (0 or 1)。inter frame では header に含まれないため 0
+    /// 垂直方向 chroma subsampling (0 or 1)。
+    /// inter / `show_existing_frame` では header に含まれないため 0
     pub subsampling_y: u8,
 
     /// フレームサイズ
@@ -176,14 +183,19 @@ pub struct Vp9FrameHeader {
 /// codec_initialization_data) は [`build_vp09_box`] 側で解析結果から反映するため、
 /// 本構造体には含めない。
 ///
-/// - `level`: 単一フレームから確定できないため呼び出し側指定。`None` は 0 (Undefined) として書き込む
+/// - `level`: 単一フレームから確定できないため呼び出し側指定。`None` は 0 (Undefined)
+///   として書き込む。Binding の level 表との照合はしない
 /// - `colour_primaries` / `transfer_characteristics` / `matrix_coefficients`:
-///   VP9 の `color_space` から ISO/IEC 23001-8 の細分値へ一意対応しないため呼び出し側が明示する
+///   VP9 の `color_space` から ISO/IEC 23001-8 の細分値へ一意対応しないため呼び出し側が明示する。
+///   Binding の「`matrixCoefficients == 0` なら chroma subsampling は 4:4:4」制約も検証しない
 /// - `width` / `height`: 対象サンプルエントリーが参照する全サンプルを収容できる値。
-///   VP9 は動的解像度を持つため呼び出し側が集約する
+///   VP9 spec Section 6.2.3 の frame 辺は 1..=65536 だが、Visual Sample Entry の幅高さは
+///   16 ビット (`u16` の最大は 65535) なので、呼び出し側が集約する
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Vp9SampleEntryConfig {
     /// VP コーデックのレベル (`None` は Undefined を意味し、`vpcC.level` に 0 が入る)
+    ///
+    /// Binding の定義済み level かどうかは検証しない
     pub level: Option<u8>,
 
     /// 色域 (ISO/IEC 23001-8 の `ColourPrimaries`)
@@ -193,12 +205,20 @@ pub struct Vp9SampleEntryConfig {
     pub transfer_characteristics: u8,
 
     /// マトリックス係数 (ISO/IEC 23001-8 の `MatrixCoefficients`)
+    ///
+    /// Binding は 0 (Identity / RGB) のとき chroma を 4:4:4 にすることを MUST とするが、
+    /// この値と [`Vp9FrameHeader::subsampling_x`] / [`Vp9FrameHeader::subsampling_y`]
+    /// の組み合わせは検証しない
     pub matrix_coefficients: u8,
 
     /// トラック全体の幅上限 ([`VisualSampleEntryFields::width`] に対応)
+    ///
+    /// VP9 spec Section 6.2.3 の frame 幅は 1..=65536。こちらは ISOBMFF の 16 ビット欄
     pub width: u16,
 
     /// トラック全体の高さ上限 ([`VisualSampleEntryFields::height`] に対応)
+    ///
+    /// VP9 spec Section 6.2.3 の frame 高さは 1..=65536。こちらは ISOBMFF の 16 ビット欄
     pub height: u16,
 }
 
@@ -256,7 +276,7 @@ impl Vp9SampleEntryConfig {
 /// # 入力
 ///
 /// - `input`: VP9 フレーム全体 (uncompressed header + compressed header + tile data)。
-///   uncompressed header の途中まで読めれば残りは無視する
+///   読み取りは `render_size` までで打ち切り、それ以降は無視する
 ///
 /// # エラー条件
 ///
@@ -276,7 +296,11 @@ impl Vp9SampleEntryConfig {
 ///
 /// # 対象外
 ///
-/// compressed header や tile data の解析は行わない
+/// - compressed header や tile data の解析は行わない。uncompressed header と
+///   compressed header の境界 (`header_size_in_bytes` の後) は取れないため、
+///   CENC の「uncompressed header を平文にする」用途には使えない
+/// - superframe (複数 coded frame + 末尾 index) は先頭フレームの uncompressed
+///   header だけを読む。index の解釈や後続フレームの走査は行わない
 pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
     let mut reader = BitReader::new(input);
 
@@ -371,8 +395,10 @@ pub fn parse_frame_header(input: &[u8]) -> Result<Vp9FrameHeader> {
 
             if intra_only {
                 read_frame_sync_code(&mut reader)?;
-                // VP9 spec Section 6.2 では profile > 0 のときのみ color_config を読み、
-                // profile 0 では 8-bit / BT.601 / studio swing / 4:2:0 を既定として仮定する
+                // VP9 spec Section 6.2 では profile > 0 のときのみ color_config を読む。
+                // profile 0 では BitDepth = 8 / color_space = CS_BT_601 / 4:2:0 を代入する。
+                // color_range は spec が触れないので、Binding の video_full_range_flag
+                // 既定 (studio swing = 0) を入れる
                 let color = if profile > 0 {
                     read_color_config(&mut reader, profile)?
                 } else {
@@ -466,10 +492,9 @@ struct ColorConfig {
 
 /// VP9 spec Section 6.2 の `frame_sync_code` (24 ビット固定バイト列 `0x49 0x83 0x42`) を読む
 fn read_frame_sync_code(reader: &mut BitReader<'_>) -> Result<()> {
-    let expected = FRAME_SYNC_CODE;
-    for byte in expected.iter() {
+    for byte in FRAME_SYNC_CODE {
         let actual = reader.read_bits(8)? as u8;
-        if actual != *byte {
+        if actual != byte {
             return Err(Error::invalid_input(
                 "VP9 frame_sync_code mismatch (expected 0x49 0x83 0x42)",
             ));
@@ -600,7 +625,16 @@ fn read_render_size(reader: &mut BitReader<'_>) -> Result<Option<(u32, u32)>> {
 /// または `intra_only == true`) を渡すこと。inter frame や
 /// `show_existing_frame` の header では色情報 (`bit_depth` / `color_space` /
 /// `color_range` / `subsampling_*`) が 0 プレースホルダになっており、
-/// この関数は下記「エラー条件」で検出して `Err` を返す
+/// この関数は下記「エラー条件」で `bit_depth == 0` を検出して `Err` を返す
+///
+/// # 検証しないもの
+///
+/// - [`Vp9SampleEntryConfig::level`] が Binding の定義済み level かどうか
+/// - [`Vp9SampleEntryConfig::matrix_coefficients`] が 0 (Identity) のとき
+///   chroma subsampling が 4:4:4 であること (Binding の MUST)
+/// - [`Vp9SampleEntryConfig::width`] / [`Vp9SampleEntryConfig::height`] が
+///   header の frame 辺 (1..=65536) を収容できること。Visual Sample Entry は
+///   16 ビットなので 65536 は呼び出し側の集約で扱う
 ///
 /// # エラー条件
 ///

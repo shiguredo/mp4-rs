@@ -148,7 +148,7 @@ fn build_keyframe_bytes(p: KeyframeParams) -> Vec<u8> {
 
 fn default_config() -> Vp9SampleEntryConfig {
     Vp9SampleEntryConfig {
-        level: None,
+        level: Vp9SampleEntryConfig::LEVEL_UNDEFINED,
         colour_primaries: 1,
         transfer_characteristics: 1,
         matrix_coefficients: 1,
@@ -518,7 +518,7 @@ fn build_vp09_box_fixed_and_derived_values() {
     assert_eq!(vp09.vpcc_box.video_full_range_flag.get(), 0);
 
     // 固定値
-    assert_eq!(vp09.vpcc_box.level, 0); // None → 0
+    assert_eq!(vp09.vpcc_box.level, Vp9SampleEntryConfig::LEVEL_UNDEFINED);
     assert!(vp09.vpcc_box.codec_initialization_data.is_empty());
     assert_eq!(
         vp09.visual.data_reference_index,
@@ -617,7 +617,7 @@ fn build_vp09_box_config_colour_reflected() {
     let bytes = build_keyframe_bytes(KeyframeParams::valid());
     let header = parse_frame_header(&bytes).expect("キーフレーム");
     let config = Vp9SampleEntryConfig {
-        level: Some(31),
+        level: 31,
         colour_primaries: Vp9SampleEntryConfig::COLOUR_PRIMARIES_BT2020,
         transfer_characteristics: Vp9SampleEntryConfig::TRANSFER_CHARACTERISTICS_BT2020,
         matrix_coefficients: Vp9SampleEntryConfig::MATRIX_COEFFICIENTS_BT2020,
@@ -643,7 +643,7 @@ fn build_vp09_box_roundtrip() {
     });
     let header = parse_frame_header(&bytes).expect("profile 2 10-bit キーフレーム");
     let config = Vp9SampleEntryConfig {
-        level: Some(41),
+        level: 41,
         colour_primaries: Vp9SampleEntryConfig::COLOUR_PRIMARIES_BT709,
         transfer_characteristics: Vp9SampleEntryConfig::TRANSFER_CHARACTERISTICS_BT709,
         matrix_coefficients: Vp9SampleEntryConfig::MATRIX_COEFFICIENTS_BT709,

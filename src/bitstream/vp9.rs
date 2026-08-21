@@ -183,8 +183,8 @@ pub struct Vp9FrameHeader {
 /// codec_initialization_data) は [`build_vp09_box`] 側で解析結果から反映するため、
 /// 本構造体には含めない。
 ///
-/// - `level`: 単一フレームから確定できないため呼び出し側指定。`None` は 0 (Undefined)
-///   として書き込む。Binding の level 表との照合はしない
+/// - `level`: 単一フレームから確定できないため呼び出し側指定。
+///   0 は Undefined ([`Vp9SampleEntryConfig::LEVEL_UNDEFINED`])。Binding の level 表との照合はしない
 /// - `colour_primaries` / `transfer_characteristics` / `matrix_coefficients`:
 ///   VP9 の `color_space` から ISO/IEC 23001-8 の細分値へ一意対応しないため呼び出し側が明示する。
 ///   Binding の「`matrixCoefficients == 0` なら chroma subsampling は 4:4:4」制約も検証しない
@@ -193,10 +193,11 @@ pub struct Vp9FrameHeader {
 ///   16 ビット (`u16` の最大は 65535) なので、呼び出し側が集約する
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Vp9SampleEntryConfig {
-    /// VP コーデックのレベル (`None` は Undefined を意味し、`vpcC.level` に 0 が入る)
+    /// VP コーデックのレベル
     ///
-    /// Binding の定義済み level かどうかは検証しない
-    pub level: Option<u8>,
+    /// VP Codec ISO Media File Format Binding の `vpcC.level`。
+    /// 0 は Undefined ([`Self::LEVEL_UNDEFINED`])。定義済み level (10..=62) かどうかは検証しない
+    pub level: u8,
 
     /// 色域 (ISO/IEC 23001-8 の `ColourPrimaries`)
     pub colour_primaries: u8,
@@ -223,6 +224,9 @@ pub struct Vp9SampleEntryConfig {
 }
 
 impl Vp9SampleEntryConfig {
+    /// `vpcC.level` の Undefined (VP Codec ISO Media File Format Binding の 0)
+    pub const LEVEL_UNDEFINED: u8 = 0;
+
     /// BT.709 系の `colour_primaries` (ISO/IEC 23001-8 Table 2 の 1 = ITU-R BT.709-6)
     pub const COLOUR_PRIMARIES_BT709: u8 = 1;
 
@@ -694,8 +698,8 @@ pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) ->
 
     let vpcc_box = VpccBox {
         profile: header.profile,
-        // level は 1 フレームからは決まらないので呼び出し側指定を使う。None は 0 (Undefined) に写す
-        level: config.level.unwrap_or(0),
+        // level は 1 フレームからは決まらないので呼び出し側指定をそのまま書く
+        level: config.level,
         bit_depth: Uint::new(header.bit_depth),
         chroma_subsampling: Uint::new(chroma_subsampling_value),
         video_full_range_flag: Uint::new(header.color_range),

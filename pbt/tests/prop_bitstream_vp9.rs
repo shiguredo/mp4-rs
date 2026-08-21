@@ -268,11 +268,7 @@ fn build_vp09_box_config_roundtrip() -> noprop::TestResult {
         let bytes = build_keyframe_bytes(&params);
         let header = parse_frame_header(&bytes).expect("キーフレーム解析");
 
-        let level = if noprop::sample_bool(ctx) {
-            Some(noprop::sample_u8(ctx))
-        } else {
-            None
-        };
+        let level = noprop::sample_u8(ctx);
         let config = Vp9SampleEntryConfig {
             level,
             colour_primaries: noprop::sample_u8(ctx),
@@ -299,7 +295,7 @@ fn build_vp09_box_config_roundtrip() -> noprop::TestResult {
         );
 
         // config 反映
-        assert_eq!(vp09.vpcc_box.level, level.unwrap_or(0));
+        assert_eq!(vp09.vpcc_box.level, level);
         assert_eq!(vp09.vpcc_box.colour_primaries, config.colour_primaries);
         assert_eq!(
             vp09.vpcc_box.transfer_characteristics,

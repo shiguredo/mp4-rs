@@ -542,7 +542,6 @@ pub fn parse_adts_frame(input: &[u8]) -> Result<(AdtsHeader, &[u8])> {
 ///
 /// 以下のいずれかで [`crate::Error`] を返す。
 ///
-/// - `asc` が [`AudioSpecificConfig`] の受理条件を満たさない
 /// - `asc.sampling_frequency` が明示形式 (ADTS に 24 ビット明示周波数はない)
 /// - ヘッダー + `raw` の長さが ADTS の `frame_length` (13 ビット、最大 8191) に収まらない
 pub fn wrap_raw_aac_in_adts(

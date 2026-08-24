@@ -70,30 +70,27 @@ const SAMPLING_FREQUENCIES: [u32; 13] = [
     96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
 ];
 
-/// ASC のサンプリング周波数の表現形式
+/// ASC のサンプリング周波数
 ///
-/// ISO/IEC 14496-3 の `samplingFrequencyIndex` は、0..=12 のときは対応表の値を使い、
-/// `0xF` のときは後続 24 ビットの明示周波数 (Hz) を使う。この 2 形式を型で区別する
+/// 標準テーブル (index 0..=12) に対応する周波数はビットストリーム上
+/// `samplingFrequencyIndex` で表され、それ以外の周波数は index `0xF` + 24 ビットの
+/// 明示値で表される。この 2 形式は内部で保持し、利用者は [`Self::hz()`] で実効
+/// 周波数だけを扱う。ビットストリーム上の形式 (index / 明示) は [`Self::from_hz()`]
+/// と `parse_audio_specific_config` が正規形を自動選択する
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SamplingFrequency {
-    /// `samplingFrequencyIndex` 0..=12 の対応表による周波数
-    Index {
-        /// 対応表の index (0..=12)
-        index: u8,
-    },
-    /// `samplingFrequencyIndex` 0xF のときの明示周波数 (Hz、1..=16777215)
-    Explicit {
-        /// 明示周波数 (Hz)
-        frequency: u32,
-    },
+pub struct SamplingFrequency {
+    /// 標準テーブルの index。`Some(0..=12)` なら index 形式、`None` なら明示形式
+    index: Option<u8>,
+    /// 実効周波数 (Hz)。`index` が `Some` のときは対応表の値と一致する (不変条件)
+    frequency: u32,
 }
 
 impl SamplingFrequency {
     /// 実効サンプリング周波数 (Hz) から生成する
     ///
-    /// 標準テーブル (index 0..=12) に一致する Hz は [`Self::Index`] (正規形 2 バイト)、
-    /// それ以外の Hz は [`Self::Explicit`] (5 バイト) を返す。利用者が index の
-    /// 対応表を知らなくても正規形を選べるようにするためのコンストラクタ。
+    /// 標準テーブル (index 0..=12) に一致する Hz は index 形式 (正規形 2 バイト)、
+    /// それ以外の Hz は明示形式 (5 バイト) になる。利用者が index の対応表を
+    /// 知らなくても正規形を選べるようにするためのコンストラクタ。
     ///
     /// # エラー条件
     ///
@@ -106,33 +103,36 @@ impl SamplingFrequency {
             ));
         }
         if let Some(index) = SAMPLING_FREQUENCIES.iter().position(|f| *f == hz) {
-            Ok(Self::Index { index: index as u8 })
+            Ok(Self {
+                index: Some(index as u8),
+                frequency: hz,
+            })
         } else {
-            Ok(Self::Explicit { frequency: hz })
+            Ok(Self {
+                index: None,
+                frequency: hz,
+            })
         }
     }
 
     /// 実効サンプリング周波数 (Hz)
     ///
-    /// [`Self::Index`] は対応表 (index 0..=12) の値、[`Self::Explicit`] は保持値を
-    /// そのまま返す。
+    /// index 形式は対応表 (index 0..=12) の値、明示形式は保持値を返す。本構造体は
+    /// [`Self::from_hz()`] / `parse_audio_specific_config` が不変条件を保証するため
+    /// 常に有効な値を返す
+    pub fn hz(self) -> u32 {
+        self.frequency
+    }
+
+    /// ADTS 組み立て用にビットストリーム上の `samplingFrequencyIndex` を返す
     ///
-    /// # エラー条件
-    ///
-    /// 手組みで [`Self::Index`] の index に 13..=15 を渡した場合に [`crate::Error`] を
-    /// 返す (panic はしない)
-    pub fn hz(&self) -> Result<u32> {
-        match self {
-            Self::Index { index } => {
-                let hz = SAMPLING_FREQUENCIES
-                    .get(*index as usize)
-                    .copied()
-                    .ok_or_else(|| {
-                        Error::invalid_input("sampling frequency index must be 0..=12")
-                    })?;
-                Ok(hz)
-            }
-            Self::Explicit { frequency } => Ok(*frequency),
+    /// 明示形式 (ADTS に表現できない) のときは [`crate::Error`]
+    pub(crate) fn sampling_frequency_index(self) -> Result<u8> {
+        match self.index {
+            Some(index) => Ok(index),
+            None => Err(Error::invalid_input(
+                "ADTS cannot represent an explicit sampling frequency (index 0xF)",
+            )),
         }
     }
 }
@@ -144,8 +144,8 @@ impl SamplingFrequency {
 /// (いずれかの API が `crate::Error` を返す)。
 ///
 /// - [`Self::audio_object_type`] は常に [`AudioObjectType::AacLc`]
-/// - [`Self::sampling_frequency`] は [`SamplingFrequency::Index`] の index が 0..=12、
-///   または [`SamplingFrequency::Explicit`] の frequency が 1..=16777215 であること
+/// - [`Self::sampling_frequency`] は [`SamplingFrequency::from_hz`] が受理する値
+///   (1..=16777215) であること
 /// - [`Self::channel_configuration`] は 1..=7 (7 は 8 チャンネル)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AudioSpecificConfig {
@@ -269,8 +269,9 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 
     let sampling_frequency_index = reader.read_bits(4)? as u8;
     let sampling_frequency = match sampling_frequency_index {
-        0..=12 => SamplingFrequency::Index {
-            index: sampling_frequency_index,
+        0..=12 => SamplingFrequency {
+            index: Some(sampling_frequency_index),
+            frequency: SAMPLING_FREQUENCIES[sampling_frequency_index as usize],
         },
         15 => {
             // index 0xF は後続 24 ビットの明示周波数 (Hz)
@@ -280,7 +281,10 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
                     "AAC explicit sampling frequency must not be 0",
                 ));
             }
-            SamplingFrequency::Explicit { frequency }
+            SamplingFrequency {
+                index: None,
+                frequency,
+            }
         }
         // index 13 / 14 は reserved
         _ => {
@@ -332,12 +336,8 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 /// # エラー条件
 ///
 /// [`AudioSpecificConfig`] の各フィールドが受理条件を満たさない場合に [`crate::Error`]
-/// を返す。
-///
-/// - `channel_configuration` が 1..=7 以外
-/// - `sampling_frequency` が [`SamplingFrequency::Index`] で index が 0..=12 以外
-/// - `sampling_frequency` が [`SamplingFrequency::Explicit`] で frequency が 0 または
-///   24 ビット超過
+/// を返す。`audio_object_type` と `sampling_frequency` は型とコンストラクタで
+/// 保証されるため、`channel_configuration` の範囲 (1..=7) だけが検証対象になる。
 ///
 /// 受理した入力に対する `encode(parse(input))` は入力と一致する
 pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<u8>> {
@@ -345,13 +345,13 @@ pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<
 
     let mut writer = BitWriter::new();
     writer.push_bits(u32::from(config.audio_object_type.as_u8()), 5);
-    match config.sampling_frequency {
-        SamplingFrequency::Index { index } => {
+    match config.sampling_frequency.index {
+        Some(index) => {
             writer.push_bits(u32::from(index), 4);
         }
-        SamplingFrequency::Explicit { frequency } => {
+        None => {
             writer.push_bits(15, 4);
-            writer.push_bits(frequency, 24);
+            writer.push_bits(config.sampling_frequency.frequency, 24);
         }
     }
     writer.push_bits(u32::from(config.channel_configuration), 4);
@@ -511,8 +511,7 @@ pub fn parse_adts_frame(input: &[u8]) -> Result<(AdtsHeader, &[u8])> {
 /// 以下のいずれかで [`crate::Error`] を返す。
 ///
 /// - `asc` が [`AudioSpecificConfig`] の受理条件を満たさない
-/// - `asc.sampling_frequency` が [`SamplingFrequency::Explicit`] (ADTS に 24 ビット
-///   明示周波数はない)
+/// - `asc.sampling_frequency` が明示形式 (ADTS に 24 ビット明示周波数はない)
 /// - ヘッダー + `raw` の長さが ADTS の `frame_length` (13 ビット、最大 8191) に収まらない
 pub fn wrap_raw_aac_in_adts(
     raw: &[u8],
@@ -521,14 +520,7 @@ pub fn wrap_raw_aac_in_adts(
 ) -> Result<Vec<u8>> {
     validate_asc(asc)?;
     // ADTS に 24 ビット明示周波数は存在しないため明示形式からの変換は拒否する
-    let sampling_frequency_index = match asc.sampling_frequency {
-        SamplingFrequency::Index { index } => index,
-        SamplingFrequency::Explicit { .. } => {
-            return Err(Error::invalid_input(
-                "ADTS cannot represent an explicit sampling frequency (index 0xF)",
-            ));
-        }
-    };
+    let sampling_frequency_index = asc.sampling_frequency.sampling_frequency_index()?;
 
     // 7 + raw の長さが 13 ビット (最大 8191) に収まることを検査する。
     // 加算は checked_add で 32-bit ターゲットでのオーバーフローを避け、
@@ -618,8 +610,7 @@ pub fn build_mp4a_box(
 ) -> Result<Mp4aBox> {
     // 受理条件の検証と正規形 ASC の生成を兼ねる
     let payload = encode_audio_specific_config(asc)?;
-    // 上記の検証で周波数は有効なので hz() は Err にならない
-    let hz = asc.sampling_frequency.hz()?;
+    let hz = asc.sampling_frequency.hz();
 
     if config.es_id < EsDescriptor::MIN_ES_ID {
         return Err(Error::invalid_input(
@@ -684,22 +675,8 @@ fn validate_asc(config: &AudioSpecificConfig) -> Result<()> {
             "AAC channel configuration must be 1..=7",
         ));
     }
-    match config.sampling_frequency {
-        SamplingFrequency::Index { index } => {
-            if index > 12 {
-                return Err(Error::invalid_input(
-                    "sampling frequency index must be 0..=12",
-                ));
-            }
-        }
-        SamplingFrequency::Explicit { frequency } => {
-            if frequency == 0 || frequency > EXPLICIT_SAMPLING_FREQUENCY_MAX {
-                return Err(Error::invalid_input(
-                    "explicit sampling frequency must be 1..=16777215",
-                ));
-            }
-        }
-    }
+    // sampling_frequency は SamplingFrequency が不変条件 (from_hz / parse が保証) を
+    // 持つため、ここでの検証は不要
     Ok(())
 }
 

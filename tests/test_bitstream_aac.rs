@@ -124,7 +124,7 @@ fn build_adts_header(
 fn asc_48k_stereo() -> AudioSpecificConfig {
     AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Index { index: 3 }, // 48000
+        sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
         channel_configuration: 2,
     }
 }
@@ -156,14 +156,7 @@ fn parse_asc_48k_stereo() {
     let config = parse_audio_specific_config(&[0x11, 0x90])
         .expect("0x11 0x90 (AAC-LC 48kHz stereo) は解析成功する");
     assert_eq!(config.audio_object_type, AudioObjectType::AacLc);
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Index { index: 3 }
-    );
-    assert_eq!(
-        config.sampling_frequency.hz().expect("index 3 は有効"),
-        48000
-    );
+    assert_eq!(config.sampling_frequency.hz(), 48000);
     assert_eq!(config.channel_configuration, 2);
 }
 
@@ -173,14 +166,7 @@ fn parse_asc_44100_mono() {
     let config = parse_audio_specific_config(&[0x12, 0x08])
         .expect("0x12 0x08 (AAC-LC 44.1kHz mono) は解析成功する");
     assert_eq!(config.audio_object_type, AudioObjectType::AacLc);
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Index { index: 4 } // 44100
-    );
-    assert_eq!(
-        config.sampling_frequency.hz().expect("index 4 は有効"),
-        44100
-    );
+    assert_eq!(config.sampling_frequency.hz(), 44100);
     assert_eq!(config.channel_configuration, 1);
 }
 
@@ -189,14 +175,7 @@ fn parse_asc_44100_mono() {
 fn parse_asc_44100_stereo() {
     let config = parse_audio_specific_config(&[0x12, 0x10])
         .expect("0x12 0x10 (AAC-LC 44.1kHz stereo) は解析成功する");
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Index { index: 4 } // 44100
-    );
-    assert_eq!(
-        config.sampling_frequency.hz().expect("index 4 は有効"),
-        44100
-    );
+    assert_eq!(config.sampling_frequency.hz(), 44100);
     assert_eq!(config.channel_configuration, 2);
 }
 
@@ -206,26 +185,12 @@ fn parse_asc_frequency_index_boundaries() {
     // index 0 (96000)
     let bytes = build_asc(2, 0, None, 2, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("index 0 は解析成功する");
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Index { index: 0 }
-    );
-    assert_eq!(
-        config.sampling_frequency.hz().expect("index 0 は有効"),
-        96000
-    );
+    assert_eq!(config.sampling_frequency.hz(), 96000);
 
     // index 12 (7350)
     let bytes = build_asc(2, 12, None, 1, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("index 12 は解析成功する");
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Index { index: 12 }
-    );
-    assert_eq!(
-        config.sampling_frequency.hz().expect("index 12 は有効"),
-        7350
-    );
+    assert_eq!(config.sampling_frequency.hz(), 7350);
 }
 
 /// channel_configuration 7 (8 チャンネル) を解析できる
@@ -242,24 +207,12 @@ fn parse_asc_explicit_frequency() {
     // 明示周波数 44100 (0xAC44) を 24 ビットで書く
     let bytes = build_asc(2, 15, Some(44100), 2, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("明示周波数は解析成功する");
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Explicit { frequency: 44100 }
-    );
-    assert_eq!(
-        config.sampling_frequency.hz().expect("明示周波数は有効"),
-        44100
-    );
+    assert_eq!(config.sampling_frequency.hz(), 44100);
     assert_eq!(config.channel_configuration, 2);
     // 24 ビット最大値 (16777215) も受理する
     let bytes = build_asc(2, 15, Some(0xFF_FFFF), 1, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("明示周波数最大値は解析成功する");
-    assert_eq!(
-        config.sampling_frequency,
-        SamplingFrequency::Explicit {
-            frequency: 0xFF_FFFF
-        }
-    );
+    assert_eq!(config.sampling_frequency.hz(), 0xFF_FFFF);
 }
 
 // ===== parse_audio_specific_config: 拒否系 =====
@@ -391,38 +344,23 @@ fn encode_asc_explicit_frequency_roundtrip() {
 fn encode_asc_hand_built_valid() {
     let config = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Index { index: 4 },
+        sampling_frequency: SamplingFrequency::from_hz(44100).expect("44100 は生成成功する"),
         channel_configuration: 1,
     };
     let encoded = encode_audio_specific_config(&config).expect("有効な ASC はエンコード成功する");
     assert_eq!(encoded, [0x12, 0x08]);
 }
 
-/// 手組みで範囲外の index (13..=15) を持つ ASC はエンコードで拒否する
-///
-/// `sampling_frequency` が enum になったことで「index と Hz の食い違い」は表現できず、
-/// 残る手組みの不正は index の範囲外のみ
-#[test]
-fn reject_encode_asc_out_of_range_index() {
-    for index in [13u8, 14, 15] {
-        let config = AudioSpecificConfig {
-            audio_object_type: AudioObjectType::AacLc,
-            sampling_frequency: SamplingFrequency::Index { index },
-            channel_configuration: 2,
-        };
-        let err = encode_audio_specific_config(&config)
-            .expect_err(&format!("index {index} は拒否される"));
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
-    }
-}
-
 /// 手組みで channel_configuration が範囲外の ASC はエンコードで拒否する
+///
+/// `audio_object_type` と `sampling_frequency` は型とコンストラクタで保証されるため、
+/// 手組みで発生しうる不正は channel_configuration の範囲だけ
 #[test]
 fn reject_encode_asc_invalid_channel_configuration() {
     for channel in [0u8, 8] {
         let config = AudioSpecificConfig {
             audio_object_type: AudioObjectType::AacLc,
-            sampling_frequency: SamplingFrequency::Index { index: 3 },
+            sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
             channel_configuration: channel,
         };
         let err = encode_audio_specific_config(&config)
@@ -431,48 +369,26 @@ fn reject_encode_asc_invalid_channel_configuration() {
     }
 }
 
-/// 手組みで明示周波数が 0 または 24 ビット超過の ASC はエンコードで拒否する
-#[test]
-fn reject_encode_asc_invalid_explicit_frequency() {
-    for freq in [0u32, 0x0100_0000] {
-        let config = AudioSpecificConfig {
-            audio_object_type: AudioObjectType::AacLc,
-            sampling_frequency: SamplingFrequency::Explicit { frequency: freq },
-            channel_configuration: 2,
-        };
-        let err = encode_audio_specific_config(&config)
-            .expect_err(&format!("明示周波数 {freq} は拒否される"));
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
-    }
-}
-
-/// `SamplingFrequency::hz()` が範囲外 index で Err を返す (panic しない)
-#[test]
-fn reject_sampling_frequency_hz_out_of_range_index() {
-    for index in [13u8, 14, 15] {
-        let frequency = SamplingFrequency::Index { index };
-        let err = frequency
-            .hz()
-            .expect_err(&format!("index {index} は hz() で拒否される"));
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
-    }
-}
-
 // ===== SamplingFrequency::from_hz =====
 
-/// 標準テーブルに一致する Hz は `Index` になり、正規形 (2 バイト) にエンコードされる
+/// 標準テーブルに一致する Hz は index 形式になり、正規形 (2 バイト) にエンコードされる
 #[test]
 fn sampling_frequency_from_hz_standard_frequency_is_index() {
-    let cases: [(u32, u8); 3] = [(96000, 0), (48000, 3), (7350, 12)];
-    for (hz, expected_index) in cases {
+    for hz in [96000u32, 48000, 7350] {
         let frequency = SamplingFrequency::from_hz(hz).expect("有効な Hz は生成成功する");
+        assert_eq!(frequency.hz(), hz);
+        // 標準周波数は index 形式なので正規形は 2 バイト
+        let config = AudioSpecificConfig {
+            audio_object_type: AudioObjectType::AacLc,
+            sampling_frequency: frequency,
+            channel_configuration: 2,
+        };
         assert_eq!(
-            frequency,
-            SamplingFrequency::Index {
-                index: expected_index
-            }
+            encode_audio_specific_config(&config)
+                .expect("エンコード成功する")
+                .len(),
+            2
         );
-        assert_eq!(frequency.hz().expect("生成値は有効"), hz);
     }
 
     // 代表値 48000 (index 3) が 2 バイトの正規形にエンコードされる
@@ -485,22 +401,25 @@ fn sampling_frequency_from_hz_standard_frequency_is_index() {
     assert_eq!(encoded, [0x11, 0x90]);
 }
 
-/// 標準テーブルに一致しない Hz は `Explicit` になり、5 バイトにエンコードされる
+/// 標準テーブルに一致しない Hz は明示形式になり、5 バイトにエンコードされる
 #[test]
 fn sampling_frequency_from_hz_non_standard_frequency_is_explicit() {
     for hz in [44000u32, 65535, 0xFF_FFFF] {
         let frequency = SamplingFrequency::from_hz(hz).expect("有効な Hz は生成成功する");
-        assert_eq!(frequency, SamplingFrequency::Explicit { frequency: hz });
-        assert_eq!(frequency.hz().expect("生成値は有効"), hz);
+        assert_eq!(frequency.hz(), hz);
+        // 非標準周波数は明示形式なので正規形は 5 バイト
+        let config = AudioSpecificConfig {
+            audio_object_type: AudioObjectType::AacLc,
+            sampling_frequency: frequency,
+            channel_configuration: 2,
+        };
+        assert_eq!(
+            encode_audio_specific_config(&config)
+                .expect("エンコード成功する")
+                .len(),
+            5
+        );
     }
-
-    let config = AudioSpecificConfig {
-        audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::from_hz(44000).expect("44000 は生成成功する"),
-        channel_configuration: 2,
-    };
-    let encoded = encode_audio_specific_config(&config).expect("エンコード成功する");
-    assert_eq!(encoded.len(), 5);
 }
 
 /// `from_hz` が 0 または 24 ビット超過の Hz を拒否する
@@ -779,7 +698,8 @@ fn wrap_raw_aac_in_adts_roundtrip() {
 fn reject_wrap_adts_explicit_frequency() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Explicit { frequency: 44100 },
+        // 非標準周波数 44000 は from_hz で明示形式になる
+        sampling_frequency: SamplingFrequency::from_hz(44000).expect("44000 は生成成功する"),
         channel_configuration: 2,
     };
     let err = wrap_raw_aac_in_adts(&[0x01], &asc, &default_adts_config())
@@ -861,7 +781,7 @@ fn build_mp4a_box_fixed_and_derived_values() {
 fn build_mp4a_box_channel_7_maps_to_8_channels() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Index { index: 3 },
+        sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
         channel_configuration: 7,
     };
     let mp4a = build_mp4a_box(&asc, &default_mp4a_config()).expect("channel 7 は構築成功する");
@@ -875,7 +795,7 @@ fn build_mp4a_box_channel_7_maps_to_8_channels() {
 fn build_mp4a_box_96khz_samplerate_zero() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Index { index: 0 },
+        sampling_frequency: SamplingFrequency::from_hz(96000).expect("96000 は生成成功する"),
         channel_configuration: 2,
     };
     let mp4a = build_mp4a_box(&asc, &default_mp4a_config()).expect("96 kHz は構築成功する");
@@ -891,10 +811,7 @@ fn build_mp4a_box_96khz_samplerate_zero() {
         .payload
         .clone();
     let reparsed = parse_audio_specific_config(&payload).expect("payload は再解析成功する");
-    assert_eq!(
-        reparsed.sampling_frequency.hz().expect("index 0 は有効"),
-        96000
-    );
+    assert_eq!(reparsed.sampling_frequency.hz(), 96000);
 }
 
 /// 明示周波数が 65535 を超える ASC の構築で samplerate は 0 になる
@@ -902,7 +819,8 @@ fn build_mp4a_box_96khz_samplerate_zero() {
 fn build_mp4a_box_explicit_frequency_over_u16() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Explicit { frequency: 70000 },
+        // 非標準周波数 70000 は from_hz で明示形式になる
+        sampling_frequency: SamplingFrequency::from_hz(70000).expect("70000 は生成成功する"),
         channel_configuration: 2,
     };
     let mp4a =
@@ -934,15 +852,16 @@ fn reject_build_mp4a_box_buffer_size_db_overflow() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// 受理条件を満たさない ASC (範囲外 index) は構築で拒否する
+/// 受理条件を満たさない ASC (範囲外 channel) は構築で拒否する
 #[test]
 fn reject_build_mp4a_box_invalid_asc() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Index { index: 13 }, // 範囲外
-        channel_configuration: 2,
+        sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
+        channel_configuration: 0, // 範囲外
     };
-    let err = build_mp4a_box(&asc, &default_mp4a_config()).expect_err("範囲外 index は拒否される");
+    let err =
+        build_mp4a_box(&asc, &default_mp4a_config()).expect_err("範囲外 channel は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 

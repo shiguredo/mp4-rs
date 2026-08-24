@@ -30,30 +30,21 @@ const SAMPLING_FREQUENCIES: [u32; 13] = [
 
 /// 受理条件を満たす [`AudioSpecificConfig`] を生成する
 ///
-/// - `sampling_frequency` は 0..=12 を境界化しつつ、`Explicit` (明示周波数) を重み付きで混ぜる
+/// - `sampling_frequency` は標準 Hz (index 形式) と任意 Hz (明示形式) を重み付きで混ぜる
 /// - `channel_configuration` は 1..=7 を境界化する
 fn sample_valid_asc(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
-    let sampling_frequency = match noprop::sample_weighted_index(ctx, &[4, 1]) {
-        0 => SamplingFrequency::Index {
-            index: noprop::sample_with_boundaries(
-                ctx,
-                &[0u8, 12],
-                noprop::Ratio::one_nth(3),
-                |ctx| noprop::sample_u64_in(ctx, 0..=12) as u8,
-            ),
-        },
-        _ => SamplingFrequency::Explicit {
-            frequency: noprop::sample_with_boundaries(
-                ctx,
-                &[1u32, 0xFF_FFFF],
-                noprop::Ratio::one_nth(3),
-                |ctx| noprop::sample_u64_in(ctx, 1..=0xFF_FFFF) as u32,
-            ),
-        },
+    let hz = match noprop::sample_weighted_index(ctx, &[4, 1]) {
+        0 => SAMPLING_FREQUENCIES[noprop::sample_u64_in(ctx, 0..=12) as usize],
+        _ => noprop::sample_with_boundaries(
+            ctx,
+            &[1u32, 0xFF_FFFF],
+            noprop::Ratio::one_nth(3),
+            |ctx| noprop::sample_u64_in(ctx, 1..=0xFF_FFFF) as u32,
+        ),
     };
     AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency,
+        sampling_frequency: SamplingFrequency::from_hz(hz).expect("有効な Hz は生成成功する"),
         channel_configuration: sample_channel_configuration(ctx),
     }
 }
@@ -61,18 +52,15 @@ fn sample_valid_asc(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
 /// ADTS への wrap に使う、受理条件を満たす [`AudioSpecificConfig`] を生成する
 ///
 /// ADTS に 24 ビット明示周波数は存在しないため、`sampling_frequency` は
-/// 最初から `Index` (0..=12) に閉じる (拒否サンプリングでケースを捨てない)
+/// 標準 Hz (index 形式) に閉じる (拒否サンプリングでケースを捨てない)
 fn sample_valid_asc_for_adts(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
+    let index = noprop::sample_with_boundaries(ctx, &[0u8, 12], noprop::Ratio::one_nth(3), |ctx| {
+        noprop::sample_u64_in(ctx, 0..=12) as u8
+    });
     AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::Index {
-            index: noprop::sample_with_boundaries(
-                ctx,
-                &[0u8, 12],
-                noprop::Ratio::one_nth(3),
-                |ctx| noprop::sample_u64_in(ctx, 0..=12) as u8,
-            ),
-        },
+        sampling_frequency: SamplingFrequency::from_hz(SAMPLING_FREQUENCIES[index as usize])
+            .expect("標準 Hz は生成成功する"),
         channel_configuration: sample_channel_configuration(ctx),
     }
 }
@@ -99,11 +87,11 @@ fn sample_adts_config(ctx: &mut noprop::TestCaseContext) -> AdtsEncodeConfig {
 
 /// 受理条件を満たす ASC は `encode(parse(encode))` で往復し、正規形の長さが保たれる
 ///
-/// - `sampling_frequency` が `Index` (0..=12) のとき 2 バイト、`Explicit` のとき 5 バイト
+/// - 標準 Hz (index 形式) は 2 バイト、非標準 Hz (明示形式) は 5 バイト
 /// - 生成値は valid-by-construction なので `encode` が拒否しないこと
 ///
-/// `Explicit` は重み付き分岐なので、到達ゲートで踏まれていることを保証する
-/// (`Index` と `Explicit` の両経路のエンコードを検証する)
+/// 明示形式は重み付き分岐なので、到達ゲート (encode 長 5 バイト) で踏まれていることを
+/// 保証する (index / 明示の両経路のエンコードを検証する)
 #[test]
 fn asc_encode_parse_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
@@ -111,25 +99,17 @@ fn asc_encode_parse_roundtrip() -> noprop::TestResult {
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
         let config = sample_valid_asc(ctx);
-        if matches!(
-            config.sampling_frequency,
-            SamplingFrequency::Explicit { .. }
-        ) {
-            explicit_frequency_reached.set(true);
-        }
 
         let encoded =
             encode_audio_specific_config(&config).expect("有効な ASC はエンコード成功する");
-        // 正規形の長さ: Index (0..=12) は 2 バイト、Explicit は 5 バイト
-        let expected_len = if matches!(
-            config.sampling_frequency,
-            SamplingFrequency::Explicit { .. }
-        ) {
-            5
-        } else {
-            2
-        };
-        assert_eq!(encoded.len(), expected_len);
+        // 正規形の長さ: 標準 Hz (index 形式) は 2 バイト、非標準 Hz (明示形式) は 5 バイト
+        assert!(
+            encoded.len() == 2 || encoded.len() == 5,
+            "正規形の長さは 2 または 5 バイトであるべき"
+        );
+        if encoded.len() == 5 {
+            explicit_frequency_reached.set(true);
+        }
 
         let parsed =
             parse_audio_specific_config(&encoded).expect("エンコードした ASC は再解析成功する");
@@ -138,7 +118,7 @@ fn asc_encode_parse_roundtrip() -> noprop::TestResult {
     })?;
     assert!(
         explicit_frequency_reached.get(),
-        "Explicit (明示周波数) のケースが 1 件も生成されていない\n{runner}"
+        "明示形式 (5 バイト) のケースが 1 件も生成されていない\n{runner}"
     );
     Ok(())
 }
@@ -179,15 +159,10 @@ fn adts_wrap_parse_roundtrip() -> noprop::TestResult {
         assert_eq!(header.mpeg_version, config.mpeg_version);
         assert!(header.protection_absent, "組み立ては CRC なし固定");
         assert_eq!(header.audio_object_type, AudioObjectType::AacLc);
-        // ADTS 用サンプラーは Index のみを生成する
-        match asc.sampling_frequency {
-            SamplingFrequency::Index { index } => {
-                assert_eq!(header.sampling_frequency_index, index);
-            }
-            SamplingFrequency::Explicit { .. } => {
-                panic!("ADTS 用サンプラーは Index のみを生成する")
-            }
-        }
+        // ADTS 用サンプラーは標準 Hz (index 形式) のみを生成する。ヘッダーの index が
+        // ASC の実効周波数と一致することを、index の対応表経由で照合する
+        let expected_hz = SAMPLING_FREQUENCIES[header.sampling_frequency_index as usize];
+        assert_eq!(asc.sampling_frequency.hz(), expected_hz);
         assert_eq!(header.channel_configuration, asc.channel_configuration);
         assert_eq!(header.frame_length as usize, frame.len());
         assert_eq!(header.original_copy, config.original_copy);
@@ -204,9 +179,9 @@ fn adts_wrap_parse_roundtrip() -> noprop::TestResult {
 
 /// `SamplingFrequency::from_hz(hz)` の生成値は `hz()` で往復し、encode → parse でも往復する
 ///
-/// - 標準テーブル値 (重み付き分岐) は `Index`、任意 Hz は `Explicit` になる
-/// - どちらの経路も踏まれることを到達ゲートで保証する
-/// - encode → parse で形式 (`Index` / `Explicit`) が保持される (往復で正規形の長さも保たれる)
+/// - 標準テーブル値 (重み付き分岐) は index 形式 (2 バイト)、任意 Hz は明示形式 (5 バイト)
+/// - どちらの形式も踏まれることを encode 長の到達ゲートで保証する
+/// - encode → parse で形式 (index / 明示) が保持される (往復で正規形の長さも保たれる)
 #[test]
 fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
@@ -214,7 +189,7 @@ fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
     let explicit_reached = Cell::new(false);
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
-        // 標準テーブル値 (Index 経路) と任意 Hz (Explicit 経路) を重み付きで混ぜる
+        // 標準テーブル値 (index 形式経路) と任意 Hz (明示形式経路) を重み付きで混ぜる
         let hz = match noprop::sample_weighted_index(ctx, &[1, 3]) {
             0 => SAMPLING_FREQUENCIES[noprop::sample_u64_in(ctx, 0..=12) as usize],
             _ => noprop::sample_with_boundaries(
@@ -225,11 +200,7 @@ fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
             ),
         };
         let frequency = SamplingFrequency::from_hz(hz).expect("有効な Hz は生成成功する");
-        assert_eq!(frequency.hz().expect("生成値は有効"), hz);
-        match frequency {
-            SamplingFrequency::Index { .. } => index_reached.set(true),
-            SamplingFrequency::Explicit { .. } => explicit_reached.set(true),
-        }
+        assert_eq!(frequency.hz(), hz);
 
         // 生成した ASC の encode → parse 往復 (形式を保持する)
         let config = AudioSpecificConfig {
@@ -239,6 +210,12 @@ fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
         };
         let encoded =
             encode_audio_specific_config(&config).expect("有効な ASC はエンコード成功する");
+        if encoded.len() == 2 {
+            index_reached.set(true);
+        }
+        if encoded.len() == 5 {
+            explicit_reached.set(true);
+        }
         let parsed =
             parse_audio_specific_config(&encoded).expect("エンコードした ASC は再解析成功する");
         assert_eq!(parsed, config, "encode → parse で ASC が往復する");
@@ -246,11 +223,11 @@ fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
     })?;
     assert!(
         index_reached.get(),
-        "標準周波数 (Index 経路) のケースが 1 件も生成されていない\n{runner}"
+        "標準周波数 (index 形式) のケースが 1 件も生成されていない\n{runner}"
     );
     assert!(
         explicit_reached.get(),
-        "非標準周波数 (Explicit 経路) のケースが 1 件も生成されていない\n{runner}"
+        "非標準周波数 (明示形式) のケースが 1 件も生成されていない\n{runner}"
     );
     Ok(())
 }

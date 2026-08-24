@@ -15,6 +15,9 @@
   - @sile
 - [ADD] VP9 ビットストリーム処理ユーティリティ (`bitstream::vp9`) を追加する
   - @sile
+- [ADD] H.264 ビットストリーム処理ユーティリティ (`bitstream::h264`) を追加する
+  - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、SPS / PPS 抽出、`avc1` / `avcC` の構築を提供する
+  - @sile
 - [FIX] `UnknownBox` のデコードでトップレベル以外の可変長ボックスを拒否する
   - コンテナボックス内部の未知ボックスループが末尾のゼロ埋めを 1 個の `UnknownBox` として誤認識するのを防ぐ
   - トップレベルの未知ボックス（`RootBox` 経由）は従来どおり可変長ボックスを受理する

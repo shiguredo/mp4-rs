@@ -1,0 +1,247 @@
+//! NAL ユニットのフレーミング処理 (Annex B / length-prefixed)
+//!
+//! H.264 / H.265 共通の、コーデックに依存しない NAL ユニット境界の走査と
+//! 相互変換を提供する。NAL ヘッダーの解釈は行わず、NAL 本体をバイト列として
+//! 呼び出し側へ渡す。
+//!
+//! crate 内部専用の非公開モジュールであり、公開 API にはしない。
+
+use alloc::vec::Vec;
+
+use crate::{Error, Result};
+
+/// 4 バイト開始コード (`start_code_prefix_one_4bytes`、ITU-T H.264 Annex B)
+pub(crate) const START_CODE_PREFIX_ONE_4BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
+
+/// 3 バイト開始コード (`start_code_prefix_one_3bytes`、ITU-T H.264 Annex B)
+pub(crate) const START_CODE_PREFIX_ONE_3BYTES: [u8; 3] = [0x00, 0x00, 0x01];
+
+/// `pos` に開始コードがある場合にその長さ (3 または 4) を返す
+///
+/// 4 バイト開始コードを 3 バイト開始コード + 先行ゼロに誤分割しないため、
+/// 4 バイトを先に検査する
+fn start_code_len_at(input: &[u8], pos: usize) -> Option<usize> {
+    if input.len() >= pos + START_CODE_PREFIX_ONE_4BYTES.len()
+        && input[pos..pos + START_CODE_PREFIX_ONE_4BYTES.len()] == START_CODE_PREFIX_ONE_4BYTES
+    {
+        Some(START_CODE_PREFIX_ONE_4BYTES.len())
+    } else if input.len() >= pos + START_CODE_PREFIX_ONE_3BYTES.len()
+        && input[pos..pos + START_CODE_PREFIX_ONE_3BYTES.len()] == START_CODE_PREFIX_ONE_3BYTES
+    {
+        Some(START_CODE_PREFIX_ONE_3BYTES.len())
+    } else {
+        None
+    }
+}
+
+/// `pos` 以降で最初に現れる開始コードの位置と長さを返す
+fn find_start_code(input: &[u8], pos: usize) -> Option<(usize, usize)> {
+    let mut i = pos;
+    while i + START_CODE_PREFIX_ONE_3BYTES.len() <= input.len() {
+        if let Some(len) = start_code_len_at(input, i) {
+            return Some((i, len));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 長さフィールド幅が 1 / 2 / 4 のいずれかであることを検証する
+///
+/// ISO/IEC 14496-15 の `lengthSizeMinusOne` は 0 / 1 / 3 が正当で、
+/// 2 (幅 3) は reserved である
+fn check_length_size(length_size: u8) -> Result<()> {
+    if !matches!(length_size, 1 | 2 | 4) {
+        return Err(Error::invalid_input(
+            "length size must be 1, 2, or 4 (3 is reserved)",
+        ));
+    }
+    Ok(())
+}
+
+/// 大端序の長さフィールドを整数値として読む
+fn read_length_field(bytes: &[u8], length_size: u8) -> u32 {
+    let mut len: u32 = 0;
+    for byte in &bytes[..length_size as usize] {
+        len = (len << 8) | u32::from(*byte);
+    }
+    len
+}
+
+/// `len` が `length_size` バイトの長さフィールドに収まるかを返す
+fn length_fits(len: usize, length_size: u8) -> bool {
+    match length_size {
+        1 => len <= u8::MAX as usize,
+        2 => len <= u16::MAX as usize,
+        4 => len <= u32::MAX as usize,
+        _ => false,
+    }
+}
+
+/// 大端序の長さフィールドを書き出す
+///
+/// `length_fits` で収まることを検証済みの `len` だけを渡すこと
+fn write_length_field(out: &mut Vec<u8>, len: usize, length_size: u8) {
+    let len = len as u32;
+    match length_size {
+        1 => out.push(len as u8),
+        2 => out.extend_from_slice(&(len as u16).to_be_bytes()),
+        4 => out.extend_from_slice(&len.to_be_bytes()),
+        _ => unreachable!("length_size is validated by check_length_size"),
+    }
+}
+
+/// Annex B (ITU-T H.264 Annex B) の NAL ユニット境界を走査する
+///
+/// 返す NAL 本体は開始コードを含まないバイト列の借用。
+///
+/// # 契約
+///
+/// - 空入力は NAL ユニット 0 個の成功 (開始コード欠落とは区別する)
+/// - 非空入力に開始コードが 1 つも無い場合は [`crate::Error`]
+/// - 最初の開始コードより前の `leading_zero_8bits`、および最後の NAL より後の
+///   `trailing_zero_8bits` は境界の詰め物として捨て、NAL 本体に含めない
+/// - 最初の開始コードより前に非ゼロバイトがある場合は [`crate::Error`]
+///   (詰め物でも NAL 本体でもないデータを黙って捨てない)
+/// - 開始コードの直後に次の開始コードまたは入力終端が来る空 NAL は [`crate::Error`]
+/// - 3 バイトと 4 バイトの開始コードの混在を受理する
+pub(crate) fn scan_annexb_nals(input: &[u8]) -> Result<Vec<&[u8]>> {
+    let mut nals = Vec::new();
+    if input.is_empty() {
+        return Ok(nals);
+    }
+
+    // 最初の開始コードを探す。見つからない場合は入力全体がどの NAL にも属さない
+    let Some((first_start, first_len)) = find_start_code(input, 0) else {
+        return Err(Error::invalid_input("Annex B input has no start code"));
+    };
+
+    // 最初の開始コードより前は leading_zero_8bits の詰め物にできるゼロだけを許す
+    if input[..first_start].iter().any(|b| *b != 0) {
+        return Err(Error::invalid_input(
+            "Annex B input has non-zero bytes before the first start code",
+        ));
+    }
+
+    let mut cursor = first_start + first_len;
+    loop {
+        match find_start_code(input, cursor) {
+            Some((next_start, next_len)) => {
+                // 直前の NAL 本体は次の開始コードの直前まで
+                if next_start == cursor {
+                    return Err(Error::invalid_input("Annex B input has an empty NAL unit"));
+                }
+                nals.push(&input[cursor..next_start]);
+                cursor = next_start + next_len;
+            }
+            None => {
+                // 最後の NAL の後は trailing_zero_8bits の詰め物を除く。
+                // 正しい EBSP の NAL は rbsp_stop_one_bit で終わるため
+                // 本体が末尾ゼロで終わることはない (ITU-T H.264 7.4.1)
+                let mut end = input.len();
+                while end > cursor && input[end - 1] == 0 {
+                    end -= 1;
+                }
+                if end == cursor {
+                    return Err(Error::invalid_input("Annex B input has an empty NAL unit"));
+                }
+                nals.push(&input[cursor..end]);
+                break;
+            }
+        }
+    }
+    Ok(nals)
+}
+
+/// length-prefixed 形式 (ISO/IEC 14496-15) の NAL ユニット列を走査する
+///
+/// 返す NAL 本体は長さプレフィックスを含まないバイト列の借用。
+///
+/// # 契約
+///
+/// - 長さフィールド幅は 1 / 2 / 4 のみ受理する (3 は reserved として
+///   [`crate::Error`])
+/// - 空入力は NAL ユニット 0 個の成功
+/// - 長さフィールドが入力末尾を超える、宣言長が残バイトを超える、
+///   宣言長が 0 の NAL は [`crate::Error`]
+pub(crate) fn scan_length_prefixed_nals(input: &[u8], length_size: u8) -> Result<Vec<&[u8]>> {
+    check_length_size(length_size)?;
+    let length_size = length_size as usize;
+
+    let mut nals = Vec::new();
+    let mut cursor = 0;
+    while cursor < input.len() {
+        // 長さフィールドが入力末尾を超える場合は切り詰めとして Error
+        if input.len() - cursor < length_size {
+            return Err(Error::invalid_input(
+                "length field exceeds the end of the input",
+            ));
+        }
+        let len = read_length_field(&input[cursor..], length_size as u8) as usize;
+        cursor += length_size;
+        // 宣言長 0 の NAL は黙って読み飛ばさず Error
+        if len == 0 {
+            return Err(Error::invalid_input("NAL unit with length 0"));
+        }
+        // 宣言長が残バイトを超える場合は切り詰めとして Error
+        if len > input.len() - cursor {
+            return Err(Error::invalid_input(
+                "declared NAL length exceeds the remaining input",
+            ));
+        }
+        nals.push(&input[cursor..cursor + len]);
+        cursor += len;
+    }
+    Ok(nals)
+}
+
+/// Annex B の NAL ユニット列を length-prefixed 形式へ変換する
+///
+/// 各 NAL 本体の前に指定幅の長さフィールドを付ける。フレーミングのみを行い、
+/// NAL ヘッダーの解釈はしない。
+///
+/// # 契約
+///
+/// - 長さフィールド幅は 1 / 2 / 4 のみ受理する (3 は reserved として
+///   [`crate::Error`])
+/// - 入力の走査は [`scan_annexb_nals`] と同じ契約に従う
+/// - NAL 本体が長さフィールド幅に収まらない場合は [`crate::Error`]
+///   (黙った切り詰めはしない)
+pub(crate) fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
+    check_length_size(length_size)?;
+    let nals = scan_annexb_nals(input)?;
+
+    let mut out = Vec::new();
+    for nal in nals {
+        if !length_fits(nal.len(), length_size) {
+            return Err(Error::invalid_input(
+                "NAL unit is too long for the length field",
+            ));
+        }
+        write_length_field(&mut out, nal.len(), length_size);
+        out.extend_from_slice(nal);
+    }
+    Ok(out)
+}
+
+/// length-prefixed 形式の NAL ユニット列を Annex B へ変換する
+///
+/// 各 NAL 本体の前に 4 バイト開始コード (`0x00000001`) を付ける。
+/// フレーミングのみを行い、NAL ヘッダーの解釈はしない。
+///
+/// # 契約
+///
+/// - 長さフィールド幅は 1 / 2 / 4 のみ受理する (3 は reserved として
+///   [`crate::Error`])
+/// - 入力の走査は [`scan_length_prefixed_nals`] と同じ契約に従う
+pub(crate) fn length_prefixed_to_annexb(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
+    check_length_size(length_size)?;
+    let nals = scan_length_prefixed_nals(input, length_size)?;
+
+    let mut out = Vec::new();
+    for nal in nals {
+        out.extend_from_slice(&START_CODE_PREFIX_ONE_4BYTES);
+        out.extend_from_slice(nal);
+    }
+    Ok(out)
+}

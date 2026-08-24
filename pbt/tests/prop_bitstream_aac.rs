@@ -42,16 +42,36 @@ fn sample_valid_asc(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
     } else {
         SAMPLING_FREQUENCIES[sampling_frequency_index as usize]
     };
-    let channel_configuration =
-        noprop::sample_with_boundaries(ctx, &[1u8, 7], noprop::Ratio::one_nth(3), |ctx| {
-            noprop::sample_u64_in(ctx, 1..=7) as u8
-        });
     AudioSpecificConfig {
         audio_object_type: 2,
         sampling_frequency_index,
         sampling_frequency,
-        channel_configuration,
+        channel_configuration: sample_channel_configuration(ctx),
     }
+}
+
+/// ADTS への wrap に使う、受理条件を満たす [`AudioSpecificConfig`] を生成する
+///
+/// ADTS に 24 ビット明示周波数は存在しないため、`sampling_frequency_index` は
+/// 最初から 0..=12 に閉じる (拒否サンプリングでケースを捨てない)
+fn sample_valid_asc_for_adts(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
+    let sampling_frequency_index =
+        noprop::sample_with_boundaries(ctx, &[0u8, 12], noprop::Ratio::one_nth(3), |ctx| {
+            noprop::sample_u64_in(ctx, 0..=12) as u8
+        });
+    AudioSpecificConfig {
+        audio_object_type: 2,
+        sampling_frequency_index,
+        sampling_frequency: SAMPLING_FREQUENCIES[sampling_frequency_index as usize],
+        channel_configuration: sample_channel_configuration(ctx),
+    }
+}
+
+/// 受理条件を満たす `channel_configuration` (1..=7) を生成する
+fn sample_channel_configuration(ctx: &mut noprop::TestCaseContext) -> u8 {
+    noprop::sample_with_boundaries(ctx, &[1u8, 7], noprop::Ratio::one_nth(3), |ctx| {
+        noprop::sample_u64_in(ctx, 1..=7) as u8
+    })
 }
 
 /// 受理条件を満たす [`AdtsEncodeConfig`] を生成する
@@ -121,11 +141,7 @@ fn adts_wrap_parse_roundtrip() -> noprop::TestResult {
     let mpeg2_reached = Cell::new(false);
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
-        let asc = sample_valid_asc(ctx);
-        // ADTS に 24 ビット明示周波数はないため、index 0xF の ASC は wrap 対象から除外する
-        if asc.sampling_frequency_index == 15 {
-            return Ok(());
-        }
+        let asc = sample_valid_asc_for_adts(ctx);
         let config = sample_adts_config(ctx);
         if matches!(config.mpeg_version, AdtsMpegVersion::Mpeg2) {
             mpeg2_reached.set(true);

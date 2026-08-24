@@ -91,8 +91,9 @@ pub enum AdtsMpegVersion {
 
 /// 解析済みの ADTS ヘッダー
 ///
-/// `parse_adts_frame` が返す。組み立て側 ([`AdtsEncodeConfig`]) への再指定に
-/// 必要なフィールドだけを保持する
+/// `parse_adts_frame` が返す解析結果全体を保持する。再組み立てに使うのは
+/// `mpeg_version` / `original_copy` / `home` と、ASC 側の周波数 index・チャンネルで、
+/// `wrap_raw_aac_in_adts` は本構造体を受け取らない
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AdtsHeader {
     /// MPEG バージョン (ID ビット)
@@ -301,7 +302,8 @@ pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<
 /// - 入力がヘッダーの途中で切れている
 /// - syncword 不一致、`layer != 0`、`profile != 1`
 /// - `sampling_frequency_index` が 13 / 14 / 15
-/// - `channel_configuration` が 0 または 8..=7 の外
+/// - `channel_configuration` が 0、または 1..=7 の外 (3 ビットフィールドなので
+///   到達しうるのは 0 のみ)
 /// - `number_of_raw_data_blocks_in_frame` が 0 以外
 /// - `frame_length` がヘッダー長未満、または `input` の末尾を超える
 ///
@@ -439,8 +441,13 @@ pub fn wrap_raw_aac_in_adts(
         ));
     }
 
-    let frame_length = ADTS_HEADER_SIZE_NO_CRC + raw.len();
-    if frame_length as u32 > ADTS_FRAME_LENGTH_MAX {
+    // 7 + raw の長さが 13 ビット (最大 8191) に収まることを検査する。
+    // 加算は checked_add で 32-bit ターゲットでのオーバーフローを避け、
+    // 比較も usize のまま行う (as u32 では 4 GiB 超で切り捨てにより検査をすり抜ける)
+    let frame_length = ADTS_HEADER_SIZE_NO_CRC
+        .checked_add(raw.len())
+        .ok_or_else(|| Error::invalid_input("ADTS frame_length overflow"))?;
+    if frame_length > ADTS_FRAME_LENGTH_MAX as usize {
         return Err(Error::invalid_input(
             "ADTS frame_length (header + raw) does not fit in 13 bits",
         ));

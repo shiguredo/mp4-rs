@@ -319,7 +319,7 @@ fn reject_asc_zero_padded_trailing_byte() {
 fn encode_asc_roundtrip() {
     let inputs: [&[u8]; 5] = [
         &[0x11, 0x90], // 48 kHz stereo
-        &[0x12, 0x10], // 44.1 kHz mono
+        &[0x12, 0x10], // 44.1 kHz stereo
         &[0x16, 0x08], // 7350 Hz mono
         &[0x10, 0x10], // 96 kHz stereo
         &[0x11, 0xb8], // 48 kHz 8ch
@@ -465,6 +465,22 @@ fn parse_adts_original_copy_and_home() {
     assert!(parsed.home);
 }
 
+/// private_bit / copyright ビットが 1 の ADTS フレームも解析できる (値を返さず読み飛ばす)
+///
+/// 本モジュールは private_bit / copyright ビットを 0 必須にしない契約なので、
+/// 1 でも受理して残りのフィールドと raw を返す
+#[test]
+fn parse_adts_private_bit_and_copyright_accepted() {
+    let header = build_adts_header(0xFFF, 0, 0, 1, 1, 3, 1, 2, 0, 0, 1, 1, 9, 0x7FF, 0, None);
+    let mut frame = header.clone();
+    frame.extend_from_slice(&[0x01, 0x02]);
+    let (parsed, parsed_raw) =
+        parse_adts_frame(&frame).expect("private_bit=1 / copyright=1 は読み飛ばされて受理される");
+    assert_eq!(parsed.sampling_frequency_index, 3);
+    assert_eq!(parsed.channel_configuration, 2);
+    assert_eq!(parsed_raw, &[0x01, 0x02][..]);
+}
+
 /// 9 バイトヘッダー (protection_absent = 0、CRC 付き) を解析できる
 ///
 /// CRC の値は検証せず読み飛ばす
@@ -572,18 +588,20 @@ fn reject_adts_reserved_frequency_index() {
     }
 }
 
-/// channel_configuration 0 と 8 は 3 ビットで表現できないため拒否する
+/// channel_configuration 0 は拒否する
+///
+/// ADTS の channel_configuration は 3 ビットフィールドなので 8..=15 は表現できず、
+/// 到達しうる不正値は 0 のみ
 #[test]
 fn reject_adts_invalid_channel_configuration() {
-    for channel in [0u8, 8] {
-        let header = build_adts_header(
-            0xFFF, 0, 0, 1, 1, 3, 0, channel, 0, 0, 0, 0, 9, 0x7FF, 0, None,
-        );
-        let mut frame = header.clone();
-        frame.extend_from_slice(&[0x01, 0x02]);
-        let err = parse_adts_frame(&frame).expect_err(&format!("channel {channel} は拒否される"));
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
-    }
+    let channel = 0u8;
+    let header = build_adts_header(
+        0xFFF, 0, 0, 1, 1, 3, 0, channel, 0, 0, 0, 0, 9, 0x7FF, 0, None,
+    );
+    let mut frame = header.clone();
+    frame.extend_from_slice(&[0x01, 0x02]);
+    let err = parse_adts_frame(&frame).expect_err(&format!("channel {channel} は拒否される"));
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
 /// number_of_raw_data_blocks_in_frame != 0 は拒否する

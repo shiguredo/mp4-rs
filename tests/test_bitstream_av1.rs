@@ -352,6 +352,10 @@ mod obu {
         for ctx in [Av1ObuParseContext::ConfigObus, Av1ObuParseContext::Sample] {
             let err = parse_obus(&bytes, ctx).expect_err("TILE_LIST は Binding で拒否");
             assert_eq!(err.kind, ErrorKind::InvalidInput);
+            assert_eq!(
+                err.reason,
+                "AV1 OBU_TILE_LIST is not supported by AV1 Codec ISO Media File Format Binding"
+            );
         }
     }
 
@@ -367,7 +371,7 @@ mod obu {
         assert_eq!(obus[2].obu_type, Av1ObuType::RedundantFrameHeader);
     }
 
-    /// Sequence Header の extension flag は拒否する
+    /// Sequence Header の extension flag は拒否する (AV1 spec §6.2.2 は非 layer-specific)
     #[test]
     fn sequence_header_extension_rejected() {
         let mut bytes = vec![obu_header_byte(OBU_SEQUENCE_HEADER, true, true, 0)];
@@ -376,7 +380,40 @@ mod obu {
         let err = parse_obus(&bytes, Av1ObuParseContext::ConfigObus)
             .expect_err("Sequence Header は layer-specific ではない");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(
+            err.reason,
+            "AV1 Sequence Header OBU must have obu_extension_flag equal to 0"
+        );
     }
+
+    /// Temporal Delimiter の extension flag は拒否する (同じく非 layer-specific)
+    #[test]
+    fn temporal_delimiter_extension_rejected() {
+        let mut bytes = vec![obu_header_byte(OBU_TEMPORAL_DELIMITER, true, true, 0)];
+        bytes.push(0); // extension header (temporal=0, spatial=0, reserved=0)
+        bytes.extend(encode_leb128(0));
+        let err = parse_obus(&bytes, Av1ObuParseContext::ConfigObus)
+            .expect_err("Temporal Delimiter は layer-specific ではない");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(
+            err.reason,
+            "AV1 Temporal Delimiter OBU must have obu_extension_flag equal to 0"
+        );
+    }
+
+    /// Padding は Either なので extension header 付きでも受理する
+    #[test]
+    fn padding_extension_accepted() {
+        let mut bytes = vec![obu_header_byte(OBU_PADDING, true, true, 0)];
+        bytes.push(0); // extension header (temporal=0, spatial=0, reserved=0)
+        bytes.extend(encode_leb128(1));
+        bytes.push(0x80);
+        let obus = parse_obus(&bytes, Av1ObuParseContext::ConfigObus)
+            .expect("Padding は extension 付きでも受理する");
+        assert_eq!(obus[0].obu_type, Av1ObuType::Padding);
+        assert_eq!(obus[0].payload, &[0x80]);
+    }
+
     /// 予約済み `obu_type` (0) はサイズで読み飛ばし、列挙結果に含める
     #[test]
     fn reserved_type_skipped() {

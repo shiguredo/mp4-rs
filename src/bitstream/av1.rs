@@ -78,9 +78,11 @@ pub enum Av1ObuParseContext {
 pub enum Av1ObuType {
     /// 予約値 (0 および 9..=14)。payload は解釈せずサイズで読み飛ばす
     Reserved(u8),
-    /// Sequence Header OBU
+    /// Sequence Header OBU。AV1 spec §6.2.2 では非 layer-specific であり、
+    /// `obu_extension_flag` は 0 でなければならない
     SequenceHeader,
-    /// Temporal Delimiter OBU
+    /// Temporal Delimiter OBU。AV1 spec §6.2.2 では非 layer-specific であり、
+    /// `obu_extension_flag` は 0 でなければならない
     TemporalDelimiter,
     /// Frame Header OBU
     FrameHeader,
@@ -92,9 +94,14 @@ pub enum Av1ObuType {
     Frame,
     /// Redundant Frame Header OBU
     RedundantFrameHeader,
-    /// Tile List OBU。Binding はこの版でサポートせず、サンプルでは SHALL NOT
+    /// Tile List OBU。
+    ///
+    /// Binding §1 NOTE: この版の Binding は Tile List をサポートしない。
+    /// Binding §2.4: サンプルでは `OBU_TILE_LIST` は SHALL NOT。
+    /// [`parse_obus`] は両コンテキストでこの種別を拒否し、`Ok` では返さない
     TileList,
-    /// Padding OBU
+    /// Padding OBU。AV1 spec §6.2.2 では Either であり、`obu_extension_flag = 1`
+    /// なら layer-specific、`0` ならそうではない
     Padding,
 }
 
@@ -253,8 +260,11 @@ pub fn decode_leb128(input: &[u8]) -> Result<(u32, usize)> {
 /// - [`Av1ObuParseContext::Sample`] で空入力
 /// - [`Av1ObuParseContext::ConfigObus`] で `obu_has_size_field = 0`
 /// - `obu_forbidden_bit` / `obu_reserved_1bit` / `extension_header_reserved_3bits` が 0 でない
-/// - Sequence Header OBU が `obu_extension_flag = 1`
-/// - `OBU_TILE_LIST` (Binding はこの版で未サポート、サンプルでは SHALL NOT)
+/// - Sequence Header OBU または Temporal Delimiter OBU が `obu_extension_flag = 1`
+///   (AV1 spec §6.2.2。非 layer-specific)
+/// - `OBU_TILE_LIST`。[`Av1ObuParseContext::ConfigObus`] は Binding §1 NOTE
+///   (この版は未サポート)、[`Av1ObuParseContext::Sample`] は Binding §2.4 の
+///   SHALL NOT。[`Av1ObuType::TileList`] は `Ok` では返さない
 /// - extension header が入力末尾で欠ける
 /// - LEB128 が入力末尾で欠ける、8 バイト目の continuation bit が 1、または値が `(1 << 32) - 1` を超える
 /// - 宣言サイズが `usize` を溢れる、または残バイトを超える
@@ -336,16 +346,23 @@ fn parse_one_obu(remaining: &[u8], ctx: Av1ObuParseContext) -> Result<Av1Obu<'_>
 
     let obu_type = Av1ObuType::from_header_value(obu_type_value);
     if matches!(obu_type, Av1ObuType::TileList) {
-        // Binding §1 NOTE: この版は Tile List をサポートしない。
+        // Binding §1 NOTE: この版は Tile List をサポートしない (ConfigObus の根拠)。
         // Binding §2.4: サンプルでは OBU_TILE_LIST は SHALL NOT。
         // 根拠は Binding であり、RTP / libwebrtc の除外理由ではない
         return Err(Error::invalid_input(
             "AV1 OBU_TILE_LIST is not supported by AV1 Codec ISO Media File Format Binding",
         ));
     }
-    if matches!(obu_type, Av1ObuType::SequenceHeader) && extension_flag == 1 {
+    // AV1 spec §6.2.2: 非 layer-specific の OBU は obu_extension_flag = 0。
+    // Sequence Header と Temporal Delimiter が該当する。Padding は Either なので残す
+    if extension_flag == 1 && matches!(obu_type, Av1ObuType::SequenceHeader) {
         return Err(Error::invalid_input(
             "AV1 Sequence Header OBU must have obu_extension_flag equal to 0",
+        ));
+    }
+    if extension_flag == 1 && matches!(obu_type, Av1ObuType::TemporalDelimiter) {
+        return Err(Error::invalid_input(
+            "AV1 Temporal Delimiter OBU must have obu_extension_flag equal to 0",
         ));
     }
 

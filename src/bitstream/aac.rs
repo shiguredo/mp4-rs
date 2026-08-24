@@ -76,7 +76,7 @@ const SAMPLING_FREQUENCIES: [u32; 13] = [
 /// `samplingFrequencyIndex` で表され、それ以外の周波数は index `0xF` + 24 ビットの
 /// 明示値で表される。この 2 形式は内部で保持し、利用者は [`Self::hz()`] で実効
 /// 周波数だけを扱う。ビットストリーム上の形式 (index / 明示) は [`Self::from_hz()`]
-/// と `parse_audio_specific_config` が正規形を自動選択する
+/// と [`parse_audio_specific_config`] が正規形を自動選択する
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SamplingFrequency {
     /// 標準テーブルの index。`Some(0..=12)` なら index 形式、`None` なら明示形式
@@ -89,8 +89,8 @@ impl SamplingFrequency {
     /// 実効サンプリング周波数 (Hz) から生成する
     ///
     /// 標準テーブル (index 0..=12) に一致する Hz は index 形式 (正規形 2 バイト)、
-    /// それ以外の Hz は明示形式 (5 バイト) になる。利用者が index の対応表を
-    /// 知らなくても正規形を選べるようにするためのコンストラクタ。
+    /// それ以外の Hz は明示形式 (5 バイト) になる。形式の選択は自動なので、
+    /// 利用者は index の対応表を意識する必要がない。
     ///
     /// # エラー条件
     ///

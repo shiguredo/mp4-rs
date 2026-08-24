@@ -63,26 +63,58 @@ GASpecificConfig の必須 3 フラグ (`frameLengthFlag` / `dependsOnCoreCoder`
 
 入力バイト列は、上記を読み切った位置で終端していなければならない。後続バイトがある入力 (例: `tests/testdata/beep-aac-audio.mp4` の `DecoderSpecificInfo::payload` である 5 バイト `12 08 56 e5 00`。先頭 16 ビットは AOT 2 / 44.1 kHz / mono だが、余りが SBR の `syncExtensionType` `0x2B7`) は拒否する。短すぎる入力も拒否する。
 
-エンコードは受理条件を満たす構造化値だけを正規形バイト列にする。フラグ 3 つは 0 で書き、明示周波数以外は 2 バイト、index `0xF` のときは 5 バイトになる。受理した入力に対する `encode(parse(input))` は入力と一致する。手組みの構造化値も同じ受理条件で検証する。`audio_object_type` は 2、`channel_configuration` は 1..=7、`sampling_frequency_index` が 0..=12 なら `sampling_frequency` は上表と一致、`0xF` なら `sampling_frequency` は 1..=16777215 (24 ビット) で 0 は拒否。index と Hz が食い違う手組みは、encode / `build_mp4a_box` / `wrap_raw_aac_in_adts` のいずれでも拒否する。構築 API の `DecoderSpecificInfo::payload` にはこの正規形を格納する (入力生バイトを「余りごと」コピーしない)。
+エンコードは受理条件を満たす構造化値だけを正規形バイト列にする。フラグ 3 つは 0 で書き、明示周波数以外は 2 バイト、index `0xF` のときは 5 バイトになる。受理した入力に対する `encode(parse(input))` は入力と一致する。
+
+実装では上記の受理条件を型で保証する方針にした。`audio_object_type` は `AudioObjectType` (単一 variant)、`channel_configuration` は `ChannelConfiguration` (7 variant)、サンプリング周波数は `SamplingFrequency` (priv field の不透明 struct) で表し、index 0..=12 と Hz の対応・明示周波数 1..=16777215 (0 は拒否) は `SamplingFrequency::from_hz` と parse が保証する。このため「index と Hz が食い違う手組み」は表現できず、encode / `build_mp4a_box` / `wrap_raw_aac_in_adts` の入力検証は不要になった (`encode_audio_specific_config` は非 Result)。構築 API の `DecoderSpecificInfo::payload` にはこの正規形を格納する (入力生バイトを「余りごと」コピーしない)。
 
 以下は公開 API の骨格を示す (型名・関数名は実装時に既存 API と整合させて調整可)。
 
 ```rust
+/// AAC の Audio Object Type (現状は AOT 2 のみ)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AudioObjectType {
+    /// AOT 2 (AAC-LC)
+    AacLc,
+}
+
+/// ASC のサンプリング周波数 (不透明 struct)
+///
+/// 標準テーブル (index 0..=12) に一致する Hz は index 形式、それ以外は明示形式
+/// (24 ビット) になり、形式は `SamplingFrequency::from_hz` が自動選択する
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SamplingFrequency {
+    // 非公開フィールド
+}
+
+impl SamplingFrequency {
+    pub fn from_hz(hz: u32) -> Result<Self>; // 0 と 24 ビット超過は Err
+    pub fn hz(self) -> u32;                  // 実効周波数 (Hz)。常に有効
+}
+
+/// AAC のチャンネル構成 (1..=7。7 は 8 チャンネル)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelConfiguration {
+    Mono,          // 1
+    Stereo,        // 2
+    Channels3,     // 3
+    Channels4,     // 4
+    Channels5,     // 5
+    FivePointOne,  // 6 (5.1)
+    SevenPointOne, // 7 (8 チャンネル / 7.1)
+}
+
 /// 受理した AAC-LC の AudioSpecificConfig
+///
+/// 全フィールドが型で受理条件を保証されるため、不正な手組みは表現できない
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AudioSpecificConfig {
-    /// 常に 2 (AAC-LC)
-    pub audio_object_type: u8,
-    /// 0..=12 または 0xF
-    pub sampling_frequency_index: u8,
-    /// 実効サンプリング周波数 (Hz)
-    pub sampling_frequency: u32,
-    /// 1..=7 (7 は 8 チャンネル)
-    pub channel_configuration: u8,
+    pub audio_object_type: AudioObjectType, // 常に AacLc
+    pub sampling_frequency: SamplingFrequency,
+    pub channel_configuration: ChannelConfiguration,
 }
 
 pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig>;
-pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<u8>>;
+pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Vec<u8>; // 非 Result
 ```
 
 ### ADTS 解析 API と ADTS と raw AAC の相互変換
@@ -120,9 +152,9 @@ pub enum AdtsMpegVersion {
 pub struct AdtsHeader {
     pub mpeg_version: AdtsMpegVersion,
     pub protection_absent: bool,
-    pub audio_object_type: u8, // 常に 2
+    pub audio_object_type: AudioObjectType, // 常に AacLc
     pub sampling_frequency_index: u8, // 0..=12
-    pub channel_configuration: u8, // 1..=7
+    pub channel_configuration: ChannelConfiguration,
     pub frame_length: u16,
     pub original_copy: bool,
     pub home: bool,
@@ -192,7 +224,7 @@ pub fn build_mp4a_box(
 
 ### テスト
 
-- 単体テスト (`tests/test_bitstream_aac.rs`): 正規形 ASC (`0x11 0x90` の 48 kHz stereo、`0x12 0x10` の 44.1 kHz stereo など)、ADTS 7 バイト (nrdb = 0)。拒否: 短い入力、AOT 2 以外、sfi 13 / 14、channel 0 / 8..=15、3 フラグのいずれかが 1、後続バイトあり (fixture の `12 08 56 e5 00`)、index と Hz が食い違う手組み、`buffer_size_db` の 24 ビット超過、ADTS の syncword 不一致 / nrdb != 0 / profile != 1 / 境界超過。96 kHz (index 0) の構築で `samplerate.integer == 0` かつ payload に 96000 が残ること
+- 単体テスト (`tests/test_bitstream_aac.rs`): 正規形 ASC (`0x11 0x90` の 48 kHz stereo、`0x12 0x10` の 44.1 kHz stereo など)、ADTS 7 バイト (nrdb = 0)。拒否: 短い入力、AOT 2 以外、sfi 13 / 14、channel 0 / 8..=15、3 フラグのいずれかが 1、後続バイトあり (fixture の `12 08 56 e5 00`)、`buffer_size_db` の 24 ビット超過、ADTS の syncword 不一致 / nrdb != 0 / profile != 1 / 境界超過。96 kHz (index 0) の構築で `samplerate.integer == 0` かつ payload に 96000 が残ること。「index と Hz が食い違う手組み」は型で表現できないため拒否テストは存在しない (型による保証の確認は `SamplingFrequency::from_hz` の往復で行う)
 - PBT (`pbt/tests/prop_bitstream_aac.rs`): 受理条件内の ASC の `encode` / `parse` 往復、ADTS の意味往復。`pbt/Cargo.toml` の noprop は追加済みなので依存は足さない
 - 実データ: `beep-aac-audio.mp4` の 5 バイト ASC は成功例にしない (SBR 拡張の拒否例)。成功の実データとして ADTS ストリームを `tests/testdata/` に追加する。ネットワークや外部コマンドなしでテストが完結すること
 - Fuzzing: `fuzz/fuzz_targets/fuzz_bitstream_aac.rs` に ASC パーサーと ADTS パーサーを対象とするターゲットを追加し、`fuzz/Cargo.toml` に `[[bin]]` を追加する
@@ -211,7 +243,7 @@ pub fn build_mp4a_box(
 
 - `bitstream::aac` が公開され、AAC-LC の ASC 解析と正規形エンコード、ADTS フレーム解析、ADTS 組み立て、`Mp4aBox` 構築が利用できること
 - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、channel configuration 0 / 8..=15、sfi 13 / 14、ADTS の `number_of_raw_data_blocks_in_frame != 0` を `crate::Error` として拒否し、AAC-LC として黙って読み替えないこと
-- `build_mp4a_box` が `Mp4aBox` を返し `SampleEntry` に包まないこと。固定値 / ストリーム導出 / 呼び出し側指定が設計方針の三分類どおりであること。`channelcount` は index 7 を 8 に写し、`samplerate` は `u16` に収まらない周波数を切り捨てず 0 にすること。`buffer_size_db` が 24 ビットに収まらない値、および `sampling_frequency_index` と `sampling_frequency` が食い違う手組みは encode / `build_mp4a_box` / `wrap_raw_aac_in_adts` で `crate::Error` であること
+- `build_mp4a_box` が `Mp4aBox` を返し `SampleEntry` に包まないこと。固定値 / ストリーム導出 / 呼び出し側指定が設計方針の三分類どおりであること。`channelcount` は index 7 を 8 に写し、`samplerate` は `u16` に収まらない周波数を切り捨てず 0 にすること。`buffer_size_db` が 24 ビットに収まらない値は `build_mp4a_box` で `crate::Error` であること。`sampling_frequency_index` と `sampling_frequency` の食い違いは `AudioSpecificConfig` の型設計により構築不能であること
 - Hisui の AOT 無視、モノラル / ステレオ以外の拒否、ビットレート固定、`SampleEntry` ラップを移植していないこと
 - 不正入力を panic や黙った打ち切りではなく `crate::Error` として報告すること
 - `no_std` と crate 本体の依存ライブラリ 0 を維持すること (pbt 側の noprop は crate 本体の依存ではない)

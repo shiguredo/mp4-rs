@@ -5,13 +5,13 @@
 //! `tests/testdata/black-av1-video.mp4` を用いた fixture テストで補う
 
 use shiguredo_mp4::{
-    Decode, Encode, ErrorKind, Mp4File, Uint,
+    Decode, Either, Encode, ErrorKind, Mp4File, Uint,
     bitstream::av1::{
         Av1FrameType, Av1ObuParseContext, Av1ObuType, Av1SampleEntryConfig, Av1SequenceHeader,
         build_av01_box, decode_leb128, parse_frame_header_prefix, parse_obus,
         parse_sequence_header,
     },
-    boxes::{RootBox, SampleEntry, VisualSampleEntryFields},
+    boxes::{RootBox, SampleEntry, StszBox, VisualSampleEntryFields},
 };
 
 /// Sequence Header の `obu_type` 値
@@ -271,24 +271,28 @@ mod obu {
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 
-    /// reserved bit は拒否する
+    /// reserved bit は拒否する (完全な OBU で reserved だけを 1 にする)
     #[test]
     fn reserved_bit() {
-        let bytes = vec![obu_header_byte(OBU_PADDING, false, true, 1)];
-        // has_size=1 だが leb128 が無いので、reserved のあとで truncated にもなり得る。
-        // ヘッダー reserved は leb128 より先に見る
-        let err = parse_obus(&bytes, Av1ObuParseContext::ConfigObus)
-            .expect_err("reserved bit または後続不足");
+        let mut bytes = wrap_obu(OBU_PADDING, &[0x80], true);
+        bytes[0] |= 0x01;
+        // leb128 と payload を備えた完全な OBU なので、reserved 検査を外せば成功する。
+        // reason で「reserved が原因」であることを固定する
+        let err = parse_obus(&bytes, Av1ObuParseContext::ConfigObus).expect_err("reserved は拒否");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(err.reason, "AV1 obu_reserved_1bit must be 0");
     }
 
     /// extension header が 1 バイト足りない
     #[test]
     fn short_extension() {
         let bytes = vec![obu_header_byte(OBU_FRAME_HEADER, true, true, 0)];
+        // extension バイトが無い入力は、extension 検査を外すと空スライスへの leb128 で
+        // 同じ InvalidInput になる。reason で「extension header が原因」であることを固定する
         let err =
             parse_obus(&bytes, Av1ObuParseContext::ConfigObus).expect_err("extension header 不足");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(err.reason, "AV1 obu_extension_header is truncated");
     }
 
     /// 宣言サイズが入力を超える
@@ -333,6 +337,7 @@ mod obu {
             .expect_err("Sequence Header は layer-specific ではない");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
+    /// 予約済み `obu_type` (0) はサイズで読み飛ばし、列挙結果に含める
     #[test]
     fn reserved_type_skipped() {
         let bytes = wrap_obu(0, &[0xFF], true);
@@ -508,6 +513,136 @@ mod sequence_header {
         assert!(sh.monochrome);
         assert_eq!((sh.chroma_subsampling_x, sh.chroma_subsampling_y), (1, 1));
         assert_eq!(sh.chroma_sample_position, 0);
+    }
+
+    /// identity RGB (BT.709 + sRGB + MC_IDENTITY) は color_range を符号化せず 4:4:4 を代入する
+    #[test]
+    fn identity_rgb_444() {
+        let mut w = BitWriter::new();
+        w.push_bits(0, 3); // seq_profile
+        w.push_bit(1); // still_picture
+        w.push_bit(1); // reduced_still_picture_header
+        w.push_bits(0, 5); // seq_level_idx[0]
+        w.push_bits(15, 4);
+        w.push_bits(15, 4);
+        w.push_bits(15, 16);
+        w.push_bits(15, 16);
+        w.push_bit(0); // use_128x128_superblock
+        w.push_bit(0); // enable_filter_intra
+        w.push_bit(0); // enable_intra_edge_filter
+        w.push_bit(0); // enable_superres
+        w.push_bit(0); // enable_cdef
+        w.push_bit(0); // enable_restoration
+        w.push_bit(0); // high_bitdepth
+        w.push_bit(0); // mono_chrome
+        w.push_bit(1); // color_description_present_flag
+        w.push_bits(1, 8); // color_primaries = CP_BT_709
+        w.push_bits(13, 8); // transfer_characteristics = TC_SRGB
+        w.push_bits(0, 8); // matrix_coefficients = MC_IDENTITY
+        // identity は color_range を符号化しない。separate_uv / film_grain を 1 にして、
+        // 誤って color_range を読む実装だと (1,1) になることを固定する
+        w.push_bit(1); // separate_uv_delta_q
+        w.push_bit(1); // film_grain_params_present
+        let sh = parse_sh(&w.into_bytes());
+        assert_eq!((sh.chroma_subsampling_x, sh.chroma_subsampling_y), (0, 0));
+        assert_eq!(sh.chroma_sample_position, 0);
+    }
+
+    /// profile 2 かつ BitDepth != 12 は構文上 4:2:2 を代入し sx / sy を読まない
+    #[test]
+    fn profile2_non_12bit_422() {
+        let mut w = BitWriter::new();
+        w.push_bits(2, 3); // seq_profile
+        w.push_bit(1);
+        w.push_bit(1);
+        w.push_bits(0, 5);
+        w.push_bits(15, 4);
+        w.push_bits(15, 4);
+        w.push_bits(15, 16);
+        w.push_bits(15, 16);
+        w.push_bit(0);
+        w.push_bit(0);
+        w.push_bit(0);
+        w.push_bit(0);
+        w.push_bit(0);
+        w.push_bit(0);
+        w.push_bit(0); // high_bitdepth = 0 (8-bit、BitDepth != 12)
+        w.push_bit(0); // mono_chrome
+        w.push_bit(0); // color_description_present_flag
+        w.push_bit(0); // color_range
+        // sx / sy は書かない。separate_uv / film_grain を 1 にして、
+        // 誤って sx / sy を読む実装だと (1,1) になることを固定する
+        w.push_bit(1); // separate_uv_delta_q
+        w.push_bit(1); // film_grain_params_present
+        let sh = parse_sh(&w.into_bytes());
+        assert_eq!(sh.seq_profile, 2);
+        assert_eq!((sh.chroma_subsampling_x, sh.chroma_subsampling_y), (1, 0));
+        assert_eq!(sh.chroma_sample_position, 0);
+    }
+
+    /// timing_info (uvlc 込み) / decoder_model_info / initial_display_delay /
+    /// frame_id_numbers_present_flag を立てた合法 SH を解析できる
+    #[test]
+    fn timing_decoder_model_frame_id() {
+        let mut w = BitWriter::new();
+        w.push_bits(0, 3); // seq_profile
+        w.push_bit(0); // still_picture
+        w.push_bit(0); // reduced_still_picture_header
+        w.push_bit(1); // timing_info_present_flag
+        w.push_bits(1, 32); // num_units_in_display_tick
+        w.push_bits(30, 32); // time_scale
+        w.push_bit(1); // equal_picture_interval
+        w.push_bit(1); // num_ticks_per_picture_minus_1 = uvlc(0)
+        w.push_bit(1); // decoder_model_info_present_flag
+        w.push_bits(4, 5); // buffer_delay_length_minus_1
+        w.push_bits(1, 32); // num_units_in_decoding_tick
+        w.push_bits(0, 5); // buffer_removal_time_length_minus_1
+        w.push_bits(0, 5); // frame_presentation_time_length_minus_1
+        w.push_bit(1); // initial_display_delay_present_flag
+        w.push_bits(0, 5); // operating_points_cnt_minus_1 = 0 (1 個)
+        w.push_bits(0, 12); // operating_point_idc[0]
+        w.push_bits(8, 5); // seq_level_idx[0] (>7 なので tier ビットあり)
+        w.push_bit(1); // seq_tier[0]
+        w.push_bit(1); // decoder_model_present_for_this_op[0]
+        w.push_bits(10, 5); // decoder_buffer_delay[0] (n = 4 + 1 = 5)
+        w.push_bits(20, 5); // encoder_buffer_delay[0]
+        w.push_bit(0); // low_delay_mode_flag[0]
+        w.push_bit(1); // initial_display_delay_present_for_this_op[0]
+        w.push_bits(3, 4); // initial_display_delay_minus_1[0]
+        w.push_bits(15, 4);
+        w.push_bits(15, 4);
+        w.push_bits(319, 16);
+        w.push_bits(239, 16);
+        w.push_bit(1); // frame_id_numbers_present_flag
+        w.push_bits(0, 4); // delta_frame_id_length_minus_2
+        w.push_bits(0, 3); // additional_frame_id_length_minus_1
+        w.push_bit(0); // use_128x128_superblock
+        w.push_bit(0); // enable_filter_intra
+        w.push_bit(0); // enable_intra_edge_filter
+        w.push_bit(0); // enable_interintra_compound
+        w.push_bit(0); // enable_masked_compound
+        w.push_bit(0); // enable_warped_motion
+        w.push_bit(0); // enable_dual_filter
+        w.push_bit(0); // enable_order_hint
+        w.push_bit(1); // seq_choose_screen_content_tools
+        w.push_bit(1); // seq_choose_integer_mv
+        w.push_bit(0); // enable_superres
+        w.push_bit(0); // enable_cdef
+        w.push_bit(0); // enable_restoration
+        w.push_bit(0); // high_bitdepth
+        w.push_bit(0); // mono_chrome
+        w.push_bit(0); // color_description_present_flag
+        w.push_bit(0); // color_range
+        w.push_bits(0, 2); // chroma_sample_position
+        w.push_bit(0); // separate_uv_delta_q
+        w.push_bit(0); // film_grain_params_present
+        let sh = parse_sh(&w.into_bytes());
+        assert_eq!(sh.seq_level_idx_0, 8);
+        assert_eq!(sh.seq_tier_0, 1);
+        assert_eq!(sh.max_frame_width, 320);
+        assert_eq!(sh.max_frame_height, 240);
+        assert!(!sh.reduced_still_picture_header);
+        assert_eq!((sh.chroma_subsampling_x, sh.chroma_subsampling_y), (1, 1));
     }
 }
 
@@ -711,18 +846,30 @@ mod build {
     }
 }
 
-/// 既存の AV1 MP4 fixture から configOBUs を解析できる
+/// 既存の AV1 MP4 fixture から configOBUs を解析し、サンプルを stsz で分割して
+/// それぞれを Binding §2.4 の Temporal Unit として解析できる
 #[test]
 fn fixture_black_av1_video_config_obus() {
     let input_bytes = include_bytes!("testdata/black-av1-video.mp4");
     let (file, _) = Mp4File::decode(&input_bytes[..]).expect("fixture をデコードできる");
+
+    let mdat_payload = file
+        .boxes
+        .iter()
+        .find_map(|root| match root {
+            RootBox::Mdat(mdat) => Some(mdat.payload.as_slice()),
+            _ => None,
+        })
+        .expect("fixture に mdat がある");
+
     let mut found = false;
     for root in &file.boxes {
         let RootBox::Moov(moov) = root else {
             continue;
         };
         for trak in &moov.trak_boxes {
-            for entry in &trak.mdia_box.minf_box.stbl_box.stsd_box.entries {
+            let stbl = &trak.mdia_box.minf_box.stbl_box;
+            for entry in &stbl.stsd_box.entries {
                 let SampleEntry::Av01(av01) = entry else {
                     continue;
                 };
@@ -731,26 +878,47 @@ fn fixture_black_av1_video_config_obus() {
                     .expect("実データの configOBUs を解析できる");
                 let sh_obu = obus
                     .iter()
-                    .find(|o| o.obu_type == Av1ObuType::SequenceHeader);
-                if let Some(sh_obu) = sh_obu {
-                    let sh = parse_sequence_header(sh_obu.payload)
-                        .expect("実データの Sequence Header を解析できる");
-                    assert_eq!(sh.max_frame_width, u32::from(av01.visual.width));
-                    assert_eq!(sh.max_frame_height, u32::from(av01.visual.height));
-                    assert_eq!(sh.seq_profile, av01.av1c_box.seq_profile.get());
+                    .find(|o| o.obu_type == Av1ObuType::SequenceHeader)
+                    .expect("実データの configOBUs に Sequence Header がある");
+                let sh = parse_sequence_header(sh_obu.payload)
+                    .expect("実データの Sequence Header を解析できる");
+                assert_eq!(sh.max_frame_width, u32::from(av01.visual.width));
+                assert_eq!(sh.max_frame_height, u32::from(av01.visual.height));
+                assert_eq!(sh.seq_profile, av01.av1c_box.seq_profile.get());
+
+                // stsz のサンプルサイズで mdat を切り、各サンプルを Binding §2.4 の
+                // Temporal Unit (Sample コンテキスト) として解析する
+                let chunk_count = match &stbl.stco_or_co64_box {
+                    Either::A(stco) => stco.chunk_offsets.len(),
+                    Either::B(co64) => co64.chunk_offsets.len(),
+                };
+                assert_eq!(chunk_count, 1, "fixture は単一チャンクでサンプルが連続する");
+                let StszBox::Variable { entry_sizes } = &stbl.stsz_box else {
+                    panic!("fixture の stsz はサンプルごとにサイズが異なる");
+                };
+                assert_eq!(entry_sizes.len(), 25, "fixture のサンプル数は 25");
+                let total: u32 = entry_sizes.iter().sum();
+                assert_eq!(
+                    usize::try_from(total).expect("u32 は usize に収まる"),
+                    mdat_payload.len(),
+                    "stsz の合計は mdat payload 全体を覆う"
+                );
+                let mut offset = 0usize;
+                for (index, size) in entry_sizes.iter().enumerate() {
+                    let end = offset + usize::try_from(*size).expect("u32 は usize に収まる");
+                    let sample = &mdat_payload[offset..end];
+                    let sample_obus = parse_obus(sample, Av1ObuParseContext::Sample)
+                        .expect("実データのサンプルは Temporal Unit として解析できる");
+                    assert!(
+                        !sample_obus.is_empty(),
+                        "サンプル {index} は 1 個以上の OBU を含む"
+                    );
+                    offset = end;
                 }
             }
         }
     }
     assert!(found, "fixture に Av01 サンプルエントリーがある");
-
-    for root in &file.boxes {
-        if let RootBox::Mdat(mdat) = root {
-            let sample_obus = parse_obus(&mdat.payload, Av1ObuParseContext::Sample)
-                .expect("実データの mdat をサンプルとして解析できる");
-            assert!(!sample_obus.is_empty(), "サンプルは 1 個以上の OBU を含む");
-        }
-    }
 }
 
 /// `black-av1-video.mp4` から抽出した configOBUs 単体を解析し `Av01Box` を構築できる

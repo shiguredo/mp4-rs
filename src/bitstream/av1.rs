@@ -67,7 +67,9 @@ pub enum Av1ObuParseContext {
     /// MP4 サンプル (Binding §2.4)
     ///
     /// 最後以外の OBU は `obu_has_size_field = 1` が必須。最後の OBU だけ省略でき、
-    /// 省略時はサンプル末尾までを payload とする。空入力は拒否する
+    /// 省略時はサンプル末尾までを payload とする。サイズを省略した時点でその OBU が
+    /// 列の最後になり、後続バイトはすべて payload に吸収されるため、「最後以外の
+    /// OBU が省略した」ことはこのパーサーでは検出できない。空入力は拒否する
     Sample,
 }
 
@@ -250,7 +252,6 @@ pub fn decode_leb128(input: &[u8]) -> Result<(u32, usize)> {
 ///
 /// - [`Av1ObuParseContext::Sample`] で空入力
 /// - [`Av1ObuParseContext::ConfigObus`] で `obu_has_size_field = 0`
-/// - [`Av1ObuParseContext::Sample`] で最後以外の OBU がサイズフィールドを省略
 /// - `obu_forbidden_bit` / `obu_reserved_1bit` / `extension_header_reserved_3bits` が 0 でない
 /// - Sequence Header OBU が `obu_extension_flag = 1`
 /// - `OBU_TILE_LIST` (Binding はこの版で未サポート、サンプルでは SHALL NOT)
@@ -745,7 +746,7 @@ pub fn build_av01_box(
             }
             seen_sequence_header = true;
             let parsed = parse_sequence_header(obu.payload)?;
-            if !sequence_header_matches_av1c(&parsed, seq) {
+            if parsed != *seq {
                 return Err(Error::invalid_input(
                     "AV1 configOBUs Sequence Header does not match the provided Av1SequenceHeader",
                 ));
@@ -823,20 +824,6 @@ pub fn build_av01_box(
         av1c_box,
         unknown_boxes: Vec::new(),
     })
-}
-
-fn sequence_header_matches_av1c(parsed: &Av1SequenceHeader, expected: &Av1SequenceHeader) -> bool {
-    parsed.seq_profile == expected.seq_profile
-        && parsed.seq_level_idx_0 == expected.seq_level_idx_0
-        && parsed.seq_tier_0 == expected.seq_tier_0
-        && parsed.high_bitdepth == expected.high_bitdepth
-        && parsed.twelve_bit == expected.twelve_bit
-        && parsed.monochrome == expected.monochrome
-        && parsed.chroma_subsampling_x == expected.chroma_subsampling_x
-        && parsed.chroma_subsampling_y == expected.chroma_subsampling_y
-        && parsed.chroma_sample_position == expected.chroma_sample_position
-        && parsed.max_frame_width == expected.max_frame_width
-        && parsed.max_frame_height == expected.max_frame_height
 }
 
 /// AV1 uncompressed header / Sequence Header の MSB-first ビット読み取り

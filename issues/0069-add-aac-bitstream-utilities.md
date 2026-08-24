@@ -1,7 +1,7 @@
 # AAC ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-24
 - Branch: feature/add-aac-bitstream-utilities
 - Polished: 2026-08-21
 
@@ -251,3 +251,13 @@ pub fn build_mp4a_box(
 - 公開 API の rustdoc に受理する入力、拒否条件、`samplerate` が 0 になる周波数、ADTS 組み立ての固定ビットが記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`src/bitstream/aac.rs` に `bitstream::aac` モジュールを実装した。`src/bitstream.rs` に `pub mod aac;` を追記し、公開 API として `parse_audio_specific_config` / `encode_audio_specific_config` / `parse_adts_frame` / `wrap_raw_aac_in_adts` / `build_mp4a_box` を提供する。
+
+設計方針どおり AOT 2 (AAC-LC) のみを受理し、GASpecificConfig 必須 3 フラグの非ゼロ・後続の SBR / PS 拡張・channel 0 / 8..=15・sfi 13 / 14・ADTS の nrdb != 0 は `crate::Error` で拒否する。`beep-aac-audio.mp4` の 5 バイト ASC (`12 08 56 e5 00`) は SBR 拡張の拒否例としてテストに固定し、成功例は ffmpeg 抽出の ADTS ストリーム (`tests/testdata/beep-aac-audio.aac`) を fixture にした。
+
+実装中に `AudioSpecificConfig` のフィールドを型安全にした。`audio_object_type` は `AudioObjectType` enum、`channel_configuration` は `ChannelConfiguration` enum (7 は `SevenPointOne` = 8 チャンネル)、サンプリング周波数は `SamplingFrequency` 不透明 struct (`from_hz` が形式を自動選択し、`hz()` は非 Result) で表した。これにより「index と Hz の食い違い」等の不正な手組みが型で表現不能になり、入力検証 (旧 `validate_asc`) と `encode_audio_specific_config` の `Result` は撤去した。
+
+テストは決定的テスト (`tests/test_bitstream_aac.rs`)、noprop PBT (`pbt/tests/prop_bitstream_aac.rs`)、fuzz ターゲット (`fuzz/fuzz_targets/fuzz_bitstream_aac.rs`、`fuzz/Cargo.toml` に `[[bin]]` 登録)、実データ fixture を追加した。`README.md` / `README.en.md` の規格書一覧に ISO/IEC 13818-7 と ISO/IEC 14496-3 を追記し、`CHANGES.md` の develop に `[ADD]` を記載した。`cargo fmt` / `cargo clippy` / `cargo test` / `cargo doc` はすべて通る。

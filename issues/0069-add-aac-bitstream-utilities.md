@@ -3,93 +3,219 @@
 - Created: 2026-08-18
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-aac-bitstream-utilities
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-21
 
 ## 目的
 
-AAC の AudioSpecificConfig と ADTS ヘッダーを解析し、`mp4a` / `esds` の構築、および ADTS <-> raw AAC 相互変換を `shiguredo_mp4` の汎用ユーティリティとして提供する。
+AAC-LC の AudioSpecificConfig と ADTS ヘッダーを解析し、`mp4a` / `esds` の構築、および ADTS と raw AAC の相互変換を `shiguredo_mp4` の汎用ユーティリティとして提供する。
 
-これらは MP4 ボックス自体の処理ではないが、AAC ストリームから `Mp4aBox` を構築する場合と、MP4 サンプルをデコーダーへ渡せる形式 (ADTS) に変換する場合の双方で必要になる。
+これらは MP4 ボックス自体の処理ではないが、AAC-LC ストリームから `Mp4aBox` を構築する場合と、MP4 サンプルをデコーダーへ渡せる形式 (ADTS) に変換する場合の双方で必要になる。
 
 ## 現状
 
-- `src/boxes_sample_entry.rs` の `Mp4aBox` および `src/descriptors.rs` の `EsDescriptor` / `DecoderConfigDescriptor` / `DecoderSpecificInfo` は既に存在するが、`DecoderSpecificInfo::payload` に格納される AudioSpecificConfig 本体を解析する API はない
-- ADTS ヘッダー解析、および ADTS <-> raw AAC 相互変換の API もない
-- `DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3` (`0x40`) や `STREAM_TYPE_AUDIO` (`0x05`) の定数は既に定義されているが、AudioSpecificConfig の中身 (audio object type、サンプリング周波数、チャンネル構成) は呼び出し側が生バイト列として組み立てる必要がある
-- `shiguredo/hisui` や `shiguredo/sora-rust-sdk` など利用側で同種の解析を重複実装している可能性がある (要確認)
+- `src/boxes_sample_entry.rs` の `Mp4aBox`、`src/descriptors.rs` の `EsDescriptor` / `DecoderConfigDescriptor` / `DecoderSpecificInfo` / `SlConfigDescriptor`、`src/boxes_moov_tree.rs` の `EsdsBox` は既にある。`DecoderSpecificInfo::payload` に入る AudioSpecificConfig (以下 ASC) を解析する API はない
+- ADTS ヘッダー解析、および ADTS と raw AAC の相互変換 API もない
+- `DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3` (`0x40`) と `STREAM_TYPE_AUDIO` (`0x05`) は定義済みで、ASC 本体は呼び出し側が生バイト列として組み立てている。既存テストの代表値は `tests/test_boxes_sample_entry.rs` の `payload: vec![0x11, 0x90]` (コメント: AAC-LC、48 kHz、stereo)
+- `src/bitstream.rs` は公開済みで `vp8` / `vp9` だけを公開している。`pbt/Cargo.toml` の `noprop` は 0068 で追加済み
+- Hisui の AAC モジュールは同種処理を自前実装している (`parse_audio_specific_config` / `create_audio_specific_config` / `create_mp4a_sample_entry`、HLS の ADTS 付与、SRT の ADTS ヘッダー解析)。AOT を読まず先頭 2 バイトだけから周波数 index を取る、チャンネル 1 / 2 以外を拒否する、`buffer_size_db` / `max_bitrate` / `avg_bitrate` を固定する、戻り値を `SampleEntry::Mp4a` に包む、ADTS を MPEG-4・CRC なし・1 raw data block にハードコードする、といった利用側固有の契約が混ざっている。本 crate には移植しない
+- Sora Rust SDK の `src` に ASC / ADTS 解析は無い
 
-参照仕様は [ISO/IEC 14496-3 (MPEG-4 Audio)](https://www.iso.org/standard/76383.html) および ISO/IEC 13818-7 (ADTS) とする。
+参照仕様は ISO/IEC 14496-3 (MPEG-4 Audio、ASC) と ISO/IEC 13818-7 (ADTS) とする。本リポジトリに `refs/` は無い。下記の表と拒否条件は crate の契約として固定し、実装時に一次資料と突き合わせる。
 
 ## 設計方針
 
+本 issue の対象は **AOT 2 (AAC-LC) のみ**。SBR / PS の存在検出も含め、HE-AAC は対象外とする。AOT 2 以外、および AOT 2 でも GASpecificConfig 必須 3 フラグの後ろで入力が終端していない場合 (後続バイトや explicit SBR / PS 拡張) は、AAC-LC として黙って読み替えず `crate::Error` を返す。ゼロ埋めの後続バイトも拒否する。
+
 ### モジュール構成
 
-`src/lib.rs` から公開する `bitstream` モジュール配下に AAC 用のサブモジュールを追加する。`mod.rs` は使わない。
+`src/lib.rs` から公開する `bitstream` モジュール配下に AAC 用サブモジュールを追加する。`mod.rs` は使わない。
 
 ```text
 src/bitstream.rs
 src/bitstream/aac.rs
 ```
 
-`src/bitstream.rs` が既に他 issue (0062〜0066) の実装で追加済みであれば `pub mod aac;` を追記するだけで足りる。未追加なら本 issue で新設する。AAC の解析処理は NAL 層 (`src/bitstream/nal.rs`) に依存せず、`bitstream::aac` 単独で完結する。
+`src/bitstream.rs` は既にあるので `pub mod aac;` を追記する。本体は `src/bitstream/aac.rs`。open の 0062 / 0063 / 0064 と並列実装する場合、`src/bitstream.rs` の追記が競合し得る。AAC の解析は NAL 層に依存せず、`bitstream::aac` 単独で完結する。ビット読み取りは `aac.rs` 内の非公開実装とし、`vp9.rs` の `BitReader` を共有しない。
 
 ### AudioSpecificConfig 解析 API
 
-`bitstream::aac` は AudioSpecificConfig (以下 ASC) を解析する API を公開する。ASC は ISO/IEC 14496-3 で規定されるビットストリームで、少なくとも次の情報を返す。
+`bitstream::aac` は ASC を解析する API と、受理した構造化値から正規形バイト列をエンコードする API を公開する。返す情報は次に限定する。
 
-- audio object type (AOT。5 ビットまたはエスケープ形式で 11 ビット)
-- sampling frequency index (4 ビット。0xF はエスケープで 24 ビットの明示サンプリング周波数が続く)
-- 実効サンプリング周波数 (index から表引き、または明示値から取得)
-- channel configuration (4 ビット)
-- AOT 2 (AAC-LC) の場合の GASpecificConfig の必須部分 (frameLengthFlag / dependsOnCoreCoder / extensionFlag)
+- audio object type (常に 2。5 ビット値が 31 のエスケープ形式は拒否)
+- sampling frequency index (4 ビット)
+- 実効サンプリング周波数 (Hz)
+- channel configuration (4 ビット、値は 1..=7)
 
-対応する AOT の範囲は少なくとも AAC-LC (AOT 2) を含む。SBR (HE-AAC v1、explicit / implicit 双方) と PS (HE-AAC v2) の扱いは実装時に決めるが、少なくとも「AOT 2 以外の入力を黙って読み替えない」ことを保証する。
+サンプリング周波数の crate 契約 (ISO/IEC 14496-3 の表に対応):
 
-短すぎる入力、reserved AOT、reserved sampling frequency index、reserved channel configuration、境界超過は `crate::Error` を返す。
+- index 0..=12: 96000 / 88200 / 64000 / 48000 / 44100 / 32000 / 24000 / 22050 / 16000 / 12000 / 11025 / 8000 / 7350
+- index 13 / 14: reserved。拒否
+- index 15 (`0xF`): 後続 24 ビットを明示周波数 (Hz) として読む。 0 は拒否する
 
-### ADTS 解析 API と ADTS <-> raw AAC 相互変換
+channel configuration の crate 契約 (index 7 だけチャンネル数と一致しない):
 
-`bitstream::aac` は ADTS ヘッダー (7 バイトまたは CRC 付き 9 バイト) を解析する API と、ADTS フレーム列と raw AAC フレーム列を相互変換する API を公開する。
+- 0: PCE で定義。本 issue では拒否
+- 1..=6: そのままチャンネル数
+- 7: 8 チャンネル
+- 8..=15: reserved。拒否
 
-- ADTS ヘッダーから、AOT (profile + 1)、sampling_frequency_index、channel_configuration、frame_length、number_of_raw_data_blocks_in_frame を取得する
-- ADTS フレーム列を raw AAC フレーム列に変換する。number_of_raw_data_blocks_in_frame が 0 (1 raw data block) 以外の入力の扱いを明示する
-- raw AAC フレーム列と ASC から ADTS フレーム列を組み立てる。ADTS ヘッダーの MPEG バージョン、protection_absent、home、original_copy などの固定/選択値を呼び出し側が明示する
+GASpecificConfig の必須 3 フラグ (`frameLengthFlag` / `dependsOnCoreCoder` / `extensionFlag`) はすべて 0 のみ受理する。 1 つでも 1 なら、後続の `coreCoderDelay` や PCE を読まずに拒否する。フラグを公開型の可変フィールドにはしない。
 
-syncword 不一致、frame_length フィールドが入力境界を超える、切り詰められた ADTS 入力は `crate::Error` を返す。
+入力バイト列は、上記を読み切った位置で終端していなければならない。後続バイトがある入力 (例: `tests/testdata/beep-aac-audio.mp4` の `DecoderSpecificInfo::payload` である 5 バイト `12 08 56 e5 00`。先頭 16 ビットは AOT 2 / 44.1 kHz / mono だが、余りが SBR の `syncExtensionType` `0x2B7`) は拒否する。短すぎる入力も拒否する。
+
+エンコードは受理条件を満たす構造化値だけを正規形バイト列にする。フラグ 3 つは 0 で書き、明示周波数以外は 2 バイト、index `0xF` のときは 5 バイトになる。受理した入力に対する `encode(parse(input))` は入力と一致する。手組みの構造化値も同じ受理条件で検証する。`audio_object_type` は 2、`channel_configuration` は 1..=7、`sampling_frequency_index` が 0..=12 なら `sampling_frequency` は上表と一致、`0xF` なら `sampling_frequency` は 1..=16777215 (24 ビット) で 0 は拒否。index と Hz が食い違う手組みは、encode / `build_mp4a_box` / `wrap_raw_aac_in_adts` のいずれでも拒否する。構築 API の `DecoderSpecificInfo::payload` にはこの正規形を格納する (入力生バイトを「余りごと」コピーしない)。
+
+以下は公開 API の骨格を示す (型名・関数名は実装時に既存 API と整合させて調整可)。
+
+```rust
+/// 受理した AAC-LC の AudioSpecificConfig
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AudioSpecificConfig {
+    /// 常に 2 (AAC-LC)
+    pub audio_object_type: u8,
+    /// 0..=12 または 0xF
+    pub sampling_frequency_index: u8,
+    /// 実効サンプリング周波数 (Hz)
+    pub sampling_frequency: u32,
+    /// 1..=7 (7 は 8 チャンネル)
+    pub channel_configuration: u8,
+}
+
+pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig>;
+pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<u8>>;
+```
+
+### ADTS 解析 API と ADTS と raw AAC の相互変換
+
+`bitstream::aac` は ADTS フレーム (ヘッダー + raw data block) を解析する API と、raw AAC と ASC から ADTS フレームを組み立てる API を公開する。
+
+ADTS 側のフィールド幅は ASC と異なる。
+
+- `profile` は 2 ビット。AOT は `profile + 1`。本 issue では AOT 2 のみなので `profile` は 1 以外を拒否する
+- `sampling_frequency_index` は 4 ビット。0..=12 以外 (13 / 14 / 15) は拒否する。ADTS に 24 ビット明示周波数は無い。ASC の index `0xF` から ADTS への変換は拒否する
+- `channel_configuration` は **3** ビット。値 1..=7 以外を拒否する。載せるのは ASC の index (1..=7) であり、`channelcount` へ展開したチャンネル数 (index 7 のとき 8) ではない。ASC の 4 ビット値 8..=15 はもともと拒否済みなので、受理した ASC からの変換では 3 ビットに載る
+
+`number_of_raw_data_blocks_in_frame` は 0 (raw data block 1 個) のみ受理する。0 以外は `crate::Error`。このときヘッダーは `protection_absent == 1` なら 7 バイト、`== 0` なら CRC 16 ビット付き 9 バイト。CRC 値の検証はしない (バイトを読み飛ばすだけ)。CRC 生成は対象外のため、組み立て側の `protection_absent` は常に 1 (CRC なし) に固定する。
+
+その他の組み立て固定値:
+
+- `layer` = 0
+- `private_bit` = 0
+- copyright 識別ビット = 0
+- `adts_buffer_fullness` = `0x7FF` (VBR 慣習値)
+- `number_of_raw_data_blocks_in_frame` = 0
+
+呼び出し側が明示する組み立て値は MPEG バージョン (ID ビット)、`original_copy`、`home` に限定する。解析結果はこれらの再指定に必要なフィールドを返す。ヘッダー全体のビット一致までは要求しない (`buffer_fullness` 等は固定値で書き直す)。意味の往復は AOT / 周波数 index / channel configuration / MPEG バージョン / `original_copy` / `home` / raw AAC ペイロードで保証する。
+
+`frame_length` はヘッダー込みの 13 ビット値。ヘッダー長未満、入力末尾を超える、または raw AAC + ヘッダーが 13 ビットに収まらない組み立ては拒否する。 syncword (`0xFFF`) 不一致、`layer != 0`、切り詰めも拒否する。
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdtsMpegVersion {
+    Mpeg4, // ID = 0
+    Mpeg2, // ID = 1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AdtsHeader {
+    pub mpeg_version: AdtsMpegVersion,
+    pub protection_absent: bool,
+    pub audio_object_type: u8, // 常に 2
+    pub sampling_frequency_index: u8, // 0..=12
+    pub channel_configuration: u8, // 1..=7
+    pub frame_length: u16,
+    pub original_copy: bool,
+    pub home: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AdtsEncodeConfig {
+    pub mpeg_version: AdtsMpegVersion,
+    pub original_copy: bool,
+    pub home: bool,
+}
+
+pub fn parse_adts_frame(input: &[u8]) -> Result<(AdtsHeader, &[u8])>; // 第 2 値は raw AAC
+pub fn wrap_raw_aac_in_adts(
+    raw: &[u8],
+    asc: &AudioSpecificConfig,
+    config: &AdtsEncodeConfig,
+) -> Result<Vec<u8>>;
+```
 
 ### サンプルエントリー構築 API
 
-解析済み ASC と呼び出し側の設定から、具体的な `Mp4aBox` および `EsdsBox` を構築する API を追加する。
+解析済み ASC と呼び出し側設定から `Mp4aBox` を 1 つ返す。`SampleEntry` には包まない。`EsdsBox` は `Mp4aBox::esds_box` として中に置く (公開 API を `Mp4aBox` と `EsdsBox` の 2 関数にはしない)。定義場所は `EsdsBox` が `src/boxes_moov_tree.rs`、それ以外は既存の再エクスポートを使う。`bitstream/aac.rs` 側で組み立て、descriptors / moov_tree の型定義は変えない。
 
-- `Mp4aBox::audio` (`AudioSampleEntryFields`) の channelcount / samplerate は ASC から反映する
-- `EsdsBox` / `EsDescriptor` / `DecoderConfigDescriptor` / `DecoderSpecificInfo` の各定数 (`OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3` / `STREAM_TYPE_AUDIO` / `UP_STREAM_FALSE`) を使用する
-- `DecoderSpecificInfo::payload` には ASC の生バイト列を格納する (解析 API から得た構造化値から再エンコードした結果と入力バイト列が一致することを保証する)
-- `es_id`、`buffer_size_db`、`max_bitrate`、`avg_bitrate` は呼び出し側が明示する値として受け取る
+#### 固定値 (関数側で埋める)
 
-公開 API は `no_std` を維持し、crate 本体 (`shiguredo_mp4`) に新しい外部依存は追加せず、エラーを既存の `crate::Error` に統合する。
+- `AudioSampleEntryFields::data_reference_index` = `DEFAULT_DATA_REFERENCE_INDEX`
+- `AudioSampleEntryFields::samplesize` = `DEFAULT_SAMPLESIZE` (16)
+- `Mp4aBox::unknown_boxes` = 空 `Vec`
+- `EsDescriptor::stream_priority` = `LOWEST_STREAM_PRIORITY`
+- `EsDescriptor::depends_on_es_id` / `url_string` / `ocr_es_id` = `None`
+- `EsDescriptor::sl_config_descr` = `SlConfigDescriptor` (既存 encode が `predefined = 2` を書く)
+- `DecoderConfigDescriptor::object_type_indication` = `OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3`
+- `DecoderConfigDescriptor::stream_type` = `STREAM_TYPE_AUDIO`
+- `DecoderConfigDescriptor::up_stream` = `UP_STREAM_FALSE`
+- `DecoderConfigDescriptor::dec_specific_info` = `Some` (`payload` は `encode_audio_specific_config` の正規形)
+
+#### ストリーム導出値 (ASC から写す)
+
+- `AudioSampleEntryFields::channelcount` = 上表のチャンネル数 (`u16`)。 index 7 は 8 チャンネル
+- `AudioSampleEntryFields::samplerate`: 実効周波数が `u16` に収まる (1..=65535) ときは `FixedPointNumber::new(hz as u16, 0)`。収まらないとき (96000 / 88200、および明示周波数が 65535 超) は切り捨てず `FixedPointNumber::new(0, 0)` とし、真値は ASC payload 側に残す。Hisui の `SampleRate::as_u16` エラーを crate の契約にしない
+
+#### 呼び出し側指定値
+
+- `es_id`: 0 は予約なので拒否 (`EsDescriptor::MIN_ES_ID` 以上)
+- `buffer_size_db`: 24 ビット (0..=16777215) に収まる値。収まらなければ `Uint::new` に渡さず `crate::Error` (`DecoderConfigDescriptor::encode` は `to_bits()` の上位 1 バイトを捨てるため、黙って切り捨てない)
+- `max_bitrate` / `avg_bitrate`
+
+Hisui のビットレート固定値 (`buffer_size_db = 65536`、`max_bitrate = 256000`、`avg_bitrate = 128000`) と、モノラル / ステレオ以外を拒否する制限は移植しない。
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Mp4aSampleEntryConfig {
+    pub es_id: u16,
+    pub buffer_size_db: u32,
+    pub max_bitrate: u32,
+    pub avg_bitrate: u32,
+}
+
+pub fn build_mp4a_box(
+    asc: &AudioSpecificConfig,
+    config: &Mp4aSampleEntryConfig,
+) -> Result<Mp4aBox>;
+```
+
+公開 API は `no_std` を維持し、crate 本体に新しい外部依存は追加せず、エラーは既存の `crate::Error` に統合する。
 
 ### テスト
 
-- 単体テスト (`tests/test_bitstream_aac.rs`): AOT 2 の代表的な AudioSpecificConfig (44.1 kHz stereo、48 kHz mono など)、ADTS 7 バイトヘッダーの決定的テスト。境界エラー (short input、reserved 値、境界超過、syncword 不一致) の拒否確認
-- PBT (`pbt/tests/prop_bitstream_aac.rs`): `noprop` サンプラーで生成した ASC / ADTS のラウンドトリップと不変条件を検証する (`pbt/Cargo.toml` に `noprop` 依存を追加する。既存 proptest との共存は 0068 で解消される)
-- 実データ fixture: `tests/testdata/beep-aac-audio.mp4` が既に存在するので、その `esds` から抽出した ASC バイト列を fixture として利用する。追加で ADTS ストリームの実データも同ディレクトリに置く
-- Fuzzing: `fuzz/fuzz_targets/fuzz_bitstream_aac.rs` に AudioSpecificConfig パーサーと ADTS パーサーの fuzz target を追加し、`fuzz/Cargo.toml` に `[[bin]]` エントリを追加する
+- 単体テスト (`tests/test_bitstream_aac.rs`): 正規形 ASC (`0x11 0x90` の 48 kHz stereo、`0x12 0x10` の 44.1 kHz stereo など)、ADTS 7 バイト (nrdb = 0)。拒否: 短い入力、AOT 2 以外、sfi 13 / 14、channel 0 / 8..=15、3 フラグのいずれかが 1、後続バイトあり (fixture の `12 08 56 e5 00`)、index と Hz が食い違う手組み、`buffer_size_db` の 24 ビット超過、ADTS の syncword 不一致 / nrdb != 0 / profile != 1 / 境界超過。96 kHz (index 0) の構築で `samplerate.integer == 0` かつ payload に 96000 が残ること
+- PBT (`pbt/tests/prop_bitstream_aac.rs`): 受理条件内の ASC の `encode` / `parse` 往復、ADTS の意味往復。`pbt/Cargo.toml` の noprop は追加済みなので依存は足さない
+- 実データ: `beep-aac-audio.mp4` の 5 バイト ASC は成功例にしない (SBR 拡張の拒否例)。成功の実データとして ADTS ストリームを `tests/testdata/` に追加する。ネットワークや外部コマンドなしでテストが完結すること
+- Fuzzing: `fuzz/fuzz_targets/fuzz_bitstream_aac.rs` に ASC パーサーと ADTS パーサーを対象とするターゲットを追加し、`fuzz/Cargo.toml` に `[[bin]]` を追加する
 
 ### 対象外
 
-- SBR / PS の詳細構文解析 (存在検出だけ行い、詳細解析は別 issue とする可能性を残す)
-- LATM / LOAS 形式の解析
+- SBR / PS (explicit / implicit) の解析と存在検出。implicit SBR は 2 バイト AAC-LC ASC からは判別できないので、デコーダー側の方針として扱わない
+- `dependsOnCoreCoder == 1` / `extensionFlag == 1` / PCE (`channelConfiguration == 0`) の構文解析
+- `number_of_raw_data_blocks_in_frame != 0` の複数 block、ADTS CRC の生成と値の検証
+- LATM / LOAS
 - Hisui / Sora Rust SDK 側の呼び出し置換と依存バージョン更新
-- RTP / SDP、デコーダーやエンコーダー固有のポリシー、コーデック文字列生成 (RFC 6381 の `codecs=` パラメータ生成など)
-- C API / WASM バインディング。利用要件が明確になった時点で別 issue とする
+- RTP / SDP、デコーダーやエンコーダー固有のポリシー、コーデック文字列生成
+- C API / WASM バインディング
 
 ## 完了条件
 
-- `bitstream::aac` が公開され、AudioSpecificConfig 解析、ADTS ヘッダー解析、ADTS <-> raw AAC 相互変換、`Mp4aBox` 構築が利用できること
-- AOT 2 (AAC-LC) の解析と構築が確実に動作すること。それ以外の AOT を「AAC-LC として黙って扱う」ことをしないこと
+- `bitstream::aac` が公開され、AAC-LC の ASC 解析と正規形エンコード、ADTS フレーム解析、ADTS 組み立て、`Mp4aBox` 構築が利用できること
+- AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、channel configuration 0 / 8..=15、sfi 13 / 14、ADTS の `number_of_raw_data_blocks_in_frame != 0` を `crate::Error` として拒否し、AAC-LC として黙って読み替えないこと
+- `build_mp4a_box` が `Mp4aBox` を返し `SampleEntry` に包まないこと。固定値 / ストリーム導出 / 呼び出し側指定が設計方針の三分類どおりであること。`channelcount` は index 7 を 8 に写し、`samplerate` は `u16` に収まらない周波数を切り捨てず 0 にすること。`buffer_size_db` が 24 ビットに収まらない値、および `sampling_frequency_index` と `sampling_frequency` が食い違う手組みは encode / `build_mp4a_box` / `wrap_raw_aac_in_adts` で `crate::Error` であること
+- Hisui の AOT 無視、モノラル / ステレオ以外の拒否、ビットレート固定、`SampleEntry` ラップを移植していないこと
 - 不正入力を panic や黙った打ち切りではなく `crate::Error` として報告すること
-- `no_std` と crate 本体の依存ライブラリ 0 を維持すること
+- `no_std` と crate 本体の依存ライブラリ 0 を維持すること (pbt 側の noprop は crate 本体の依存ではない)
 - 決定的テスト、`noprop` PBT、実データ fixture、fuzz target が追加され、`fuzz/Cargo.toml` に `[[bin]]` エントリが登録されていること
-- 公開 API の rustdoc に入力形式、返すバイト範囲、エラー条件が記載されていること
+- 公開 API の rustdoc に受理する入力、拒否条件、`samplerate` が 0 になる周波数、ADTS 組み立ての固定ビットが記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること

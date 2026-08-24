@@ -137,24 +137,66 @@ impl SamplingFrequency {
     }
 }
 
+/// AAC のチャンネル構成
+///
+/// ISO/IEC 14496-3 の `channelConfiguration` (1..=7) に対応する。0 (PCE) と
+/// 8..=15 (reserved) は本モジュールが受理しないため variant として存在しない
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelConfiguration {
+    /// 1 チャンネル (mono)
+    Mono,
+    /// 2 チャンネル (stereo)
+    Stereo,
+    /// 3 チャンネル
+    Channels3,
+    /// 4 チャンネル
+    Channels4,
+    /// 5 チャンネル
+    Channels5,
+    /// 6 チャンネル (5.1)
+    FivePointOne,
+    /// 8 チャンネル (7.1)。`channelConfiguration` の 7 に対応する
+    SevenPointOne,
+}
+
+impl ChannelConfiguration {
+    /// ビットストリーム上の `channelConfiguration` 値
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Mono => 1,
+            Self::Stereo => 2,
+            Self::Channels3 => 3,
+            Self::Channels4 => 4,
+            Self::Channels5 => 5,
+            Self::FivePointOne => 6,
+            Self::SevenPointOne => 7,
+        }
+    }
+
+    /// チャンネル数
+    ///
+    /// [`Self::SevenPointOne`] だけ 8 で、`channelConfiguration` の値と一致しない
+    pub const fn channel_count(self) -> u16 {
+        match self {
+            Self::SevenPointOne => 8,
+            _ => self.as_u8() as u16,
+        }
+    }
+}
+
 /// 受理した AAC-LC の AudioSpecificConfig
 ///
 /// `parse_audio_specific_config` が受理する構造化値で、`encode_audio_specific_config` が
-/// 正規形バイト列へ戻す。手組みで構築する場合は下記の受理条件を満たすこと
-/// (いずれかの API が `crate::Error` を返す)。
-///
-/// - [`Self::audio_object_type`] は常に [`AudioObjectType::AacLc`]
-/// - [`Self::sampling_frequency`] は [`SamplingFrequency::from_hz`] が受理する値
-///   (1..=16777215) であること
-/// - [`Self::channel_configuration`] は 1..=7 (7 は 8 チャンネル)
+/// 正規形バイト列へ戻す。全フィールドは型で受理条件が保証されるため、手組みでも
+/// 不正な値を構築できない
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AudioSpecificConfig {
     /// 常に [`AudioObjectType::AacLc`]
     pub audio_object_type: AudioObjectType,
-    /// サンプリング周波数の表現形式
+    /// サンプリング周波数
     pub sampling_frequency: SamplingFrequency,
-    /// 1..=7 (7 は 8 チャンネル)
-    pub channel_configuration: u8,
+    /// チャンネル構成
+    pub channel_configuration: ChannelConfiguration,
 }
 
 /// ADTS ヘッダーの MPEG バージョン (ID ビット)
@@ -184,8 +226,8 @@ pub struct AdtsHeader {
     pub audio_object_type: AudioObjectType,
     /// 0..=12
     pub sampling_frequency_index: u8,
-    /// 1..=7 (7 は 8 チャンネル)
-    pub channel_configuration: u8,
+    /// チャンネル構成
+    pub channel_configuration: ChannelConfiguration,
     /// ヘッダー込みのフレーム長 (バイト)
     pub frame_length: u16,
     /// `original_copy` ビット
@@ -295,12 +337,11 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
     };
 
     let channel_configuration = reader.read_bits(4)? as u8;
-    if channel_configuration == 0 || channel_configuration > 7 {
-        // 0 は PCE、8..=15 は reserved。本モジュールでは受け入れない
-        return Err(Error::invalid_input(
-            "AAC channel configuration must be 1..=7",
-        ));
-    }
+    let channel_configuration =
+        channel_configuration_from_raw(channel_configuration).ok_or_else(|| {
+            // 0 は PCE、8..=15 は reserved。本モジュールでは受け入れない
+            Error::invalid_input("AAC channel configuration must be 1..=7")
+        })?;
 
     // GASpecificConfig の必須 3 フラグはすべて 0 のみ受理する。
     // 1 つでも 1 なら後続の coreCoderDelay や PCE を読まずに拒否する
@@ -333,16 +374,10 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 /// 出力は `audioObjectType` = 2 / 3 フラグ = 0 で、明示周波数 (index `0xF`) 以外は
 /// 2 バイト、index `0xF` のときは 5 バイトになる。
 ///
-/// # エラー条件
-///
-/// [`AudioSpecificConfig`] の各フィールドが受理条件を満たさない場合に [`crate::Error`]
-/// を返す。`audio_object_type` と `sampling_frequency` は型とコンストラクタで
-/// 保証されるため、`channel_configuration` の範囲 (1..=7) だけが検証対象になる。
-///
-/// 受理した入力に対する `encode(parse(input))` は入力と一致する
-pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<u8>> {
-    validate_asc(config)?;
-
+/// 全フィールドが型で受理条件を保証されるため、エラーを返すことはない
+/// (`AudioObjectType` / `SamplingFrequency` / `ChannelConfiguration` が不変条件を
+/// 保持する)。受理した入力に対する `encode(parse(input))` は入力と一致する
+pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Vec<u8> {
     let mut writer = BitWriter::new();
     writer.push_bits(u32::from(config.audio_object_type.as_u8()), 5);
     match config.sampling_frequency.index {
@@ -354,12 +389,12 @@ pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<
             writer.push_bits(config.sampling_frequency.frequency, 24);
         }
     }
-    writer.push_bits(u32::from(config.channel_configuration), 4);
+    writer.push_bits(u32::from(config.channel_configuration.as_u8()), 4);
     // GASpecificConfig 必須 3 フラグはすべて 0
     writer.push_bit(0);
     writer.push_bit(0);
     writer.push_bit(0);
-    Ok(writer.into_bytes())
+    writer.into_bytes()
 }
 
 /// ADTS フレーム (ヘッダー + raw data block) を解析する
@@ -435,11 +470,8 @@ pub fn parse_adts_frame(input: &[u8]) -> Result<(AdtsHeader, &[u8])> {
     let _private_bit = reader.read_bit()?;
 
     let channel_configuration = reader.read_bits(3)? as u8;
-    if channel_configuration == 0 || channel_configuration > 7 {
-        return Err(Error::invalid_input(
-            "ADTS channel configuration must be 1..=7",
-        ));
-    }
+    let channel_configuration = channel_configuration_from_raw(channel_configuration)
+        .ok_or_else(|| Error::invalid_input("ADTS channel configuration must be 1..=7"))?;
 
     let original_copy = reader.read_bit()? != 0;
     let home = reader.read_bit()? != 0;
@@ -518,7 +550,6 @@ pub fn wrap_raw_aac_in_adts(
     asc: &AudioSpecificConfig,
     config: &AdtsEncodeConfig,
 ) -> Result<Vec<u8>> {
-    validate_asc(asc)?;
     // ADTS に 24 ビット明示周波数は存在しないため明示形式からの変換は拒否する
     let sampling_frequency_index = asc.sampling_frequency.sampling_frequency_index()?;
 
@@ -546,7 +577,7 @@ pub fn wrap_raw_aac_in_adts(
     writer.push_bits(ADTS_PROFILE_AAC_LC, 2);
     writer.push_bits(u32::from(sampling_frequency_index), 4);
     writer.push_bit(0); // private_bit
-    writer.push_bits(u32::from(asc.channel_configuration), 3);
+    writer.push_bits(u32::from(asc.channel_configuration.as_u8()), 3);
     writer.push_bit(u8::from(config.original_copy));
     writer.push_bit(u8::from(config.home));
     writer.push_bit(0); // copyright_identification_bit
@@ -587,8 +618,8 @@ pub fn wrap_raw_aac_in_adts(
 ///
 /// # ストリーム導出値 (ASC から写す)
 ///
-/// - [`AudioSampleEntryFields::channelcount`] = ASC のチャンネル数
-///   ([`AudioSpecificConfig::channel_configuration`] 7 は 8 チャンネル)
+/// - [`AudioSampleEntryFields::channelcount`] =
+///   [`ChannelConfiguration::channel_count`] (ASC のチャンネル構成から導出)
 /// - [`AudioSampleEntryFields::samplerate`]: 実効周波数が `u16` に収まる
 ///   (1..=65535) ときは `FixedPointNumber::new(hz, 0)`。収まらないとき
 ///   (96000 / 88200、および明示周波数が 65535 超) は切り捨てず
@@ -600,7 +631,6 @@ pub fn wrap_raw_aac_in_adts(
 ///
 /// # エラー条件
 ///
-/// - `asc` が [`AudioSpecificConfig`] の受理条件を満たさない
 /// - `config.es_id` が [`EsDescriptor::MIN_ES_ID`] 未満 (0 は予約)
 /// - `config.buffer_size_db` が 24 ビット (0..=16777215) を超える
 ///   (黙って切り捨てず [`crate::Error`])
@@ -608,8 +638,8 @@ pub fn build_mp4a_box(
     asc: &AudioSpecificConfig,
     config: &Mp4aSampleEntryConfig,
 ) -> Result<Mp4aBox> {
-    // 受理条件の検証と正規形 ASC の生成を兼ねる
-    let payload = encode_audio_specific_config(asc)?;
+    // 正規形 ASC の生成。全フィールドは型で受理条件が保証されるため Err はない
+    let payload = encode_audio_specific_config(asc);
     let hz = asc.sampling_frequency.hz();
 
     if config.es_id < EsDescriptor::MIN_ES_ID {
@@ -627,7 +657,7 @@ pub fn build_mp4a_box(
 
     let audio = AudioSampleEntryFields {
         data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-        channelcount: channel_count(asc.channel_configuration),
+        channelcount: asc.channel_configuration.channel_count(),
         samplesize: AudioSampleEntryFields::DEFAULT_SAMPLESIZE,
         samplerate: crate::FixedPointNumber::new(
             if hz <= u16::MAX as u32 { hz as u16 } else { 0 },
@@ -663,32 +693,21 @@ pub fn build_mp4a_box(
     })
 }
 
-/// [`AudioSpecificConfig`] が受理条件を満たすか検証する
+/// 生の `channelConfiguration` 値 (1..=7) から [`ChannelConfiguration`] を返す
 ///
-/// `encode_audio_specific_config` / `wrap_raw_aac_in_adts` / `build_mp4a_box` の
-/// 入り口で呼び、手組みの構造化値でも panic せず [`crate::Error`] で拒否する。
-/// `audio_object_type` は [`AudioObjectType`] が単一 variant なので型で保証され、
-/// 検証対象に含めない
-fn validate_asc(config: &AudioSpecificConfig) -> Result<()> {
-    if config.channel_configuration < 1 || config.channel_configuration > 7 {
-        return Err(Error::invalid_input(
-            "AAC channel configuration must be 1..=7",
-        ));
-    }
-    // sampling_frequency は SamplingFrequency が不変条件 (from_hz / parse が保証) を
-    // 持つため、ここでの検証は不要
-    Ok(())
-}
-
-/// ASC の `channel_configuration` (index) からチャンネル数を返す
-///
-/// index 7 だけ 8 チャンネルでチャンネル数と一致しない
-fn channel_count(configuration: u8) -> u16 {
-    if configuration == 7 {
-        8
-    } else {
-        u16::from(configuration)
-    }
+/// 0 (PCE) と 8..=15 (reserved) は `None`。ASC (4 ビット) と ADTS (3 ビット) の
+/// 両パーサーが使う
+fn channel_configuration_from_raw(raw: u8) -> Option<ChannelConfiguration> {
+    Some(match raw {
+        1 => ChannelConfiguration::Mono,
+        2 => ChannelConfiguration::Stereo,
+        3 => ChannelConfiguration::Channels3,
+        4 => ChannelConfiguration::Channels4,
+        5 => ChannelConfiguration::Channels5,
+        6 => ChannelConfiguration::FivePointOne,
+        7 => ChannelConfiguration::SevenPointOne,
+        _ => return None,
+    })
 }
 
 /// MSB-first のビット読み取り

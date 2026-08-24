@@ -6,8 +6,8 @@
 use std::cell::Cell;
 
 use shiguredo_mp4::bitstream::aac::{
-    AdtsEncodeConfig, AdtsMpegVersion, AudioObjectType, AudioSpecificConfig, SamplingFrequency,
-    encode_audio_specific_config, parse_adts_frame, parse_audio_specific_config,
+    AdtsEncodeConfig, AdtsMpegVersion, AudioObjectType, AudioSpecificConfig, ChannelConfiguration,
+    SamplingFrequency, encode_audio_specific_config, parse_adts_frame, parse_audio_specific_config,
     wrap_raw_aac_in_adts,
 };
 
@@ -65,11 +65,17 @@ fn sample_valid_asc_for_adts(ctx: &mut noprop::TestCaseContext) -> AudioSpecific
     }
 }
 
-/// 受理条件を満たす `channel_configuration` (1..=7) を生成する
-fn sample_channel_configuration(ctx: &mut noprop::TestCaseContext) -> u8 {
-    noprop::sample_with_boundaries(ctx, &[1u8, 7], noprop::Ratio::one_nth(3), |ctx| {
-        noprop::sample_u64_in(ctx, 1..=7) as u8
-    })
+/// 受理条件を満たす `channel_configuration` を生成する
+fn sample_channel_configuration(ctx: &mut noprop::TestCaseContext) -> ChannelConfiguration {
+    match noprop::sample_u64_in(ctx, 0..=6) {
+        0 => ChannelConfiguration::Mono,
+        1 => ChannelConfiguration::Stereo,
+        2 => ChannelConfiguration::Channels3,
+        3 => ChannelConfiguration::Channels4,
+        4 => ChannelConfiguration::Channels5,
+        5 => ChannelConfiguration::FivePointOne,
+        _ => ChannelConfiguration::SevenPointOne,
+    }
 }
 
 /// 受理条件を満たす [`AdtsEncodeConfig`] を生成する
@@ -100,8 +106,7 @@ fn asc_encode_parse_roundtrip() -> noprop::TestResult {
     runner.run(CASES, |ctx| {
         let config = sample_valid_asc(ctx);
 
-        let encoded =
-            encode_audio_specific_config(&config).expect("有効な ASC はエンコード成功する");
+        let encoded = encode_audio_specific_config(&config);
         // 正規形の長さ: 標準 Hz (index 形式) は 2 バイト、非標準 Hz (明示形式) は 5 バイト
         assert!(
             encoded.len() == 2 || encoded.len() == 5,
@@ -208,8 +213,7 @@ fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
             sampling_frequency: frequency,
             channel_configuration: sample_channel_configuration(ctx),
         };
-        let encoded =
-            encode_audio_specific_config(&config).expect("有効な ASC はエンコード成功する");
+        let encoded = encode_audio_specific_config(&config);
         if encoded.len() == 2 {
             index_reached.set(true);
         }

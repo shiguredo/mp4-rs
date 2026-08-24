@@ -8,8 +8,9 @@ use shiguredo_mp4::{
     Decode, Encode, ErrorKind,
     bitstream::aac::{
         AdtsEncodeConfig, AdtsMpegVersion, AudioObjectType, AudioSpecificConfig,
-        Mp4aSampleEntryConfig, SamplingFrequency, build_mp4a_box, encode_audio_specific_config,
-        parse_adts_frame, parse_audio_specific_config, wrap_raw_aac_in_adts,
+        ChannelConfiguration, Mp4aSampleEntryConfig, SamplingFrequency, build_mp4a_box,
+        encode_audio_specific_config, parse_adts_frame, parse_audio_specific_config,
+        wrap_raw_aac_in_adts,
     },
     boxes::{AudioSampleEntryFields, Mp4aBox},
 };
@@ -125,7 +126,7 @@ fn asc_48k_stereo() -> AudioSpecificConfig {
     AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
-        channel_configuration: 2,
+        channel_configuration: ChannelConfiguration::Stereo,
     }
 }
 
@@ -157,7 +158,7 @@ fn parse_asc_48k_stereo() {
         .expect("0x11 0x90 (AAC-LC 48kHz stereo) は解析成功する");
     assert_eq!(config.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(config.sampling_frequency.hz(), 48000);
-    assert_eq!(config.channel_configuration, 2);
+    assert_eq!(config.channel_configuration, ChannelConfiguration::Stereo);
 }
 
 /// `0x12 0x08` (AAC-LC、44.1 kHz、mono) を解析できる
@@ -167,7 +168,7 @@ fn parse_asc_44100_mono() {
         .expect("0x12 0x08 (AAC-LC 44.1kHz mono) は解析成功する");
     assert_eq!(config.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(config.sampling_frequency.hz(), 44100);
-    assert_eq!(config.channel_configuration, 1);
+    assert_eq!(config.channel_configuration, ChannelConfiguration::Mono);
 }
 
 /// `0x12 0x10` (AAC-LC、44.1 kHz、stereo) を解析できる
@@ -176,7 +177,7 @@ fn parse_asc_44100_stereo() {
     let config = parse_audio_specific_config(&[0x12, 0x10])
         .expect("0x12 0x10 (AAC-LC 44.1kHz stereo) は解析成功する");
     assert_eq!(config.sampling_frequency.hz(), 44100);
-    assert_eq!(config.channel_configuration, 2);
+    assert_eq!(config.channel_configuration, ChannelConfiguration::Stereo);
 }
 
 /// sampling_frequency_index 0 (96 kHz) と 12 (7350 Hz) を解析できる
@@ -198,7 +199,10 @@ fn parse_asc_frequency_index_boundaries() {
 fn parse_asc_channel_configuration_7() {
     let bytes = build_asc(2, 3, None, 7, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("channel 7 は解析成功する");
-    assert_eq!(config.channel_configuration, 7);
+    assert_eq!(
+        config.channel_configuration,
+        ChannelConfiguration::SevenPointOne
+    );
 }
 
 /// sampling_frequency_index 0xF の明示周波数 (24 ビット) を解析できる
@@ -208,7 +212,7 @@ fn parse_asc_explicit_frequency() {
     let bytes = build_asc(2, 15, Some(44100), 2, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("明示周波数は解析成功する");
     assert_eq!(config.sampling_frequency.hz(), 44100);
-    assert_eq!(config.channel_configuration, 2);
+    assert_eq!(config.channel_configuration, ChannelConfiguration::Stereo);
     // 24 ビット最大値 (16777215) も受理する
     let bytes = build_asc(2, 15, Some(0xFF_FFFF), 1, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("明示周波数最大値は解析成功する");
@@ -319,7 +323,7 @@ fn encode_asc_roundtrip() {
     ];
     for input in inputs {
         let config = parse_audio_specific_config(input).expect("入力は解析成功する");
-        let encoded = encode_audio_specific_config(&config).expect("エンコード成功する");
+        let encoded = encode_audio_specific_config(&config);
         assert_eq!(
             encoded, input,
             "encode(parse({input:?})) は入力と一致するべき"
@@ -332,7 +336,7 @@ fn encode_asc_roundtrip() {
 fn encode_asc_explicit_frequency_roundtrip() {
     let bytes = build_asc(2, 15, Some(44100), 2, [0, 0, 0]);
     let config = parse_audio_specific_config(&bytes).expect("明示周波数は解析成功する");
-    let encoded = encode_audio_specific_config(&config).expect("エンコード成功する");
+    let encoded = encode_audio_specific_config(&config);
     assert_eq!(encoded.len(), 5);
     assert_eq!(encoded, bytes);
     let reparsed = parse_audio_specific_config(&encoded).expect("再解析成功する");
@@ -345,28 +349,10 @@ fn encode_asc_hand_built_valid() {
     let config = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(44100).expect("44100 は生成成功する"),
-        channel_configuration: 1,
+        channel_configuration: ChannelConfiguration::Mono,
     };
-    let encoded = encode_audio_specific_config(&config).expect("有効な ASC はエンコード成功する");
+    let encoded = encode_audio_specific_config(&config);
     assert_eq!(encoded, [0x12, 0x08]);
-}
-
-/// 手組みで channel_configuration が範囲外の ASC はエンコードで拒否する
-///
-/// `audio_object_type` と `sampling_frequency` は型とコンストラクタで保証されるため、
-/// 手組みで発生しうる不正は channel_configuration の範囲だけ
-#[test]
-fn reject_encode_asc_invalid_channel_configuration() {
-    for channel in [0u8, 8] {
-        let config = AudioSpecificConfig {
-            audio_object_type: AudioObjectType::AacLc,
-            sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
-            channel_configuration: channel,
-        };
-        let err = encode_audio_specific_config(&config)
-            .expect_err(&format!("channel {channel} は拒否される"));
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
-    }
 }
 
 // ===== SamplingFrequency::from_hz =====
@@ -381,23 +367,18 @@ fn sampling_frequency_from_hz_standard_frequency_is_index() {
         let config = AudioSpecificConfig {
             audio_object_type: AudioObjectType::AacLc,
             sampling_frequency: frequency,
-            channel_configuration: 2,
+            channel_configuration: ChannelConfiguration::Stereo,
         };
-        assert_eq!(
-            encode_audio_specific_config(&config)
-                .expect("エンコード成功する")
-                .len(),
-            2
-        );
+        assert_eq!(encode_audio_specific_config(&config).len(), 2);
     }
 
     // 代表値 48000 (index 3) が 2 バイトの正規形にエンコードされる
     let config = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
-        channel_configuration: 2,
+        channel_configuration: ChannelConfiguration::Stereo,
     };
-    let encoded = encode_audio_specific_config(&config).expect("エンコード成功する");
+    let encoded = encode_audio_specific_config(&config);
     assert_eq!(encoded, [0x11, 0x90]);
 }
 
@@ -411,14 +392,9 @@ fn sampling_frequency_from_hz_non_standard_frequency_is_explicit() {
         let config = AudioSpecificConfig {
             audio_object_type: AudioObjectType::AacLc,
             sampling_frequency: frequency,
-            channel_configuration: 2,
+            channel_configuration: ChannelConfiguration::Stereo,
         };
-        assert_eq!(
-            encode_audio_specific_config(&config)
-                .expect("エンコード成功する")
-                .len(),
-            5
-        );
+        assert_eq!(encode_audio_specific_config(&config).len(), 5);
     }
 }
 
@@ -455,7 +431,7 @@ fn parse_adts_7byte_header() {
     assert!(parsed.protection_absent);
     assert_eq!(parsed.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(parsed.sampling_frequency_index, 4);
-    assert_eq!(parsed.channel_configuration, 1);
+    assert_eq!(parsed.channel_configuration, ChannelConfiguration::Mono);
     assert_eq!(parsed.frame_length, 10);
     assert!(!parsed.original_copy);
     assert!(!parsed.home);
@@ -471,7 +447,7 @@ fn parse_adts_mpeg2() {
     let (parsed, _) = parse_adts_frame(&frame).expect("MPEG-2 は解析成功する");
     assert_eq!(parsed.mpeg_version, AdtsMpegVersion::Mpeg2);
     assert_eq!(parsed.sampling_frequency_index, 3);
-    assert_eq!(parsed.channel_configuration, 2);
+    assert_eq!(parsed.channel_configuration, ChannelConfiguration::Stereo);
 }
 
 /// original_copy / home ビットを解析できる
@@ -497,7 +473,7 @@ fn parse_adts_private_bit_and_copyright_accepted() {
     let (parsed, parsed_raw) =
         parse_adts_frame(&frame).expect("private_bit=1 / copyright=1 は読み飛ばされて受理される");
     assert_eq!(parsed.sampling_frequency_index, 3);
-    assert_eq!(parsed.channel_configuration, 2);
+    assert_eq!(parsed.channel_configuration, ChannelConfiguration::Stereo);
     assert_eq!(parsed_raw, &[0x01, 0x02][..]);
 }
 
@@ -686,7 +662,7 @@ fn wrap_raw_aac_in_adts_roundtrip() {
     assert!(header.protection_absent);
     assert_eq!(header.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(header.sampling_frequency_index, 3);
-    assert_eq!(header.channel_configuration, 2);
+    assert_eq!(header.channel_configuration, ChannelConfiguration::Stereo);
     assert_eq!(header.frame_length, 11);
     assert!(header.original_copy);
     assert!(header.home);
@@ -700,7 +676,7 @@ fn reject_wrap_adts_explicit_frequency() {
         audio_object_type: AudioObjectType::AacLc,
         // 非標準周波数 44000 は from_hz で明示形式になる
         sampling_frequency: SamplingFrequency::from_hz(44000).expect("44000 は生成成功する"),
-        channel_configuration: 2,
+        channel_configuration: ChannelConfiguration::Stereo,
     };
     let err = wrap_raw_aac_in_adts(&[0x01], &asc, &default_adts_config())
         .expect_err("明示周波数の ASC は ADTS 化で拒否される");
@@ -782,7 +758,7 @@ fn build_mp4a_box_channel_7_maps_to_8_channels() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
-        channel_configuration: 7,
+        channel_configuration: ChannelConfiguration::SevenPointOne,
     };
     let mp4a = build_mp4a_box(&asc, &default_mp4a_config()).expect("channel 7 は構築成功する");
     assert_eq!(mp4a.audio.channelcount, 8);
@@ -796,7 +772,7 @@ fn build_mp4a_box_96khz_samplerate_zero() {
     let asc = AudioSpecificConfig {
         audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(96000).expect("96000 は生成成功する"),
-        channel_configuration: 2,
+        channel_configuration: ChannelConfiguration::Stereo,
     };
     let mp4a = build_mp4a_box(&asc, &default_mp4a_config()).expect("96 kHz は構築成功する");
     assert_eq!(mp4a.audio.samplerate.integer, 0);
@@ -821,7 +797,7 @@ fn build_mp4a_box_explicit_frequency_over_u16() {
         audio_object_type: AudioObjectType::AacLc,
         // 非標準周波数 70000 は from_hz で明示形式になる
         sampling_frequency: SamplingFrequency::from_hz(70000).expect("70000 は生成成功する"),
-        channel_configuration: 2,
+        channel_configuration: ChannelConfiguration::Stereo,
     };
     let mp4a =
         build_mp4a_box(&asc, &default_mp4a_config()).expect("明示周波数 70000 は構築成功する");
@@ -849,19 +825,6 @@ fn reject_build_mp4a_box_buffer_size_db_overflow() {
         ..default_mp4a_config()
     };
     let err = build_mp4a_box(&asc, &config).expect_err("buffer_size_db 24 ビット超過は拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
-/// 受理条件を満たさない ASC (範囲外 channel) は構築で拒否する
-#[test]
-fn reject_build_mp4a_box_invalid_asc() {
-    let asc = AudioSpecificConfig {
-        audio_object_type: AudioObjectType::AacLc,
-        sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
-        channel_configuration: 0, // 範囲外
-    };
-    let err =
-        build_mp4a_box(&asc, &default_mp4a_config()).expect_err("範囲外 channel は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -899,7 +862,7 @@ fn real_adts_first_frame_parses() {
     assert_eq!(header.audio_object_type, AudioObjectType::AacLc);
     // beep-aac-audio.mp4 の音声は 44.1 kHz / mono (AAC-LC)
     assert_eq!(header.sampling_frequency_index, 4);
-    assert_eq!(header.channel_configuration, 1);
+    assert_eq!(header.channel_configuration, ChannelConfiguration::Mono);
     assert_eq!(header.frame_length as usize, 7 + raw.len());
     assert!(!raw.is_empty(), "raw AAC ペイロードが空でないこと");
 }
@@ -913,7 +876,7 @@ fn real_adts_all_frames_parse() {
         let (header, raw) =
             parse_adts_frame(&REAL_ADTS[offset..]).expect("各 ADTS フレームは解析成功する");
         assert_eq!(header.sampling_frequency_index, 4);
-        assert_eq!(header.channel_configuration, 1);
+        assert_eq!(header.channel_configuration, ChannelConfiguration::Mono);
         offset += header.frame_length as usize;
         count += 1;
         assert!(!raw.is_empty(), "各フレームに raw AAC ペイロードがあること");

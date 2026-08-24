@@ -7,7 +7,7 @@
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind,
     bitstream::aac::{
-        AUDIO_OBJECT_TYPE_AAC_LC, AdtsEncodeConfig, AdtsMpegVersion, AudioSpecificConfig,
+        AdtsEncodeConfig, AdtsMpegVersion, AudioObjectType, AudioSpecificConfig,
         Mp4aSampleEntryConfig, SamplingFrequency, build_mp4a_box, encode_audio_specific_config,
         parse_adts_frame, parse_audio_specific_config, wrap_raw_aac_in_adts,
     },
@@ -123,7 +123,7 @@ fn build_adts_header(
 /// 代表値 `0x11 0x90` (AAC-LC、48 kHz、stereo) の ASC
 fn asc_48k_stereo() -> AudioSpecificConfig {
     AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Index { index: 3 }, // 48000
         channel_configuration: 2,
     }
@@ -155,7 +155,7 @@ fn default_adts_config() -> AdtsEncodeConfig {
 fn parse_asc_48k_stereo() {
     let config = parse_audio_specific_config(&[0x11, 0x90])
         .expect("0x11 0x90 (AAC-LC 48kHz stereo) は解析成功する");
-    assert_eq!(config.audio_object_type, 2);
+    assert_eq!(config.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(
         config.sampling_frequency,
         SamplingFrequency::Index { index: 3 }
@@ -172,7 +172,7 @@ fn parse_asc_48k_stereo() {
 fn parse_asc_44100_mono() {
     let config = parse_audio_specific_config(&[0x12, 0x08])
         .expect("0x12 0x08 (AAC-LC 44.1kHz mono) は解析成功する");
-    assert_eq!(config.audio_object_type, 2);
+    assert_eq!(config.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(
         config.sampling_frequency,
         SamplingFrequency::Index { index: 4 } // 44100
@@ -390,7 +390,7 @@ fn encode_asc_explicit_frequency_roundtrip() {
 #[test]
 fn encode_asc_hand_built_valid() {
     let config = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Index { index: 4 },
         channel_configuration: 1,
     };
@@ -406,7 +406,7 @@ fn encode_asc_hand_built_valid() {
 fn reject_encode_asc_out_of_range_index() {
     for index in [13u8, 14, 15] {
         let config = AudioSpecificConfig {
-            audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+            audio_object_type: AudioObjectType::AacLc,
             sampling_frequency: SamplingFrequency::Index { index },
             channel_configuration: 2,
         };
@@ -416,24 +416,12 @@ fn reject_encode_asc_out_of_range_index() {
     }
 }
 
-/// 手組みで audio_object_type が 2 以外の ASC はエンコードで拒否する
-#[test]
-fn reject_encode_asc_wrong_aot() {
-    let config = AudioSpecificConfig {
-        audio_object_type: 5,
-        sampling_frequency: SamplingFrequency::Index { index: 3 },
-        channel_configuration: 2,
-    };
-    let err = encode_audio_specific_config(&config).expect_err("AOT 5 は拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
 /// 手組みで channel_configuration が範囲外の ASC はエンコードで拒否する
 #[test]
 fn reject_encode_asc_invalid_channel_configuration() {
     for channel in [0u8, 8] {
         let config = AudioSpecificConfig {
-            audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+            audio_object_type: AudioObjectType::AacLc,
             sampling_frequency: SamplingFrequency::Index { index: 3 },
             channel_configuration: channel,
         };
@@ -448,7 +436,7 @@ fn reject_encode_asc_invalid_channel_configuration() {
 fn reject_encode_asc_invalid_explicit_frequency() {
     for freq in [0u32, 0x0100_0000] {
         let config = AudioSpecificConfig {
-            audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+            audio_object_type: AudioObjectType::AacLc,
             sampling_frequency: SamplingFrequency::Explicit { frequency: freq },
             channel_configuration: 2,
         };
@@ -489,7 +477,7 @@ fn sampling_frequency_from_hz_standard_frequency_is_index() {
 
     // 代表値 48000 (index 3) が 2 バイトの正規形にエンコードされる
     let config = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(48000).expect("48000 は生成成功する"),
         channel_configuration: 2,
     };
@@ -507,7 +495,7 @@ fn sampling_frequency_from_hz_non_standard_frequency_is_explicit() {
     }
 
     let config = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::from_hz(44000).expect("44000 は生成成功する"),
         channel_configuration: 2,
     };
@@ -525,10 +513,10 @@ fn reject_sampling_frequency_from_hz_invalid_range() {
     }
 }
 
-/// `AUDIO_OBJECT_TYPE_AAC_LC` 定数の値を固定する
+/// `AudioObjectType::AacLc` の生の AOT 値を固定する
 #[test]
-fn audio_object_type_constant_is_2() {
-    assert_eq!(AUDIO_OBJECT_TYPE_AAC_LC, 2);
+fn audio_object_type_aac_lc_as_u8_is_2() {
+    assert_eq!(AudioObjectType::AacLc.as_u8(), 2);
 }
 
 // ===== parse_adts_frame: 受理系 =====
@@ -546,7 +534,7 @@ fn parse_adts_7byte_header() {
     let (parsed, parsed_raw) = parse_adts_frame(&frame).expect("7 バイトヘッダーは解析成功する");
     assert_eq!(parsed.mpeg_version, AdtsMpegVersion::Mpeg4);
     assert!(parsed.protection_absent);
-    assert_eq!(parsed.audio_object_type, 2);
+    assert_eq!(parsed.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(parsed.sampling_frequency_index, 4);
     assert_eq!(parsed.channel_configuration, 1);
     assert_eq!(parsed.frame_length, 10);
@@ -777,7 +765,7 @@ fn wrap_raw_aac_in_adts_roundtrip() {
     let (header, parsed_raw) = parse_adts_frame(&frame).expect("組み立てたフレームは解析成功する");
     assert_eq!(header.mpeg_version, AdtsMpegVersion::Mpeg2);
     assert!(header.protection_absent);
-    assert_eq!(header.audio_object_type, 2);
+    assert_eq!(header.audio_object_type, AudioObjectType::AacLc);
     assert_eq!(header.sampling_frequency_index, 3);
     assert_eq!(header.channel_configuration, 2);
     assert_eq!(header.frame_length, 11);
@@ -790,25 +778,12 @@ fn wrap_raw_aac_in_adts_roundtrip() {
 #[test]
 fn reject_wrap_adts_explicit_frequency() {
     let asc = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Explicit { frequency: 44100 },
         channel_configuration: 2,
     };
     let err = wrap_raw_aac_in_adts(&[0x01], &asc, &default_adts_config())
         .expect_err("明示周波数の ASC は ADTS 化で拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
-/// 受理条件を満たさない ASC からの組み立ては拒否する
-#[test]
-fn reject_wrap_adts_invalid_asc() {
-    let asc = AudioSpecificConfig {
-        audio_object_type: 5,
-        sampling_frequency: SamplingFrequency::Index { index: 3 },
-        channel_configuration: 2,
-    };
-    let err = wrap_raw_aac_in_adts(&[0x01], &asc, &default_adts_config())
-        .expect_err("AOT 5 の ASC は ADTS 化で拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -885,7 +860,7 @@ fn build_mp4a_box_fixed_and_derived_values() {
 #[test]
 fn build_mp4a_box_channel_7_maps_to_8_channels() {
     let asc = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Index { index: 3 },
         channel_configuration: 7,
     };
@@ -899,7 +874,7 @@ fn build_mp4a_box_channel_7_maps_to_8_channels() {
 #[test]
 fn build_mp4a_box_96khz_samplerate_zero() {
     let asc = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Index { index: 0 },
         channel_configuration: 2,
     };
@@ -926,7 +901,7 @@ fn build_mp4a_box_96khz_samplerate_zero() {
 #[test]
 fn build_mp4a_box_explicit_frequency_over_u16() {
     let asc = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Explicit { frequency: 70000 },
         channel_configuration: 2,
     };
@@ -963,7 +938,7 @@ fn reject_build_mp4a_box_buffer_size_db_overflow() {
 #[test]
 fn reject_build_mp4a_box_invalid_asc() {
     let asc = AudioSpecificConfig {
-        audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Index { index: 13 }, // 範囲外
         channel_configuration: 2,
     };
@@ -1002,7 +977,7 @@ fn real_adts_first_frame_parses() {
     let (header, raw) = parse_adts_frame(REAL_ADTS).expect("実 ADTS フレームは解析成功する");
     assert_eq!(header.mpeg_version, AdtsMpegVersion::Mpeg4);
     assert!(header.protection_absent);
-    assert_eq!(header.audio_object_type, 2);
+    assert_eq!(header.audio_object_type, AudioObjectType::AacLc);
     // beep-aac-audio.mp4 の音声は 44.1 kHz / mono (AAC-LC)
     assert_eq!(header.sampling_frequency_index, 4);
     assert_eq!(header.channel_configuration, 1);

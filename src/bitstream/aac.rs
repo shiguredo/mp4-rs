@@ -23,11 +23,24 @@ use crate::{
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
 
-/// AOT 2 (AAC-LC)
+/// AAC の Audio Object Type (AOT)
 ///
-/// [`AudioSpecificConfig::audio_object_type`] / [`AdtsHeader::audio_object_type`] が
-/// 常に保持する値
-pub const AUDIO_OBJECT_TYPE_AAC_LC: u8 = 2;
+/// 本モジュールは AOT 2 (AAC-LC) のみを受理するため、現状は単一の variant のみを持つ。
+/// HE-AAC (SBR / PS) 対応を足す場合は variant を追加する
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AudioObjectType {
+    /// AOT 2 (AAC-LC)
+    AacLc,
+}
+
+impl AudioObjectType {
+    /// ビットストリーム上の生の AOT 値
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::AacLc => 2,
+        }
+    }
+}
 
 /// ADTS の `profile` (2 ビット)。AOT は `profile + 1` なので AOT 2 では常に 1
 const ADTS_PROFILE_AAC_LC: u32 = 1;
@@ -130,14 +143,14 @@ impl SamplingFrequency {
 /// 正規形バイト列へ戻す。手組みで構築する場合は下記の受理条件を満たすこと
 /// (いずれかの API が `crate::Error` を返す)。
 ///
-/// - [`Self::audio_object_type`] は常に [`AUDIO_OBJECT_TYPE_AAC_LC`]
+/// - [`Self::audio_object_type`] は常に [`AudioObjectType::AacLc`]
 /// - [`Self::sampling_frequency`] は [`SamplingFrequency::Index`] の index が 0..=12、
 ///   または [`SamplingFrequency::Explicit`] の frequency が 1..=16777215 であること
 /// - [`Self::channel_configuration`] は 1..=7 (7 は 8 チャンネル)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AudioSpecificConfig {
-    /// 常に [`AUDIO_OBJECT_TYPE_AAC_LC`]
-    pub audio_object_type: u8,
+    /// 常に [`AudioObjectType::AacLc`]
+    pub audio_object_type: AudioObjectType,
     /// サンプリング周波数の表現形式
     pub sampling_frequency: SamplingFrequency,
     /// 1..=7 (7 は 8 チャンネル)
@@ -167,8 +180,8 @@ pub struct AdtsHeader {
     pub mpeg_version: AdtsMpegVersion,
     /// `protection_absent`。`true` なら CRC なし (7 バイト)、`false` なら CRC 付き (9 バイト)
     pub protection_absent: bool,
-    /// 常に [`AUDIO_OBJECT_TYPE_AAC_LC`]
-    pub audio_object_type: u8,
+    /// 常に [`AudioObjectType::AacLc`]
+    pub audio_object_type: AudioObjectType,
     /// 0..=12
     pub sampling_frequency_index: u8,
     /// 1..=7 (7 は 8 チャンネル)
@@ -248,7 +261,7 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 
     let audio_object_type = reader.read_bits(5)? as u8;
     // 対象は AOT 2 のみ。5 ビット値が 31 のエスケープ形式もここで拒否される
-    if audio_object_type != AUDIO_OBJECT_TYPE_AAC_LC {
+    if audio_object_type != AudioObjectType::AacLc.as_u8() {
         return Err(Error::invalid_input(
             "AAC audio object type must be 2 (AAC-LC)",
         ));
@@ -305,7 +318,7 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
     }
 
     Ok(AudioSpecificConfig {
-        audio_object_type,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency,
         channel_configuration,
     })
@@ -321,7 +334,6 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 /// [`AudioSpecificConfig`] の各フィールドが受理条件を満たさない場合に [`crate::Error`]
 /// を返す。
 ///
-/// - `audio_object_type` が 2 以外
 /// - `channel_configuration` が 1..=7 以外
 /// - `sampling_frequency` が [`SamplingFrequency::Index`] で index が 0..=12 以外
 /// - `sampling_frequency` が [`SamplingFrequency::Explicit`] で frequency が 0 または
@@ -332,7 +344,7 @@ pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<
     validate_asc(config)?;
 
     let mut writer = BitWriter::new();
-    writer.push_bits(u32::from(config.audio_object_type), 5);
+    writer.push_bits(u32::from(config.audio_object_type.as_u8()), 5);
     match config.sampling_frequency {
         SamplingFrequency::Index { index } => {
             writer.push_bits(u32::from(index), 4);
@@ -469,7 +481,7 @@ pub fn parse_adts_frame(input: &[u8]) -> Result<(AdtsHeader, &[u8])> {
         AdtsHeader {
             mpeg_version,
             protection_absent,
-            audio_object_type: AUDIO_OBJECT_TYPE_AAC_LC,
+            audio_object_type: AudioObjectType::AacLc,
             sampling_frequency_index,
             channel_configuration,
             frame_length,
@@ -663,13 +675,10 @@ pub fn build_mp4a_box(
 /// [`AudioSpecificConfig`] が受理条件を満たすか検証する
 ///
 /// `encode_audio_specific_config` / `wrap_raw_aac_in_adts` / `build_mp4a_box` の
-/// 入り口で呼び、手組みの構造化値でも panic せず [`crate::Error`] で拒否する
+/// 入り口で呼び、手組みの構造化値でも panic せず [`crate::Error`] で拒否する。
+/// `audio_object_type` は [`AudioObjectType`] が単一 variant なので型で保証され、
+/// 検証対象に含めない
 fn validate_asc(config: &AudioSpecificConfig) -> Result<()> {
-    if config.audio_object_type != AUDIO_OBJECT_TYPE_AAC_LC {
-        return Err(Error::invalid_input(
-            "AAC audio object type must be 2 (AAC-LC)",
-        ));
-    }
     if config.channel_configuration < 1 || config.channel_configuration > 7 {
         return Err(Error::invalid_input(
             "AAC channel configuration must be 1..=7",

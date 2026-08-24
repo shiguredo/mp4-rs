@@ -6,7 +6,7 @@
 use std::cell::Cell;
 
 use shiguredo_mp4::bitstream::aac::{
-    AdtsEncodeConfig, AdtsMpegVersion, AudioSpecificConfig, SamplingFrequency,
+    AdtsEncodeConfig, AdtsMpegVersion, AudioObjectType, AudioSpecificConfig, SamplingFrequency,
     encode_audio_specific_config, parse_adts_frame, parse_audio_specific_config,
     wrap_raw_aac_in_adts,
 };
@@ -52,7 +52,7 @@ fn sample_valid_asc(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
         },
     };
     AudioSpecificConfig {
-        audio_object_type: 2,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency,
         channel_configuration: sample_channel_configuration(ctx),
     }
@@ -64,7 +64,7 @@ fn sample_valid_asc(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
 /// 最初から `Index` (0..=12) に閉じる (拒否サンプリングでケースを捨てない)
 fn sample_valid_asc_for_adts(ctx: &mut noprop::TestCaseContext) -> AudioSpecificConfig {
     AudioSpecificConfig {
-        audio_object_type: 2,
+        audio_object_type: AudioObjectType::AacLc,
         sampling_frequency: SamplingFrequency::Index {
             index: noprop::sample_with_boundaries(
                 ctx,
@@ -178,7 +178,7 @@ fn adts_wrap_parse_roundtrip() -> noprop::TestResult {
             parse_adts_frame(&frame).expect("組み立てたフレームは解析成功する");
         assert_eq!(header.mpeg_version, config.mpeg_version);
         assert!(header.protection_absent, "組み立ては CRC なし固定");
-        assert_eq!(header.audio_object_type, 2);
+        assert_eq!(header.audio_object_type, AudioObjectType::AacLc);
         // ADTS 用サンプラーは Index のみを生成する
         match asc.sampling_frequency {
             SamplingFrequency::Index { index } => {
@@ -233,7 +233,7 @@ fn sampling_frequency_from_hz_roundtrip() -> noprop::TestResult {
 
         // 生成した ASC の encode → parse 往復 (形式を保持する)
         let config = AudioSpecificConfig {
-            audio_object_type: 2,
+            audio_object_type: AudioObjectType::AacLc,
             sampling_frequency: frequency,
             channel_configuration: sample_channel_configuration(ctx),
         };

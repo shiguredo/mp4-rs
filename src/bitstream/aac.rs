@@ -23,8 +23,11 @@ use crate::{
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
 
-/// AOT 2 (AAC-LC) 以外は本モジュールの対象外
-const AUDIO_OBJECT_TYPE_AAC_LC: u8 = 2;
+/// AOT 2 (AAC-LC)
+///
+/// [`AudioSpecificConfig::audio_object_type`] / [`AdtsHeader::audio_object_type`] が
+/// 常に保持する値
+pub const AUDIO_OBJECT_TYPE_AAC_LC: u8 = 2;
 
 /// ADTS の `profile` (2 ビット)。AOT は `profile + 1` なので AOT 2 では常に 1
 const ADTS_PROFILE_AAC_LC: u32 = 1;
@@ -54,25 +57,89 @@ const SAMPLING_FREQUENCIES: [u32; 13] = [
     96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
 ];
 
+/// ASC のサンプリング周波数の表現形式
+///
+/// ISO/IEC 14496-3 の `samplingFrequencyIndex` は、0..=12 のときは対応表の値を使い、
+/// `0xF` のときは後続 24 ビットの明示周波数 (Hz) を使う。この 2 形式を型で区別する
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SamplingFrequency {
+    /// `samplingFrequencyIndex` 0..=12 の対応表による周波数
+    Index {
+        /// 対応表の index (0..=12)
+        index: u8,
+    },
+    /// `samplingFrequencyIndex` 0xF のときの明示周波数 (Hz、1..=16777215)
+    Explicit {
+        /// 明示周波数 (Hz)
+        frequency: u32,
+    },
+}
+
+impl SamplingFrequency {
+    /// 実効サンプリング周波数 (Hz) から生成する
+    ///
+    /// 標準テーブル (index 0..=12) に一致する Hz は [`Self::Index`] (正規形 2 バイト)、
+    /// それ以外の Hz は [`Self::Explicit`] (5 バイト) を返す。利用者が index の
+    /// 対応表を知らなくても正規形を選べるようにするためのコンストラクタ。
+    ///
+    /// # エラー条件
+    ///
+    /// `hz` が 0、または 24 ビット (1..=16777215) を超える場合に [`crate::Error`] を
+    /// 返す (panic はしない)
+    pub fn from_hz(hz: u32) -> Result<Self> {
+        if hz == 0 || hz > EXPLICIT_SAMPLING_FREQUENCY_MAX {
+            return Err(Error::invalid_input(
+                "sampling frequency must be 1..=16777215",
+            ));
+        }
+        if let Some(index) = SAMPLING_FREQUENCIES.iter().position(|f| *f == hz) {
+            Ok(Self::Index { index: index as u8 })
+        } else {
+            Ok(Self::Explicit { frequency: hz })
+        }
+    }
+
+    /// 実効サンプリング周波数 (Hz)
+    ///
+    /// [`Self::Index`] は対応表 (index 0..=12) の値、[`Self::Explicit`] は保持値を
+    /// そのまま返す。
+    ///
+    /// # エラー条件
+    ///
+    /// 手組みで [`Self::Index`] の index に 13..=15 を渡した場合に [`crate::Error`] を
+    /// 返す (panic はしない)
+    pub fn hz(&self) -> Result<u32> {
+        match self {
+            Self::Index { index } => {
+                let hz = SAMPLING_FREQUENCIES
+                    .get(*index as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        Error::invalid_input("sampling frequency index must be 0..=12")
+                    })?;
+                Ok(hz)
+            }
+            Self::Explicit { frequency } => Ok(*frequency),
+        }
+    }
+}
+
 /// 受理した AAC-LC の AudioSpecificConfig
 ///
 /// `parse_audio_specific_config` が受理する構造化値で、`encode_audio_specific_config` が
 /// 正規形バイト列へ戻す。手組みで構築する場合は下記の受理条件を満たすこと
 /// (いずれかの API が `crate::Error` を返す)。
 ///
-/// - [`Self::audio_object_type`] は常に 2 (AAC-LC)
-/// - [`Self::sampling_frequency_index`] は 0..=12 または `0xF`。0..=12 のとき
-///   [`Self::sampling_frequency`] は上表 (index 0..=12 の対応表) と一致し、
-///   `0xF` のときは明示周波数 (Hz) を表し 1..=16777215 であること (0 は拒否)
+/// - [`Self::audio_object_type`] は常に [`AUDIO_OBJECT_TYPE_AAC_LC`]
+/// - [`Self::sampling_frequency`] は [`SamplingFrequency::Index`] の index が 0..=12、
+///   または [`SamplingFrequency::Explicit`] の frequency が 1..=16777215 であること
 /// - [`Self::channel_configuration`] は 1..=7 (7 は 8 チャンネル)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AudioSpecificConfig {
-    /// 常に 2 (AAC-LC)
+    /// 常に [`AUDIO_OBJECT_TYPE_AAC_LC`]
     pub audio_object_type: u8,
-    /// 0..=12 または `0xF` (後続 24 ビットで明示周波数を示す)
-    pub sampling_frequency_index: u8,
-    /// 実効サンプリング周波数 (Hz)
-    pub sampling_frequency: u32,
+    /// サンプリング周波数の表現形式
+    pub sampling_frequency: SamplingFrequency,
     /// 1..=7 (7 は 8 チャンネル)
     pub channel_configuration: u8,
 }
@@ -100,7 +167,7 @@ pub struct AdtsHeader {
     pub mpeg_version: AdtsMpegVersion,
     /// `protection_absent`。`true` なら CRC なし (7 バイト)、`false` なら CRC 付き (9 バイト)
     pub protection_absent: bool,
-    /// 常に 2 (AAC-LC)
+    /// 常に [`AUDIO_OBJECT_TYPE_AAC_LC`]
     pub audio_object_type: u8,
     /// 0..=12
     pub sampling_frequency_index: u8,
@@ -189,7 +256,9 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 
     let sampling_frequency_index = reader.read_bits(4)? as u8;
     let sampling_frequency = match sampling_frequency_index {
-        0..=12 => SAMPLING_FREQUENCIES[sampling_frequency_index as usize],
+        0..=12 => SamplingFrequency::Index {
+            index: sampling_frequency_index,
+        },
         15 => {
             // index 0xF は後続 24 ビットの明示周波数 (Hz)
             let frequency = reader.read_bits(24)?;
@@ -198,7 +267,7 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
                     "AAC explicit sampling frequency must not be 0",
                 ));
             }
-            frequency
+            SamplingFrequency::Explicit { frequency }
         }
         // index 13 / 14 は reserved
         _ => {
@@ -237,7 +306,6 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 
     Ok(AudioSpecificConfig {
         audio_object_type,
-        sampling_frequency_index,
         sampling_frequency,
         channel_configuration,
     })
@@ -255,9 +323,9 @@ pub fn parse_audio_specific_config(input: &[u8]) -> Result<AudioSpecificConfig> 
 ///
 /// - `audio_object_type` が 2 以外
 /// - `channel_configuration` が 1..=7 以外
-/// - `sampling_frequency_index` が 0..=12 以外かつ `0xF` 以外
-/// - `sampling_frequency_index` が 0..=12 なのに `sampling_frequency` が対応表と食い違う
-/// - `sampling_frequency_index` が `0xF` なのに `sampling_frequency` が 0 または 24 ビット超過
+/// - `sampling_frequency` が [`SamplingFrequency::Index`] で index が 0..=12 以外
+/// - `sampling_frequency` が [`SamplingFrequency::Explicit`] で frequency が 0 または
+///   24 ビット超過
 ///
 /// 受理した入力に対する `encode(parse(input))` は入力と一致する
 pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<u8>> {
@@ -265,9 +333,14 @@ pub fn encode_audio_specific_config(config: &AudioSpecificConfig) -> Result<Vec<
 
     let mut writer = BitWriter::new();
     writer.push_bits(u32::from(config.audio_object_type), 5);
-    writer.push_bits(u32::from(config.sampling_frequency_index), 4);
-    if config.sampling_frequency_index == 15 {
-        writer.push_bits(config.sampling_frequency, 24);
+    match config.sampling_frequency {
+        SamplingFrequency::Index { index } => {
+            writer.push_bits(u32::from(index), 4);
+        }
+        SamplingFrequency::Explicit { frequency } => {
+            writer.push_bits(15, 4);
+            writer.push_bits(frequency, 24);
+        }
     }
     writer.push_bits(u32::from(config.channel_configuration), 4);
     // GASpecificConfig 必須 3 フラグはすべて 0
@@ -426,7 +499,8 @@ pub fn parse_adts_frame(input: &[u8]) -> Result<(AdtsHeader, &[u8])> {
 /// 以下のいずれかで [`crate::Error`] を返す。
 ///
 /// - `asc` が [`AudioSpecificConfig`] の受理条件を満たさない
-/// - `asc.sampling_frequency_index` が `0xF` (ADTS に 24 ビット明示周波数はない)
+/// - `asc.sampling_frequency` が [`SamplingFrequency::Explicit`] (ADTS に 24 ビット
+///   明示周波数はない)
 /// - ヘッダー + `raw` の長さが ADTS の `frame_length` (13 ビット、最大 8191) に収まらない
 pub fn wrap_raw_aac_in_adts(
     raw: &[u8],
@@ -434,12 +508,15 @@ pub fn wrap_raw_aac_in_adts(
     config: &AdtsEncodeConfig,
 ) -> Result<Vec<u8>> {
     validate_asc(asc)?;
-    // ADTS に 24 ビット明示周波数は存在しないため index 0xF からの変換は拒否する
-    if asc.sampling_frequency_index == 15 {
-        return Err(Error::invalid_input(
-            "ADTS cannot represent an explicit sampling frequency (index 0xF)",
-        ));
-    }
+    // ADTS に 24 ビット明示周波数は存在しないため明示形式からの変換は拒否する
+    let sampling_frequency_index = match asc.sampling_frequency {
+        SamplingFrequency::Index { index } => index,
+        SamplingFrequency::Explicit { .. } => {
+            return Err(Error::invalid_input(
+                "ADTS cannot represent an explicit sampling frequency (index 0xF)",
+            ));
+        }
+    };
 
     // 7 + raw の長さが 13 ビット (最大 8191) に収まることを検査する。
     // 加算は checked_add で 32-bit ターゲットでのオーバーフローを避け、
@@ -463,7 +540,7 @@ pub fn wrap_raw_aac_in_adts(
     writer.push_bits(ADTS_LAYER_ZERO, 2);
     writer.push_bit(1); // protection_absent = 1 (CRC なし)
     writer.push_bits(ADTS_PROFILE_AAC_LC, 2);
-    writer.push_bits(u32::from(asc.sampling_frequency_index), 4);
+    writer.push_bits(u32::from(sampling_frequency_index), 4);
     writer.push_bit(0); // private_bit
     writer.push_bits(u32::from(asc.channel_configuration), 3);
     writer.push_bit(u8::from(config.original_copy));
@@ -529,6 +606,8 @@ pub fn build_mp4a_box(
 ) -> Result<Mp4aBox> {
     // 受理条件の検証と正規形 ASC の生成を兼ねる
     let payload = encode_audio_specific_config(asc)?;
+    // 上記の検証で周波数は有効なので hz() は Err にならない
+    let hz = asc.sampling_frequency.hz()?;
 
     if config.es_id < EsDescriptor::MIN_ES_ID {
         return Err(Error::invalid_input(
@@ -548,11 +627,7 @@ pub fn build_mp4a_box(
         channelcount: channel_count(asc.channel_configuration),
         samplesize: AudioSampleEntryFields::DEFAULT_SAMPLESIZE,
         samplerate: crate::FixedPointNumber::new(
-            if asc.sampling_frequency <= u16::MAX as u32 {
-                asc.sampling_frequency as u16
-            } else {
-                0
-            },
+            if hz <= u16::MAX as u32 { hz as u16 } else { 0 },
             0,
         ),
     };
@@ -600,29 +675,20 @@ fn validate_asc(config: &AudioSpecificConfig) -> Result<()> {
             "AAC channel configuration must be 1..=7",
         ));
     }
-    match config.sampling_frequency_index {
-        0..=12 => {
-            if config.sampling_frequency
-                != SAMPLING_FREQUENCIES[config.sampling_frequency_index as usize]
-            {
+    match config.sampling_frequency {
+        SamplingFrequency::Index { index } => {
+            if index > 12 {
                 return Err(Error::invalid_input(
-                    "sampling_frequency does not match sampling_frequency_index",
+                    "sampling frequency index must be 0..=12",
                 ));
             }
         }
-        15 => {
-            if config.sampling_frequency == 0
-                || config.sampling_frequency > EXPLICIT_SAMPLING_FREQUENCY_MAX
-            {
+        SamplingFrequency::Explicit { frequency } => {
+            if frequency == 0 || frequency > EXPLICIT_SAMPLING_FREQUENCY_MAX {
                 return Err(Error::invalid_input(
                     "explicit sampling frequency must be 1..=16777215",
                 ));
             }
-        }
-        _ => {
-            return Err(Error::invalid_input(
-                "sampling_frequency_index must be 0..=12 or 0xF",
-            ));
         }
     }
     Ok(())

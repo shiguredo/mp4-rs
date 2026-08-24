@@ -255,7 +255,9 @@ pub fn decode_leb128(input: &[u8]) -> Result<(u32, usize)> {
 /// - `obu_forbidden_bit` / `obu_reserved_1bit` / `extension_header_reserved_3bits` が 0 でない
 /// - Sequence Header OBU が `obu_extension_flag = 1`
 /// - `OBU_TILE_LIST` (Binding はこの版で未サポート、サンプルでは SHALL NOT)
-/// - LEB128 または宣言サイズが入力境界を超える
+/// - extension header が入力末尾で欠ける
+/// - LEB128 が入力末尾で欠ける、8 バイト目の continuation bit が 1、または値が `(1 << 32) - 1` を超える
+/// - 宣言サイズが `usize` を溢れる、または残バイトを超える
 ///
 /// 予約済み `obu_type` (0 および 9..=14) はサイズを使って読み飛ばし、列挙結果に含める。
 /// `OBU_TEMPORAL_DELIMITER` / `OBU_PADDING` / `OBU_REDUNDANT_FRAME_HEADER` は SHOULD NOT
@@ -722,7 +724,7 @@ pub fn parse_frame_header_prefix(
 /// - `config_obus` が ConfigObus 規則に違反する
 /// - Sequence Header OBU が 2 個以上、または先頭以外にある
 /// - `config_obus` 内の Sequence Header が `seq` と一致しない
-/// - `max_frame_width` / `max_frame_height` が 65536 (Visual Sample Entry の `u16` に入らない)
+/// - `max_frame_width` / `max_frame_height` が 1..=65535 の範囲外 (0 または 65536 以上。Visual Sample Entry の `u16` に入らない)
 /// - `initial_presentation_delay_minus_one` が 16 以上
 /// - `seq` の欄が `Av1cBox` のビット幅に収まらない
 pub fn build_av01_box(

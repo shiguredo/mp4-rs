@@ -164,6 +164,46 @@ fn two_operating_point_sequence_header(width: u32, height: u32) -> Vec<u8> {
     w.into_bytes()
 }
 
+/// `still_picture = 1` だが `reduced_still_picture_header = 0` の Sequence Header。
+/// av1C レコード欄と寸法は `reduced_still_sequence_header` と同じになる
+fn still_picture_non_reduced_sequence_header(width: u32, height: u32) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.push_bits(0, 3); // seq_profile
+    w.push_bit(1); // still_picture
+    w.push_bit(0); // reduced_still_picture_header
+    w.push_bit(0); // timing_info_present_flag
+    w.push_bit(0); // initial_display_delay_present_flag
+    w.push_bits(0, 5); // operating_points_cnt_minus_1 = 0 (1 個)
+    w.push_bits(0, 12); // operating_point_idc[0]
+    w.push_bits(0, 5); // seq_level_idx[0] <= 7 なので tier は構文に現れない
+    w.push_bits(15, 4);
+    w.push_bits(15, 4);
+    w.push_bits(width - 1, 16);
+    w.push_bits(height - 1, 16);
+    w.push_bit(0); // frame_id_numbers_present_flag
+    w.push_bit(0); // use_128x128_superblock
+    w.push_bit(0);
+    w.push_bit(0);
+    w.push_bit(0); // enable_interintra_compound
+    w.push_bit(0); // enable_masked_compound
+    w.push_bit(0); // enable_warped_motion
+    w.push_bit(0); // enable_dual_filter
+    w.push_bit(0); // enable_order_hint
+    w.push_bit(1); // seq_choose_screen_content_tools
+    w.push_bit(1); // seq_choose_integer_mv
+    w.push_bit(0); // enable_superres
+    w.push_bit(0); // enable_cdef
+    w.push_bit(0); // enable_restoration
+    w.push_bit(0); // high_bitdepth
+    w.push_bit(0); // mono_chrome
+    w.push_bit(0); // color_description_present_flag
+    w.push_bit(0); // color_range
+    w.push_bits(0, 2);
+    w.push_bit(0); // separate_uv_delta_q
+    w.push_bit(0); // film_grain
+    w.into_bytes()
+}
+
 fn parse_sh(payload: &[u8]) -> Av1SequenceHeader {
     parse_sequence_header(payload).expect("有効な Sequence Header は解析成功する")
 }
@@ -694,11 +734,12 @@ mod build {
         parse_sh(&reduced_still_sequence_header(320, 240))
     }
 
-    /// Sequence Header から幅・高さと av1C 欄を埋める
+    /// Sequence Header から幅・高さと av1C 欄を埋める。
+    /// level / tier が 0 以外の SH を使い、写し忘れを 0 初期値と区別する
     #[test]
     fn fills_visual_and_av1c() {
-        let seq = seq_320x240();
-        let payload = reduced_still_sequence_header(320, 240);
+        let payload = two_operating_point_sequence_header(320, 240);
+        let seq = parse_sh(&payload);
         let config_obus = wrap_obu(OBU_SEQUENCE_HEADER, &payload, true);
         let box_ = build_av01_box(
             &seq,
@@ -719,8 +760,14 @@ mod build {
             VisualSampleEntryFields::NULL_COMPRESSORNAME
         );
         assert_eq!(box_.av1c_box.seq_profile.get(), 0);
+        assert_eq!(box_.av1c_box.seq_level_idx_0.get(), 8);
+        assert_eq!(box_.av1c_box.seq_tier_0.get(), 1);
         assert_eq!(box_.av1c_box.high_bitdepth.get(), 0);
         assert_eq!(box_.av1c_box.twelve_bit.get(), 0);
+        assert_eq!(box_.av1c_box.monochrome.get(), 0);
+        assert_eq!(box_.av1c_box.chroma_subsampling_x.get(), 1);
+        assert_eq!(box_.av1c_box.chroma_subsampling_y.get(), 1);
+        assert_eq!(box_.av1c_box.chroma_sample_position.get(), 0);
         assert!(box_.av1c_box.initial_presentation_delay_minus_one.is_none());
         assert_eq!(box_.av1c_box.config_obus, config_obus);
         assert!(box_.unknown_boxes.is_empty());
@@ -805,6 +852,44 @@ mod build {
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 
+    /// av1C レコード欄と寸法が同じでも `reduced_still_picture_header` が違えば拒否する
+    #[test]
+    fn mismatched_reduced_still_picture_header() {
+        let seq = parse_sh(&reduced_still_sequence_header(320, 240));
+        let other = parse_sh(&still_picture_non_reduced_sequence_header(320, 240));
+        assert!(seq.reduced_still_picture_header);
+        assert!(!other.reduced_still_picture_header);
+        assert_eq!(seq.seq_profile, other.seq_profile);
+        assert_eq!(seq.seq_level_idx_0, other.seq_level_idx_0);
+        assert_eq!(seq.seq_tier_0, other.seq_tier_0);
+        assert_eq!(seq.high_bitdepth, other.high_bitdepth);
+        assert_eq!(seq.twelve_bit, other.twelve_bit);
+        assert_eq!(seq.monochrome, other.monochrome);
+        assert_eq!(seq.chroma_subsampling_x, other.chroma_subsampling_x);
+        assert_eq!(seq.chroma_subsampling_y, other.chroma_subsampling_y);
+        assert_eq!(seq.chroma_sample_position, other.chroma_sample_position);
+        assert_eq!(seq.max_frame_width, other.max_frame_width);
+        assert_eq!(seq.max_frame_height, other.max_frame_height);
+        let config_obus = wrap_obu(
+            OBU_SEQUENCE_HEADER,
+            &still_picture_non_reduced_sequence_header(320, 240),
+            true,
+        );
+        let err = build_av01_box(
+            &seq,
+            &config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect_err("reduced_still だけ違う SH は不一致");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(
+            err.reason,
+            "AV1 configOBUs Sequence Header does not match the provided Av1SequenceHeader"
+        );
+    }
+
     /// 65536 は Visual Sample Entry に入らない
     #[test]
     fn dimension_overflow() {
@@ -821,15 +906,13 @@ mod build {
         assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 
-    /// 構築結果をエンコードしてデコードしても同じ
+    /// 構築結果をエンコードしてデコードしても同じ。
+    /// level / tier / chroma が 0 以外の SH を使い、av1C のビット詰めも固定する
     #[test]
     fn encode_decode_roundtrip() {
-        let seq = seq_320x240();
-        let config_obus = wrap_obu(
-            OBU_SEQUENCE_HEADER,
-            &reduced_still_sequence_header(320, 240),
-            true,
-        );
+        let payload = two_operating_point_sequence_header(320, 240);
+        let seq = parse_sh(&payload);
+        let config_obus = wrap_obu(OBU_SEQUENCE_HEADER, &payload, true);
         let box_ = build_av01_box(
             &seq,
             &config_obus,
@@ -840,9 +923,7 @@ mod build {
         .expect("構築できる");
         let encoded = box_.encode_to_vec().expect("encode");
         let (decoded, _) = shiguredo_mp4::boxes::Av01Box::decode(&encoded).expect("decode");
-        assert_eq!(decoded.visual.width, box_.visual.width);
-        assert_eq!(decoded.av1c_box.seq_profile, box_.av1c_box.seq_profile);
-        assert_eq!(decoded.av1c_box.config_obus, box_.av1c_box.config_obus);
+        assert_eq!(decoded, box_);
     }
 }
 

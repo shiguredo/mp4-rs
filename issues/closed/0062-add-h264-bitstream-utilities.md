@@ -1,7 +1,7 @@
 # H.264 ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-25
 - Branch: feature/add-h264-bitstream-utilities
 - Polished: 2026-08-24
 
@@ -19,7 +19,7 @@ H.264 の Annex B / length-prefixed NAL ユニット列の解析、SPS の解析
 - `shiguredo/sora-rust-sdk` の `src/video_codecs/mp4.rs` には length-prefixed 形式から Annex B への変換が独立に実装されている。ISO/IEC 14496-15 に合わせ長さ 1 / 2 / 4 だけを受理する一方、切り詰められた NAL ユニットを `break` で黙って打ち切る。後者は汎用パーサーの契約として適切ではない。SDP の `profile-level-id` 組み立ては本 crate の対象外である
 - H.264 と H.265 は Annex B の開始コード探索と length-prefixed 形式の境界検証を共有できるが、NAL ヘッダーの長さ、種別のビット配置、妥当性条件は異なる。0063 は本 issue が追加する非公開 `nal` 層を再利用する前提である
 
-参照仕様は [ITU-T H.264 (06/2026)](https://www.itu.int/rec/T-REC-H.264-202606-I/en) とする。ISO/IEC 14496-15 の `AVCDecoderConfigurationRecord` (`avcC`) は本リポジトリに一次資料が無いため、現行 `AvccBox` の encode 契約（`src/boxes_sample_entry.rs`）と、下記で固定する crate 契約に合わせる。
+参照仕様は [ITU-T H.264 (06/2026)](https://www.itu.int/rec/T-REC-H.264-202606-I/en) と ISO/IEC 14496-15 の `AVCDecoderConfigurationRecord` (`avcC`) とする。`lengthSizeMinusOne` は 0 / 1 / 3 が正当で、2 (幅 3) は reserved である。
 
 ## 設計方針
 
@@ -54,14 +54,14 @@ Annex B (ITU-T H.264 Annex B):
 
 - 空入力は NAL ユニット 0 個の成功とする (開始コード欠落とは区別する)
 - 非空入力に開始コードが 1 つも無い場合は `crate::Error` とする
-- 最初の開始コードより前の `leading_zero_8bits`、および最後の NAL より後の `trailing_zero_8bits` は境界の詰め物として捨て、NAL 本体に含めない
+- 最初の開始コードより前の `leading_zero_8bits`、NAL 間のゼロ詰め (`trailing_zero_8bits` / 次の開始コードの `leading_zero_8bits`)、および最後の NAL より後の `trailing_zero_8bits` は境界の詰め物として捨て、NAL 本体に含めない。NAL 本体の終端は ITU-T H.264 Annex B B.2 どおり、後続のバイトアラインされた `0x000000` / `0x000001`、またはストリーム終端の直前までとする
 - 開始コードの直後に次の開始コードまたは入力終端が来る空 NAL は `crate::Error` とする。黙って読み飛ばさない
 - 3 バイトと 4 バイトの開始コードの混在を受理する。4 バイト開始コードを 3 バイト開始コード + 先行ゼロに誤分割しない
 
 length-prefixed:
 
-- 長さフィールド幅は 1 / 2 / 4 のみ受理する。ISO/IEC 14496-15 の `lengthSizeMinusOne` は 0 / 1 / 3 が正当で、2 (幅 3) は reserved である。Hisui の `convert_annexb_to_nalu` は幅 1..=4（3 を含む）を受理するが、crate 契約にはしない
-- `AvccBox::length_size_minus_one` (`Uint<u8, 2>`、0..=3) から幅を取るときは、0 / 1 / 3 を 1 / 2 / 4 に写し、2 は `crate::Error` とする
+- 長さフィールド幅は `LengthSize` 型で表現する (`OneByte` / `TwoBytes` / `FourBytes`)。ISO/IEC 14496-15 の `lengthSizeMinusOne` は 0 / 1 / 3 が正当で、2 (幅 3) は reserved のため型で表現できない。Hisui の `convert_annexb_to_nalu` は幅 1..=4（3 を含む）を受理するが、crate 契約にはしない
+- `LengthSize::length_size_minus_one` は `lengthSizeMinusOne` の値 (0 / 1 / 3) を返す。`AvccBox::length_size_minus_one` (`Uint<u8, 2>`、0..=3) から `LengthSize` を得る換算は crate 側には置かず、呼び出し側が 0 / 1 / 3 を `OneByte` / `TwoBytes` / `FourBytes` に写す (2 は reserved のため写せない)
 - 長さフィールドが入力末尾を超える、宣言長が残バイトを超える、宣言長が 0 の NAL は `crate::Error` とする。Sora のように切り詰めを `break` で黙って打ち切らない
 - 空入力は NAL ユニット 0 個の成功とする
 - Annex B から length-prefixed への変換では、開始コードを除いた NAL 本体の前に指定幅の長さフィールドを付ける
@@ -71,7 +71,7 @@ H.264 ヘッダー (ITU-T H.264 7.3.1 / 7.4.1):
 
 - `forbidden_zero_bit` が 1 なら `crate::Error` とする
 - ヘッダー 1 バイトに満たない NAL は `crate::Error` とする
-- 予約・未指定の `nal_unit_type` はフレーミングでは不透明な NAL として通す。SPS 解析は type 7、構築時の PPS は type 8 を要求する
+- `nal_unit_type` は `H264NalUnitType` 型で表す。Table 7-1 の主要種別 (非 IDR スライス / IDR スライス / SEI / SPS / PPS / AUD) は名前付きバリアント、それ以外 (予約・未指定や実ストリームで使われる定義値以外の値) は `Other(u8)` としてフレーミングでは不透明に通す。SPS 解析は `Sps`、構築時の PPS は `Pps` を要求する
 
 ### SPS 解析
 
@@ -95,13 +95,13 @@ SPS 追加構文 (`chroma_format_idc` 以降) を読む `profile_idc` は、同 
 
 寸法に到達するために、`pic_order_cnt_type` 0 / 1 の追加構文は全 `profile_idc` でビット位置を進めるためだけに読み飛ばす。SPS 追加構文を読む `profile_idc` では、その前に `qpprime_y_zero_transform_bypass_flag` (`u(1)`) と `seq_scaling_matrix_present_flag` 配下の scaling list も同様に読み飛ばす。公開結果に scaling list や VUI は載せない。`vui_parameters_present_flag` 以降は読まない。
 
-`chroma_format_idc > 3`、`bit_depth_luma_minus8 > 6`、`bit_depth_chroma_minus8 > 6` は同 7.4.2.1.1 の値域外として拒否する。切り詰められた SPS、Exp-Golomb の途中終端も拒否する。
+`chroma_format_idc > 3`、`bit_depth_luma_minus8 > 6`、`bit_depth_chroma_minus8 > 6`、`pic_order_cnt_type > 2` は同 7.4.2.1.1 の値域外として拒否する。寸法の導出に必要な構文 (frame cropping まで) が途中で終わる SPS、Exp-Golomb の途中終端も拒否する。`vui_parameters_present_flag` 以降の欠落は成功とする。
 
 ### サンプルエントリー構築 API
 
-SPS / PPS の EBSP リストと呼び出し側設定から `Avc1Box` を 1 つ返す。先頭 SPS を関数内で解析して代表値にする。`SampleEntry` には包まない。Annex B 入力からの構築は、列挙して type 7 / 8 を入力順で集め、同じ構築関数に渡す薄いラッパーとする。SEI / IDR / AUD 等は無視する。SPS または PPS が 0 個なら `crate::Error` とする。複数 SPS / PPS は `AvccBox` のリストに入力順で全部残し、profile / level / 寸法 / chroma / bit depth は先頭 SPS だけから取る。
+SPS / PPS の EBSP リストと呼び出し側設定から `Avc1Box` を 1 つ返す。先頭 SPS を関数内で解析して代表値にする。`SampleEntry` には包まない。Annex B 入力からの構築は、列挙して type 7 / 8 を入力順で集め、同じ構築関数に渡す薄いラッパーとする。SEI / IDR / AUD 等は無視する。SPS または PPS が 0 個なら `crate::Error` とする。全ての SPS は非空・NAL type 7（`forbidden_zero_bit == 0`）、全ての PPS は非空・NAL type 8（`forbidden_zero_bit == 0`）であることを検証する（構文解析は先頭 SPS だけ）。複数 SPS / PPS は `AvccBox` のリストに入力順で全部残し、profile / level / width / height / chroma / bit depth は先頭 SPS だけから取る。
 
-PPS は NAL type 8 であることと非空であることだけを検証し、PPS 構文は解析しない。SPS extension (type 13) の抽出と `sps_ext_list` への格納は対象外とし、構築結果の `sps_ext_list` は空 `Vec` とする。
+PPS 構文は解析しない。SPS extension (type 13) の抽出と `sps_ext_list` への格納は対象外とし、構築結果の `sps_ext_list` は空 `Vec` とする。
 
 `AvccBox::encode` は `avc_profile_indication` が 66 / 77 / 88 以外のとき `chroma_format` / `bit_depth_luma_minus8` / `bit_depth_chroma_minus8` を必須とする。この条件は SPS 追加構文の `profile_idc` リストと一致しない。66 / 77 / 88 以外では、SPS 追加構文から読めた値があればそれを入れ、無ければ上記の推論値 (`chroma_format_idc = 1`、bit depth minus8 = 0) を入れて encode が失敗しないようにする。66 / 77 / 88 ではこれらのフィールドは `None` のままにする。
 
@@ -124,25 +124,35 @@ SPS / PPS の個数が現行 `AvccBox::encode` の上限 (SPS 31、PPS 255) を�
 
 #### 呼び出し側指定値
 
-- NAL 長フィールド幅: 1 / 2 / 4。`AvccBox::length_size_minus_one` には幅 - 1 を入れる（結果は 0 / 1 / 3）。幅 3（`length_size_minus_one == 2`）は拒否する。Hisui のように 4 に固定しない
+- NAL 長フィールド幅: [`LengthSize`] 型 (`OneByte` / `TwoBytes` / `FourBytes`)。`AvccBox::length_size_minus_one` には `LengthSize::length_size_minus_one` の値 (0 / 1 / 3) を入れる。幅 3（`length_size_minus_one == 2`）は reserved のため型で表現できない。Hisui のように 4 に固定しない
 
 公開 API は `no_std` を維持し、crate 本体 (`shiguredo_mp4`) に新しい外部依存は追加しない。入力から読んだサイズやカウントを信頼した `Vec::with_capacity` は行わない (実入力長に比例する確保までは禁じない)。エラーは新しい公開エラー体系を増やさず、既存の `crate::Error` / `ErrorKind` に統合する。
 
 以下は骨格例である。型名・関数名は実装時に既存 API (`parse_frame_header` / `build_vp08_box` 等) と整合させて調整してよい。
 
 ```rust
+pub enum H264NalUnitType {
+    NonIdrSlice, // 1
+    IdrSlice,    // 5
+    Sei,         // 6
+    Sps,         // 7
+    Pps,         // 8
+    Aud,         // 9
+    Other(u8),   // それ以外 (0、2..=4、10..=31 など) を不透明に通す
+}
+
 pub struct H264NalUnit<'a> {
-    pub nal_unit_type: u8, // 下位 5 ビット
-    pub data: &'a [u8],    // NAL ヘッダー込み、開始コード / 長さプレフィックス無し、EBSP
+    pub nal_unit_type: H264NalUnitType,
+    pub data: &'a [u8], // NAL ヘッダー込み、開始コード / 長さプレフィックス無し、EBSP
 }
 
 pub fn parse_annexb_nal_units(input: &[u8]) -> Result<...>; // 借用ベースの列挙
-pub fn parse_length_prefixed_nal_units(input: &[u8], length_size: u8) -> Result<...>;
+pub fn parse_length_prefixed_nal_units(input: &[u8], length_size: LengthSize) -> Result<...>;
 
-pub fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8>>;
-pub fn length_prefixed_to_annexb(input: &[u8], length_size: u8) -> Result<Vec<u8>>;
+pub fn annexb_to_length_prefixed(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>>;
+pub fn length_prefixed_to_annexb(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>>;
 
-pub fn collect_nal_units<'a>(nals: impl IntoIterator<Item = H264NalUnit<'a>>, nal_unit_type: u8) -> Vec<&'a [u8]>;
+pub fn collect_nal_units<'a>(nals: impl IntoIterator<Item = H264NalUnit<'a>>, nal_unit_type: H264NalUnitType) -> Vec<&'a [u8]>;
 
 pub struct H264Sps {
     pub profile_idc: u8,
@@ -158,7 +168,7 @@ pub struct H264Sps {
 pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps>;
 
 pub struct H264SampleEntryConfig {
-    pub length_size: u8, // 1 / 2 / 4
+    pub length_size: LengthSize,
 }
 
 pub fn build_avc1_box(
@@ -170,11 +180,11 @@ pub fn build_avc1_box(
 pub fn build_avc1_box_from_annexb(input: &[u8], config: &H264SampleEntryConfig) -> Result<Avc1Box>;
 ```
 
-`parse_length_prefixed_nal_units` と相互変換の `length_size` は、呼び出し側が `AvccBox::length_size_minus_one` から換算した 1 / 2 / 4 を渡す。換算ヘルパーを置く場合も、`length_size_minus_one == 2`（幅 3）は Error にする。
+`parse_length_prefixed_nal_units` と相互変換の `length_size` は、呼び出し側が `AvccBox::length_size_minus_one` の値 (0 / 1 / 3) から `LengthSize` へ写して渡す。2 (幅 3) は reserved のため型で表現できない。
 
 ### テスト
 
-- 単体テスト (`tests/test_bitstream_h264.rs`): 3 バイト / 4 バイト / 混在開始コード。空入力は 0 個で成功、非空で開始コード無しは Error、空 NAL は Error。先頭・末尾のゼロ詰めが NAL 本体に混ざらないこと。length-prefixed の幅 1 / 2 / 4、幅 3 の拒否、切り詰め・長さ 0・長さ超過の Error。`forbidden_zero_bit`。EBSP の `0x000003` を含む SPS が RBSP 化後に正しく読めること。Baseline (66) / Main (77) / High (100) / High 10 (110)。クロップ無しとクロップ後 1920x1080。`frame_mbs_only_flag == 0`。66 / 77 / 88 で `chroma_format` が `None`、100 で `Some`。SPS / PPS 空リストの構築拒否。幅 0 と `u16::MAX` 超過の拒否
+- 単体テスト (`tests/test_bitstream_h264.rs`): 3 バイト / 4 バイト / 混在開始コード。空入力は 0 個で成功、非空で開始コード無しは Error、空 NAL は Error。先頭・末尾のゼロ詰めが NAL 本体に混ざらないこと。length-prefixed の幅 1 / 2 / 4、切り詰め・長さ 0・長さ超過の Error。`forbidden_zero_bit`。EBSP の `0x000003` を含む SPS が RBSP 化後に正しく読めること。Baseline (66) / Main (77) / High (100) / High 10 (110)。クロップ無しとクロップ後 1920x1080。`frame_mbs_only_flag == 0`。66 / 77 / 88 で `chroma_format` が `None`、100 で `Some`。SPS / PPS 空リストの構築拒否。幅 0 と `u16::MAX` 超過の拒否
 - PBT (`pbt/tests/prop_bitstream_h264.rs`): Annex B と length-prefixed のラウンドトリップ (NAL 境界が入力を重複なく覆うこと)。構築した正当な SPS の不変条件 (profile / 寸法 / avcC 欄)。`pbt/Cargo.toml` の noprop は 0068 で追加済みなので依存は足さない。PBT 専用 SPS ビルダーはテスト内に留め、公開 API にしない
 - 実データ fixture: `tests/testdata/` に小さな Annex B または length-prefixed 列を置く。既存の `black-h264-video.mp4` / `black-h264-fmp4.mp4` から抽出してもよい。ネットワークや外部コマンドなしでテストが完結すること
 - Fuzzing: `fuzz/fuzz_targets/fuzz_bitstream_h264.rs` に公開の Annex B 列挙・length-prefixed 列挙・`parse_sps` を対象とするターゲットを追加し、`fuzz/Cargo.toml` に `[[bin]]` エントリを追加する
@@ -194,7 +204,7 @@ pub fn build_avc1_box_from_annexb(input: &[u8], config: &H264SampleEntryConfig) 
 
 - `bitstream::h264` が公開され、Annex B 走査、length-prefixed 形式との相互変換、SPS 解析、SPS / PPS 抽出、`Avc1Box` 構築が利用できること
 - `src/bitstream/nal.rs` が非公開であり、コーデック共通の公開 NAL 型やトレイトが追加されていないこと
-- 空の Annex B / length-prefixed 入力は 0 個の成功、非空 Annex B の開始コード欠落・空 NAL・切り詰め・長さ 0・幅 3 は `crate::Error` であること
+- 空の Annex B / length-prefixed 入力は 0 個の成功、非空 Annex B の開始コード欠落・空 NAL・切り詰め・長さ 0 は `crate::Error` であること。幅 3 は `LengthSize` 型で表現できないこと
 - 返す NAL バイト列がヘッダー込み・開始コード無しの EBSP であり、RBSP 化が SPS 解析内部に閉じていること
 - 正当な `profile_idc` を Hisui 固有の許可リストで制限していないこと。66 / 77 / 88 以外の `AvccBox` 追加欄は SPS 値または推論値で埋め、encode が必須欄欠落で失敗しないこと
 - `build_avc1_box` が `Avc1Box` を返し `SampleEntry` に包まないこと。固定値 / ストリーム導出 / 呼び出し側指定が設計方針の三分類どおりであること
@@ -202,6 +212,33 @@ pub fn build_avc1_box_from_annexb(input: &[u8], config: &H264SampleEntryConfig) 
 - 不正入力を panic や黙った打ち切りではなく `crate::Error` として報告すること
 - `no_std` と crate 本体の依存ライブラリ 0 を維持すること (pbt 側の noprop は crate 本体の依存ではない)
 - 決定的テスト (`tests/test_bitstream_h264.rs`)、`noprop` PBT (`pbt/tests/prop_bitstream_h264.rs`)、実データ fixture (`tests/testdata/` 配下)、fuzz target (`fuzz/fuzz_targets/fuzz_bitstream_h264.rs`) が追加され、`fuzz/Cargo.toml` に `[[bin]]` エントリが登録されていること
-- 公開 API の rustdoc に入力形式、返す NAL バイト列へヘッダーを含むか、長さ幅 1 / 2 / 4 の契約、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、エラー条件が記載されていること
+- 公開 API の rustdoc に入力形式、返す NAL バイト列へヘッダーを含むか、`LengthSize` と `H264NalUnitType` の契約、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`src/bitstream.rs` に `pub mod h264` と非公開の `mod nal` を追加し、`src/bitstream/h264.rs` に以下の公開 API を追加した。
+
+- `H264NalUnitType` / `H264NalUnit`: NAL 種別と借用ベースの NAL 公開型
+- `LengthSize`: 長さフィールド幅 (1 / 2 / 4) を型で表す
+- `parse_annexb_nal_units` / `parse_length_prefixed_nal_units`: 借用ベースの NAL 列挙
+- `annexb_to_length_prefixed` / `length_prefixed_to_annexb`: Annex B と length-prefixed 形式の相互変換
+- `collect_nal_units`: 指定種別の NAL 本体を入力順で集める
+- `H264Sps` / `parse_sps`: SPS 解析。profile / level / width / height / chroma / bit depth を公開する
+- `H264SampleEntryConfig` / `build_avc1_box` / `build_avc1_box_from_annexb`: SPS / PPS から `Avc1Box` を構築する
+
+### 設計方針からの変更点
+
+コードレビューを経て以下を issue から変更した。
+
+- 長さフィールド幅は `u8` ではなく `LengthSize` 型にした。幅 3 (reserved) を型で表現できないようにし、実行時の幅検証と防御分岐を削除した
+- `nal_unit_type` は `u8` ではなく `H264NalUnitType` 型にした。Table 7-1 の主要種別を名前付きバリアント、定義値以外を `Other(u8)` として不透明に通す
+- Annex B 走査で NAL 間のゼロ詰め (`trailing_zero_8bits` / 次の開始コードの `leading_zero_8bits`) も本体に含めない (ITU-T H.264 Annex B B.2)
+- `pic_order_cnt_type > 2` を値域外として拒否する (ITU-T H.264 7.4.2.1.1)
+- 構築時に全 SPS を非空・NAL type 7 (`forbidden_zero_bit == 0`) として検証する (PPS と同じ方針。構文解析は先頭 SPS だけ)
+
+### テストと fuzz
+
+- 決定的テスト `tests/test_bitstream_h264.rs`、noprop PBT `pbt/tests/prop_bitstream_h264.rs`、実データ fixture (`tests/testdata/h264-sps-pps-annexb.bin`)、fuzz target `fuzz/fuzz_targets/fuzz_bitstream_h264.rs` を追加した
+- `CHANGES.md` の `develop` に `[ADD]` として追記した

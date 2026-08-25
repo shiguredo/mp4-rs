@@ -15,6 +15,9 @@
   - @sile
 - [ADD] VP9 ビットストリーム処理ユーティリティ (`bitstream::vp9`) を追加する
   - @sile
+- [ADD] H.264 ビットストリーム処理ユーティリティ (`bitstream::h264`) を追加する
+  - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、SPS / PPS 抽出、`avc1` / `avcC` の構築を提供する
+  - @sile
 - [ADD] AV1 ビットストリーム処理ユーティリティ (`bitstream::av1`) を追加する
   - @sile
 - [ADD] AAC ビットストリーム処理ユーティリティ (`bitstream::aac`) を追加する

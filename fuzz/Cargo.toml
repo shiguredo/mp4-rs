@@ -525,6 +525,20 @@ name = "fuzz_bitstream_h264"
 path = "fuzz_targets/fuzz_bitstream_h264.rs"
 test = false
 
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_bitstream_av1"
+path = "fuzz_targets/fuzz_bitstream_av1.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "fuzz_bitstream_aac"
+path = "fuzz_targets/fuzz_bitstream_aac.rs"
+test = false
+
 [dependencies]
 # cargo-fuzz 用の fuzz ターゲットランタイム
 libfuzzer-sys = "0.4"

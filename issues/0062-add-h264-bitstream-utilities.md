@@ -99,7 +99,7 @@ SPS 追加構文 (`chroma_format_idc` 以降) を読む `profile_idc` は、同 
 
 ### サンプルエントリー構築 API
 
-SPS / PPS の EBSP リストと呼び出し側設定から `Avc1Box` を 1 つ返す。先頭 SPS を関数内で解析して代表値にする。`SampleEntry` には包まない。Annex B 入力からの構築は、列挙して type 7 / 8 を入力順で集め、同じ構築関数に渡す薄いラッパーとする。SEI / IDR / AUD 等は無視する。SPS または PPS が 0 個なら `crate::Error` とする。全ての SPS は非空・NAL type 7（`forbidden_zero_bit == 0`）、全ての PPS は非空・NAL type 8（`forbidden_zero_bit == 0`）であることを検証する（構文解析は先頭 SPS だけ）。複数 SPS / PPS は `AvccBox` のリストに入力順で全部残し、profile / level / 寸法 / chroma / bit depth は先頭 SPS だけから取る。
+SPS / PPS の EBSP リストと呼び出し側設定から `Avc1Box` を 1 つ返す。先頭 SPS を関数内で解析して代表値にする。`SampleEntry` には包まない。Annex B 入力からの構築は、列挙して type 7 / 8 を入力順で集め、同じ構築関数に渡す薄いラッパーとする。SEI / IDR / AUD 等は無視する。SPS または PPS が 0 個なら `crate::Error` とする。全ての SPS は非空・NAL type 7（`forbidden_zero_bit == 0`）、全ての PPS は非空・NAL type 8（`forbidden_zero_bit == 0`）であることを検証する（構文解析は先頭 SPS だけ）。複数 SPS / PPS は `AvccBox` のリストに入力順で全部残し、profile / level / width / height / chroma / bit depth は先頭 SPS だけから取る。
 
 PPS 構文は解析しない。SPS extension (type 13) の抽出と `sps_ext_list` への格納は対象外とし、構築結果の `sps_ext_list` は空 `Vec` とする。
 

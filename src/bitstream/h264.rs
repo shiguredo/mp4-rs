@@ -466,7 +466,7 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
 
 /// [`Avc1Box`] の構築に必要な、ストリームから一意に決まらない設定値
 ///
-/// profile / level / 寸法 / chroma / bit depth / SPS / PPS は
+/// profile / level / width / height / chroma / bit depth / SPS / PPS は
 /// [`build_avc1_box`] 側で SPS / PPS の EBSP から導出するため、
 /// 本構造体には含めない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

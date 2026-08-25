@@ -18,9 +18,11 @@
 //!
 //! # 長さフィールド幅の契約
 //!
-//! length-prefixed 形式を扱う API の長さフィールド幅は 1 / 2 / 4 のみを受理する。
-//! 幅 3 (ISO/IEC 14496-15 の `lengthSizeMinusOne == 2`、reserved) は
-//! [`crate::Error`] となる。
+//! length-prefixed 形式を扱う API の長さフィールド幅は [`LengthSize`] 型で
+//! 表現する。幅 3 (ISO/IEC 14496-15 の `lengthSizeMinusOne == 2`、reserved) は
+//! この型で表現できない。
+
+pub use crate::bitstream::nal::LengthSize;
 
 use alloc::vec::Vec;
 
@@ -120,7 +122,7 @@ pub fn parse_annexb_nal_units(input: &[u8]) -> Result<Vec<H264NalUnit<'_>>> {
 /// # 入力
 ///
 /// - `input`: 大端序の長さフィールド + NAL 本体を繰り返したバイト列
-/// - `length_size`: 長さフィールド幅 (1 / 2 / 4 のみ。3 は reserved として拒否)
+/// - `length_size`: 長さフィールド幅 ([`LengthSize`]。幅 3 は型で表現できない)
 ///
 /// # 返り値
 ///
@@ -129,7 +131,6 @@ pub fn parse_annexb_nal_units(input: &[u8]) -> Result<Vec<H264NalUnit<'_>>> {
 ///
 /// # エラー条件
 ///
-/// - `length_size` が 1 / 2 / 4 以外
 /// - 長さフィールドが入力末尾を超える
 /// - 宣言長が残バイトを超える (切り詰め)
 /// - 宣言長が 0 の NAL
@@ -139,7 +140,7 @@ pub fn parse_annexb_nal_units(input: &[u8]) -> Result<Vec<H264NalUnit<'_>>> {
 /// 空入力は NAL ユニット 0 個の成功として扱う。
 pub fn parse_length_prefixed_nal_units(
     input: &[u8],
-    length_size: u8,
+    length_size: LengthSize,
 ) -> Result<Vec<H264NalUnit<'_>>> {
     let bodies = nal::scan_length_prefixed_nals(input, length_size)?;
     bodies.iter().map(|body| to_h264_nal_unit(body)).collect()
@@ -150,7 +151,7 @@ pub fn parse_length_prefixed_nal_units(
 /// # 入力
 ///
 /// - `input`: 開始コードで区切られた NAL ユニット列
-/// - `length_size`: 出力の長さフィールド幅 (1 / 2 / 4 のみ。3 は reserved として拒否)
+/// - `length_size`: 出力の長さフィールド幅 ([`LengthSize`]。幅 3 は型で表現できない)
 ///
 /// # 返り値
 ///
@@ -163,7 +164,7 @@ pub fn parse_length_prefixed_nal_units(
 ///   NAL ヘッダーは検証せず、`forbidden_zero_bit == 1` でも変換は成功する)
 /// - NAL 本体が `length_size` バイトの長さフィールドに収まらない
 ///   (黙った切り詰めはしない)
-pub fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
+pub fn annexb_to_length_prefixed(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>> {
     nal::annexb_to_length_prefixed(input, length_size)
 }
 
@@ -172,7 +173,7 @@ pub fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8
 /// # 入力
 ///
 /// - `input`: 大端序の長さフィールド + NAL 本体を繰り返したバイト列
-/// - `length_size`: 長さフィールド幅 (1 / 2 / 4 のみ。3 は reserved として拒否)
+/// - `length_size`: 長さフィールド幅 ([`LengthSize`]。幅 3 は型で表現できない)
 ///
 /// # 返り値
 ///
@@ -183,7 +184,7 @@ pub fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8
 ///
 /// - length-prefixed の境界走査エラー ([`parse_length_prefixed_nal_units`] の
 ///   走査分。NAL ヘッダーは検証せず、`forbidden_zero_bit == 1` でも変換は成功する)
-pub fn length_prefixed_to_annexb(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
+pub fn length_prefixed_to_annexb(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>> {
     nal::length_prefixed_to_annexb(input, length_size)
 }
 
@@ -471,12 +472,13 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
 /// 本構造体には含めない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264SampleEntryConfig {
-    /// NAL 長フィールド幅 (1 / 2 / 4)
+    /// NAL 長フィールド幅 ([`LengthSize`])
     ///
-    /// [`AvccBox::length_size_minus_one`] には幅 - 1 が入る
-    /// (1 / 2 / 4 は 0 / 1 / 3 に対応)。幅 3 (`length_size_minus_one == 2`) は
-    /// ISO/IEC 14496-15 で reserved のため拒否する
-    pub length_size: u8,
+    /// [`AvccBox::length_size_minus_one`] には
+    /// [`LengthSize::length_size_minus_one`] の値 (0 / 1 / 3) が入る。
+    /// 幅 3 (`length_size_minus_one == 2`) は ISO/IEC 14496-15 で reserved のため
+    /// この型で表現できない
+    pub length_size: LengthSize,
 }
 
 /// SPS / PPS の EBSP リストと設定値から [`Avc1Box`] を 1 つ構築する
@@ -510,7 +512,7 @@ pub struct H264SampleEntryConfig {
 ///
 /// # 呼び出し側指定値
 ///
-/// - [`H264SampleEntryConfig::length_size`]: NAL 長フィールド幅 1 / 2 / 4
+/// - [`H264SampleEntryConfig::length_size`]: NAL 長フィールド幅 ([`LengthSize`])
 ///
 /// # エラー条件
 ///
@@ -520,7 +522,6 @@ pub struct H264SampleEntryConfig {
 /// - SPS が非空・NAL type 7 以外。PPS が非空・NAL type 8 以外
 ///   (構文解析は先頭 SPS だけ。PPS 構文は解析しない)
 /// - 先頭 SPS の解析失敗 ([`parse_sps`] のエラー条件)
-/// - `length_size` が 1 / 2 / 4 以外
 pub fn build_avc1_box(
     sps_list: &[Vec<u8>],
     pps_list: &[Vec<u8>],
@@ -579,14 +580,10 @@ pub fn build_avc1_box(
     // 先頭 SPS を解析して代表値にする
     let sps = parse_sps(first_sps)?;
 
-    // 呼び出し側指定の長さフィールド幅 1 / 2 / 4 を length_size_minus_one (0 / 1 / 3) へ写す
-    let length_size_minus_one = match config.length_size {
-        1 => Uint::new(0),
-        2 => Uint::new(1),
-        4 => Uint::new(3),
-        // 幅 3 (length_size_minus_one == 2) は ISO/IEC 14496-15 で reserved
-        _ => return Err(Error::invalid_input("length_size must be 1, 2, or 4")),
-    };
+    // 呼び出し側指定の長さフィールド幅を length_size_minus_one (0 / 1 / 3) へ写す。
+    // 幅 3 (length_size_minus_one == 2) は ISO/IEC 14496-15 で reserved のため
+    // LengthSize 型では表現できない
+    let length_size_minus_one = Uint::new(config.length_size.length_size_minus_one());
 
     // AvccBox::encode は avc_profile_indication が 66 / 77 / 88 以外のとき
     // 追加欄 (chroma_format 等) を必須とする。SPS の値は 66 / 77 / 88 以外では

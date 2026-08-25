@@ -16,6 +16,40 @@ pub(crate) const START_CODE_PREFIX_ONE_4BYTES: [u8; 4] = [0x00, 0x00, 0x00, 0x01
 /// 3 バイト開始コード (`start_code_prefix_one_3bytes`、ITU-T H.264 Annex B)
 pub(crate) const START_CODE_PREFIX_ONE_3BYTES: [u8; 3] = [0x00, 0x00, 0x01];
 
+/// NAL 長フィールド幅 (ISO/IEC 14496-15 の `lengthSizeMinusOne`)
+///
+/// `lengthSizeMinusOne` は 0 / 1 / 3 が正当で、2 (幅 3) は reserved のため
+/// この型では表現できない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LengthSize {
+    /// 幅 1 (`lengthSizeMinusOne == 0`)
+    OneByte,
+    /// 幅 2 (`lengthSizeMinusOne == 1`)
+    TwoBytes,
+    /// 幅 4 (`lengthSizeMinusOne == 3`)
+    FourBytes,
+}
+
+impl LengthSize {
+    /// バイト幅 (1 / 2 / 4)
+    pub fn bytes(self) -> usize {
+        match self {
+            Self::OneByte => 1,
+            Self::TwoBytes => 2,
+            Self::FourBytes => 4,
+        }
+    }
+
+    /// `lengthSizeMinusOne` の値 (0 / 1 / 3)
+    pub fn length_size_minus_one(self) -> u8 {
+        match self {
+            Self::OneByte => 0,
+            Self::TwoBytes => 1,
+            Self::FourBytes => 3,
+        }
+    }
+}
+
 /// `pos` に開始コードがある場合にその長さ (3 または 4) を返す
 ///
 /// 4 バイト開始コードを 3 バイト開始コード + 先行ゼロに誤分割しないため、
@@ -46,48 +80,32 @@ fn find_start_code(input: &[u8], pos: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// 長さフィールド幅が 1 / 2 / 4 のいずれかであることを検証する
-///
-/// ISO/IEC 14496-15 の `lengthSizeMinusOne` は 0 / 1 / 3 が正当で、
-/// 2 (幅 3) は reserved である
-fn check_length_size(length_size: u8) -> Result<()> {
-    if !matches!(length_size, 1 | 2 | 4) {
-        return Err(Error::invalid_input(
-            "length size must be 1, 2, or 4 (3 is reserved)",
-        ));
-    }
-    Ok(())
-}
-
 /// 大端序の長さフィールドを整数値として読む
-fn read_length_field(bytes: &[u8], length_size: u8) -> u32 {
+fn read_length_field(bytes: &[u8], length_size: LengthSize) -> u32 {
     let mut len: u32 = 0;
-    for byte in &bytes[..length_size as usize] {
+    for byte in &bytes[..length_size.bytes()] {
         len = (len << 8) | u32::from(*byte);
     }
     len
 }
 
 /// `len` が `length_size` バイトの長さフィールドに収まるかを返す
-fn length_fits(len: usize, length_size: u8) -> bool {
+fn length_fits(len: usize, length_size: LengthSize) -> bool {
     match length_size {
-        1 => len <= u8::MAX as usize,
-        2 => len <= u16::MAX as usize,
-        4 => len <= u32::MAX as usize,
-        _ => false,
+        LengthSize::OneByte => len <= u8::MAX as usize,
+        LengthSize::TwoBytes => len <= u16::MAX as usize,
+        LengthSize::FourBytes => len <= u32::MAX as usize,
     }
 }
 
 /// 大端序の長さフィールドを書き出す
 ///
 /// `length_fits` で収まることを検証済みの `len` だけを渡すこと
-fn write_length_field(out: &mut Vec<u8>, len: usize, length_size: u8) {
-    let len = len as u32;
+fn write_length_field(out: &mut Vec<u8>, len: usize, length_size: LengthSize) {
     match length_size {
-        1 => out.push(len as u8),
-        2 => out.extend_from_slice(&(len as u16).to_be_bytes()),
-        4 => out.extend_from_slice(&len.to_be_bytes()),
-        _ => unreachable!("length_size is validated by check_length_size"),
+        LengthSize::OneByte => out.push(len as u8),
+        LengthSize::TwoBytes => out.extend_from_slice(&(len as u16).to_be_bytes()),
+        LengthSize::FourBytes => out.extend_from_slice(&(len as u32).to_be_bytes()),
     }
 }
 
@@ -175,26 +193,26 @@ pub(crate) fn scan_annexb_nals(input: &[u8]) -> Result<Vec<&[u8]>> {
 ///
 /// # 契約
 ///
-/// - 長さフィールド幅は 1 / 2 / 4 のみ受理する (3 は reserved として
-///   [`crate::Error`])
 /// - 空入力は NAL ユニット 0 個の成功
 /// - 長さフィールドが入力末尾を超える、宣言長が残バイトを超える、
 ///   宣言長が 0 の NAL は [`crate::Error`]
-pub(crate) fn scan_length_prefixed_nals(input: &[u8], length_size: u8) -> Result<Vec<&[u8]>> {
-    check_length_size(length_size)?;
-    let length_size = length_size as usize;
+pub(crate) fn scan_length_prefixed_nals(
+    input: &[u8],
+    length_size: LengthSize,
+) -> Result<Vec<&[u8]>> {
+    let length_size_bytes = length_size.bytes();
 
     let mut nals = Vec::new();
     let mut cursor = 0;
     while cursor < input.len() {
         // 長さフィールドが入力末尾を超える場合は切り詰めとして Error
-        if input.len() - cursor < length_size {
+        if input.len() - cursor < length_size_bytes {
             return Err(Error::invalid_input(
                 "length field exceeds the end of the input",
             ));
         }
-        let len = read_length_field(&input[cursor..], length_size as u8) as usize;
-        cursor += length_size;
+        let len = read_length_field(&input[cursor..], length_size) as usize;
+        cursor += length_size_bytes;
         // 宣言長 0 の NAL は黙って読み飛ばさず Error
         if len == 0 {
             return Err(Error::invalid_input("NAL unit with length 0"));
@@ -218,13 +236,10 @@ pub(crate) fn scan_length_prefixed_nals(input: &[u8], length_size: u8) -> Result
 ///
 /// # 契約
 ///
-/// - 長さフィールド幅は 1 / 2 / 4 のみ受理する (3 は reserved として
-///   [`crate::Error`])
 /// - 入力の走査は [`scan_annexb_nals`] と同じ契約に従う
 /// - NAL 本体が長さフィールド幅に収まらない場合は [`crate::Error`]
 ///   (黙った切り詰めはしない)
-pub(crate) fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
-    check_length_size(length_size)?;
+pub(crate) fn annexb_to_length_prefixed(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>> {
     let nals = scan_annexb_nals(input)?;
 
     let mut out = Vec::new();
@@ -247,11 +262,8 @@ pub(crate) fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result
 ///
 /// # 契約
 ///
-/// - 長さフィールド幅は 1 / 2 / 4 のみ受理する (3 は reserved として
-///   [`crate::Error`])
 /// - 入力の走査は [`scan_length_prefixed_nals`] と同じ契約に従う
-pub(crate) fn length_prefixed_to_annexb(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
-    check_length_size(length_size)?;
+pub(crate) fn length_prefixed_to_annexb(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>> {
     let nals = scan_length_prefixed_nals(input, length_size)?;
 
     let mut out = Vec::new();

@@ -7,8 +7,8 @@
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, Uint,
     bitstream::h264::{
-        H264SampleEntryConfig, build_avc1_box, build_avc1_box_from_annexb, collect_nal_units,
-        parse_annexb_nal_units, parse_length_prefixed_nal_units, parse_sps,
+        H264SampleEntryConfig, LengthSize, build_avc1_box, build_avc1_box_from_annexb,
+        collect_nal_units, parse_annexb_nal_units, parse_length_prefixed_nal_units, parse_sps,
     },
     boxes::{Avc1Box, VisualSampleEntryFields},
 };
@@ -254,14 +254,13 @@ fn to_ebsp(rbsp: &[u8]) -> Vec<u8> {
 }
 
 /// 大端序の長さフィールドを付けて length-prefixed バイト列を作る
-fn length_prefixed(nals: &[&[u8]], length_size: u8) -> Vec<u8> {
+fn length_prefixed(nals: &[&[u8]], length_size: LengthSize) -> Vec<u8> {
     let mut out = Vec::new();
     for nal in nals {
         match length_size {
-            1 => out.push(nal.len() as u8),
-            2 => out.extend_from_slice(&(nal.len() as u16).to_be_bytes()),
-            4 => out.extend_from_slice(&(nal.len() as u32).to_be_bytes()),
-            _ => unreachable!(),
+            LengthSize::OneByte => out.push(nal.len() as u8),
+            LengthSize::TwoBytes => out.extend_from_slice(&(nal.len() as u16).to_be_bytes()),
+            LengthSize::FourBytes => out.extend_from_slice(&(nal.len() as u32).to_be_bytes()),
         }
         out.extend_from_slice(nal);
     }
@@ -274,7 +273,9 @@ fn valid_pps() -> Vec<u8> {
 }
 
 fn default_config() -> H264SampleEntryConfig {
-    H264SampleEntryConfig { length_size: 4 }
+    H264SampleEntryConfig {
+        length_size: LengthSize::FourBytes,
+    }
 }
 
 // ===== parse_annexb_nal_units: 受理系 =====
@@ -481,10 +482,14 @@ fn parse_annexb_rejects_forbidden_zero_bit() {
 #[test]
 fn parse_length_prefixed_widths_1_2_4() {
     let nal = [0x65, 0x88, 0x84];
-    for length_size in [1u8, 2, 4] {
+    for length_size in [
+        LengthSize::OneByte,
+        LengthSize::TwoBytes,
+        LengthSize::FourBytes,
+    ] {
         let input = length_prefixed(&[&nal], length_size);
         let nals = parse_length_prefixed_nal_units(&input, length_size)
-            .unwrap_or_else(|_| panic!("幅 {length_size} は解析成功する"));
+            .unwrap_or_else(|_| panic!("幅 {:?} は解析成功する", length_size));
         assert_eq!(nals.len(), 1);
         assert_eq!(nals[0].nal_unit_type, 5);
         assert_eq!(nals[0].data, nal);
@@ -496,8 +501,9 @@ fn parse_length_prefixed_widths_1_2_4() {
 fn parse_length_prefixed_multiple_nals() {
     let nal1 = [0x67, 0x42, 0xC0];
     let nal2 = [0x65, 0x88];
-    let input = length_prefixed(&[&nal1, &nal2], 4);
-    let nals = parse_length_prefixed_nal_units(&input, 4).expect("複数 NAL は解析成功する");
+    let input = length_prefixed(&[&nal1, &nal2], LengthSize::FourBytes);
+    let nals = parse_length_prefixed_nal_units(&input, LengthSize::FourBytes)
+        .expect("複数 NAL は解析成功する");
     assert_eq!(nals.len(), 2);
     assert_eq!(nals[0].nal_unit_type, 7);
     assert_eq!(nals[0].data, nal1);
@@ -508,40 +514,20 @@ fn parse_length_prefixed_multiple_nals() {
 /// 空入力は NAL ユニット 0 個の成功
 #[test]
 fn parse_length_prefixed_empty_input_is_success() {
-    let nals = parse_length_prefixed_nal_units(&[], 4).expect("空入力は 0 個の成功");
+    let nals =
+        parse_length_prefixed_nal_units(&[], LengthSize::FourBytes).expect("空入力は 0 個の成功");
     assert!(nals.is_empty());
 }
 
 // ===== parse_length_prefixed_nal_units: 拒否系 =====
-
-/// 幅 3 (lengthSizeMinusOne == 2、reserved) は Error
-///
-/// length-prefixed を扱う公開 API は全て幅 3 を拒否する。各 API が幅 3 を
-/// 受理する実装に差し替えた場合に入力は成功するよう、幅 3 で正当な入力を
-/// 使う (幅 3 拒否契約だけが Error の理由になる)
-#[test]
-fn parse_length_prefixed_rejects_width_3() {
-    // 幅 3 の長さフィールド (0x000003) と NAL 本体で正しい length-prefixed 入力
-    let lp = [0x00, 0x00, 0x03, 0x65, 0x88, 0x84];
-    // 幅 3 で変換できる正当な Annex B 入力
-    let annexb = [0x00, 0x00, 0x01, 0x65, 0x88];
-    for err in [
-        parse_length_prefixed_nal_units(&lp, 3).expect_err("幅 3 は reserved のため Error"),
-        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&annexb, 3)
-            .expect_err("幅 3 は reserved のため Error"),
-        shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, 3)
-            .expect_err("幅 3 は reserved のため Error"),
-    ] {
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
-    }
-}
 
 /// 長さフィールドが入力末尾を超える場合は Error
 #[test]
 fn parse_length_prefixed_rejects_length_field_exceeding_end() {
     // 幅 4 の長さフィールドを読むのに 3 バイトしか残っていない
     let input = [0x00, 0x00, 0x01];
-    let err = parse_length_prefixed_nal_units(&input, 4).expect_err("長さフィールド超過は Error");
+    let err = parse_length_prefixed_nal_units(&input, LengthSize::FourBytes)
+        .expect_err("長さフィールド超過は Error");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -552,7 +538,7 @@ fn parse_length_prefixed_rejects_declared_length_exceeding_remaining() {
     let mut input = Vec::new();
     input.extend_from_slice(&5u32.to_be_bytes());
     input.extend_from_slice(&[0x65, 0x88]);
-    let err = parse_length_prefixed_nal_units(&input, 4)
+    let err = parse_length_prefixed_nal_units(&input, LengthSize::FourBytes)
         .expect_err("宣言長超過は Error (黙って打ち切らない)");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
@@ -561,7 +547,8 @@ fn parse_length_prefixed_rejects_declared_length_exceeding_remaining() {
 #[test]
 fn parse_length_prefixed_rejects_zero_length() {
     let input = [0x00, 0x00, 0x00, 0x00];
-    let err = parse_length_prefixed_nal_units(&input, 4).expect_err("長さ 0 の NAL は Error");
+    let err = parse_length_prefixed_nal_units(&input, LengthSize::FourBytes)
+        .expect_err("長さ 0 の NAL は Error");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -569,9 +556,9 @@ fn parse_length_prefixed_rejects_zero_length() {
 #[test]
 fn parse_length_prefixed_rejects_forbidden_zero_bit() {
     let nal = [0xE5, 0x88];
-    let input = length_prefixed(&[&nal], 1);
-    let err =
-        parse_length_prefixed_nal_units(&input, 1).expect_err("forbidden_zero_bit=1 は Error");
+    let input = length_prefixed(&[&nal], LengthSize::OneByte);
+    let err = parse_length_prefixed_nal_units(&input, LengthSize::OneByte)
+        .expect_err("forbidden_zero_bit=1 は Error");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -583,9 +570,10 @@ fn annexb_to_length_prefixed_adds_length_fields() {
     let nal1 = [0x67, 0x42, 0xC0];
     let nal2 = [0x65, 0x88];
     let input = annexb_with_3(&[&nal1, &nal2]);
-    let out = shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&input, 2)
-        .expect("Annex B → length-prefixed は成功する");
-    let expected = length_prefixed(&[&nal1, &nal2], 2);
+    let out =
+        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&input, LengthSize::TwoBytes)
+            .expect("Annex B → length-prefixed は成功する");
+    let expected = length_prefixed(&[&nal1, &nal2], LengthSize::TwoBytes);
     assert_eq!(out, expected);
 }
 
@@ -594,9 +582,10 @@ fn annexb_to_length_prefixed_adds_length_fields() {
 fn length_prefixed_to_annexb_adds_4byte_start_codes() {
     let nal1 = [0x67, 0x42, 0xC0];
     let nal2 = [0x65, 0x88];
-    let input = length_prefixed(&[&nal1, &nal2], 1);
-    let out = shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&input, 1)
-        .expect("length-prefixed → Annex B は成功する");
+    let input = length_prefixed(&[&nal1, &nal2], LengthSize::OneByte);
+    let out =
+        shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&input, LengthSize::OneByte)
+            .expect("length-prefixed → Annex B は成功する");
     let expected = annexb_with_4(&[&nal1, &nal2]);
     assert_eq!(out, expected);
 }
@@ -610,11 +599,12 @@ fn conversions_pass_through_forbidden_zero_bit() {
     let nal = [0x88, 0x65];
     // length-prefixed → Annex B は常に 4 バイト開始コードで書く
     let annexb = annexb_with_4(&[&nal]);
-    let lp = length_prefixed(&[&nal], 4);
-    let out = shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&annexb, 4)
-        .expect("Annex B → length-prefixed はヘッダー検証なしで成功する");
+    let lp = length_prefixed(&[&nal], LengthSize::FourBytes);
+    let out =
+        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&annexb, LengthSize::FourBytes)
+            .expect("Annex B → length-prefixed はヘッダー検証なしで成功する");
     assert_eq!(out, lp);
-    let out = shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, 4)
+    let out = shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, LengthSize::FourBytes)
         .expect("length-prefixed → Annex B はヘッダー検証なしで成功する");
     assert_eq!(out, annexb);
 }
@@ -625,10 +615,12 @@ fn annexb_length_prefixed_annexb_roundtrip() {
     let nal1 = [0x67, 0x42, 0xC0];
     let nal2 = [0x65, 0x88];
     let original = annexb_with_4(&[&nal1, &nal2]);
-    let lp = shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&original, 4)
-        .expect("Annex B → length-prefixed は成功する");
-    let back = shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, 4)
-        .expect("length-prefixed → Annex B は成功する");
+    let lp =
+        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&original, LengthSize::FourBytes)
+            .expect("Annex B → length-prefixed は成功する");
+    let back =
+        shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, LengthSize::FourBytes)
+            .expect("length-prefixed → Annex B は成功する");
     assert_eq!(back, original);
 }
 
@@ -638,8 +630,9 @@ fn annexb_to_length_prefixed_rejects_nal_too_long_for_width_1() {
     // 幅 1 は最大 255 バイト。256 バイトの NAL は収まらない
     let nal = vec![0x65; 256];
     let input = annexb_with_3(&[&nal]);
-    let err = shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&input, 1)
-        .expect_err("幅 1 に収まらない NAL は Error");
+    let err =
+        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&input, LengthSize::OneByte)
+            .expect_err("幅 1 に収まらない NAL は Error");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -1279,7 +1272,9 @@ fn build_avc1_box_fixed_and_derived_values() {
         ..SpsParams::valid()
     });
     let pps = valid_pps();
-    let config = H264SampleEntryConfig { length_size: 2 };
+    let config = H264SampleEntryConfig {
+        length_size: LengthSize::TwoBytes,
+    };
     let avc1 = build_avc1_box(
         core::slice::from_ref(&sps),
         core::slice::from_ref(&pps),
@@ -1341,19 +1336,6 @@ fn build_avc1_box_rejects_empty_sps_list() {
 fn build_avc1_box_rejects_empty_pps_list() {
     let sps = build_sps(&SpsParams::valid());
     let err = build_avc1_box(&[sps], &[], &default_config()).expect_err("PPS 空リストは拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
-}
-
-/// 長さ幅 3 は reserved のため拒否する
-#[test]
-fn build_avc1_box_rejects_length_size_3() {
-    let sps = build_sps(&SpsParams::valid());
-    let err = build_avc1_box(
-        &[sps],
-        &[valid_pps()],
-        &H264SampleEntryConfig { length_size: 3 },
-    )
-    .expect_err("長さ幅 3 は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 

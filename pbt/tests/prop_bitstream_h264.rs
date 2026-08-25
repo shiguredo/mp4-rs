@@ -8,7 +8,7 @@ use std::cell::Cell;
 use shiguredo_mp4::{
     Decode, Encode,
     bitstream::h264::{
-        H264SampleEntryConfig, annexb_to_length_prefixed, build_avc1_box,
+        H264SampleEntryConfig, LengthSize, annexb_to_length_prefixed, build_avc1_box,
         length_prefixed_to_annexb, parse_annexb_nal_units, parse_length_prefixed_nal_units,
         parse_sps,
     },
@@ -212,18 +212,26 @@ fn build_annexb(bodies: &[Vec<u8>]) -> Vec<u8> {
 }
 
 /// 大端序の長さフィールドを付けて length-prefixed バイト列を作る
-fn build_length_prefixed(bodies: &[Vec<u8>], length_size: u8) -> Vec<u8> {
+fn build_length_prefixed(bodies: &[Vec<u8>], length_size: LengthSize) -> Vec<u8> {
     let mut out = Vec::new();
     for body in bodies {
         match length_size {
-            1 => out.push(body.len() as u8),
-            2 => out.extend_from_slice(&(body.len() as u16).to_be_bytes()),
-            4 => out.extend_from_slice(&(body.len() as u32).to_be_bytes()),
-            _ => unreachable!(),
+            LengthSize::OneByte => out.push(body.len() as u8),
+            LengthSize::TwoBytes => out.extend_from_slice(&(body.len() as u16).to_be_bytes()),
+            LengthSize::FourBytes => out.extend_from_slice(&(body.len() as u32).to_be_bytes()),
         }
         out.extend_from_slice(body);
     }
     out
+}
+
+/// 長さフィールド幅を 1 / 2 / 4 からサンプリングする
+fn sample_length_size(ctx: &mut noprop::TestCaseContext) -> LengthSize {
+    match noprop::sample_u64_in(ctx, 0..=2) {
+        0 => LengthSize::OneByte,
+        1 => LengthSize::TwoBytes,
+        _ => LengthSize::FourBytes,
+    }
 }
 
 /// Annex B と length-prefixed の相互変換がラウンドトリップする
@@ -240,11 +248,7 @@ fn annexb_length_prefixed_roundtrip() -> noprop::TestResult {
     let mut runner = noprop::Runner::new(seed);
 
     runner.run(CASES, |ctx| {
-        let length_size = match noprop::sample_u64_in(ctx, 0..=2) {
-            0 => 1u8,
-            1 => 2u8,
-            _ => 4u8,
-        };
+        let length_size = sample_length_size(ctx);
         // 0 / 1 / 複数 NAL を境界化する (幅 1 でも収まるよう本体長は 1..=100)
         let nal_count = noprop::sample_with_boundaries(
             ctx,
@@ -389,11 +393,7 @@ fn build_avc1_box_invariants() -> noprop::TestResult {
             pps.push(noprop::sample_u64_in(ctx, 1..=255) as u8);
         }
 
-        let length_size = match noprop::sample_u64_in(ctx, 0..=2) {
-            0 => 1u8,
-            1 => 2u8,
-            _ => 4u8,
-        };
+        let length_size = sample_length_size(ctx);
         let avc1 = build_avc1_box(
             core::slice::from_ref(&sps),
             &[pps],
@@ -435,7 +435,10 @@ fn build_avc1_box_invariants() -> noprop::TestResult {
         }
 
         // 呼び出し側指定値 (幅 1 / 2 / 4 → length_size_minus_one = 0 / 1 / 3)
-        assert_eq!(avc1.avcc_box.length_size_minus_one.get(), length_size - 1);
+        assert_eq!(
+            avc1.avcc_box.length_size_minus_one.get(),
+            length_size.length_size_minus_one()
+        );
 
         // 固定値
         assert!(avc1.unknown_boxes.is_empty());

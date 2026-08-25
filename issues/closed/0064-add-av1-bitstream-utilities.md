@@ -1,7 +1,7 @@
 # AV1 ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-25
 - Branch: feature/add-av1-bitstream-utilities
 - Polished: 2026-08-21
 
@@ -167,3 +167,28 @@ pub fn build_av01_box(
 - 公開 API の rustdoc に解析コンテキスト、サイズフィールド規則、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、保持するバイト範囲、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`src/bitstream.rs` に `pub mod av1` を追加し、`src/bitstream/av1.rs` に以下の公開 API を追加した。
+
+- `Av1ObuParseContext` (`ConfigObus` / `Sample`): Binding の違いを API で区別する入力コンテキスト
+- `Av1ObuType` / `Av1Obu`: 借用ベースの OBU 列公開型
+- `decode_leb128`: AV1 spec §4.10.5 の LEB128 デコード
+- `parse_obus`: `obu_type` / reserved bit / extension header / `obu_size` を検証し、OBU 列を返す
+- `Av1SequenceHeader` / `parse_sequence_header`: Sequence Header の解析。`av1C` / 寸法 / フレーム先頭部解析に必要な値だけを公開する
+- `Av1FrameHeaderPrefix` / `parse_frame_header_prefix`: uncompressed header 先頭部の RAP 判定用解析
+- `Av1SampleEntryConfig` / `build_av01_box`: 解析済み Sequence Header と `configOBUs` から `Av01Box` を構築する
+
+### 設計方針からの変更点
+
+コードレビューを経て以下を issue から変更した。
+
+- `Av1FrameHeaderPrefix` は struct ではなく enum (`ShowExistingFrame` / `NewFrame { frame_type, show_frame }`) にした。`show_existing_frame == 1` のとき `frame_type` / `show_frame` が現れない排他関係を型で表現し、RAP 判定用に `is_rap` メソッドを追加した
+- 非 layer-specific OBU (Sequence Header / Temporal Delimiter) の `obu_extension_flag = 1` を拒否する (AV1 spec §6.2.2)
+- `reduced_still_picture_header == 1` のとき `still_picture = 1` を要求する (AV1 spec §5.5.2)
+- `max_frame_width / max_frame_height` は `VisualSampleEntryFields` の `u16` に収まる 1..=65535 だけ受理する (issue のとおり 65536 は拒否)
+
+### テストと fuzz
+
+- 決定的テスト `tests/test_bitstream_av1.rs`、noprop PBT `pbt/tests/prop_bitstream_av1.rs`、実データ fixture (`tests/testdata/black-av1-video.mp4` / `black-av1-config-obus.bin`)、fuzz target `fuzz/fuzz_targets/fuzz_bitstream_av1.rs` を追加した

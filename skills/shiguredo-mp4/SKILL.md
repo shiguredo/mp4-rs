@@ -428,6 +428,9 @@ for sample in table.samples() {
 - ISO/IEC 14496-30 (Timed Text 系)
 - 3GPP TS 26.245 (タイムドテキスト)
 - VP Codec ISO Media File Format Binding
+- RFC 6386: VP8 Data Format and Decoding Guide
+- VP9 Bitstream and Decoding Process Specification
 - AV1 Codec ISO Media File Format Binding
+- AV1 Bitstream & Decoding Process Specification
 - Encapsulation of Opus in ISO Base Media File Format
 - Encapsulation of FLAC in ISO Base Media File Format

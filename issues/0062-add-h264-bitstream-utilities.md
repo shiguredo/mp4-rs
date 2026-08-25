@@ -1,7 +1,7 @@
 # H.264 ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-25
 - Branch: feature/add-h264-bitstream-utilities
 - Polished: 2026-08-24
 
@@ -215,3 +215,30 @@ pub fn build_avc1_box_from_annexb(input: &[u8], config: &H264SampleEntryConfig) 
 - 公開 API の rustdoc に入力形式、返す NAL バイト列へヘッダーを含むか、`LengthSize` と `H264NalUnitType` の契約、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`src/bitstream.rs` に `pub mod h264` と非公開の `mod nal` を追加し、`src/bitstream/h264.rs` に以下の公開 API を追加した。
+
+- `H264NalUnitType` / `H264NalUnit`: NAL 種別と借用ベースの NAL 公開型
+- `LengthSize`: 長さフィールド幅 (1 / 2 / 4) を型で表す
+- `parse_annexb_nal_units` / `parse_length_prefixed_nal_units`: 借用ベースの NAL 列挙
+- `annexb_to_length_prefixed` / `length_prefixed_to_annexb`: Annex B と length-prefixed 形式の相互変換
+- `collect_nal_units`: 指定種別の NAL 本体を入力順で集める
+- `H264Sps` / `parse_sps`: SPS 解析。profile / level / width / height / chroma / bit depth を公開する
+- `H264SampleEntryConfig` / `build_avc1_box` / `build_avc1_box_from_annexb`: SPS / PPS から `Avc1Box` を構築する
+
+### 設計方針からの変更点
+
+コードレビューを経て以下を issue から変更した。
+
+- 長さフィールド幅は `u8` ではなく `LengthSize` 型にした。幅 3 (reserved) を型で表現できないようにし、実行時の幅検証と防御分岐を削除した
+- `nal_unit_type` は `u8` ではなく `H264NalUnitType` 型にした。Table 7-1 の主要種別を名前付きバリアント、定義値以外を `Other(u8)` として不透明に通す
+- Annex B 走査で NAL 間のゼロ詰め (`trailing_zero_8bits` / 次の開始コードの `leading_zero_8bits`) も本体に含めない (ITU-T H.264 Annex B B.2)
+- `pic_order_cnt_type > 2` を値域外として拒否する (ITU-T H.264 7.4.2.1.1)
+- 構築時に全 SPS を非空・NAL type 7 (`forbidden_zero_bit == 0`) として検証する (PPS と同じ方針。構文解析は先頭 SPS だけ)
+
+### テストと fuzz
+
+- 決定的テスト `tests/test_bitstream_h264.rs`、noprop PBT `pbt/tests/prop_bitstream_h264.rs`、実データ fixture (`tests/testdata/h264-sps-pps-annexb.bin`)、fuzz target `fuzz/fuzz_targets/fuzz_bitstream_h264.rs` を追加した
+- `CHANGES.md` の `develop` に `[ADD]` として追記した

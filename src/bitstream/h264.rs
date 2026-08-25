@@ -32,11 +32,44 @@ use crate::{
     boxes::{Avc1Box, AvccBox, VisualSampleEntryFields},
 };
 
-/// SPS (Sequence Parameter Set) の NAL ユニット種別 (ITU-T H.264 Table 7-1)
-const SPS_NAL_UNIT_TYPE: u8 = 7;
+/// NAL ユニット種別 (ITU-T H.264 Table 7-1 の `nal_unit_type`)
+///
+/// この列挙は Table 7-1 の主要種別だけを名前付きで持ち、予約・未指定や
+/// 実ストリームで使われる定義値以外の種別は [`Other`](H264NalUnitType::Other)
+/// として不透明に通す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum H264NalUnitType {
+    /// 非 IDR ピクチャの符号化スライス (1)
+    NonIdrSlice,
+    /// IDR ピクチャの符号化スライス (5)
+    IdrSlice,
+    /// SEI (Supplemental enhancement information) (6)
+    Sei,
+    /// SPS (Sequence parameter set) (7)
+    Sps,
+    /// PPS (Picture parameter set) (8)
+    Pps,
+    /// アクセスユニット区切り (Access unit delimiter) (9)
+    Aud,
+    /// Table 7-1 の定義値以外 (0、2..=4、10..=31 など)。実ストリームで
+    /// 使われる範囲外の値もここで不透明に通す
+    Other(u8),
+}
 
-/// PPS (Picture Parameter Set) の NAL ユニット種別 (ITU-T H.264 Table 7-1)
-const PPS_NAL_UNIT_TYPE: u8 = 8;
+impl H264NalUnitType {
+    /// ヘッダーの下位 5 ビットを [`H264NalUnitType`] に写す
+    fn from_header_value(value: u8) -> Self {
+        match value {
+            1 => Self::NonIdrSlice,
+            5 => Self::IdrSlice,
+            6 => Self::Sei,
+            7 => Self::Sps,
+            8 => Self::Pps,
+            9 => Self::Aud,
+            other => Self::Other(other),
+        }
+    }
+}
 
 /// [`AvccBox`] に格納できる SPS の最大個数 (ISO/IEC 14496-15 の `unsigned int(5)`)
 const MAX_SPS_COUNT: usize = 31;
@@ -51,7 +84,7 @@ const MAX_PPS_COUNT: usize = 255;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264NalUnit<'a> {
     /// `nal_unit_type` (NAL ヘッダーの下位 5 ビット、ITU-T H.264 7.4.1)
-    pub nal_unit_type: u8,
+    pub nal_unit_type: H264NalUnitType,
 
     /// NAL 本体
     ///
@@ -66,14 +99,14 @@ pub struct H264NalUnit<'a> {
 /// - `forbidden_zero_bit` が 1 なら [`crate::Error`]
 /// - 予約・未指定の `nal_unit_type` はエラーにせずそのまま返す
 ///   (フレーミングでは不透明な NAL として通す)
-fn validate_h264_nal_header(data: &[u8]) -> Result<u8> {
+fn validate_h264_nal_header(data: &[u8]) -> Result<H264NalUnitType> {
     let Some(&header) = data.first() else {
         return Err(Error::invalid_input("NAL unit is shorter than 1 byte"));
     };
     if header & 0b1000_0000 != 0 {
         return Err(Error::invalid_input("forbidden_zero_bit must be 0"));
     }
-    Ok(header & 0b0001_1111)
+    Ok(H264NalUnitType::from_header_value(header & 0b0001_1111))
 }
 
 /// 走査済みの NAL 本体から [`H264NalUnit`] を作る
@@ -188,11 +221,11 @@ pub fn length_prefixed_to_annexb(input: &[u8], length_size: LengthSize) -> Resul
     nal::length_prefixed_to_annexb(input, length_size)
 }
 
-/// NAL ユニット列から指定した `nal_unit_type` の NAL 本体を集める
+/// NAL ユニット列から指定した [`H264NalUnitType`] の NAL 本体を集める
 ///
 /// 入力順を保ったまま、一致した NAL の [`H264NalUnit::data`] だけを返す。
 /// エラーにはならない (一致が無ければ空 `Vec`)。
-pub fn collect_nal_units<'a, I>(nals: I, nal_unit_type: u8) -> Vec<&'a [u8]>
+pub fn collect_nal_units<'a, I>(nals: I, nal_unit_type: H264NalUnitType) -> Vec<&'a [u8]>
 where
     I: IntoIterator<Item = H264NalUnit<'a>>,
 {
@@ -277,7 +310,7 @@ pub struct H264Sps {
 /// 以降は読まない。
 pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
     let nal_unit_type = validate_h264_nal_header(nal_unit)?;
-    if nal_unit_type != SPS_NAL_UNIT_TYPE {
+    if nal_unit_type != H264NalUnitType::Sps {
         return Err(Error::invalid_input("SPS NAL unit type must be 7"));
     }
 
@@ -554,7 +587,7 @@ pub fn build_avc1_box(
         if header & 0b1000_0000 != 0 {
             return Err(Error::invalid_input("SPS forbidden_zero_bit must be 0"));
         }
-        if header & 0b0001_1111 != SPS_NAL_UNIT_TYPE {
+        if H264NalUnitType::from_header_value(header & 0b0001_1111) != H264NalUnitType::Sps {
             return Err(Error::invalid_input("SPS NAL unit type must be 7"));
         }
     }
@@ -572,7 +605,7 @@ pub fn build_avc1_box(
         if header & 0b1000_0000 != 0 {
             return Err(Error::invalid_input("PPS forbidden_zero_bit must be 0"));
         }
-        if header & 0b0001_1111 != PPS_NAL_UNIT_TYPE {
+        if H264NalUnitType::from_header_value(header & 0b0001_1111) != H264NalUnitType::Pps {
             return Err(Error::invalid_input("PPS NAL unit type must be 8"));
         }
     }
@@ -645,11 +678,11 @@ pub fn build_avc1_box(
 /// - [`build_avc1_box`] のエラー条件
 pub fn build_avc1_box_from_annexb(input: &[u8], config: &H264SampleEntryConfig) -> Result<Avc1Box> {
     let nals = parse_annexb_nal_units(input)?;
-    let sps_list: Vec<Vec<u8>> = collect_nal_units(nals.iter().copied(), SPS_NAL_UNIT_TYPE)
+    let sps_list: Vec<Vec<u8>> = collect_nal_units(nals.iter().copied(), H264NalUnitType::Sps)
         .into_iter()
         .map(|s| s.to_vec())
         .collect();
-    let pps_list: Vec<Vec<u8>> = collect_nal_units(nals.iter().copied(), PPS_NAL_UNIT_TYPE)
+    let pps_list: Vec<Vec<u8>> = collect_nal_units(nals.iter().copied(), H264NalUnitType::Pps)
         .into_iter()
         .map(|s| s.to_vec())
         .collect();

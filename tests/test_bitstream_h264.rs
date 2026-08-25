@@ -7,8 +7,9 @@
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, Uint,
     bitstream::h264::{
-        H264SampleEntryConfig, LengthSize, build_avc1_box, build_avc1_box_from_annexb,
-        collect_nal_units, parse_annexb_nal_units, parse_length_prefixed_nal_units, parse_sps,
+        H264NalUnitType, H264SampleEntryConfig, LengthSize, build_avc1_box,
+        build_avc1_box_from_annexb, collect_nal_units, parse_annexb_nal_units,
+        parse_length_prefixed_nal_units, parse_sps,
     },
     boxes::{Avc1Box, VisualSampleEntryFields},
 };
@@ -287,7 +288,7 @@ fn parse_annexb_single_nal_with_4byte_start_code() {
     let input = annexb_with_4(&[&nal]);
     let nals = parse_annexb_nal_units(&input).expect("4 バイト開始コードの NAL は解析成功する");
     assert_eq!(nals.len(), 1);
-    assert_eq!(nals[0].nal_unit_type, 5);
+    assert_eq!(nals[0].nal_unit_type, H264NalUnitType::IdrSlice);
     assert_eq!(nals[0].data, nal);
 }
 
@@ -298,7 +299,7 @@ fn parse_annexb_single_nal_with_3byte_start_code() {
     let input = annexb_with_3(&[&nal]);
     let nals = parse_annexb_nal_units(&input).expect("3 バイト開始コードの NAL は解析成功する");
     assert_eq!(nals.len(), 1);
-    assert_eq!(nals[0].nal_unit_type, 1);
+    assert_eq!(nals[0].nal_unit_type, H264NalUnitType::NonIdrSlice);
     assert_eq!(nals[0].data, nal);
 }
 
@@ -401,14 +402,14 @@ fn parse_annexb_rejects_all_zero_span_between_start_codes() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// 予約・未指定の nal_unit_type はエラーにせず不透明な NAL として通す
+/// Table 7-1 の定義値以外の nal_unit_type はエラーにせず不透明な NAL として通す
 #[test]
-fn parse_annexb_reserved_nal_unit_type_is_opaque() {
+fn parse_annexb_unknown_nal_unit_type_is_opaque() {
     // nal_unit_type = 0 (未指定)
     let nal = [0x00, 0x01, 0x02];
     let input = annexb_with_3(&[&nal]);
     let nals = parse_annexb_nal_units(&input).expect("未指定 nal_unit_type は通す");
-    assert_eq!(nals[0].nal_unit_type, 0);
+    assert_eq!(nals[0].nal_unit_type, H264NalUnitType::Other(0));
     assert_eq!(nals[0].data, nal);
 }
 
@@ -491,7 +492,7 @@ fn parse_length_prefixed_widths_1_2_4() {
         let nals = parse_length_prefixed_nal_units(&input, length_size)
             .unwrap_or_else(|_| panic!("幅 {:?} は解析成功する", length_size));
         assert_eq!(nals.len(), 1);
-        assert_eq!(nals[0].nal_unit_type, 5);
+        assert_eq!(nals[0].nal_unit_type, H264NalUnitType::IdrSlice);
         assert_eq!(nals[0].data, nal);
     }
 }
@@ -505,9 +506,9 @@ fn parse_length_prefixed_multiple_nals() {
     let nals = parse_length_prefixed_nal_units(&input, LengthSize::FourBytes)
         .expect("複数 NAL は解析成功する");
     assert_eq!(nals.len(), 2);
-    assert_eq!(nals[0].nal_unit_type, 7);
+    assert_eq!(nals[0].nal_unit_type, H264NalUnitType::Sps);
     assert_eq!(nals[0].data, nal1);
-    assert_eq!(nals[1].nal_unit_type, 5);
+    assert_eq!(nals[1].nal_unit_type, H264NalUnitType::IdrSlice);
     assert_eq!(nals[1].data, nal2);
 }
 
@@ -643,15 +644,15 @@ fn annexb_to_length_prefixed_rejects_nal_too_long_for_width_1() {
 fn collect_nal_units_filters_by_type() {
     let input = annexb_with_3(&[&[0x67, 0x42], &[0x68, 0xEB], &[0x65, 0x88], &[0x67, 0x4D]]);
     let nals = parse_annexb_nal_units(&input).expect("Annex B は解析成功する");
-    let sps = collect_nal_units(nals.iter().copied(), 7);
+    let sps = collect_nal_units(nals.iter().copied(), H264NalUnitType::Sps);
     assert_eq!(sps.len(), 2);
     assert_eq!(sps[0], [0x67, 0x42]);
     assert_eq!(sps[1], [0x67, 0x4D]);
-    let pps = collect_nal_units(nals.iter().copied(), 8);
+    let pps = collect_nal_units(nals.iter().copied(), H264NalUnitType::Pps);
     assert_eq!(pps.len(), 1);
     assert_eq!(pps[0], [0x68, 0xEB]);
     // 一致が無ければ空 Vec
-    let sei = collect_nal_units(nals.iter().copied(), 6);
+    let sei = collect_nal_units(nals.iter().copied(), H264NalUnitType::Sei);
     assert!(sei.is_empty());
 }
 
@@ -1513,8 +1514,8 @@ fn real_h264_annexb_parses() {
     let nals = parse_annexb_nal_units(REAL_H264_SPS_PPS_ANNEXB)
         .expect("実 SPS / PPS の Annex B は解析成功する");
     assert_eq!(nals.len(), 2);
-    assert_eq!(nals[0].nal_unit_type, 7);
-    assert_eq!(nals[1].nal_unit_type, 8);
+    assert_eq!(nals[0].nal_unit_type, H264NalUnitType::Sps);
+    assert_eq!(nals[1].nal_unit_type, H264NalUnitType::Pps);
 }
 
 /// 実データから build_avc1_box_from_annexb で Avc1Box を構築できる

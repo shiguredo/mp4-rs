@@ -71,7 +71,7 @@ H.264 ヘッダー (ITU-T H.264 7.3.1 / 7.4.1):
 
 - `forbidden_zero_bit` が 1 なら `crate::Error` とする
 - ヘッダー 1 バイトに満たない NAL は `crate::Error` とする
-- 予約・未指定の `nal_unit_type` はフレーミングでは不透明な NAL として通す。SPS 解析は type 7、構築時の PPS は type 8 を要求する
+- `nal_unit_type` は `H264NalUnitType` 型で表す。Table 7-1 の主要種別 (非 IDR スライス / IDR スライス / SEI / SPS / PPS / AUD) は名前付きバリアント、それ以外 (予約・未指定や実ストリームで使われる定義値以外の値) は `Other(u8)` としてフレーミングでは不透明に通す。SPS 解析は `Sps`、構築時の PPS は `Pps` を要求する
 
 ### SPS 解析
 
@@ -131,9 +131,19 @@ SPS / PPS の個数が現行 `AvccBox::encode` の上限 (SPS 31、PPS 255) を�
 以下は骨格例である。型名・関数名は実装時に既存 API (`parse_frame_header` / `build_vp08_box` 等) と整合させて調整してよい。
 
 ```rust
+pub enum H264NalUnitType {
+    NonIdrSlice, // 1
+    IdrSlice,    // 5
+    Sei,         // 6
+    Sps,         // 7
+    Pps,         // 8
+    Aud,         // 9
+    Other(u8),   // それ以外 (0、2..=4、10..=31 など) を不透明に通す
+}
+
 pub struct H264NalUnit<'a> {
-    pub nal_unit_type: u8, // 下位 5 ビット
-    pub data: &'a [u8],    // NAL ヘッダー込み、開始コード / 長さプレフィックス無し、EBSP
+    pub nal_unit_type: H264NalUnitType,
+    pub data: &'a [u8], // NAL ヘッダー込み、開始コード / 長さプレフィックス無し、EBSP
 }
 
 pub fn parse_annexb_nal_units(input: &[u8]) -> Result<...>; // 借用ベースの列挙
@@ -142,7 +152,7 @@ pub fn parse_length_prefixed_nal_units(input: &[u8], length_size: LengthSize) ->
 pub fn annexb_to_length_prefixed(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>>;
 pub fn length_prefixed_to_annexb(input: &[u8], length_size: LengthSize) -> Result<Vec<u8>>;
 
-pub fn collect_nal_units<'a>(nals: impl IntoIterator<Item = H264NalUnit<'a>>, nal_unit_type: u8) -> Vec<&'a [u8]>;
+pub fn collect_nal_units<'a>(nals: impl IntoIterator<Item = H264NalUnit<'a>>, nal_unit_type: H264NalUnitType) -> Vec<&'a [u8]>;
 
 pub struct H264Sps {
     pub profile_idc: u8,
@@ -202,6 +212,6 @@ pub fn build_avc1_box_from_annexb(input: &[u8], config: &H264SampleEntryConfig) 
 - 不正入力を panic や黙った打ち切りではなく `crate::Error` として報告すること
 - `no_std` と crate 本体の依存ライブラリ 0 を維持すること (pbt 側の noprop は crate 本体の依存ではない)
 - 決定的テスト (`tests/test_bitstream_h264.rs`)、`noprop` PBT (`pbt/tests/prop_bitstream_h264.rs`)、実データ fixture (`tests/testdata/` 配下)、fuzz target (`fuzz/fuzz_targets/fuzz_bitstream_h264.rs`) が追加され、`fuzz/Cargo.toml` に `[[bin]]` エントリが登録されていること
-- 公開 API の rustdoc に入力形式、返す NAL バイト列へヘッダーを含むか、長さ幅 1 / 2 / 4 の契約、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、エラー条件が記載されていること
+- 公開 API の rustdoc に入力形式、返す NAL バイト列へヘッダーを含むか、`LengthSize` と `H264NalUnitType` の契約、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること

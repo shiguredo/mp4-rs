@@ -155,7 +155,7 @@ pub fn parse_annexb_nal_units(input: &[u8]) -> Result<Vec<H264NalUnit<'_>>> {
 /// # 入力
 ///
 /// - `input`: 大端序の長さフィールド + NAL 本体を繰り返したバイト列
-/// - `length_size`: 長さフィールド幅 ([`LengthSize`]。幅 3 は型で表現できない)
+/// - `length_size`: 長さフィールド幅
 ///
 /// # 返り値
 ///
@@ -184,7 +184,7 @@ pub fn parse_length_prefixed_nal_units(
 /// # 入力
 ///
 /// - `input`: 開始コードで区切られた NAL ユニット列
-/// - `length_size`: 出力の長さフィールド幅 ([`LengthSize`]。幅 3 は型で表現できない)
+/// - `length_size`: 出力の長さフィールド幅
 ///
 /// # 返り値
 ///
@@ -206,7 +206,7 @@ pub fn annexb_to_length_prefixed(input: &[u8], length_size: LengthSize) -> Resul
 /// # 入力
 ///
 /// - `input`: 大端序の長さフィールド + NAL 本体を繰り返したバイト列
-/// - `length_size`: 長さフィールド幅 ([`LengthSize`]。幅 3 は型で表現できない)
+/// - `length_size`: 長さフィールド幅
 ///
 /// # 返り値
 ///
@@ -505,7 +505,7 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
 /// 本構造体には含めない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264SampleEntryConfig {
-    /// NAL 長フィールド幅 ([`LengthSize`])
+    /// NAL 長フィールド幅
     pub length_size: LengthSize,
 }
 

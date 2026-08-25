@@ -119,7 +119,9 @@ Sample implementations using WebAssembly are available on GitHub Pages.
 
 ## Specifications
 
+- ISO/IEC 13818-7
 - ISO/IEC 14496-1
+- ISO/IEC 14496-3
 - ISO/IEC 14496-12
 - ISO/IEC 14496-14
 - ISO/IEC 14496-15

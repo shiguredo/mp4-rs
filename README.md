@@ -134,7 +134,9 @@ gh skill install shiguredo/mp4-rs shiguredo-mp4
 
 ## 規格書
 
+- ISO/IEC 13818-7
 - ISO/IEC 14496-1
+- ISO/IEC 14496-3
 - ISO/IEC 14496-12
 - ISO/IEC 14496-14
 - ISO/IEC 14496-15

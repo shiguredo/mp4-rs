@@ -17,6 +17,10 @@
   - @sile
 - [ADD] AV1 ビットストリーム処理ユーティリティ (`bitstream::av1`) を追加する
   - @sile
+- [ADD] AAC ビットストリーム処理ユーティリティ (`bitstream::aac`) を追加する
+  - AAC-LC の AudioSpecificConfig の解析・正規形エンコード、ADTS フレームの解析と raw AAC の相互変換、`Mp4aBox` の構築を提供する
+  - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、ADTS の複数 raw data block は `crate::Error` として拒否する
+  - @sile
 - [FIX] `UnknownBox` のデコードでトップレベル以外の可変長ボックスを拒否する
   - コンテナボックス内部の未知ボックスループが末尾のゼロ埋めを 1 個の `UnknownBox` として誤認識するのを防ぐ
   - トップレベルの未知ボックス（`RootBox` 経由）は従来どおり可変長ボックスを受理する

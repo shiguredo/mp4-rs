@@ -192,10 +192,10 @@ pub fn length_prefixed_to_annexb(input: &[u8], length_size: u8) -> Result<Vec<u8
 ///
 /// 入力順を保ったまま、一致した NAL の [`H264NalUnit::data`] だけを返す。
 /// エラーにはならない (一致が無ければ空 `Vec`)。
-pub fn collect_nal_units<'a>(
-    nals: impl IntoIterator<Item = H264NalUnit<'a>>,
-    nal_unit_type: u8,
-) -> Vec<&'a [u8]> {
+pub fn collect_nal_units<'a, I>(nals: I, nal_unit_type: u8) -> Vec<&'a [u8]>
+where
+    I: IntoIterator<Item = H264NalUnit<'a>>,
+{
     nals.into_iter()
         .filter(|nal| nal.nal_unit_type == nal_unit_type)
         .map(|nal| nal.data)

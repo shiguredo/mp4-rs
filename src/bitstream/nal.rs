@@ -99,8 +99,11 @@ fn write_length_field(out: &mut Vec<u8>, len: usize, length_size: u8) {
 ///
 /// - 空入力は NAL ユニット 0 個の成功 (開始コード欠落とは区別する)
 /// - 非空入力に開始コードが 1 つも無い場合は [`crate::Error`]
-/// - 最初の開始コードより前の `leading_zero_8bits`、および最後の NAL より後の
-///   `trailing_zero_8bits` は境界の詰め物として捨て、NAL 本体に含めない
+/// - 最初の開始コードより前の `leading_zero_8bits`、NAL 間のゼロ詰め
+///   (`trailing_zero_8bits` / 次の開始コードの `leading_zero_8bits`)、および
+///   最後の NAL より後の `trailing_zero_8bits` は境界の詰め物として捨て、
+///   NAL 本体に含めない (NAL 本体は ITU-T H.264 Annex B B.2 どおり後続の
+///   バイトアラインされた `0x000000` / `0x000001` の直前まで)
 /// - 最初の開始コードより前に非ゼロバイトがある場合は [`crate::Error`]
 ///   (詰め物でも NAL 本体でもないデータを黙って捨てない)
 /// - 開始コードの直後に次の開始コードまたは入力終端が来る空 NAL は [`crate::Error`]
@@ -131,7 +134,20 @@ pub(crate) fn scan_annexb_nals(input: &[u8]) -> Result<Vec<&[u8]>> {
                 if next_start == cursor {
                     return Err(Error::invalid_input("Annex B input has an empty NAL unit"));
                 }
-                nals.push(&input[cursor..next_start]);
+                // NAL 本体の末尾ゼロは次の開始コードのパディング
+                // (trailing_zero_8bits / leading_zero_8bits) として含めない。
+                // 仕様 (ITU-T H.264 Annex B B.2) では NAL 本体は後続の
+                // バイトアラインされた 0x000000 / 0x000001 の直前までであり、
+                // 正しい EBSP は内部に 0x000000 / 0x000001 を含まないため
+                // 末尾ゼロの除去で仕様と一致する
+                let mut end = next_start;
+                while end > cursor && input[end - 1] == 0 {
+                    end -= 1;
+                }
+                if end == cursor {
+                    return Err(Error::invalid_input("Annex B input has an empty NAL unit"));
+                }
+                nals.push(&input[cursor..end]);
                 cursor = next_start + next_len;
             }
             None => {

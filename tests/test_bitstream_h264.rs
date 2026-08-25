@@ -347,6 +347,45 @@ fn parse_annexb_strips_trailing_zero_padding() {
     assert_eq!(nals[0].data, nal);
 }
 
+/// NAL 間のゼロ詰めが直前の NAL 本体に混ざらない
+///
+/// 仕様 (ITU-T H.264 Annex B B.2) では NAL 本体は後続のバイトアラインされた
+/// `0x000000` / `0x000001` の直前まで。`65 88 00 00 00` は次の 3 バイト開始
+/// コード (`00 00 01`) の前置きゼロなので、1 個目は `[65, 88]` になる
+#[test]
+fn parse_annexb_strips_trailing_zeros_between_nals() {
+    let input = [
+        0x00, 0x00, 0x01, 0x65, 0x88, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41, 0x9A,
+    ];
+    let nals = parse_annexb_nal_units(&input).expect("NAL 間ゼロ詰めは解析成功する");
+    assert_eq!(nals.len(), 2);
+    assert_eq!(nals[0].data, [0x65, 0x88]);
+    assert_eq!(nals[1].data, [0x41, 0x9A]);
+}
+
+/// NAL 間の 1 バイトだけのゼロ詰めも直前の NAL 本体に混ざらない
+///
+/// 4 バイト開始コード (`00 00 00 01`) の前置きゼロ 1 バイトを NAL 本体に
+/// 含めない
+#[test]
+fn parse_annexb_single_zero_before_4byte_start_code() {
+    let input = [0x00, 0x00, 0x01, 0x65, 0x00, 0x00, 0x00, 0x01, 0x41];
+    let nals = parse_annexb_nal_units(&input).expect("前置きゼロ 1 バイトは解析成功する");
+    assert_eq!(nals.len(), 2);
+    assert_eq!(nals[0].data, [0x65]);
+    assert_eq!(nals[1].data, [0x41]);
+}
+
+/// NAL 間の詰め物が全てゼロだと空 NAL として Error
+#[test]
+fn parse_annexb_rejects_all_zero_span_between_start_codes() {
+    // 1 個目の開始コードの後にゼロ 1 バイト、続けて 4 バイト開始コード。
+    // ゼロ除去後は空になるため Error (黙って読み飛ばさない)
+    let input = [0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x41];
+    let err = parse_annexb_nal_units(&input).expect_err("ゼロのみの NAL 間は空 NAL のため Error");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
 /// 予約・未指定の nal_unit_type はエラーにせず不透明な NAL として通す
 #[test]
 fn parse_annexb_reserved_nal_unit_type_is_opaque() {
@@ -463,15 +502,20 @@ fn parse_length_prefixed_empty_input_is_success() {
 
 /// 幅 3 (lengthSizeMinusOne == 2、reserved) は Error
 ///
-/// length-prefixed を扱う公開 API は全て幅 3 を拒否する
+/// length-prefixed を扱う公開 API は全て幅 3 を拒否する。各 API が幅 3 を
+/// 受理する実装に差し替えた場合に入力は成功するよう、幅 3 で正当な入力を
+/// 使う (幅 3 拒否契約だけが Error の理由になる)
 #[test]
 fn parse_length_prefixed_rejects_width_3() {
-    let input = [0x00, 0x00, 0x00, 0x65];
+    // 幅 3 の長さフィールド (0x000003) と NAL 本体で正しい length-prefixed 入力
+    let lp = [0x00, 0x00, 0x03, 0x65, 0x88, 0x84];
+    // 幅 3 で変換できる正当な Annex B 入力
+    let annexb = [0x00, 0x00, 0x01, 0x65, 0x88];
     for err in [
-        parse_length_prefixed_nal_units(&input, 3).expect_err("幅 3 は reserved のため Error"),
-        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&input, 3)
+        parse_length_prefixed_nal_units(&lp, 3).expect_err("幅 3 は reserved のため Error"),
+        shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&annexb, 3)
             .expect_err("幅 3 は reserved のため Error"),
-        shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&input, 3)
+        shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, 3)
             .expect_err("幅 3 は reserved のため Error"),
     ] {
         assert_eq!(err.kind, ErrorKind::InvalidInput);
@@ -711,6 +755,40 @@ fn parse_sps_with_scaling_matrix_next_scale_zero() {
     assert_eq!(sps.height, 240);
 }
 
+/// 4:4:4 (chroma_format_idc = 3) では scaling list が 12 本になる
+///
+/// 7.3.2.1.1 の `i < ((chroma_format_idc != 3) ? 8 : 12)` どおり、chroma 3 では
+/// 12 本 (i < 6 は 16 要素、それ以外は 64 要素) を読み飛ばして解析できる。
+/// 読み飛ばし数が 8 本に退行すると後続フィールドがずれて 320x240 にならない
+#[test]
+fn parse_sps_chroma_444_with_scaling_matrix() {
+    let sps = parse_sps(&build_sps(&SpsParams {
+        profile_idc: 100,
+        chroma_format_idc: 3,
+        seq_scaling_matrix_present_flag: true,
+        ..SpsParams::valid()
+    }))
+    .expect("chroma 3 で scaling list 12 本入りの SPS は解析成功する");
+    assert_eq!(sps.chroma_format_idc, 3);
+    assert_eq!(sps.width, 320);
+    assert_eq!(sps.height, 240);
+}
+
+/// 4:4:4 で一部の scaling list が absent (present flag = 0) でも解析できる
+#[test]
+fn parse_sps_chroma_444_with_partial_scaling_matrix() {
+    let sps = parse_sps(&build_sps(&SpsParams {
+        profile_idc: 100,
+        chroma_format_idc: 3,
+        seq_scaling_matrix_present_flag: true,
+        scaling_list_present_count: 1,
+        ..SpsParams::valid()
+    }))
+    .expect("chroma 3 で present flag 0 の scaling list 入り SPS は解析成功する");
+    assert_eq!(sps.width, 320);
+    assert_eq!(sps.height, 240);
+}
+
 /// pic_order_cnt_type = 1 の追加構文 (offset 列を含む) を読み飛ばして解析できる
 #[test]
 fn parse_sps_pic_order_cnt_type_1() {
@@ -784,6 +862,100 @@ fn parse_sps_frame_mbs_only_flag_zero_with_crop() {
     }))
     .expect("frame_mbs_only_flag=0 のクロップ SPS は解析成功する");
     assert_eq!(sps.height, 472);
+}
+
+/// モノクロ (chroma_format_idc = 0) のクロップ (CropUnitX = 1 / CropUnitY = 1)
+///
+/// 7.4.2.1.1 の `ChromaArrayType == 0` で `CropUnitX = 1`、`CropUnitY = 2 - frame_mbs_only_flag`
+/// (fmbf=1 で 1)。4:2:0 の 2 / 2 と取り違えると期待値がずれる
+#[test]
+fn parse_sps_monochrome_crop() {
+    // 320 - 1 * (1 + 1) = 318、240 - 1 * (1 + 1) = 238
+    let sps = parse_sps(&build_sps(&SpsParams {
+        profile_idc: 100,
+        chroma_format_idc: 0,
+        frame_cropping_flag: true,
+        frame_crop_left_offset: 1,
+        frame_crop_right_offset: 1,
+        frame_crop_top_offset: 1,
+        frame_crop_bottom_offset: 1,
+        ..SpsParams::valid()
+    }))
+    .expect("モノクロのクロップ SPS は解析成功する");
+    assert_eq!(sps.chroma_format_idc, 0);
+    assert_eq!(sps.width, 318);
+    assert_eq!(sps.height, 238);
+}
+
+/// 4:2:2 (chroma_format_idc = 2) のクロップ (CropUnitX = 2 / CropUnitY = 1)
+///
+/// Table 6-1 の `SubWidthC = 2` / `SubHeightC = 1` が反映される。
+/// SubHeightC を 4:2:0 の 2 と取り違えると高さがずれる
+#[test]
+fn parse_sps_chroma_422_crop() {
+    // 320 - 2 * (1 + 1) = 316、240 - 1 * (1 + 1) = 238
+    let sps = parse_sps(&build_sps(&SpsParams {
+        profile_idc: 100,
+        chroma_format_idc: 2,
+        frame_cropping_flag: true,
+        frame_crop_left_offset: 1,
+        frame_crop_right_offset: 1,
+        frame_crop_top_offset: 1,
+        frame_crop_bottom_offset: 1,
+        ..SpsParams::valid()
+    }))
+    .expect("4:2:2 のクロップ SPS は解析成功する");
+    assert_eq!(sps.chroma_format_idc, 2);
+    assert_eq!(sps.width, 316);
+    assert_eq!(sps.height, 238);
+}
+
+/// 4:4:4 (chroma_format_idc = 3、separate 無し) のクロップ (CropUnitX = 1 / CropUnitY = 1)
+///
+/// Table 6-1 の `SubWidthC = 1` / `SubHeightC = 1` が反映される
+#[test]
+fn parse_sps_chroma_444_crop() {
+    // 320 - 1 * (1 + 1) = 318、240 - 1 * (1 + 1) = 238
+    let sps = parse_sps(&build_sps(&SpsParams {
+        profile_idc: 100,
+        chroma_format_idc: 3,
+        frame_cropping_flag: true,
+        frame_crop_left_offset: 1,
+        frame_crop_right_offset: 1,
+        frame_crop_top_offset: 1,
+        frame_crop_bottom_offset: 1,
+        ..SpsParams::valid()
+    }))
+    .expect("4:4:4 のクロップ SPS は解析成功する");
+    assert_eq!(sps.chroma_format_idc, 3);
+    assert_eq!(sps.width, 318);
+    assert_eq!(sps.height, 238);
+}
+
+/// separate_colour_plane_flag = 1 (ChromaArrayType = 0) のクロップ
+///
+/// 7.4.2.1.1 の `ChromaArrayType == 0` で `CropUnitX = 1`、
+/// `CropUnitY = 2 - frame_mbs_only_flag`。fmbf=0 で CropUnitY = 2 になる
+#[test]
+fn parse_sps_chroma_444_separate_colour_plane_crop() {
+    // 高さ 480 (15 マップ単位 × 2)、320 - 1 * (1 + 1) = 318、
+    // 480 - 2 * (1 + 1) = 476
+    let sps = parse_sps(&build_sps(&SpsParams {
+        profile_idc: 100,
+        chroma_format_idc: 3,
+        separate_colour_plane_flag: true,
+        frame_mbs_only_flag: false,
+        frame_cropping_flag: true,
+        frame_crop_left_offset: 1,
+        frame_crop_right_offset: 1,
+        frame_crop_top_offset: 1,
+        frame_crop_bottom_offset: 1,
+        ..SpsParams::valid()
+    }))
+    .expect("separate colour plane のクロップ SPS は解析成功する");
+    assert_eq!(sps.chroma_format_idc, 3);
+    assert_eq!(sps.width, 318);
+    assert_eq!(sps.height, 476);
 }
 
 /// 実エンコーダー由来の EBSP (emulation prevention byte を含む) が RBSP 化後に読める

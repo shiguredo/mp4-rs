@@ -108,8 +108,9 @@ fn to_h264_nal_unit(body: &[u8]) -> Result<H264NalUnit<'_>> {
 /// - ヘッダー 1 バイトに満たない NAL
 ///
 /// 空入力は NAL ユニット 0 個の成功として扱う (開始コード欠落とは区別する)。
-/// 先頭の開始コードより前の `leading_zero_8bits` と、最後の NAL より後の
-/// `trailing_zero_8bits` は境界の詰め物として NAL 本体に含めない。
+/// 先頭の開始コードより前の `leading_zero_8bits`、NAL 間のゼロ詰め、および
+/// 最後の NAL より後の `trailing_zero_8bits` は境界の詰め物として NAL 本体に
+/// 含めない。
 pub fn parse_annexb_nal_units(input: &[u8]) -> Result<Vec<H264NalUnit<'_>>> {
     let bodies = nal::scan_annexb_nals(input)?;
     bodies.iter().map(|body| to_h264_nal_unit(body)).collect()

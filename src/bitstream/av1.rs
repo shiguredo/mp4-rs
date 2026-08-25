@@ -175,16 +175,35 @@ pub struct Av1SequenceHeader {
 
 /// uncompressed header 先頭部の RAP 判定用フィールド
 ///
+/// AV1 spec §5.9.2 は `show_existing_frame == 1` で早期分岐し、
+/// `frame_type` / `show_frame` はそのときだけ現れない。この排他関係を型で表現する。
+///
 /// Binding §2.4 の sync sample は、先頭フレームが Key かつ `show_frame = 1` であることと、
 /// Sequence Header が最初の Frame Header より前にあることを要求する
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Av1FrameHeaderPrefix {
-    /// `show_existing_frame`。true のときこのヘッダーは RAP にならない
-    pub show_existing_frame: bool,
-    /// `frame_type`。`show_existing_frame == true` のときはヘッダーに現れないので `None`
-    pub frame_type: Option<Av1FrameType>,
-    /// `show_frame`。`show_existing_frame == true` のときはヘッダーに現れないので `None`
-    pub show_frame: Option<bool>,
+pub enum Av1FrameHeaderPrefix {
+    /// `show_existing_frame == 1`。既存フレームの表示指示であり、このヘッダーは RAP にならない
+    ShowExistingFrame,
+    /// `show_existing_frame == 0`。新規フレーム
+    NewFrame {
+        /// `frame_type`
+        frame_type: Av1FrameType,
+        /// `show_frame`
+        show_frame: bool,
+    },
+}
+
+impl Av1FrameHeaderPrefix {
+    /// Binding §2.4 の sync sample に必要な「Key かつ `show_frame = 1`」を判定する
+    pub fn is_rap(&self) -> bool {
+        matches!(
+            self,
+            Self::NewFrame {
+                frame_type: Av1FrameType::Key,
+                show_frame: true,
+            }
+        )
+    }
 }
 
 /// AV1 spec §6.8.2 の `frame_type`
@@ -674,28 +693,22 @@ fn read_uvlc(reader: &mut BitReader<'_>) -> Result<u32> {
 ///
 /// RAP 判定に必要な `show_existing_frame` / `frame_type` / `show_frame` だけを返す。
 /// `reduced_still_picture_header == 1` のときは AV1 spec §5.9.2 の代入値を使う。
-/// `show_existing_frame == 1` のときは同構文が早期 return するため、
-/// `frame_type` / `show_frame` は `None` にする
+/// `show_existing_frame == 1` のときは同構文が早期 return するため
+/// [`Av1FrameHeaderPrefix::ShowExistingFrame`] を返す
 pub fn parse_frame_header_prefix(
     payload: &[u8],
     seq: &Av1SequenceHeader,
 ) -> Result<Av1FrameHeaderPrefix> {
     if seq.reduced_still_picture_header {
-        return Ok(Av1FrameHeaderPrefix {
-            show_existing_frame: false,
-            frame_type: Some(Av1FrameType::Key),
-            show_frame: Some(true),
+        return Ok(Av1FrameHeaderPrefix::NewFrame {
+            frame_type: Av1FrameType::Key,
+            show_frame: true,
         });
     }
 
     let mut reader = BitReader::new(payload);
-    let show_existing_frame = reader.read_bit()? != 0;
-    if show_existing_frame {
-        return Ok(Av1FrameHeaderPrefix {
-            show_existing_frame: true,
-            frame_type: None,
-            show_frame: None,
-        });
+    if reader.read_bit()? != 0 {
+        return Ok(Av1FrameHeaderPrefix::ShowExistingFrame);
     }
 
     let frame_type = match reader.read_bits(2)? as u8 {
@@ -706,10 +719,9 @@ pub fn parse_frame_header_prefix(
         _ => unreachable!("frame_type is 2 bits"),
     };
     let show_frame = reader.read_bit()? != 0;
-    Ok(Av1FrameHeaderPrefix {
-        show_existing_frame: false,
-        frame_type: Some(frame_type),
-        show_frame: Some(show_frame),
+    Ok(Av1FrameHeaderPrefix::NewFrame {
+        frame_type,
+        show_frame,
     })
 }
 

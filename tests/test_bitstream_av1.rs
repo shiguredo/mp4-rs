@@ -7,8 +7,8 @@
 use shiguredo_mp4::{
     Decode, Either, Encode, ErrorKind, Mp4File, Uint,
     bitstream::av1::{
-        Av1FrameType, Av1ObuParseContext, Av1ObuType, Av1SampleEntryConfig, Av1SequenceHeader,
-        build_av01_box, decode_leb128, parse_frame_header_prefix, parse_obus,
+        Av1FrameHeaderPrefix, Av1FrameType, Av1ObuParseContext, Av1ObuType, Av1SampleEntryConfig,
+        Av1SequenceHeader, build_av01_box, decode_leb128, parse_frame_header_prefix, parse_obus,
         parse_sequence_header,
     },
     boxes::{RootBox, SampleEntry, StszBox, VisualSampleEntryFields},
@@ -731,9 +731,14 @@ mod frame_prefix {
     fn reduced_still_picture() {
         let sh = parse_sh(&reduced_still_sequence_header(16, 16));
         let prefix = parse_frame_header_prefix(&[], &sh).expect("reduced はビットを読まない");
-        assert!(!prefix.show_existing_frame);
-        assert_eq!(prefix.frame_type, Some(Av1FrameType::Key));
-        assert_eq!(prefix.show_frame, Some(true));
+        assert_eq!(
+            prefix,
+            Av1FrameHeaderPrefix::NewFrame {
+                frame_type: Av1FrameType::Key,
+                show_frame: true,
+            }
+        );
+        assert!(prefix.is_rap());
     }
 
     /// 通常ヘッダーで Key / show_frame=1 を読む
@@ -745,9 +750,14 @@ mod frame_prefix {
         w.push_bits(0, 2); // KEY_FRAME
         w.push_bit(1); // show_frame
         let prefix = parse_frame_header_prefix(&w.into_bytes(), &sh).expect("通常ヘッダーの先頭部");
-        assert!(!prefix.show_existing_frame);
-        assert_eq!(prefix.frame_type, Some(Av1FrameType::Key));
-        assert_eq!(prefix.show_frame, Some(true));
+        assert_eq!(
+            prefix,
+            Av1FrameHeaderPrefix::NewFrame {
+                frame_type: Av1FrameType::Key,
+                show_frame: true,
+            }
+        );
+        assert!(prefix.is_rap());
     }
 
     /// show_existing_frame=1 は RAP にならない
@@ -758,9 +768,8 @@ mod frame_prefix {
         w.push_bit(1);
         let prefix =
             parse_frame_header_prefix(&w.into_bytes(), &sh).expect("show_existing は早期 return");
-        assert!(prefix.show_existing_frame);
-        assert_eq!(prefix.frame_type, None);
-        assert_eq!(prefix.show_frame, None);
+        assert_eq!(prefix, Av1FrameHeaderPrefix::ShowExistingFrame);
+        assert!(!prefix.is_rap());
     }
 }
 

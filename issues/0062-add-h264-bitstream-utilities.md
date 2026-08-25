@@ -19,7 +19,7 @@ H.264 の Annex B / length-prefixed NAL ユニット列の解析、SPS の解析
 - `shiguredo/sora-rust-sdk` の `src/video_codecs/mp4.rs` には length-prefixed 形式から Annex B への変換が独立に実装されている。ISO/IEC 14496-15 に合わせ長さ 1 / 2 / 4 だけを受理する一方、切り詰められた NAL ユニットを `break` で黙って打ち切る。後者は汎用パーサーの契約として適切ではない。SDP の `profile-level-id` 組み立ては本 crate の対象外である
 - H.264 と H.265 は Annex B の開始コード探索と length-prefixed 形式の境界検証を共有できるが、NAL ヘッダーの長さ、種別のビット配置、妥当性条件は異なる。0063 は本 issue が追加する非公開 `nal` 層を再利用する前提である
 
-参照仕様は [ITU-T H.264 (06/2026)](https://www.itu.int/rec/T-REC-H.264-202606-I/en) とする。ISO/IEC 14496-15 の `AVCDecoderConfigurationRecord` (`avcC`) は本リポジトリに一次資料が無いため、現行 `AvccBox` の encode 契約（`src/boxes_sample_entry.rs`）と、下記で固定する crate 契約に合わせる。
+参照仕様は [ITU-T H.264 (06/2026)](https://www.itu.int/rec/T-REC-H.264-202606-I/en) と ISO/IEC 14496-15 の `AVCDecoderConfigurationRecord` (`avcC`) とする。`lengthSizeMinusOne` は 0 / 1 / 3 が正当で、2 (幅 3) は reserved である。
 
 ## 設計方針
 

@@ -8,8 +8,7 @@
 //! - ITU-T H.264 (06/2026): NAL ユニット (7.3.1 / 7.4.1)、SPS (7.3.2.1.1 /
 //!   7.4.2.1.1)、Annex B の開始コード
 //! - ISO/IEC 14496-15: `AVCDecoderConfigurationRecord` (`avcC`) の
-//!   `lengthSizeMinusOne`。本リポジトリには一次資料が無いため、
-//!   現行 [`AvccBox`] の encode 契約に合わせる
+//!   `lengthSizeMinusOne` (0 / 1 / 3 が正当、2 は reserved)
 //!
 //! # NAL バイト列の契約
 //!

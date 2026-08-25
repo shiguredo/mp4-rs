@@ -95,13 +95,13 @@ SPS 追加構文 (`chroma_format_idc` 以降) を読む `profile_idc` は、同 
 
 寸法に到達するために、`pic_order_cnt_type` 0 / 1 の追加構文は全 `profile_idc` でビット位置を進めるためだけに読み飛ばす。SPS 追加構文を読む `profile_idc` では、その前に `qpprime_y_zero_transform_bypass_flag` (`u(1)`) と `seq_scaling_matrix_present_flag` 配下の scaling list も同様に読み飛ばす。公開結果に scaling list や VUI は載せない。`vui_parameters_present_flag` 以降は読まない。
 
-`chroma_format_idc > 3`、`bit_depth_luma_minus8 > 6`、`bit_depth_chroma_minus8 > 6` は同 7.4.2.1.1 の値域外として拒否する。切り詰められた SPS、Exp-Golomb の途中終端も拒否する。
+`chroma_format_idc > 3`、`bit_depth_luma_minus8 > 6`、`bit_depth_chroma_minus8 > 6`、`pic_order_cnt_type > 2` は同 7.4.2.1.1 の値域外として拒否する。寸法の導出に必要な構文 (frame cropping まで) が途中で終わる SPS、Exp-Golomb の途中終端も拒否する。`vui_parameters_present_flag` 以降の欠落は成功とする。
 
 ### サンプルエントリー構築 API
 
-SPS / PPS の EBSP リストと呼び出し側設定から `Avc1Box` を 1 つ返す。先頭 SPS を関数内で解析して代表値にする。`SampleEntry` には包まない。Annex B 入力からの構築は、列挙して type 7 / 8 を入力順で集め、同じ構築関数に渡す薄いラッパーとする。SEI / IDR / AUD 等は無視する。SPS または PPS が 0 個なら `crate::Error` とする。複数 SPS / PPS は `AvccBox` のリストに入力順で全部残し、profile / level / 寸法 / chroma / bit depth は先頭 SPS だけから取る。
+SPS / PPS の EBSP リストと呼び出し側設定から `Avc1Box` を 1 つ返す。先頭 SPS を関数内で解析して代表値にする。`SampleEntry` には包まない。Annex B 入力からの構築は、列挙して type 7 / 8 を入力順で集め、同じ構築関数に渡す薄いラッパーとする。SEI / IDR / AUD 等は無視する。SPS または PPS が 0 個なら `crate::Error` とする。全ての SPS は非空・NAL type 7（`forbidden_zero_bit == 0`）、全ての PPS は非空・NAL type 8（`forbidden_zero_bit == 0`）であることを検証する（構文解析は先頭 SPS だけ）。複数 SPS / PPS は `AvccBox` のリストに入力順で全部残し、profile / level / 寸法 / chroma / bit depth は先頭 SPS だけから取る。
 
-PPS は NAL type 8 であることと非空であることだけを検証し、PPS 構文は解析しない。SPS extension (type 13) の抽出と `sps_ext_list` への格納は対象外とし、構築結果の `sps_ext_list` は空 `Vec` とする。
+PPS 構文は解析しない。SPS extension (type 13) の抽出と `sps_ext_list` への格納は対象外とし、構築結果の `sps_ext_list` は空 `Vec` とする。
 
 `AvccBox::encode` は `avc_profile_indication` が 66 / 77 / 88 以外のとき `chroma_format` / `bit_depth_luma_minus8` / `bit_depth_chroma_minus8` を必須とする。この条件は SPS 追加構文の `profile_idc` リストと一致しない。66 / 77 / 88 以外では、SPS 追加構文から読めた値があればそれを入れ、無ければ上記の推論値 (`chroma_format_idc = 1`、bit depth minus8 = 0) を入れて encode が失敗しないようにする。66 / 77 / 88 ではこれらのフィールドは `None` のままにする。
 

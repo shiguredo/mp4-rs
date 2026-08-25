@@ -160,7 +160,8 @@ pub fn parse_length_prefixed_nal_units(
 ///
 /// # エラー条件
 ///
-/// - [`parse_annexb_nal_units`] と同じ Annex B 走査のエラー
+/// - Annex B の境界走査エラー ([`parse_annexb_nal_units`] の走査分。
+///   NAL ヘッダーは検証せず、`forbidden_zero_bit == 1` でも変換は成功する)
 /// - NAL 本体が `length_size` バイトの長さフィールドに収まらない
 ///   (黙った切り詰めはしない)
 pub fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
@@ -181,7 +182,8 @@ pub fn annexb_to_length_prefixed(input: &[u8], length_size: u8) -> Result<Vec<u8
 ///
 /// # エラー条件
 ///
-/// - [`parse_length_prefixed_nal_units`] と同じ length-prefixed 走査のエラー
+/// - length-prefixed の境界走査エラー ([`parse_length_prefixed_nal_units`] の
+///   走査分。NAL ヘッダーは検証せず、`forbidden_zero_bit == 1` でも変換は成功する)
 pub fn length_prefixed_to_annexb(input: &[u8], length_size: u8) -> Result<Vec<u8>> {
     nal::length_prefixed_to_annexb(input, length_size)
 }
@@ -262,8 +264,9 @@ pub struct H264Sps {
 /// - NAL ヘッダーの `forbidden_zero_bit == 1`、または NAL 本体が 1 バイト未満
 /// - `nal_unit_type` が 7 (SPS) 以外
 /// - `chroma_format_idc > 3`、`bit_depth_luma_minus8 > 6`、
-///   `bit_depth_chroma_minus8 > 6` (7.4.2.1.1 の値域外)
-/// - 切り詰められた SPS、Exp-Golomb の途中終端
+///   `bit_depth_chroma_minus8 > 6`、`pic_order_cnt_type > 2` (7.4.2.1.1 の値域外)
+/// - 寸法の導出に必要な構文 (frame cropping まで) が途中で終わる SPS、
+///   Exp-Golomb の途中終端。`vui_parameters_present_flag` 以降の欠落は成功とする
 /// - クロップが符号化サイズを食いつぶす
 /// - クロップ後の幅または高さが 0
 /// - クロップ後の幅または高さが `u16::MAX` を超える
@@ -338,6 +341,9 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
     // pic_order_cnt_type 0 / 1 の追加構文はビット位置を進めるためだけに読み飛ばす
     let _log2_max_frame_num_minus4 = reader.read_ue()?;
     let pic_order_cnt_type = reader.read_ue()?;
+    if pic_order_cnt_type > 2 {
+        return Err(Error::invalid_input("pic_order_cnt_type must be 0..=2"));
+    }
     if pic_order_cnt_type == 0 {
         let _log2_max_pic_order_cnt_lsb_minus4 = reader.read_ue()?;
     } else if pic_order_cnt_type == 1 {
@@ -512,7 +518,8 @@ pub struct H264SampleEntryConfig {
 /// - SPS または PPS が 0 個
 /// - SPS が 31 個超、PPS が 255 個超 (現行 [`Encode::encode`](crate::Encode::encode) の上限)
 /// - SPS / PPS の NAL が `u16::MAX` バイト超 (avcC の長さ欄が 16 ビット)
-/// - PPS が NAL type 8 以外、または非空でない (PPS 構文は解析しない)
+/// - SPS が非空・NAL type 7 以外。PPS が非空・NAL type 8 以外
+///   (構文解析は先頭 SPS だけ。PPS 構文は解析しない)
 /// - 先頭 SPS の解析失敗 ([`parse_sps`] のエラー条件)
 /// - `length_size` が 1 / 2 / 4 以外
 pub fn build_avc1_box(
@@ -538,6 +545,17 @@ pub fn build_avc1_box(
     for sps in sps_list {
         if sps.len() > u16::MAX as usize {
             return Err(Error::invalid_input("SPS is too long (max u16::MAX)"));
+        }
+        // 全ての SPS を非空・NAL type 7 として検証する (PPS と同じ方針)。
+        // 解析して代表値にするのは先頭 SPS だけでよい
+        let Some(&header) = sps.first() else {
+            return Err(Error::invalid_input("SPS must be a non-empty NAL unit"));
+        };
+        if header & 0b1000_0000 != 0 {
+            return Err(Error::invalid_input("SPS forbidden_zero_bit must be 0"));
+        }
+        if header & 0b0001_1111 != SPS_NAL_UNIT_TYPE {
+            return Err(Error::invalid_input("SPS NAL unit type must be 7"));
         }
     }
     for pps in pps_list {

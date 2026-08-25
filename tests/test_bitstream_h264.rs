@@ -239,6 +239,20 @@ fn annexb_with_4(nals: &[&[u8]]) -> Vec<u8> {
     out
 }
 
+/// RBSP を EBSP 化する (`00 00` の後に emulation prevention byte `0x03` を挿入する)
+///
+/// ITU-T H.264 7.4.1 の挿入規則。テスト用に `parse_sps` の入力を作る
+fn to_ebsp(rbsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for &byte in rbsp {
+        if out.len() >= 2 && out[out.len() - 2] == 0 && out[out.len() - 1] == 0 {
+            out.push(0x03);
+        }
+        out.push(byte);
+    }
+    out
+}
+
 /// 大端序の長さフィールドを付けて length-prefixed バイト列を作る
 fn length_prefixed(nals: &[&[u8]], length_size: u8) -> Vec<u8> {
     let mut out = Vec::new();
@@ -585,6 +599,24 @@ fn length_prefixed_to_annexb_adds_4byte_start_codes() {
         .expect("length-prefixed → Annex B は成功する");
     let expected = annexb_with_4(&[&nal1, &nal2]);
     assert_eq!(out, expected);
+}
+
+/// 変換 API は NAL ヘッダーを検証せず forbidden_zero_bit = 1 も通す
+///
+/// ヘッダー検証は parse 系 API だけの責務。変換はフレーミングのみを行う
+#[test]
+fn conversions_pass_through_forbidden_zero_bit() {
+    // forbidden_zero_bit = 1 の NAL (0x88 = 1000_1000 / nal_unit_type = 8)
+    let nal = [0x88, 0x65];
+    // length-prefixed → Annex B は常に 4 バイト開始コードで書く
+    let annexb = annexb_with_4(&[&nal]);
+    let lp = length_prefixed(&[&nal], 4);
+    let out = shiguredo_mp4::bitstream::h264::annexb_to_length_prefixed(&annexb, 4)
+        .expect("Annex B → length-prefixed はヘッダー検証なしで成功する");
+    assert_eq!(out, lp);
+    let out = shiguredo_mp4::bitstream::h264::length_prefixed_to_annexb(&lp, 4)
+        .expect("length-prefixed → Annex B はヘッダー検証なしで成功する");
+    assert_eq!(out, annexb);
 }
 
 /// Annex B → length-prefixed → Annex B がラウンドトリップする
@@ -982,6 +1014,30 @@ fn parse_sps_real_ebsp_with_emulation_prevention_bytes() {
     assert_eq!(sps.height, 480);
 }
 
+/// RBSP の `00 00 03` が EBSP では `00 00 03 03` になり正しく復元される
+///
+/// emulation prevention byte の除去は入力側の位置で判定する。出力側の
+/// 連続ゼロ数で判定すると 2 個目の `0x03` まで食って RBSP が壊れる。
+/// profile / constraint / level の先頭 3 バイトを `00 00 03` にして
+/// RBSP に `00 00 03` を現させる
+#[test]
+fn parse_sps_restores_rbsp_with_00_00_03() {
+    let rbsp = build_sps(&SpsParams {
+        profile_idc: 0,
+        constraint_set_flags: 0x00,
+        level_idc: 0x03,
+        ..SpsParams::valid()
+    });
+    let ebsp = to_ebsp(&rbsp);
+    assert!(
+        ebsp.windows(4).any(|w| w == [0x00, 0x00, 0x03, 0x03]),
+        "EBSP が `00 00 03 03` を含むこと"
+    );
+    let sps = parse_sps(&ebsp).expect("`00 00 03 03` 入り EBSP の SPS は解析成功する");
+    assert_eq!(sps.width, 320);
+    assert_eq!(sps.height, 240);
+}
+
 // ===== parse_sps: 拒否系 =====
 
 /// NAL type が 7 以外の SPS は拒否する
@@ -1062,6 +1118,21 @@ fn parse_sps_rejects_bit_depth_chroma_out_of_range() {
         ..SpsParams::valid()
     });
     let err = parse_sps(&nal).expect_err("bit_depth_chroma_minus8=7 は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// pic_order_cnt_type > 2 は値域外として拒否する
+///
+/// 7.4.2.1.1 は pic_order_cnt_type を 0..=2 に限定する。3 以上を黙って
+/// type 2 と同じ読みにすると後続ビットが寸法に食い込むため、他の値域
+/// チェックと同じ入口で拒否する
+#[test]
+fn parse_sps_rejects_pic_order_cnt_type_out_of_range() {
+    let nal = build_sps(&SpsParams {
+        pic_order_cnt_type: 3,
+        ..SpsParams::valid()
+    });
+    let err = parse_sps(&nal).expect_err("pic_order_cnt_type=3 は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -1354,6 +1425,40 @@ fn build_avc1_box_rejects_pps_forbidden_zero_bit() {
     let pps = vec![0x88, 0xEB, 0xE3];
     let err = build_avc1_box(&[sps], &[pps], &default_config())
         .expect_err("forbidden_zero_bit=1 の PPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の SPS も非空・NAL type 7 であることを検証する
+///
+/// 空の 2 本目が avcC に長さ 0 で載らないよう、PPS と同じ方針で全 SPS を
+/// 検証する (構文解析して代表値にするのは先頭 SPS だけ)
+#[test]
+fn build_avc1_box_rejects_second_sps_not_type_7() {
+    let sps = build_sps(&SpsParams::valid());
+    // 0x65 = type 5 (IDR) の NAL
+    let not_sps = vec![0x65, 0x88];
+    let err = build_avc1_box(&[sps, not_sps], &[valid_pps()], &default_config())
+        .expect_err("type 7 以外の 2 本目 SPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の SPS が空なら拒否する
+#[test]
+fn build_avc1_box_rejects_empty_second_sps() {
+    let sps = build_sps(&SpsParams::valid());
+    let err = build_avc1_box(&[sps, Vec::new()], &[valid_pps()], &default_config())
+        .expect_err("空の 2 本目 SPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// SPS の forbidden_zero_bit が 1 なら拒否する
+#[test]
+fn build_avc1_box_rejects_sps_forbidden_zero_bit() {
+    let sps = build_sps(&SpsParams::valid());
+    // 0x87 = 1000_0111: forbidden_zero_bit = 1 / nal_unit_type = 7
+    let forbidden_sps = vec![0x87, 0x64, 0x00];
+    let err = build_avc1_box(&[sps, forbidden_sps], &[valid_pps()], &default_config())
+        .expect_err("forbidden_zero_bit=1 の SPS は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 

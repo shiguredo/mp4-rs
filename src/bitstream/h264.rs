@@ -506,11 +506,6 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264SampleEntryConfig {
     /// NAL 長フィールド幅 ([`LengthSize`])
-    ///
-    /// [`AvccBox::length_size_minus_one`] には
-    /// [`LengthSize::length_size_minus_one`] の値 (0 / 1 / 3) が入る。
-    /// 幅 3 (`length_size_minus_one == 2`) は ISO/IEC 14496-15 で reserved のため
-    /// この型で表現できない
     pub length_size: LengthSize,
 }
 

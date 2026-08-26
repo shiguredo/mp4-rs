@@ -1,7 +1,7 @@
 # bitstream::av1 の Sequence Header に operating point 情報を公開し予約値を検証する
 
 - Created: 2026-08-26
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-26
 - Branch: feature/add-av1-sequence-header-validation
 - Polished: {YYYY-MM-DD}
 
@@ -47,3 +47,11 @@ field 追加は後方互換のある追加とし、既存の `build_av01_box` / 
 - 決定的テスト（`tests/` 配下）が追加され、mock / stub、sleep、`#[ignore]`、外部 command、ネットワークを使用しない
 - `CHANGES.md` の develop に `[ADD]` として記載される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+`src/bitstream/av1.rs` の `Av1SequenceHeader` に `operating_points_cnt_minus_1` と `operating_point_idc_0` を追加し、`parse_sequence_header` が値を公開するようにした。`reduced_still_picture_header == 1` のときは AV1 spec の暗黙値（いずれも 0）を代入する。複数 operating point 自体の拒否は行わない。
+
+`read_color_config` で `chroma_sample_position == 3`（`CSP_RESERVED`）を `crate::Error` として拒否するようにした。
+
+決定的テストを `tests/test_bitstream_av1.rs` に追加し、`CHANGES.md` の develop に `[ADD]` を記載した。

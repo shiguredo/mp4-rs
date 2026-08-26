@@ -149,6 +149,12 @@ pub struct Av1Obu<'a> {
 pub struct Av1SequenceHeader {
     /// `seq_profile` (0..=2)
     pub seq_profile: u8,
+    /// `operating_points_cnt_minus_1` (0..=31)。
+    /// `reduced_still_picture_header == 1` のときは構文上 0
+    pub operating_points_cnt_minus_1: u8,
+    /// `operating_point_idc[0]` (0..=4095)。
+    /// `reduced_still_picture_header == 1` のときは構文上 0
+    pub operating_point_idc_0: u16,
     /// `seq_level_idx[0]` (0..=31)
     pub seq_level_idx_0: u8,
     /// `seq_tier[0]` (0 または 1)。`seq_level_idx[0] <= 7` のときは構文上 0
@@ -163,7 +169,8 @@ pub struct Av1SequenceHeader {
     pub chroma_subsampling_x: u8,
     /// `subsampling_y` (0 または 1)
     pub chroma_subsampling_y: u8,
-    /// `chroma_sample_position` (0..=3)。構文に現れないときは 0
+    /// `chroma_sample_position` (0..=2)。構文に現れないときは 0。
+    /// 予約値 3 (`CSP_RESERVED`) は [`parse_sequence_header`] が拒否する
     pub chroma_sample_position: u8,
     /// `max_frame_width_minus_1 + 1` (1..=65536)
     pub max_frame_width: u32,
@@ -433,6 +440,7 @@ fn parse_one_obu(remaining: &[u8], ctx: Av1ObuParseContext) -> Result<Av1Obu<'_>
 /// - 入力不足
 /// - `seq_profile` が 3..=7 (予約)
 /// - `reduced_still_picture_header == 1` かつ `still_picture == 0`
+/// - `chroma_sample_position` が 3 (`CSP_RESERVED`。AV1 spec Color config semantics)
 pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader> {
     let mut reader = BitReader::new(payload);
 
@@ -450,6 +458,10 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader> {
         ));
     }
 
+    // AV1 spec Sequence header OBU syntax:
+    // reduced_still_picture_header == 1 のときは operating point 関連は暗黙値
+    let mut operating_points_cnt_minus_1 = 0u8;
+    let mut operating_point_idc_0 = 0u16;
     let mut seq_level_idx_0 = 0u8;
     let mut seq_tier_0 = 0u8;
     let mut buffer_delay_length_minus_1 = 0u8;
@@ -470,9 +482,9 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader> {
             }
         }
         let initial_display_delay_present_flag = reader.read_bit()? != 0;
-        let operating_points_cnt_minus_1 = reader.read_bits(5)? as u8;
+        operating_points_cnt_minus_1 = reader.read_bits(5)? as u8;
         for i in 0..=operating_points_cnt_minus_1 {
-            let _operating_point_idc = reader.read_bits(12)?;
+            let operating_point_idc = reader.read_bits(12)? as u16;
             let seq_level_idx = reader.read_bits(5)? as u8;
             let seq_tier = if seq_level_idx > 7 {
                 reader.read_bit()?
@@ -480,6 +492,7 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader> {
                 0
             };
             if i == 0 {
+                operating_point_idc_0 = operating_point_idc;
                 seq_level_idx_0 = seq_level_idx;
                 seq_tier_0 = seq_tier;
             }
@@ -556,6 +569,8 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader> {
 
     Ok(Av1SequenceHeader {
         seq_profile,
+        operating_points_cnt_minus_1,
+        operating_point_idc_0,
         seq_level_idx_0,
         seq_tier_0,
         high_bitdepth: color.high_bitdepth,
@@ -646,6 +661,12 @@ fn read_color_config(reader: &mut BitReader<'_>, seq_profile: u8) -> Result<Colo
     } else {
         0
     };
+    // AV1 spec Color config semantics: chroma_sample_position == 3 は CSP_RESERVED
+    if chroma_sample_position == 3 {
+        return Err(Error::invalid_input(
+            "AV1 chroma_sample_position 3 is reserved (CSP_RESERVED)",
+        ));
+    }
     let _separate_uv_delta_q = reader.read_bit()?;
 
     Ok(ColorConfig {

@@ -23,6 +23,10 @@
   - @sile
 - [ADD] AV1 ビットストリーム処理ユーティリティ (`bitstream::av1`) を追加する
   - @sile
+- [ADD] `bitstream::av1` の `Av1SequenceHeader` に operating point 情報を公開し、`chroma_sample_position` の予約値を拒否する
+  - `operating_points_cnt_minus_1` / `operating_point_idc_0` を公開する（`reduced_still_picture_header == 1` のときは暗黙値）
+  - `chroma_sample_position == 3` (`CSP_RESERVED`) を `crate::Error` で拒否する
+  - @sile
 - [ADD] AAC ビットストリーム処理ユーティリティ (`bitstream::aac`) を追加する
   - AAC-LC の AudioSpecificConfig の解析・正規形エンコード、ADTS フレームの解析と raw AAC の相互変換、`Mp4aBox` の構築を提供する
   - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、ADTS の複数 raw data block は `crate::Error` として拒否する

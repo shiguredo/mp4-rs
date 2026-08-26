@@ -440,16 +440,63 @@ mod sequence_header {
         assert_eq!(sh.max_frame_width, 320);
         assert_eq!(sh.max_frame_height, 240);
         assert!(sh.reduced_still_picture_header);
+        // reduced_still_picture_header == 1 のときは operating point は暗黙値
+        assert_eq!(sh.operating_points_cnt_minus_1, 0);
+        assert_eq!(sh.operating_point_idc_0, 0);
     }
 
-    /// 複数 operating point を拒否せず、index 0 の level / tier を取る
+    /// 複数 operating point を拒否せず、index 0 の level / tier / idc を公開する
     #[test]
     fn multiple_operating_points() {
         let payload = two_operating_point_sequence_header(64, 64);
         let sh = parse_sh(&payload);
+        assert_eq!(sh.operating_points_cnt_minus_1, 1);
+        assert_eq!(sh.operating_point_idc_0, 0);
         assert_eq!(sh.seq_level_idx_0, 8);
         assert_eq!(sh.seq_tier_0, 1);
         assert!(!sh.reduced_still_picture_header);
+    }
+
+    /// `operating_point_idc[0]` が非 0 でも公開する（拒否しない）
+    #[test]
+    fn non_zero_operating_point_idc_0() {
+        let mut w = BitWriter::new();
+        w.push_bits(0, 3); // seq_profile
+        w.push_bit(0); // still_picture
+        w.push_bit(0); // reduced_still_picture_header
+        w.push_bit(0); // timing_info_present_flag
+        w.push_bit(0); // initial_display_delay_present_flag
+        w.push_bits(0, 5); // operating_points_cnt_minus_1 = 0 (1 個)
+        w.push_bits(0xABC, 12); // operating_point_idc[0]
+        w.push_bits(0, 5); // seq_level_idx[0]
+        w.push_bits(15, 4);
+        w.push_bits(15, 4);
+        w.push_bits(15, 16);
+        w.push_bits(15, 16);
+        w.push_bit(0); // frame_id_numbers_present_flag
+        w.push_bit(0); // use_128x128_superblock
+        w.push_bit(0);
+        w.push_bit(0);
+        w.push_bit(0); // enable_interintra_compound
+        w.push_bit(0); // enable_masked_compound
+        w.push_bit(0); // enable_warped_motion
+        w.push_bit(0); // enable_dual_filter
+        w.push_bit(0); // enable_order_hint
+        w.push_bit(1); // seq_choose_screen_content_tools
+        w.push_bit(1); // seq_choose_integer_mv
+        w.push_bit(0); // enable_superres
+        w.push_bit(0); // enable_cdef
+        w.push_bit(0); // enable_restoration
+        w.push_bit(0); // high_bitdepth
+        w.push_bit(0); // mono_chrome
+        w.push_bit(0); // color_description_present_flag
+        w.push_bit(0); // color_range
+        w.push_bits(0, 2); // chroma_sample_position
+        w.push_bit(0); // separate_uv_delta_q
+        w.push_bit(0); // film_grain
+        let sh = parse_sh(&w.into_bytes());
+        assert_eq!(sh.operating_points_cnt_minus_1, 0);
+        assert_eq!(sh.operating_point_idc_0, 0xABC);
     }
 
     /// seq_profile 3 は予約なので拒否する
@@ -461,6 +508,39 @@ mod sequence_header {
         w.push_bit(1);
         let err = parse_sequence_header(&w.into_bytes()).expect_err("profile 3 は予約");
         assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+
+    /// chroma_sample_position == 3 (`CSP_RESERVED`) は拒否する
+    #[test]
+    fn reserved_chroma_sample_position() {
+        let mut w = BitWriter::new();
+        w.push_bits(0, 3); // seq_profile
+        w.push_bit(1); // still_picture
+        w.push_bit(1); // reduced_still_picture_header
+        w.push_bits(0, 5); // seq_level_idx[0]
+        w.push_bits(15, 4);
+        w.push_bits(15, 4);
+        w.push_bits(15, 16);
+        w.push_bits(15, 16);
+        w.push_bit(0); // use_128x128_superblock
+        w.push_bit(0); // enable_filter_intra
+        w.push_bit(0); // enable_intra_edge_filter
+        w.push_bit(0); // enable_superres
+        w.push_bit(0); // enable_cdef
+        w.push_bit(0); // enable_restoration
+        w.push_bit(0); // high_bitdepth
+        w.push_bit(0); // mono_chrome
+        w.push_bit(0); // color_description_present_flag
+        w.push_bit(0); // color_range
+        w.push_bits(3, 2); // chroma_sample_position = CSP_RESERVED
+        w.push_bit(0); // separate_uv_delta_q
+        w.push_bit(0); // film_grain_params_present
+        let err = parse_sequence_header(&w.into_bytes()).expect_err("CSP_RESERVED は拒否");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_eq!(
+            err.reason,
+            "AV1 chroma_sample_position 3 is reserved (CSP_RESERVED)"
+        );
     }
 
     /// profile 0 / 10-bit (`high_bitdepth = 1`, `twelve_bit` は構文に現れない)
@@ -906,6 +986,11 @@ mod build {
         assert!(seq.reduced_still_picture_header);
         assert!(!other.reduced_still_picture_header);
         assert_eq!(seq.seq_profile, other.seq_profile);
+        assert_eq!(
+            seq.operating_points_cnt_minus_1,
+            other.operating_points_cnt_minus_1
+        );
+        assert_eq!(seq.operating_point_idc_0, other.operating_point_idc_0);
         assert_eq!(seq.seq_level_idx_0, other.seq_level_idx_0);
         assert_eq!(seq.seq_tier_0, other.seq_tier_0);
         assert_eq!(seq.high_bitdepth, other.high_bitdepth);

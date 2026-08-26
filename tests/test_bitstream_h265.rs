@@ -1223,6 +1223,132 @@ fn build_hev1_box_rejects_wrong_pps_type() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
+/// 2 本目以降の SPS も非空・NAL type 33 であることを検証する
+///
+/// 空の 2 本目が hvcC に長さ 0 で載らないよう、先頭だけでなく全 SPS を
+/// 検証する (構文解析して代表値にするのは先頭 SPS だけ)
+#[test]
+fn build_hev1_box_rejects_second_sps_not_type_33() {
+    let sps = build_sps(&SpsParams::valid());
+    // type 19 (IDR_W_RADL) の NAL。先頭は正当な SPS のまま
+    let not_sps = vec![0x26, 0x01];
+    let err = build_hev1_box(
+        &[valid_vps()],
+        &[sps, not_sps],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect_err("type 33 以外の 2 本目 SPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の SPS が空なら拒否する
+#[test]
+fn build_hev1_box_rejects_empty_second_sps() {
+    let sps = build_sps(&SpsParams::valid());
+    let err = build_hev1_box(
+        &[valid_vps()],
+        &[sps, Vec::new()],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect_err("空の 2 本目 SPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目 SPS の forbidden_zero_bit が 1 なら拒否する
+#[test]
+fn build_hev1_box_rejects_second_sps_forbidden_zero_bit() {
+    let sps = build_sps(&SpsParams::valid());
+    // 0xC2 = 1100_0010: forbidden_zero_bit = 1 / nal_unit_type = 33
+    let forbidden_sps = vec![0xC2, 0x01];
+    let err = build_hev1_box(
+        &[valid_vps()],
+        &[sps, forbidden_sps],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect_err("forbidden_zero_bit=1 の 2 本目 SPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目 SPS の TemporalId が 0 以外なら拒否する
+#[test]
+fn build_hev1_box_rejects_second_sps_non_zero_temporal_id() {
+    let sps = build_sps(&SpsParams::valid());
+    let mut sps_tid2 = sps.clone();
+    // byte1 の tid を 2 に書き換える (TemporalId = 1)。先頭 SPS は正当なまま
+    sps_tid2[1] = 0x02;
+    let err = build_hev1_box(
+        &[valid_vps()],
+        &[sps, sps_tid2],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect_err("TemporalId=1 の 2 本目 SPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の VPS も非空・NAL type 32 であることを検証する
+#[test]
+fn build_hev1_box_rejects_second_vps_not_type_32() {
+    let sps = build_sps(&SpsParams::valid());
+    // ヘッダーを type 33 (SPS) に書き換えた 2 本目 VPS
+    let not_vps = vec![0x42, 0x01, 0x0C];
+    let err = build_hev1_box(
+        &[valid_vps(), not_vps],
+        &[sps],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect_err("type 32 以外の 2 本目 VPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の VPS が空なら拒否する
+#[test]
+fn build_hev1_box_rejects_empty_second_vps() {
+    let sps = build_sps(&SpsParams::valid());
+    let err = build_hev1_box(
+        &[valid_vps(), Vec::new()],
+        &[sps],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect_err("空の 2 本目 VPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の PPS も非空・NAL type 34 であることを検証する
+#[test]
+fn build_hev1_box_rejects_second_pps_not_type_34() {
+    let sps = build_sps(&SpsParams::valid());
+    // ヘッダーを type 33 (SPS) に書き換えた 2 本目 PPS
+    let not_pps = vec![0x42, 0x01, 0xC1];
+    let err = build_hev1_box(
+        &[valid_vps()],
+        &[sps],
+        &[valid_pps(), not_pps],
+        &default_config(),
+    )
+    .expect_err("type 34 以外の 2 本目 PPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// 2 本目以降の PPS が空なら拒否する
+#[test]
+fn build_hev1_box_rejects_empty_second_pps() {
+    let sps = build_sps(&SpsParams::valid());
+    let err = build_hev1_box(
+        &[valid_vps()],
+        &[sps],
+        &[valid_pps(), Vec::new()],
+        &default_config(),
+    )
+    .expect_err("空の 2 本目 PPS は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
 /// VPS / SPS の TemporalId が 0 以外なら拒否する (PPS は 0 でなくてよい)
 #[test]
 fn build_hev1_box_rejects_non_zero_temporal_id_vps_sps() {

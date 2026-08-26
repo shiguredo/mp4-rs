@@ -118,6 +118,23 @@ fn sample_sps_bits(ctx: &mut noprop::TestCaseContext) -> SpsBits {
     }
 }
 
+/// RBSP を EBSP 化する (`00 00` の後に emulation prevention byte `0x03` を挿入する)
+///
+/// ITU-T H.265 7.4.2.1 の挿入規則。`parse_sps` の入力契約は NAL ヘッダー付き
+/// EBSP であり、内部で `00 00 03` を破棄する。ビットライターの出力をそのまま
+/// 渡すと、乱数の compatibility / constraint フラグに `00 00 03` が混入した
+/// ときに後続ビットがずれて不変条件が壊れる
+fn to_ebsp(rbsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for &byte in rbsp {
+        if out.len() >= 2 && out[out.len() - 2] == 0 && out[out.len() - 1] == 0 {
+            out.push(0x03);
+        }
+        out.push(byte);
+    }
+    out
+}
+
 /// NAL ヘッダー (type 33 / layer 0 / TemporalId 0) 付きのクロップ無し SPS EBSP を組み立てる
 fn build_sps(p: &SpsBits) -> Vec<u8> {
     let mut w = BitWriter::new();
@@ -165,7 +182,8 @@ fn build_sps(p: &SpsBits) -> Vec<u8> {
     w.push_bit(0); // conformance_window_flag = 0
     w.push_ue(u32::from(p.bit_depth_luma_minus8));
     w.push_ue(u32::from(p.bit_depth_chroma_minus8));
-    w.into_bytes()
+    // ビットライターの出力は RBSP。parse_sps / hvcC 格納の契約は EBSP
+    to_ebsp(&w.into_bytes())
 }
 
 /// ランダムな NAL 本体を生成する

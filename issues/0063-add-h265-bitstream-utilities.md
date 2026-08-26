@@ -1,7 +1,7 @@
 # H.265 ビットストリーム処理ユーティリティを追加する
 
 - Created: 2026-08-18
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-26
 - Branch: feature/add-h265-bitstream-utilities
 - Polished: 2026-08-25
 
@@ -247,3 +247,13 @@ pub fn build_hvc1_box_from_annexb(input: &[u8], config: &H265SampleEntryConfig) 
 - 公開 API の rustdoc に入力形式、返す NAL バイト列へヘッダーを含むか、`LengthSize` とヘッダー検証、`hev1` / `hvc1` の選択と `array_completeness`、固定値 / ストリーム導出値 / 呼び出し側指定値の分類、エラー条件が記載されていること
 - `CHANGES.md` の `develop` に `[ADD]` として記載されていること
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ること
+
+## 解決方法
+
+`bitstream::h265` を追加した。
+
+- Annex B / length-prefixed の NAL ユニット列の解析 (`parse_annexb_nal_units` / `parse_length_prefixed_nal_units`)、相互変換 (`annexb_to_length_prefixed` / `length_prefixed_to_annexb`)、`collect_nal_units` を提供する。共有処理は既存の `src/bitstream/nal.rs` のフレーミング層に限定し、H.264 / H.265 の公開 API は独立させる。`LengthSize` は `bitstream::h265` からも再公開する
+- SPS 解析 (`parse_sps`) は ITU-T H.265 7.3.2.2.1 / 7.3.3 / 7.4.3.2.1 に従い、`profile_tier_level` から bit depth までを読み、クロップ後寸法を Table 6-1 で計算する。`bit_depth_*_minus8` は `hvcC` の `unsigned int(3)` に合わせ 0..=7 以外を拒否する
+- サンプルエントリー構築 (`build_hev1_box` / `build_hvc1_box` / `build_hev1_box_from_annexb` / `build_hvc1_box_from_annexb`) は、VPS / SPS / PPS の EBSP から `Hev1Box` / `Hvc1Box` を組み立てる。`array_completeness` は hev1 で 0、hvc1 で 1 とし、固定値 / ストリーム導出値 / 呼び出し側指定値を設計方針の三分類に従って埋める
+- テストとして、単体テスト (`tests/test_bitstream_h265.rs`)、noprop PBT (`pbt/tests/prop_bitstream_h265.rs`)、実データ fixture (`tests/testdata/h265-vps-sps-pps-annexb.bin`)、fuzz target (`fuzz/fuzz_targets/fuzz_bitstream_h265.rs`) を追加した
+- `CHANGES.md` の develop に `[ADD]` として記載した

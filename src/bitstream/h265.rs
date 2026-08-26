@@ -53,8 +53,9 @@ pub enum H265NalUnitType {
     PrefixSei,
     /// suffix SEI (Supplemental enhancement information) (40)
     SuffixSei,
-    /// Table 7-1 の定義値以外 (0..=31、36..=38、41..=63 など)。
-    /// 実ストリームで使われる範囲外の値もここで不透明に通す
+    /// この列挙が名前を付けていない Table 7-1 の値 (0..=31 の VCL、
+    /// 36..=38、41..=63 など)。実ストリームで使われる範囲外の値も
+    /// ここで不透明に通す
     Other(u8),
 }
 
@@ -457,12 +458,12 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H265Sps> {
         return Err(Error::invalid_input("chroma_format_idc must be 0..=3"));
     }
     // chroma_format_idc == 3 のときだけ separate_colour_plane_flag が存在する。
-    // 不在時は 0
-    let separate_colour_plane_flag = if chroma_format_idc == 3 {
-        reader.read_bit()?
-    } else {
-        0
-    };
+    // 不在時は 0。クロップの SubWidthC / SubHeightC (Table 6-1) は
+    // separate_colour_plane_flag == 1 の行も chroma_format_idc == 3 と
+    // 同じ 1/1 のため、ここでは読むだけで捨てる
+    if chroma_format_idc == 3 {
+        reader.read_bit()?;
+    }
     let pic_width_in_luma_samples = reader.read_ue()?;
     let pic_height_in_luma_samples = reader.read_ue()?;
     let conformance_window_flag = reader.read_bit()?;
@@ -491,14 +492,6 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H265Sps> {
             "bit_depth_chroma_minus8 must be 0..=7",
         ));
     }
-
-    // ChromaArrayType は separate_colour_plane_flag == 1 なら 0、さもなくば
-    // chroma_format_idc (7.4.3.2.1)
-    let _chroma_array_type = if separate_colour_plane_flag == 1 {
-        0
-    } else {
-        chroma_format_idc
-    };
 
     // SubWidthC / SubHeightC は ITU-T H.265 Table 6-1 による
     // (chroma_format_idc 0: 1/1、1: 2/2、2: 2/1、3: 1/1。
@@ -663,7 +656,9 @@ pub fn build_hvc1_box(
 ///
 /// [`parse_annexb_nal_units`] で列挙した NAL から type 32 (VPS) / type 33 (SPS) /
 /// type 34 (PPS) を入力順で集め、[`build_hev1_box`] に渡す薄いラッパー。
-/// VCL / SEI 等の他種別の NAL は無視する。
+/// VCL / SEI 等の他種別の NAL は無視する。ただし、列挙時に全 NAL のヘッダーを
+/// 検証するため、ヘッダー不正 (例: forbidden_zero_bit = 1) の VCL が混ざると
+/// 無視されず失敗する
 ///
 /// # エラー条件
 ///
@@ -684,7 +679,9 @@ pub fn build_hev1_box_from_annexb(input: &[u8], config: &H265SampleEntryConfig) 
 ///
 /// [`parse_annexb_nal_units`] で列挙した NAL から type 32 (VPS) / type 33 (SPS) /
 /// type 34 (PPS) を入力順で集め、[`build_hvc1_box`] に渡す薄いラッパー。
-/// VCL / SEI 等の他種別の NAL は無視する。
+/// VCL / SEI 等の他種別の NAL は無視する。ただし、列挙時に全 NAL のヘッダーを
+/// 検証するため、ヘッダー不正 (例: forbidden_zero_bit = 1) の VCL が混ざると
+/// 無視されず失敗する
 ///
 /// # エラー条件
 ///

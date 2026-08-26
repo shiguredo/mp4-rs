@@ -353,14 +353,14 @@ fn parse_annexb_rejects_consecutive_start_codes() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// Table 7-1 の定義値以外の nal_unit_type はエラーにせず不透明な NAL として通す
+/// この列挙が名前を付けていない nal_unit_type はエラーにせず不透明な NAL として通す
 #[test]
 fn parse_annexb_unknown_nal_unit_type_is_opaque() {
-    // nal_unit_type = 0 (未指定)。0x00 = 0b0000_0000
-    let nal = [0x00, 0x01, 0x02];
+    // nal_unit_type = 48 (未指定 41..=63)。0x60 = 0b0110_0000
+    let nal = [0x60, 0x01, 0x02];
     let input = annexb_with_3(&[&nal]);
     let nals = parse_annexb_nal_units(&input).expect("未指定 nal_unit_type は通す");
-    assert_eq!(nals[0].nal_unit_type, H265NalUnitType::Other(0));
+    assert_eq!(nals[0].nal_unit_type, H265NalUnitType::Other(48));
     assert_eq!(nals[0].data, nal);
 }
 
@@ -1175,6 +1175,36 @@ fn build_hev1_box_nalu_arrays_store_ebsp() {
     );
 }
 
+/// 複数 SPS のとき、先頭 SPS の寸法を代表値にし、2 本目は配列に残す
+#[test]
+fn build_hev1_box_uses_first_sps_for_dimensions() {
+    let sps_640 = build_sps(&SpsParams {
+        pic_width_in_luma_samples: 640,
+        pic_height_in_luma_samples: 480,
+        ..SpsParams::valid()
+    });
+    let sps_320 = build_sps(&SpsParams::valid());
+    let hev1 = build_hev1_box(
+        &[valid_vps()],
+        &[sps_640, sps_320.clone()],
+        &[valid_pps()],
+        &default_config(),
+    )
+    .expect("複数 SPS は構築成功する");
+
+    // 構文解析して代表値にするのは先頭 SPS だけ
+    assert_eq!(hev1.visual.width, 640, "先頭 SPS の幅が代表値になる");
+    assert_eq!(hev1.visual.height, 480, "先頭 SPS の高さが代表値になる");
+    assert_eq!(
+        hev1.hvcc_box.general_level_idc, 90,
+        "先頭 SPS の profile_tier_level が代表値になる"
+    );
+
+    // 2 本目もヘッダー検証を済ませたうえで入力順のまま配列に残る
+    assert_eq!(hev1.hvcc_box.nalu_arrays[1].nalus.len(), 2);
+    assert_eq!(hev1.hvcc_box.nalu_arrays[1].nalus[1], sps_320);
+}
+
 /// VPS リストが空なら拒否する
 #[test]
 fn build_hev1_box_rejects_empty_vps_list() {
@@ -1495,6 +1525,20 @@ fn build_hvc1_box_from_annexb_rejects_without_pps() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
+/// forbidden_zero_bit = 1 の VCL が混ざると、無視せず全体が失敗する
+///
+/// rustdoc は「VCL / SEI 等は無視する」と書くが、列挙時に全 NAL のヘッダーを
+/// 検証するため、ヘッダー不正の NAL は無視されない
+#[test]
+fn build_hev1_box_from_annexb_rejects_invalid_slice() {
+    let sps = build_sps(&SpsParams::valid());
+    // 0x82 = 0b1000_0010: forbidden_zero_bit = 1 / nal_unit_type = 1 (スライス)
+    let input = annexb_with_3(&[&valid_vps(), &sps, &valid_pps(), &[0x82, 0x01, 0x88]]);
+    let err = build_hev1_box_from_annexb(&input, &default_config())
+        .expect_err("forbidden_zero_bit=1 のスライスは拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
 // ===== 実データ fixture =====
 
 /// 実エンコーダー (ffmpeg + x265) が生成した MP4 から抽出した VPS / SPS / PPS /
@@ -1527,6 +1571,10 @@ fn real_h265_parse_sps() {
     assert_eq!(sps.general_profile_space, 0);
     assert_eq!(sps.general_tier_flag, 0);
     assert_eq!(sps.general_profile_idc, 1);
+    // 実 SPS の EBSP から独立に計算した期待値。合成ビルダーとパーサーが
+    // 同じビット順バグを共有すると通ってしまうため、実データで固定する
+    assert_eq!(sps.general_profile_compatibility_flags, 0x6000_0000);
+    assert_eq!(sps.general_constraint_indicator_flags, 0x9000_0000_0000);
     assert_eq!(sps.general_level_idc, 90);
     assert_eq!(sps.sps_max_sub_layers_minus1, 0);
     assert_eq!(sps.sps_temporal_id_nesting_flag, 1);

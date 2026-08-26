@@ -528,6 +528,13 @@ test = false
 [[bin]]
 bench = false
 doc = false
+name = "fuzz_bitstream_h265"
+path = "fuzz_targets/fuzz_bitstream_h265.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
 name = "fuzz_bitstream_av1"
 path = "fuzz_targets/fuzz_bitstream_av1.rs"
 test = false

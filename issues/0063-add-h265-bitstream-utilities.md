@@ -15,12 +15,12 @@ H.264 と共有できるのは NAL ユニットを区切る外側のフレーミ
 
 - `src/boxes_sample_entry.rs` には `Hev1Box`、`Hvc1Box`、`HvccBox`、`HvccNalUintArray` があるが、H.265 ストリームから構築する API はない
 - `src/bitstream.rs` は既に公開されており、`aac` / `av1` / `h264` / `vp8` / `vp9` を公開している。非公開の `mod nal` (`src/bitstream/nal.rs`) も 0062 で追加済み。`h265` サブモジュールは無い。`pbt/Cargo.toml` の `noprop` は 0068 で追加済み
-- `LengthSize` (`OneByte` / `TwoBytes` / `FourBytes`) は `src/bitstream/nal.rs` に定義され、公開面では `bitstream::h264` が `pub use` している。幅 3 (`lengthSizeMinusOne == 2`) は ISO/IEC 14496-15 で reserved のため型で表現できない
+- `LengthSize` (`OneByte` / `TwoBytes` / `FourBytes`) は `src/bitstream/nal.rs` に定義され、公開面では `bitstream::h264` が `pub use` している。ISO/IEC 14496-15:2022 8.3.2.1.3 の `lengthSizeMinusOne` は 0 / 1 / 3 (幅 1 / 2 / 4) だけが shall であり、2 (幅 3) は型で表現できない
 - `shiguredo/hisui` の `src/video/h265.rs` には Annex B の走査、SPS の解析、VPS / SPS / PPS からのサンプルエントリー構築がある。H.264 側の開始コード探索を再利用しており、外側のフレーミング処理には実際の共通性がある。一方で、2 バイトの H.265 NAL ヘッダー、NAL 種別、SPS 構文は H.264 と異なる
 - Hisui 固有のプロファイル許可リスト (`general_profile_idc` の `{1, 2, 3, 4, 5, 6, 7, 9}`)、固定の 4 バイト長、`FrameRate` から切り上げた `avg_frame_rate` と `constant_frame_rate = 1`、常に `SampleEntry::Hvc1` を返す方針、常に `array_completeness = 1` は汎用 crate の契約にはできない
 - `shiguredo/sora-rust-sdk` の `src/video_codecs/mp4.rs` は `HvccBox` から VPS / SPS / PPS を 4 バイト開始コード付き Annex B へ結合し、`lengthSizeMinusOne` は 0 / 1 / 3 だけを受理する。SDP やコーデック文字列生成は本 crate の対象外である
 
-参照仕様は [ITU-T H.265 (V11) (01/2026)](https://www.itu.int/rec/T-REC-H.265-202601-I/en) および ISO/IEC 14496-15 の `HEVCDecoderConfigurationRecord` (`hvcC`) とする。`lengthSizeMinusOne` は AVC と同様に 0 / 1 / 3 が正当で、2 (幅 3) は reserved である。本リポジトリに `refs/` の 14496-15 は無い。`hvcC` へ写すフィールド幅と不明値は現行 `HvccBox` に合わせ、下記の crate 契約として固定する。
+参照仕様は [ITU-T H.265 (V11) (01/2026)](https://www.itu.int/rec/T-REC-H.265-202601-I/en) (ISO/IEC 23008-2 と技術的に整合) および ISO/IEC 14496-15:2022 の 8.3 / 8.4 (`HEVCDecoderConfigurationRecord` / `'hvc1'` / `'hev1'` / `'hvcC'`) とする。H.265 ビットストリーム構文は ITU-T H.265、ファイル格納は 14496-15:2022 を一次とする。
 
 ## 設計方針
 
@@ -49,7 +49,7 @@ Annex B の境界走査と length-prefixed の境界検証・相互変換は `na
 - 空入力は NAL ユニット 0 個の成功とする (開始コード欠落とは区別する)
 - 非空入力に開始コードが 1 つも無い場合、最初の開始コードより前の非ゼロ、空 NAL、切り詰め、長さ 0 は `crate::Error` とする
 - 3 バイトと 4 バイトの開始コードの混在を受理する
-- length-prefixed の長さフィールド幅は `LengthSize` (`OneByte` / `TwoBytes` / `FourBytes`)。Hisui の 4 バイト固定は移植しない
+- length-prefixed の長さフィールド幅は `LengthSize` (`OneByte` / `TwoBytes` / `FourBytes`)。ISO/IEC 14496-15:2022 8.3.2.1.3 は `lengthSizeMinusOne` を 0 / 1 / 3 に限る。Hisui の 4 バイト固定は移植しない
 - Annex B から length-prefixed への変換では、開始コードを除いた NAL 本体の前に指定幅の長さフィールドを付ける
 - length-prefixed から Annex B への変換では、開始コードを常に 4 バイト (`0x00000001`) で書く。NAL type に応じた `zero_byte` の shall (VPS / SPS / PPS、AU 先頭) はアクセスユニット検出が対象外のため実装しない
 - 相互変換自体はフレーミングのみで、NAL ヘッダー検証は行わない (0062 の `annexb_to_length_prefixed` と同じ)
@@ -84,7 +84,7 @@ Hisui の `H265_ALLOWED_PROFILE_IDCS` で `general_profile_idc` 自体を拒否�
 
 `chroma_format_idc > 3`、`sps_max_sub_layers_minus1 > 6` は 7.4.3.2.1 の値域外として拒否する。
 
-`bit_depth_luma_minus8` / `bit_depth_chroma_minus8` は仕様 7.4.3.2.1 では 0..=8 だが、現行 `HvccBox` の対応欄は `Uint<u8, 3>` (0..=7) である。`Uint::new` は範囲を検証せず、8 を渡すと `HvccBox::encode` の `0b1111_1000 | to_bits()` が下位 3 ビット 0 (8-bit) として黙って書き出す。したがって **0..=7 以外は `crate::Error`** とする。H.265 として合法な 16-bit (`minus8 == 8`) も `hvcC` に載せられないため拒否する。Hisui が 0..=7 で切っているのはこのボックス幅に合わせたものであり、許可リストとは別件として維持する。
+`bit_depth_luma_minus8` / `bit_depth_chroma_minus8` は ITU-T H.265 7.4.3.2.1 では 0..=8 だが、ISO/IEC 14496-15:2022 8.3.2.1.2 の `HEVCDecoderConfigurationRecord` はどちらも `unsigned int(3)` (0..=7) である。現行 `HvccBox` も `Uint<u8, 3>`。`Uint::new` は範囲を検証せず、8 を渡すと `HvccBox::encode` の `0b1111_1000 | to_bits()` が下位 3 ビット 0 (8-bit) として黙って書き出す。したがって **0..=7 以外は `crate::Error`** とする。H.265 として合法な 16-bit (`minus8 == 8`) も `hvcC` に載せられないため拒否する。Hisui が 0..=7 で切っているのはこのフィールド幅に合わせたものであり、許可リストとは別件として維持する。
 
 寸法は同 7.4.3.2.1 と Table 6-1 に従う。H.264 の `CropUnitY = SubHeightC * (2 - frame_mbs_only_flag)` は使わない (H.265 に `frame_mbs_only_flag` は無い)。
 
@@ -101,37 +101,37 @@ VPS / SPS / PPS の EBSP リストと呼び出し側設定から、`Hev1Box` ま
 
 Annex B 入力からの構築は、列挙して type 32 / 33 / 34 を入力順で集め、同じ構築関数に渡す薄いラッパーとする (`build_hev1_box_from_annexb` / `build_hvc1_box_from_annexb`)。VCL / SEI 等は無視する。
 
-VPS / SPS / PPS のいずれかが 0 個なら `crate::Error` とする。`hev1` でも、構築に必要な代表 SPS と格納するパラメータセットが無い入力は受け付けない。全ての VPS は非空・NAL type 32・`TemporalId == 0`、全ての SPS は非空・NAL type 33・`TemporalId == 0`、全ての PPS は非空・NAL type 34 であることを検証する (`forbidden_zero_bit`、`nuh_temporal_id_plus1 != 0`、`nuh_layer_id` 0..=62 も適用。PPS の `TemporalId` は 0 でなくてよい)。構文解析は先頭 SPS だけ。複数 VPS / SPS / PPS は `nalu_arrays` に入力順で全部残し、profile / level / width / height / chroma / bit depth / temporal 欄は先頭 SPS だけから取る。
+VPS / SPS / PPS のいずれかが 0 個なら `crate::Error` とする。ISO/IEC 14496-15:2022 8.3.1 は `'hev1'` でパラメータセットをサンプル側にも置けるとするが、本構築 API は代表 SPS から `hvcC` 欄と寸法を埋めるため、`hev1` でも 3 種を 1 個以上要求する。全ての VPS は非空・NAL type 32・`TemporalId == 0`、全ての SPS は非空・NAL type 33・`TemporalId == 0`、全ての PPS は非空・NAL type 34 であることを検証する (`forbidden_zero_bit`、`nuh_temporal_id_plus1 != 0`、`nuh_layer_id` 0..=62 も適用。PPS の `TemporalId` は 0 でなくてよい)。構文解析は先頭 SPS だけ。複数 VPS / SPS / PPS は `nalu_arrays` に入力順で全部残し、profile / level / width / height / chroma / bit depth / temporal 欄は先頭 SPS だけから取る。ISO/IEC 14496-15:2022 8.3.2.1.1 は活性化される全パラメータセットで `chroma_format_idc` / `bit_depth_*_minus8` 等が同一であること等を shall とするが、全件一致の検証は対象外とする (0062 の先頭 SPS 代表値と同じ)。
 
-`nalu_arrays` は VPS / SPS / PPS の 3 配列をこの順で持ち、各 `nalus` には呼び出し側が渡した EBSP を開始コード無し・emulation prevention byte 残しで格納する。
+`nalu_arrays` は VPS / SPS / PPS の 3 配列をこの順で持つ。ISO/IEC 14496-15:2022 8.3.2.1.1 は配列を VPS、SPS、PPS、prefix SEI、suffix SEI の順にすることを recommended とし、NAL 種別はこれらに限る。本 issue は VPS / SPS / PPS だけを載せ、SEI 配列は対象外とする。各 `nalus` には呼び出し側が渡した EBSP を開始コード無し・emulation prevention byte 残しで格納する (同 8.3.2.1.3 の `nalUnit` は ISO/IEC 23008-2 の NAL ユニット)。
 
-`HvccNalUintArray::array_completeness` は fourcc に連動させる。現行 `Hev1Box` / `Hvc1Box` の rustdoc どおり、`hvc1` はパラメータセットが全て `hvcC` の out-of-band、`hev1` は in-band で現れうる。したがって `build_hvc1_box` は completeness 1、`build_hev1_box` は completeness 0 とする。Hisui の常時 1 は移植しない。呼び出し側の completeness 引数は置かない。
+`HvccNalUintArray::array_completeness` は fourcc に連動させる。ISO/IEC 14496-15:2022 8.4.1.1.1 は `'hvc1'` でパラメータセット配列の completeness を 1 に必須 (default and mandatory)、その他配列は 0 とする。`'hev1'` では全配列の default が 0。8.3.1 は `'hvc1'` の VPS / SPS / PPS をサンプルエントリーのみ、`'hev1'` はサンプルエントリーとサンプルの両方を許可する。したがって `build_hvc1_box` は completeness 1、`build_hev1_box` は completeness 0 とする。Hisui の常時 1 は移植しない。呼び出し側の completeness 引数は置かない。
 
 `HvccBox::encode` は `nalu_arrays` 個数を `u8`、各配列の NAL 個数と各 NAL 長を `u16` で書く。上限を超える入力はボックス encode に渡す前に `crate::Error` とする。
 
 #### 固定値 (関数側で埋める)
 
-- `VisualSampleEntryFields` の `horizresolution` / `vertresolution` / `frame_count` / `compressorname` / `depth`: 同構造体の `DEFAULT_HORIZRESOLUTION` / `DEFAULT_VERTRESOLUTION` / `DEFAULT_FRAME_COUNT` / `NULL_COMPRESSORNAME` / `DEFAULT_DEPTH`
+- `VisualSampleEntryFields` の `horizresolution` / `vertresolution` / `frame_count` / `compressorname` / `depth`: 同構造体の `DEFAULT_HORIZRESOLUTION` / `DEFAULT_VERTRESOLUTION` / `DEFAULT_FRAME_COUNT` / `NULL_COMPRESSORNAME` / `DEFAULT_DEPTH`。ISO/IEC 14496-15:2022 8.4.1.1.3 の compressorname `"\013HEVC Coding"` は recommended であり shall ではない。H.264 / AV1 / VP8 構築に合わせ DEFAULT を使う
 - `VisualSampleEntryFields::data_reference_index` = `VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX`
 - `Hev1Box::unknown_boxes` / `Hvc1Box::unknown_boxes` = 空 `Vec`
-- `HvccBox` の configurationVersion は既存の `HvccBox::encode` が書く 1 に任せる
-- `HvccBox::min_spatial_segmentation_idc` = 0 (VUI を読まないため導出できない)
-- `HvccBox::parallelism_type` = 0 (PPS / VUI を読まないため導出できない)
-- `HvccBox::avg_frame_rate` = 0 (フレームレート推定は対象外。Hisui の `FrameRate` は移植しない)
-- `HvccBox::constant_frame_rate` = 0 (CFR 固定は移植しない。現行 `HvccBox` の rustdoc は 0 を VBR と書いているが、本構築 API は導出できない欄を 0 で埋める。ボックス rustdoc の修正は対象外)
+- `HvccBox` の configurationVersion は既存の `HvccBox::encode` が書く 1 に任せる (ISO/IEC 14496-15:2022 8.3.2.1.2 の `configurationVersion = 1`)
+- `HvccBox::min_spatial_segmentation_idc` = 0。VUI を読まないため追加制限を付けない。ISO/IEC 14496-15:2022 8.3.2.1.1 は、活性化される全パラメータセットの空間分割の最低以下であることを shall とする (0 はその下限)
+- `HvccBox::parallelism_type` = 0。ISO/IEC 14496-15:2022 8.3.2.1.3 は、混合または不明なら 0 に should とする。値は PPS の `tiles_enabled_flag` / `entropy_coding_sync_enabled_flag` から推論できるが、PPS 構文は対象外
+- `HvccBox::avg_frame_rate` = 0。同 8.3.2.1.3 は 0 を unspecified average frame rate とする。Hisui の `FrameRate` は移植しない
+- `HvccBox::constant_frame_rate` = 0。同 8.3.2.1.3 は 1 を定フレームレート、2 を temporal layer 単位の定フレームレート、0 を「定フレームレートであるとは限らない」とする。Hisui の CFR=1 は移植しない。現行 `HvccBox` の rustdoc は 0 を VBR と書いており仕様文面とずれるが、ボックス rustdoc の修正は対象外
 
 #### ストリーム導出値 (先頭 SPS から写す)
 
 - `HvccBox::general_profile_space` / `general_tier_flag` / `general_profile_idc` / `general_profile_compatibility_flags` / `general_constraint_indicator_flags` / `general_level_idc`
 - `HvccBox::chroma_format_idc` / `bit_depth_luma_minus8` / `bit_depth_chroma_minus8` (上記の 0..=7 検証済み)
-- `HvccBox::num_temporal_layers` = `sps_max_sub_layers_minus1 + 1` (1..=7。`Uint<u8, 3>` に収まる)
-- `HvccBox::temporal_id_nested` = `sps_temporal_id_nesting_flag`
+- `HvccBox::num_temporal_layers` = `sps_max_sub_layers_minus1 + 1` (1..=7。`Uint<u8, 3>` に収まる)。ISO/IEC 14496-15:2022 8.3.2.1.3 は 1 を非 temporal scalable、0 を不明、2 以上を層数とする。単層 SPS (`minus1 == 0`) は 1 になる
+- `HvccBox::temporal_id_nested` = 先頭 SPS の `sps_temporal_id_nesting_flag`。同 8.3.2.1.3 は活性化される全 SPS が 1 のとき 1 とするが、全 SPS の一致検証は対象外
 - `VisualSampleEntryFields::width` / `height` (クロップ適用後。`u16` に収まらない値は拒否)
 - `HvccBox::nalu_arrays` (VPS / SPS / PPS の EBSP)
 
 #### 呼び出し側指定値
 
-- NAL 長フィールド幅: `LengthSize`。`HvccBox::length_size_minus_one` には `LengthSize::length_size_minus_one` の値 (0 / 1 / 3) を入れる。Hisui のように 4 に固定しない
+- NAL 長フィールド幅: `LengthSize`。`HvccBox::length_size_minus_one` には `LengthSize::length_size_minus_one` の値 (0 / 1 / 3) を入れる (ISO/IEC 14496-15:2022 8.3.2.1.3)。Hisui のように 4 に固定しない
 - `hev1` / `hvc1` の選択: 呼び出す関数 (`build_hev1_box` または `build_hvc1_box`)
 
 公開 API は `no_std` を維持し、crate 本体 (`shiguredo_mp4`) に新しい外部依存は追加しない。入力から読んだサイズやカウントを信頼した `Vec::with_capacity` は行わない (実入力長に比例する確保までは禁じない)。エラーは新しい公開エラー体系を増やさず、既存の `crate::Error` / `ErrorKind` に統合する。
@@ -206,7 +206,7 @@ pub fn build_hev1_box_from_annexb(input: &[u8], config: &H265SampleEntryConfig) 
 pub fn build_hvc1_box_from_annexb(input: &[u8], config: &H265SampleEntryConfig) -> Result<Hvc1Box>;
 ```
 
-`parse_length_prefixed_nal_units` と相互変換の `length_size` は、呼び出し側が `HvccBox::length_size_minus_one` の値 (0 / 1 / 3) から `LengthSize` へ写して渡す。2 (幅 3) は reserved のため型で表現できない。
+`parse_length_prefixed_nal_units` と相互変換の `length_size` は、呼び出し側が `HvccBox::length_size_minus_one` の値 (0 / 1 / 3) から `LengthSize` へ写して渡す。2 (幅 3) は ISO/IEC 14496-15:2022 8.3.2.1.3 の shall 集合に含まれないため型で表現できない。
 
 ### テスト
 
@@ -224,10 +224,13 @@ pub fn build_hvc1_box_from_annexb(input: &[u8], config: &H265SampleEntryConfig) 
 - C API / WASM バインディング
 - VPS 構文解析、PPS 構文解析、VUI、スライスヘッダー、アクセスユニット検出
 - `min_spatial_segmentation_idc` / `parallelism_type` を VUI / PPS から導出すること
+- prefix SEI / suffix SEI を `nalu_arrays` に載せる (ISO/IEC 14496-15:2022 8.3.2.1.1 は許可するが、本 issue は VPS / SPS / PPS のみ)
+- 活性化される全パラメータセット間の profile / chroma / bit depth 一致の検証 (ISO/IEC 14496-15:2022 8.3.2.1.1 の shall。先頭 SPS の代表値のみ)
 - `nuh_layer_id != 0` の NAL を Annex A の ignore として捨てること
 - PBT 専用 SPS ビルダーの公開 API 化
 - length-prefixed の 3 バイト長のサポート
 - `HvccBox` の rustdoc (`constant_frame_rate` の 0 の意味など) の修正
+- ISO/IEC 14496-15:2022 8.4.1.1.3 の compressorname `"\013HEVC Coding"` への変更
 
 ## 完了条件
 

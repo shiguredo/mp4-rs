@@ -1,14 +1,16 @@
 //! H.264 ビットストリーム処理ユーティリティ
 //!
 //! Annex B / length-prefixed の NAL ユニット列の解析、SPS の解析、
-//! SPS / PPS の抽出、`avc1` / `avcC` の構築を提供する。
+//! SPS / PPS の抽出、`avc1` / `avcC` の構築、profile-level-id の
+//! パース・正規化を提供する。
 //!
 //! 参照仕様は以下のとおり。
 //!
 //! - ITU-T H.264 (06/2026): NAL ユニット (7.3.1 / 7.4.1)、SPS (7.3.2.1.1 /
-//!   7.4.2.1.1)、Annex B の開始コード
+//!   7.4.2.1.1)、Annex B の開始コード、profile / level (Annex A Table A-1)
 //! - ISO/IEC 14496-15: `AVCDecoderConfigurationRecord` (`avcC`) の
 //!   `lengthSizeMinusOne` (0 / 1 / 3 が正当、2 は reserved)
+//! - RFC 6184: profile-level-id (Section 8.1 Table 5 と Level 1b の記述)
 //!
 //! # NAL バイト列の契約
 //!
@@ -496,6 +498,387 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
         width,
         height,
     })
+}
+
+/// H.264 の sub-profile (RFC 6184 Section 8.1 Table 5 の 12 profile)
+///
+/// 同じ sub-profile を表す複数の (profile_idc, profile-iop) 組み合わせは
+/// [`parse_profile_level_id`] でこの enum の 1 値へ正規化される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum H264Profile {
+    /// Constrained Baseline (CB)
+    ConstrainedBaseline,
+    /// Baseline (B)
+    Baseline,
+    /// Main (M)
+    Main,
+    /// Extended (E)
+    Extended,
+    /// High (H)
+    High,
+    /// High 10 (H10)
+    High10,
+    /// High 4:2:2 (H42)
+    High42,
+    /// High 4:4:4 Predictive (H44)
+    High44,
+    /// High 10 Intra (H10I)
+    High10Intra,
+    /// High 4:2:2 Intra (H42I)
+    High42Intra,
+    /// High 4:4:4 Intra (H44I)
+    High44Intra,
+    /// CAVLC 4:4:4 Intra (C44I)
+    Cavlc444Intra,
+}
+
+/// H.264 の level (ITU-T H.264 (06/2026) Annex A Table A-1)
+///
+/// [`H264Level::Level1b`] は `level_idc` だけでは決まらず、profile と
+/// profile-iop の組み合わせで決まるため、独立した値として持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum H264Level {
+    /// Level 1 (`level_idc` 10)
+    Level1,
+    /// Level 1b (ad hoc な表現。profile により `level_idc` 11 +
+    /// `constraint_set3_flag` 1、または `level_idc` 9)
+    Level1b,
+    /// Level 1.1 (`level_idc` 11)
+    Level1_1,
+    /// Level 1.2 (`level_idc` 12)
+    Level1_2,
+    /// Level 1.3 (`level_idc` 13)
+    Level1_3,
+    /// Level 2 (`level_idc` 20)
+    Level2,
+    /// Level 2.1 (`level_idc` 21)
+    Level2_1,
+    /// Level 2.2 (`level_idc` 22)
+    Level2_2,
+    /// Level 3 (`level_idc` 30)
+    Level3,
+    /// Level 3.1 (`level_idc` 31)
+    Level3_1,
+    /// Level 3.2 (`level_idc` 32)
+    Level3_2,
+    /// Level 4 (`level_idc` 40)
+    Level4,
+    /// Level 4.1 (`level_idc` 41)
+    Level4_1,
+    /// Level 4.2 (`level_idc` 42)
+    Level4_2,
+    /// Level 5 (`level_idc` 50)
+    Level5,
+    /// Level 5.1 (`level_idc` 51)
+    Level5_1,
+    /// Level 5.2 (`level_idc` 52)
+    Level5_2,
+    /// Level 6 (`level_idc` 60)
+    Level6,
+    /// Level 6.1 (`level_idc` 61)
+    Level6_1,
+    /// Level 6.2 (`level_idc` 62)
+    Level6_2,
+}
+
+/// H.264 の sub-profile と level の正規化結果
+///
+/// [`parse_profile_level_id`] / [`parse_profile_level_id_hex`] が返す。
+/// 元の 3 バイト (profile_idc / profile-iop / level_idc) は保持せず、
+/// 正規化した enum だけを持つ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct H264ProfileLevelId {
+    /// sub-profile (RFC 6184 Section 8.1 Table 5)
+    pub profile: H264Profile,
+
+    /// level (ITU-T H.264 (06/2026) Annex A Table A-1)
+    pub level: H264Level,
+}
+
+/// RFC 6184 Section 8.1 Table 5 の 1 行
+///
+/// `mask` は profile-iop の固定ビット位置、`value` はその固定ビットの
+/// 期待値。Table 5 の `x` (どちらでもよい) は mask から外れる。
+#[derive(Debug, Clone, Copy)]
+struct H264ProfilePattern {
+    profile: H264Profile,
+    profile_idc: u8,
+    mask: u8,
+    value: u8,
+}
+
+/// RFC 6184 Section 8.1 Table 5 の (profile_idc, profile-iop) パターン
+///
+/// profile-iop は MSB から constraint_set0_flag から constraint_set5_flag
+/// と reserved_zero_2bits の 1 バイトで、全パターンが reserved_zero_2bits
+/// (下位 2 bit) に 0 を要求する。Table 5 の `x` はどちらでもよい。
+const H264_PROFILE_PATTERNS: &[H264ProfilePattern] = &[
+    // CB: profile_idc 42 (66) + x1xx0000
+    H264ProfilePattern {
+        profile: H264Profile::ConstrainedBaseline,
+        profile_idc: 0x42,
+        mask: 0b0100_1111,
+        value: 0b0100_0000,
+    },
+    // CB: profile_idc 4D (77) + 1xxx0000
+    H264ProfilePattern {
+        profile: H264Profile::ConstrainedBaseline,
+        profile_idc: 0x4D,
+        mask: 0b1000_1111,
+        value: 0b1000_0000,
+    },
+    // CB: profile_idc 58 (88) + 11xx0000
+    H264ProfilePattern {
+        profile: H264Profile::ConstrainedBaseline,
+        profile_idc: 0x58,
+        mask: 0b1100_1111,
+        value: 0b1100_0000,
+    },
+    // B: profile_idc 42 (66) + x0xx0000
+    H264ProfilePattern {
+        profile: H264Profile::Baseline,
+        profile_idc: 0x42,
+        mask: 0b0100_1111,
+        value: 0,
+    },
+    // B: profile_idc 58 (88) + 10xx0000
+    H264ProfilePattern {
+        profile: H264Profile::Baseline,
+        profile_idc: 0x58,
+        mask: 0b1100_1111,
+        value: 0b1000_0000,
+    },
+    // M: profile_idc 4D (77) + 0x0x0000
+    H264ProfilePattern {
+        profile: H264Profile::Main,
+        profile_idc: 0x4D,
+        mask: 0b1010_1111,
+        value: 0,
+    },
+    // E: profile_idc 58 (88) + 00xx0000
+    H264ProfilePattern {
+        profile: H264Profile::Extended,
+        profile_idc: 0x58,
+        mask: 0b1100_1111,
+        value: 0,
+    },
+    // H: profile_idc 64 (100) + 00000000
+    H264ProfilePattern {
+        profile: H264Profile::High,
+        profile_idc: 0x64,
+        mask: 0xFF,
+        value: 0,
+    },
+    // H10: profile_idc 6E (110) + 00000000
+    H264ProfilePattern {
+        profile: H264Profile::High10,
+        profile_idc: 0x6E,
+        mask: 0xFF,
+        value: 0,
+    },
+    // H42: profile_idc 7A (122) + 00000000
+    H264ProfilePattern {
+        profile: H264Profile::High42,
+        profile_idc: 0x7A,
+        mask: 0xFF,
+        value: 0,
+    },
+    // H44: profile_idc F4 (244) + 00000000
+    H264ProfilePattern {
+        profile: H264Profile::High44,
+        profile_idc: 0xF4,
+        mask: 0xFF,
+        value: 0,
+    },
+    // H10I: profile_idc 6E (110) + 00010000
+    H264ProfilePattern {
+        profile: H264Profile::High10Intra,
+        profile_idc: 0x6E,
+        mask: 0xFF,
+        value: 0b0001_0000,
+    },
+    // H42I: profile_idc 7A (122) + 00010000
+    H264ProfilePattern {
+        profile: H264Profile::High42Intra,
+        profile_idc: 0x7A,
+        mask: 0xFF,
+        value: 0b0001_0000,
+    },
+    // H44I: profile_idc F4 (244) + 00010000
+    H264ProfilePattern {
+        profile: H264Profile::High44Intra,
+        profile_idc: 0xF4,
+        mask: 0xFF,
+        value: 0b0001_0000,
+    },
+    // C44I: profile_idc 2C (44) + 00010000
+    H264ProfilePattern {
+        profile: H264Profile::Cavlc444Intra,
+        profile_idc: 0x2C,
+        mask: 0xFF,
+        value: 0b0001_0000,
+    },
+];
+
+/// RFC 6184 Section 8.1 Table 5 の sub-profile を判定する
+///
+/// Table 5 に載っていない (profile_idc, profile-iop) の組み合わせは
+/// [`crate::Error`] とする。全パターンが reserved_zero_2bits (下位 2 bit)
+/// に 0 を要求するため、非 0 の組み合わせもここで自然に拒否される。
+fn parse_h264_profile(profile_idc: u8, profile_iop: u8) -> Result<H264Profile> {
+    for pattern in H264_PROFILE_PATTERNS {
+        if pattern.profile_idc == profile_idc && (profile_iop & pattern.mask) == pattern.value {
+            return Ok(pattern.profile);
+        }
+    }
+    Err(Error::invalid_input(
+        "profile_idc / profile-iop combination is not listed in RFC 6184 Section 8.1 Table 5",
+    ))
+}
+
+/// ITU-T H.264 (06/2026) Annex A Table A-1 の `level_idc` から [`H264Level`] へ変換する
+///
+/// Level 1b は `level_idc` だけでは決まらないため、ここでは扱わない
+/// ([`parse_h264_level`] が Level 1b を先に判定する)
+fn level_from_idc(level_idc: u8) -> Result<H264Level> {
+    match level_idc {
+        10 => Ok(H264Level::Level1),
+        11 => Ok(H264Level::Level1_1),
+        12 => Ok(H264Level::Level1_2),
+        13 => Ok(H264Level::Level1_3),
+        20 => Ok(H264Level::Level2),
+        21 => Ok(H264Level::Level2_1),
+        22 => Ok(H264Level::Level2_2),
+        30 => Ok(H264Level::Level3),
+        31 => Ok(H264Level::Level3_1),
+        32 => Ok(H264Level::Level3_2),
+        40 => Ok(H264Level::Level4),
+        41 => Ok(H264Level::Level4_1),
+        42 => Ok(H264Level::Level4_2),
+        50 => Ok(H264Level::Level5),
+        51 => Ok(H264Level::Level5_1),
+        52 => Ok(H264Level::Level5_2),
+        60 => Ok(H264Level::Level6),
+        61 => Ok(H264Level::Level6_1),
+        62 => Ok(H264Level::Level6_2),
+        _ => Err(Error::invalid_input(
+            "level_idc is not defined in ITU-T H.264 Annex A Table A-1",
+        )),
+    }
+}
+
+/// profile と profile-iop から [`H264Level`] を決める
+///
+/// Level 1b の ad hoc 表現 (RFC 6184 Section 8.1 と Section 8.2.2 の
+/// informative note、ITU-T H.264 7.4.2.1.1) を先に判定する。
+///
+/// - profile_idc が 66 / 77 / 88: `level_idc == 11` かつ
+///   `constraint_set3_flag == 1` なら Level 1b、`level_idc == 11` かつ
+///   `constraint_set3_flag == 0` なら Level 1.1。`level_idc == 9` は
+///   Level 1b の合図ではないためエラー
+/// - それ以外の Table 5 profile: `level_idc == 9` なら Level 1b、
+///   `level_idc == 11` なら Level 1.1。`constraint_set3_flag` は
+///   sub-profile 判定に使い、Level 1b 判定には使わない
+fn parse_h264_level(profile_idc: u8, profile_iop: u8, level_idc: u8) -> Result<H264Level> {
+    // constraint_set3_flag は profile-iop の bit 4 (MSB から 5 番目)
+    let constraint_set3_flag = profile_iop & 0b0001_0000 != 0;
+    if matches!(profile_idc, 66 | 77 | 88) {
+        match level_idc {
+            9 => Err(Error::invalid_input(
+                "level_idc 9 does not indicate Level 1b for profile_idc 66 / 77 / 88",
+            )),
+            11 if constraint_set3_flag => Ok(H264Level::Level1b),
+            _ => level_from_idc(level_idc),
+        }
+    } else {
+        match level_idc {
+            9 => Ok(H264Level::Level1b),
+            _ => level_from_idc(level_idc),
+        }
+    }
+}
+
+/// H.264 の profile-level-id を 3 バイト (profile_idc / profile-iop / level_idc)
+/// から [`H264ProfileLevelId`] へ正規化する
+///
+/// # 入力の解釈
+///
+/// - `profile_idc`: SPS の `profile_idc` (ITU-T H.264 7.4.2.1.1)
+/// - `profile_iop`: RFC 6184 Section 8.1 の profile-iop 1 バイト全体。
+///   [`H264Sps::constraint_set_flags`] と同一レイアウト
+///   (constraint_set0_flag から constraint_set5_flag と reserved_zero_2bits)
+///   なので、`parse_sps` の結果をそのまま渡せる
+/// - `level_idc`: SPS の `level_idc`
+///
+/// sub-profile は RFC 6184 Section 8.1 Table 5 の 12 profile へ正規化する。
+/// Table 5 の複数表現は同一の [`H264Profile`] になり、元の 3 バイトは
+/// 保持しない (非可逆)。Level 1b は profile と profile-iop / level_idc の
+/// 組み合わせで判定する。
+///
+/// # エラー条件
+///
+/// - Table 5 に載っていない (profile_idc, profile-iop) の組み合わせ
+/// - Annex A Table A-1 の既知集合外の `level_idc`
+/// - profile_idc が 66 / 77 / 88 のときの `level_idc == 9`
+pub fn parse_profile_level_id(
+    profile_idc: u8,
+    profile_iop: u8,
+    level_idc: u8,
+) -> Result<H264ProfileLevelId> {
+    let profile = parse_h264_profile(profile_idc, profile_iop)?;
+    let level = parse_h264_level(profile_idc, profile_iop, level_idc)?;
+    Ok(H264ProfileLevelId { profile, level })
+}
+
+/// RFC 4648 base16 の 1 文字を 4 bit へ変換する
+///
+/// `A-F` と `a-f` を受理し、それ以外は `None`
+fn hex_char_to_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        _ => None,
+    }
+}
+
+/// SDP の profile-level-id 文字列を 3 バイトへデコードする
+///
+/// ちょうど 6 桁の RFC 4648 base16 だけを受理する (RFC 6184 Section 8.1)
+fn decode_profile_level_id_hex(hex: &str) -> Result<[u8; 3]> {
+    let bytes = hex.as_bytes();
+    if bytes.len() != 6 {
+        return Err(Error::invalid_input(
+            "profile-level-id must be exactly 6 hexadecimal digits",
+        ));
+    }
+    let mut out = [0u8; 3];
+    for i in 0..3 {
+        let hi = hex_char_to_nibble(bytes[i * 2])
+            .ok_or_else(|| Error::invalid_input("profile-level-id contains a non-base16 digit"))?;
+        let lo = hex_char_to_nibble(bytes[i * 2 + 1])
+            .ok_or_else(|| Error::invalid_input("profile-level-id contains a non-base16 digit"))?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+/// SDP の profile-level-id 文字列を [`H264ProfileLevelId`] へ正規化する
+///
+/// # 入力の解釈
+///
+/// ちょうど 6 桁の RFC 4648 base16 文字列 (RFC 6184 Section 8.1)。
+/// `A-F` と `a-f` の両方を受理する。3 バイト (profile_idc / profile-iop /
+/// level_idc) へデコードして [`parse_profile_level_id`] に渡す薄いラッパー。
+///
+/// # エラー条件
+///
+/// - 6 桁でない (桁数エラー)
+/// - base16 でない文字を含む
+/// - [`parse_profile_level_id`] のエラー条件
+pub fn parse_profile_level_id_hex(hex: &str) -> Result<H264ProfileLevelId> {
+    let [profile_idc, profile_iop, level_idc] = decode_profile_level_id_hex(hex)?;
+    parse_profile_level_id(profile_idc, profile_iop, level_idc)
 }
 
 /// [`Avc1Box`] の構築に必要な、ストリームから一意に決まらない設定値

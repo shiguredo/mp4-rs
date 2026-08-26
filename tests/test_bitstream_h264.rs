@@ -7,9 +7,10 @@
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, Uint,
     bitstream::h264::{
-        H264NalUnitType, H264SampleEntryConfig, LengthSize, build_avc1_box,
+        H264Level, H264NalUnitType, H264Profile, H264SampleEntryConfig, LengthSize, build_avc1_box,
         build_avc1_box_from_annexb, collect_nal_units, parse_annexb_nal_units,
-        parse_length_prefixed_nal_units, parse_sps,
+        parse_length_prefixed_nal_units, parse_profile_level_id, parse_profile_level_id_hex,
+        parse_sps,
     },
     boxes::{Avc1Box, VisualSampleEntryFields},
 };
@@ -1546,4 +1547,334 @@ fn real_h264_build_avc1_box_from_annexb() {
     let (decoded, size) = Avc1Box::decode(&encoded).expect("decode 成功");
     assert_eq!(size, encoded.len());
     assert_eq!(decoded, avc1);
+}
+
+// ===== parse_profile_level_id: 受理系 =====
+
+/// RFC 6184 Section 8.1 Table 5 の 12 sub-profile がすべて正しく正規化される
+#[test]
+fn parse_profile_level_id_table5_all_profiles() {
+    let cases: &[(u8, u8, H264Profile)] = &[
+        // CB: 42 (66) + x1xx0000 / 4D (77) + 1xxx0000 / 58 (88) + 11xx0000
+        (0x42, 0b0100_0000, H264Profile::ConstrainedBaseline),
+        (0x4D, 0b1000_0000, H264Profile::ConstrainedBaseline),
+        (0x58, 0b1100_0000, H264Profile::ConstrainedBaseline),
+        // B: 42 (66) + x0xx0000 / 58 (88) + 10xx0000
+        (0x42, 0b0000_0000, H264Profile::Baseline),
+        (0x58, 0b1000_0000, H264Profile::Baseline),
+        // M: 4D (77) + 0x0x0000
+        (0x4D, 0b0000_0000, H264Profile::Main),
+        // E: 58 (88) + 00xx0000
+        (0x58, 0b0000_0000, H264Profile::Extended),
+        // H: 64 (100) + 00000000
+        (0x64, 0b0000_0000, H264Profile::High),
+        // H10 / H10I: 6E (110)
+        (0x6E, 0b0000_0000, H264Profile::High10),
+        (0x6E, 0b0001_0000, H264Profile::High10Intra),
+        // H42 / H42I: 7A (122)
+        (0x7A, 0b0000_0000, H264Profile::High42),
+        (0x7A, 0b0001_0000, H264Profile::High42Intra),
+        // H44 / H44I: F4 (244)
+        (0xF4, 0b0000_0000, H264Profile::High44),
+        (0xF4, 0b0001_0000, H264Profile::High44Intra),
+        // C44I: 2C (44) + 00010000
+        (0x2C, 0b0001_0000, H264Profile::Cavlc444Intra),
+    ];
+    for &(profile_idc, profile_iop, expected) in cases {
+        let result = parse_profile_level_id(profile_idc, profile_iop, 30).unwrap_or_else(|_| {
+            panic!(
+                "profile_idc={profile_idc:#04x} / profile-iop={profile_iop:#04x} は正規化成功する"
+            )
+        });
+        assert_eq!(
+            result.profile, expected,
+            "profile_idc={profile_idc:#04x} / profile-iop={profile_iop:#04x}"
+        );
+        assert_eq!(result.level, H264Level::Level3);
+    }
+}
+
+/// 同じ sub-profile を表す複数の (profile_idc, profile-iop) 組み合わせが
+/// 同一の [`H264Profile`] へ正規化される
+#[test]
+fn parse_profile_level_id_normalizes_equivalent_representations() {
+    let cb = [
+        parse_profile_level_id(0x42, 0b0100_0000, 30).expect("CB (42 / x1xx0000) は成功する"),
+        parse_profile_level_id(0x4D, 0b1000_0000, 30).expect("CB (4D / 1xxx0000) は成功する"),
+        parse_profile_level_id(0x58, 0b1100_0000, 30).expect("CB (58 / 11xx0000) は成功する"),
+    ];
+    assert_eq!(cb[0], cb[1]);
+    assert_eq!(cb[0], cb[2]);
+    assert_eq!(cb[0].profile, H264Profile::ConstrainedBaseline);
+
+    let baseline = [
+        parse_profile_level_id(0x42, 0b0000_0000, 30).expect("B (42 / x0xx0000) は成功する"),
+        parse_profile_level_id(0x58, 0b1000_0000, 30).expect("B (58 / 10xx0000) は成功する"),
+    ];
+    assert_eq!(baseline[0], baseline[1]);
+    assert_eq!(baseline[0].profile, H264Profile::Baseline);
+}
+
+/// profile_idc が 66 / 77 / 88 では level_idc == 11 かつ constraint_set3_flag == 1
+/// が Level 1b になる
+#[test]
+fn parse_profile_level_id_level_1b_baseline_family() {
+    // CB の各表現で constraint_set3_flag (bit 4) を立てる
+    let cases: &[(u8, u8)] = &[
+        (0x42, 0b0100_0000 | 0b0001_0000),
+        (0x4D, 0b1000_0000 | 0b0001_0000),
+        (0x58, 0b1100_0000 | 0b0001_0000),
+        // B (66) の表現 (x0xx0000) でも同様に constraint_set3_flag を立てる
+        (0x42, 0b0001_0000),
+    ];
+    for &(profile_idc, profile_iop) in cases {
+        let result = parse_profile_level_id(profile_idc, profile_iop, 11).unwrap_or_else(|_| {
+            panic!("profile_idc={profile_idc:#04x} の Level 1b は正規化成功する")
+        });
+        assert_eq!(
+            result.level,
+            H264Level::Level1b,
+            "profile_idc={profile_idc:#04x}"
+        );
+    }
+}
+
+/// profile_idc が 66 / 77 / 88 では level_idc == 11 かつ constraint_set3_flag == 0
+/// が Level 1.1 になる
+#[test]
+fn parse_profile_level_id_level_1_1_baseline_family() {
+    for &(profile_idc, profile_iop) in &[
+        (0x42, 0b0100_0000),
+        (0x4D, 0b1000_0000),
+        (0x58, 0b1100_0000),
+        (0x58, 0b0000_0000),
+    ] {
+        let result = parse_profile_level_id(profile_idc, profile_iop, 11)
+            .expect("66 / 77 / 88 の level_idc=11 は正規化成功する");
+        assert_eq!(
+            result.level,
+            H264Level::Level1_1,
+            "profile_idc={profile_idc:#04x}"
+        );
+    }
+}
+
+/// 66 / 77 / 88 以外の Table 5 profile では level_idc == 9 が Level 1b になる
+#[test]
+fn parse_profile_level_id_level_1b_other_profiles() {
+    let cases: &[(u8, u8)] = &[
+        (0x64, 0b0000_0000),
+        (0x6E, 0b0000_0000),
+        (0x6E, 0b0001_0000),
+        (0x7A, 0b0000_0000),
+        (0x7A, 0b0001_0000),
+        (0xF4, 0b0000_0000),
+        (0xF4, 0b0001_0000),
+        (0x2C, 0b0001_0000),
+    ];
+    for &(profile_idc, profile_iop) in cases {
+        let result = parse_profile_level_id(profile_idc, profile_iop, 9).unwrap_or_else(|_| {
+            panic!("profile_idc={profile_idc:#04x} の Level 1b は正規化成功する")
+        });
+        assert_eq!(
+            result.level,
+            H264Level::Level1b,
+            "profile_idc={profile_idc:#04x}"
+        );
+    }
+}
+
+/// 66 / 77 / 88 以外の Table 5 profile では level_idc == 11 が Level 1.1 になる
+///
+/// この系統では constraint_set3_flag は Level 1b 判定に使わないため、
+/// constraint_set3_flag == 1 の sub-profile (H10I 等) でも Level 1.1 になる
+#[test]
+fn parse_profile_level_id_level_1_1_other_profiles() {
+    let cases: &[(u8, u8)] = &[
+        (0x64, 0b0000_0000),
+        (0x6E, 0b0001_0000),
+        (0xF4, 0b0001_0000),
+        (0x2C, 0b0001_0000),
+    ];
+    for &(profile_idc, profile_iop) in cases {
+        let result = parse_profile_level_id(profile_idc, profile_iop, 11)
+            .expect("66 / 77 / 88 以外の level_idc=11 は正規化成功する");
+        assert_eq!(
+            result.level,
+            H264Level::Level1_1,
+            "profile_idc={profile_idc:#04x}"
+        );
+    }
+}
+
+/// Annex A Table A-1 の既知 level_idc が対応する [`H264Level`] へ正規化される
+///
+/// Level 1b / Level 1.1 の 2 値は ad hoc 表現のためここでは扱わず、
+/// 専用テストで確認する
+#[test]
+fn parse_profile_level_id_level_idc_mapping() {
+    let cases: &[(u8, H264Level)] = &[
+        (10, H264Level::Level1),
+        (12, H264Level::Level1_2),
+        (13, H264Level::Level1_3),
+        (20, H264Level::Level2),
+        (21, H264Level::Level2_1),
+        (22, H264Level::Level2_2),
+        (30, H264Level::Level3),
+        (31, H264Level::Level3_1),
+        (32, H264Level::Level3_2),
+        (40, H264Level::Level4),
+        (41, H264Level::Level4_1),
+        (42, H264Level::Level4_2),
+        (50, H264Level::Level5),
+        (51, H264Level::Level5_1),
+        (52, H264Level::Level5_2),
+        (60, H264Level::Level6),
+        (61, H264Level::Level6_1),
+        (62, H264Level::Level6_2),
+    ];
+    for &(level_idc, expected) in cases {
+        let result = parse_profile_level_id(0x64, 0b0000_0000, level_idc)
+            .expect("既知 level_idc は正規化成功する");
+        assert_eq!(result.level, expected, "level_idc={level_idc}");
+    }
+}
+
+/// [`parse_sps`] の `profile_idc` / `constraint_set_flags` / `level_idc` を
+/// そのまま渡して正規化できる
+#[test]
+fn parse_profile_level_id_accepts_h264sps_fields() {
+    let sps = parse_sps(&build_sps(&SpsParams::valid())).expect("SPS は解析成功する");
+    // SpsParams::valid() は profile_idc=66 / constraint_set_flags=0x00 / level_idc=30
+    let result = parse_profile_level_id(sps.profile_idc, sps.constraint_set_flags, sps.level_idc)
+        .expect("SPS の 3 フィールドは正規化成功する");
+    assert_eq!(result.profile, H264Profile::Baseline);
+    assert_eq!(result.level, H264Level::Level3);
+}
+
+// ===== parse_profile_level_id: 拒否系 =====
+
+/// Table 5 に載っていない (profile_idc, profile-iop) の組み合わせは拒否する
+#[test]
+fn parse_profile_level_id_rejects_unknown_profile() {
+    let cases: &[(u8, u8)] = &[
+        // reserved_zero_2bits 非 0 (全パターンが下位 2 bit に 0 を要求)
+        (0x42, 0b0000_0001),
+        (0x64, 0b0000_0010),
+        // 既知 profile_idc でも Table 5 に無い profile-iop
+        (0x58, 0b0100_0000), // 01xx0000
+        (0x4D, 0b0010_0000), // 0x1x0000 (constraint_set2_flag=1)
+        // High (64) は 00000000 のみ。constraint_set3_flag を立てると H10I と取り違えない
+        (0x64, 0b0001_0000),
+        // 未知 profile_idc
+        (0x01, 0b0000_0000),
+        (0x2B, 0b0001_0000),
+        (0x28, 0b0000_0000),
+    ];
+    for &(profile_idc, profile_iop) in cases {
+        let err = parse_profile_level_id(profile_idc, profile_iop, 30)
+            .expect_err("Table 5 外の組み合わせは拒否される");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "profile_idc={profile_idc:#04x} / profile-iop={profile_iop:#04x}"
+        );
+    }
+}
+
+/// Annex A Table A-1 の既知集合外の level_idc は拒否する
+#[test]
+fn parse_profile_level_id_rejects_unknown_level_idc() {
+    for level_idc in [
+        0u8, 1, 8, 14, 19, 23, 28, 29, 33, 39, 43, 49, 53, 59, 63, 99, 0xFF,
+    ] {
+        let err = parse_profile_level_id(0x64, 0b0000_0000, level_idc)
+            .expect_err("既知集合外 level_idc は拒否される");
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "level_idc={level_idc}");
+    }
+}
+
+/// profile_idc が 66 / 77 / 88 では level_idc == 9 は Level 1b の合図でなく拒否する
+#[test]
+fn parse_profile_level_id_rejects_level_idc_9_for_baseline_family() {
+    for &(profile_idc, profile_iop) in &[
+        (0x42, 0b0100_0000),
+        (0x4D, 0b1000_0000),
+        (0x58, 0b1100_0000),
+        (0x58, 0b0000_0000),
+    ] {
+        let err = parse_profile_level_id(profile_idc, profile_iop, 9)
+            .expect_err("66 / 77 / 88 の level_idc=9 は拒否される");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "profile_idc={profile_idc:#04x}"
+        );
+    }
+}
+
+// ===== parse_profile_level_id_hex =====
+
+/// 6 桁 base16 (大文字 / 小文字 / 混在) が同一の結果へ正規化される
+#[test]
+fn parse_profile_level_id_hex_accepts_upper_and_lower_case() {
+    let upper = parse_profile_level_id_hex("64001E").expect("大文字 hex は正規化成功する");
+    let lower = parse_profile_level_id_hex("64001e").expect("小文字 hex は正規化成功する");
+    let mixed = parse_profile_level_id_hex("64001e").expect("混在 hex は正規化成功する");
+    assert_eq!(upper, lower);
+    assert_eq!(upper, mixed);
+    assert_eq!(upper.profile, H264Profile::High);
+    assert_eq!(upper.level, H264Level::Level3);
+}
+
+/// RFC 6184 の例 (42B00B = Baseline / Level 1b) が正しく解釈される
+///
+/// profile_idc=0x42 (66) / profile-iop=0xB0 (constraint_set3_flag=1) /
+/// level_idc=0x0B (11) で、Baseline の Level 1b になる
+#[test]
+fn parse_profile_level_id_hex_rfc_example_baseline_level_1b() {
+    let result = parse_profile_level_id_hex("42B00B").expect("42B00B は正規化成功する");
+    assert_eq!(result.profile, H264Profile::Baseline);
+    assert_eq!(result.level, H264Level::Level1b);
+}
+
+/// hex 経由の結果が 3 バイト直渡しと同一になる
+#[test]
+fn parse_profile_level_id_hex_equals_byte_call() {
+    let from_hex = parse_profile_level_id_hex("64001E").expect("hex は正規化成功する");
+    let from_bytes = parse_profile_level_id(0x64, 0x00, 0x1E).expect("3 バイトは正規化成功する");
+    assert_eq!(from_hex, from_bytes);
+}
+
+/// 6 桁でない profile-level-id は拒否する
+#[test]
+fn parse_profile_level_id_hex_rejects_wrong_length() {
+    for hex in ["", "6400", "64001", "640001E", "64001E00"] {
+        let err =
+            parse_profile_level_id_hex(hex).expect_err("6 桁でない profile-level-id は拒否される");
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "入力: {hex:?}");
+    }
+}
+
+/// base16 でない文字を含む profile-level-id は拒否する
+#[test]
+fn parse_profile_level_id_hex_rejects_non_base16() {
+    for hex in ["6400g0", "64000G", "6400-0", "6400 0", "64GG00", "6400_0"] {
+        let err = parse_profile_level_id_hex(hex).expect_err("base16 でない文字は拒否される");
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "入力: {hex:?}");
+    }
+}
+
+/// hex 経由でも Table 5 非該当・既知集合外 level_idc が拒否される
+#[test]
+fn parse_profile_level_id_hex_rejects_unknown_profile_and_level() {
+    // 64 00 03: profile-iop の reserved_zero_2bits が非 0 (Table 5 外)
+    let err = parse_profile_level_id_hex("640003").expect_err("Table 5 外は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    // 64 00 63: level_idc=0x63 (99) は既知集合外
+    let err = parse_profile_level_id_hex("640063").expect_err("既知集合外 level_idc は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    // 42 40 09: 66 / 77 / 88 の level_idc=9 は拒否される
+    let err = parse_profile_level_id_hex("424009").expect_err("66 の level_idc=9 は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
 }

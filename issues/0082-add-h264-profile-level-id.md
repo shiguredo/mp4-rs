@@ -24,6 +24,7 @@ RFC 6184 Section 8.1 で定義された H.264 の profile-level-id をパース�
 
 中核 API は 3 引数の `u8`（profile_idc / profile-iop / level_idc）から `H264ProfileLevelId` へ正規化する関数とする。
 `H264Sps` の `profile_idc` / `constraint_set_flags` / `level_idc` はいずれも `u8` であり、`constraint_set_flags` は RFC 6184 の profile-iop と同じ 1 バイト全体（`constraint_set0_flag` から `constraint_set5_flag` と `reserved_zero_2bits`）なので、3 フィールドをそのまま渡せる。
+この 3 フィールドは生値のまま残し、`H264ProfileLevelId` で置き換えない。正規化は非可逆（Table 5 の複数表現が同一 enum になる）であり、`parse_sps` は Table 5 外の `profile_idc` や未知の `level_idc` も生値として返す。`build_avc1_box` は現行どおりその生値を `AvccBox` へコピーする。
 SDP 文字列（ちょうど 6 桁の RFC 4648 base16。`A-F` と `a-f` を受理する）のパースは、3 byte にデコードして同じ関数へ渡す薄いラッパーとする。
 
 公開型・関数の骨格は次のとおり。モジュールは既に `bitstream::h264` なので、関数名に `h264_` は付けない。
@@ -131,6 +132,7 @@ Level 1b の合図は、先に Table 5 で sub-profile を確定したうえで�
 ### 対象外
 
 - RFC 6184 Table 5 に無い sub-profile（Constrained High は ITU-T H.264 A.2.4.2 の Annex A profile だが Table 5 に行が無い）。libwebrtc の `kProfilePatterns` のような部分集合選択もしない
+- `H264Sps` の `profile_idc` / `constraint_set_flags` / `level_idc` を `H264ProfileLevelId` に置き換えること
 - SDP の negotiation ロジック（level の大小比較、互換判定、`max-recv-level` の解釈）
 - C API / WASM バインディング。利用要件が明確になった時点で別 issue とする
 - 他コーデックの profile / level 正規化
@@ -138,6 +140,7 @@ Level 1b の合図は、先に Table 5 で sub-profile を確定したうえで�
 ## 完了条件
 
 - `parse_profile_level_id` と `parse_profile_level_id_hex` が `bitstream::h264` に追加され、`H264Sps` の `profile_idc` / `constraint_set_flags` / `level_idc` を直接渡せる
+- `H264Sps` の上記 3 フィールドは `u8` のままである（`parse_sps` は正規化失敗で拒否しない）
 - 正規化結果は `H264ProfileLevelId { profile: H264Profile, level: H264Level }` である
 - Table 5 の 12 sub-profile すべてが正しく正規化される
 - 同じ sub-profile を表す複数の profile_idc / profile-iop 組み合わせが同じ sub-profile へ正規化される

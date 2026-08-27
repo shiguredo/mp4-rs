@@ -824,8 +824,7 @@ fn build_hvcc_box_and_visual(
         chroma_format_idc: Uint::new(sps.chroma_format_idc),
         bit_depth_luma_minus8: Uint::new(sps.bit_depth_luma_minus8),
         bit_depth_chroma_minus8: Uint::new(sps.bit_depth_chroma_minus8),
-        // 呼び出し側指定の 16 ビット raw 値をそのまま写す。利用側固有の
-        // FrameRate 型や丸め方は持ち込まない
+        // 呼び出し側指定の 16 ビット raw 値をそのまま写す
         avg_frame_rate: config.avg_frame_rate,
         // 呼び出し側指定の constantFrameRate 状態を 2 ビット値 (0 / 1 / 2) へ写す
         constant_frame_rate: Uint::new(config.constant_frame_rate.as_u8()),

@@ -247,7 +247,7 @@ where
 /// base16 である。`profile_iop` は constraint_set0_flag から
 /// constraint_set5_flag と reserved_zero_2bits の 1 バイト。
 /// Table 5 の解釈は行わず、任意の 3 バイトを保持する。
-/// hex 変換は [`Self::from_hex`] / [`Self::to_hex`]。
+/// hex 文字列との相互変換は [`Self::from_hex`] と [`Self::to_hex`] で行う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264ProfileLevelId {
     /// `profile_idc` (ITU-T H.264 7.4.2.1.1)

@@ -1,8 +1,6 @@
 //! H.264 ビットストリーム処理ユーティリティ
 //!
-//! Annex B / length-prefixed の NAL ユニット列の解析、SPS の解析、
-//! SPS / PPS の抽出、`avc1` / `avcC` の構築、profile-level-id の
-//! 3 バイト保持と hex 変換を提供する。
+//! H.264 ビットストリームの解析、関連データの変換、および MP4 ボックスの構築を提供する。
 //!
 //! 参照仕様は以下のとおり。
 //!
@@ -519,7 +517,7 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
 }
 
 impl H264ProfileLevelId {
-    /// 6 桁の RFC 4648 base16 文字列を [`H264ProfileLevelId`] へデコードする
+    /// 6 桁の RFC 4648 base16 文字列を [`H264ProfileLevelId`] へ変換する
     ///
     /// RFC 6184 Section 8.1 の SDP パラメータ profile-level-id と同じ、
     /// profile_idc / profile-iop / level_idc の順の 3 バイト表現である。

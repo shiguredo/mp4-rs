@@ -535,17 +535,17 @@ impl H264ProfileLevelId {
                 "profile-level-id must be exactly 6 hexadecimal digits",
             ));
         }
-        let mut out = [0u8; 3];
-        for i in 0..3 {
-            let hi = hex_char_to_nibble(bytes[i * 2]).ok_or_else(|| {
-                Error::invalid_input("profile-level-id contains a non-base16 digit")
-            })?;
-            let lo = hex_char_to_nibble(bytes[i * 2 + 1]).ok_or_else(|| {
-                Error::invalid_input("profile-level-id contains a non-base16 digit")
-            })?;
-            out[i] = (hi << 4) | lo;
+
+        // `from_str_radix` は先頭の `+` を受理するため、RFC 4648 の文字集合を先に検証する。
+        if !bytes.iter().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::invalid_input(
+                "profile-level-id contains a non-base16 digit",
+            ));
         }
-        let [profile_idc, profile_iop, level_idc] = out;
+
+        let [_, profile_idc, profile_iop, level_idc] = u32::from_str_radix(hex, 16)
+            .expect("validated six-digit base16 must fit in u32")
+            .to_be_bytes();
         Ok(Self {
             profile_idc,
             profile_iop,
@@ -563,18 +563,6 @@ impl H264ProfileLevelId {
             "{:02x}{:02x}{:02x}",
             self.profile_idc, self.profile_iop, self.level_idc
         )
-    }
-}
-
-/// RFC 4648 base16 の 1 文字を 4 bit へ変換する
-///
-/// `A-F` と `a-f` を受理し、それ以外は `None`
-fn hex_char_to_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
     }
 }
 

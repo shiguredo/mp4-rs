@@ -1628,9 +1628,13 @@ fn h264_profile_level_id_from_hex_rejects_wrong_length() {
 }
 
 /// base16 でない文字を含む profile-level-id は拒否する
+///
+/// `+` は整数の符号として解釈せず、RFC 4648 の文字集合に含まれない文字として拒否する
 #[test]
 fn h264_profile_level_id_from_hex_rejects_non_base16() {
-    for hex in ["6400g0", "64000G", "6400-0", "6400 0", "64GG00", "6400_0"] {
+    for hex in [
+        "+00000", "6400g0", "64000G", "6400-0", "6400 0", "64GG00", "6400_0",
+    ] {
         let err = H264ProfileLevelId::from_hex(hex).expect_err("base16 でない文字は拒否される");
         assert_eq!(err.kind, ErrorKind::InvalidInput, "入力: {hex:?}");
     }

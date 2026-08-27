@@ -598,7 +598,7 @@ pub struct H265SampleEntryConfig {
     /// `hvcC` の `avgFrameRate` の 16 ビット raw 値
     ///
     /// 0 は未指定、非ゼロ値は 256 秒あたりのフレーム数 (ISO/IEC 14496-15:2022
-    /// 8.3.2.1.3)。利用側固有の `FrameRate` 型や丸め方は持ち込まない
+    /// 8.3.2.1.3)
     pub avg_frame_rate: u16,
 
     /// `hvcC` の `constantFrameRate` の状態
@@ -824,7 +824,8 @@ fn build_hvcc_box_and_visual(
         chroma_format_idc: Uint::new(sps.chroma_format_idc),
         bit_depth_luma_minus8: Uint::new(sps.bit_depth_luma_minus8),
         bit_depth_chroma_minus8: Uint::new(sps.bit_depth_chroma_minus8),
-        // 呼び出し側指定の 16 ビット raw 値をそのまま写す
+        // 呼び出し側指定の 16 ビット raw 値をそのまま写す。利用側固有の
+        // FrameRate 型や丸め方は持ち込まない
         avg_frame_rate: config.avg_frame_rate,
         // 呼び出し側指定の constantFrameRate 状態を 2 ビット値 (0 / 1 / 2) へ写す
         constant_frame_rate: Uint::new(config.constant_frame_rate.as_u8()),

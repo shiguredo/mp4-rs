@@ -48,6 +48,25 @@ impl LengthSize {
             Self::FourBytes => 3,
         }
     }
+
+    /// `lengthSizeMinusOne` の値 (0 / 1 / 3) から [`LengthSize`] へ変換する
+    ///
+    /// ISO/IEC 14496-15 で 0 / 1 / 3 が正当で、2 (幅 3) は reserved、4 以上は
+    /// 2 ビット欄の範囲外となる。正当な値は対応する variant へ変換し、
+    /// それ以外は [`crate::ErrorKind::InvalidInput`] を返す。
+    pub fn from_length_size_minus_one(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::OneByte),
+            1 => Ok(Self::TwoBytes),
+            3 => Ok(Self::FourBytes),
+            // 2 は ISO/IEC 14496-15 の lengthSizeMinusOne で reserved のため拒否する
+            2 => Err(Error::invalid_input("lengthSizeMinusOne 2 is reserved")),
+            // 4 以上は 2 ビット欄の範囲外のため拒否する
+            _ => Err(Error::invalid_input(
+                "lengthSizeMinusOne must be 0, 1, or 3",
+            )),
+        }
+    }
 }
 
 /// `pos` に開始コードがある場合にその長さ (3 または 4) を返す

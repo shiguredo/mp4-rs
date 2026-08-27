@@ -1,7 +1,7 @@
 # lengthSizeMinusOne から LengthSize へ変換する API を追加する
 
 - Created: 2026-08-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-27
 - Branch: feature/add-length-size-conversion
 - Polished: {YYYY-MM-DD}
 
@@ -58,3 +58,15 @@ pub fn from_length_size_minus_one(value: u8) -> Result<Self>;
 - 決定的テストが追加される
 - `CHANGES.md` が更新される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+`src/bitstream/nal.rs` の `LengthSize` に `from_length_size_minus_one` を追加した。
+
+- 0 / 1 / 3 をそれぞれ `OneByte` / `TwoBytes` / `FourBytes` へ変換する
+- 予約値 2 (幅 3) と範囲外 (4 以上) は `ErrorKind::InvalidInput` を返す
+- `TryFrom<u8>` は実装せず、既存 `length_size_minus_one` と対称な意味を明記した名前とした
+
+`tests/test_bitstream_h264.rs` に 0 / 1 / 3 の変換と逆変換、予約値 2 の拒否、範囲外値 4〜255 の全数拒否を確認する決定的テストを追加した。3 variant だけの有限な対応表のため PBT は追加していない。
+
+`CHANGES.md` の develop に `from_length_size_minus_one` の追加を追記した。

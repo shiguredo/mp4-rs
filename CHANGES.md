@@ -18,6 +18,9 @@
 - [ADD] H.264 ビットストリーム処理ユーティリティ (`bitstream::h264`) を追加する
   - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、SPS / PPS 抽出、`avc1` / `avcC` の構築を提供する
   - @sile
+- [ADD] `LengthSize` に `lengthSizeMinusOne` から検証付きで変換する `from_length_size_minus_one` を追加する
+  - 0 / 1 / 3 を対応する `LengthSize` へ変換し、予約値 2 と範囲外の値は `crate::Error` (`ErrorKind::InvalidInput`) として拒否する
+  - @sile
 - [ADD] H.265 ビットストリーム処理ユーティリティ (`bitstream::h265`) を追加する
   - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、VPS / SPS / PPS 抽出、`hev1` / `hvc1` / `hvcC` の構築を提供する
   - @sile

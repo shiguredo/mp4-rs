@@ -1,7 +1,7 @@
 # AV1 configOBUs から sample entry を構築する API を追加する
 
 - Created: 2026-08-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-27
 - Branch: feature/add-av1-config-obus-builder
 - Polished: {YYYY-MM-DD}
 
@@ -68,3 +68,11 @@ Sequence Header を別経路から得る場合や、binding が許容する Sequ
 - 実 fixture を使う決定的テストが追加される
 - `CHANGES.md` が更新される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+- `src/bitstream/av1.rs` に `build_av01_box_from_config_obus` を追加した
+- OBU 列挙後に、空入力・先頭が Sequence Header でない・複数ある入力を `ErrorKind::InvalidInput` で拒否し、先頭 Sequence Header の payload を解析して既存 `build_av01_box` に委譲する
+- `tests/test_bitstream_av1.rs` に実 fixture `black-av1-config-obus.bin` からの構築と、導出フィールドが Sequence Header と一致することのテストを追加した
+- 拒否系 (空入力、Sequence Header なし、先頭以外、複数) のテストも追加した
+- `CHANGES.md` に `[ADD]` エントリーを追記した

@@ -127,6 +127,8 @@ Sample implementations using WebAssembly are available on GitHub Pages.
 - ISO/IEC 14496-15
 - ISO/IEC 14496-30
 - 3GPP TS 26.245
+- [ITU-T H.264](https://www.itu.int/rec/T-REC-H.264/en)
+- [RFC 6184: RTP Payload Format for H.264 Video](https://www.rfc-editor.org/rfc/rfc6184)
 - [VP Codec ISO Media File Format Binding](https://www.webmproject.org/vp9/mp4/)
 - [RFC 6386: VP8 Data Format and Decoding Guide](https://www.rfc-editor.org/rfc/rfc6386)
 - [VP9 Bitstream and Decoding Process Specification](https://www.webmproject.org/vp9/)

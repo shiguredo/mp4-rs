@@ -304,7 +304,7 @@ fn annexb_length_prefixed_roundtrip() -> noprop::TestResult {
 
 /// 生成した正当な SPS の解析結果が不変条件を満たす
 ///
-/// - `profile_idc` / constraint フラグ / `level_idc` がそのまま復元される
+/// - `profile_idc` / `profile_iop` / `level_idc` が [`H264Sps::profile_level_id`] にそのまま復元される
 /// - 幅・高さが `(width_mbs + 1) * 16` と `(2 - fmo) * height_map * 16` に一致する
 /// - `chroma_format_idc` / bit depth が、SPS 追加構文の有無で推論値か実値になる
 #[test]
@@ -320,9 +320,9 @@ fn sps_bit_layout_invariants() -> noprop::TestResult {
         let nal = build_sps(&bits);
         let sps = parse_sps(&nal).expect("生成した SPS は解析成功する");
 
-        assert_eq!(sps.profile_idc, bits.profile_idc);
-        assert_eq!(sps.constraint_set_flags, bits.constraint_set_flags);
-        assert_eq!(sps.level_idc, bits.level_idc);
+        assert_eq!(sps.profile_level_id.profile_idc, bits.profile_idc);
+        assert_eq!(sps.profile_level_id.profile_iop, bits.constraint_set_flags);
+        assert_eq!(sps.profile_level_id.level_idc, bits.level_idc);
 
         // クロップ無し固定なので幅・高さは単純な式で期待値が定まる
         let expected_width = (u64::from(bits.pic_width_in_mbs_minus1) + 1) * 16;

@@ -2,7 +2,7 @@
 
 - Created: 2026-08-27
 - Completed: {YYYY-MM-DD}
-- Branch: feature/change-h265-sample-entry-frame-rate
+- Branch: feature/add-h265-sample-entry-frame-rate
 - Polished: {YYYY-MM-DD}
 
 ## 目的
@@ -18,7 +18,6 @@ H.265 の sample entry 構築時に、呼び出し側が把握している平均
 - ISO/IEC 14496-15:2022 8.3.2.1.3 では `avgFrameRate = 0` は未指定を表すが、非ゼロ値を呼び出し側が指定することもできる
 - 同節の `constantFrameRate` は 0 / 1 / 2 に意味があり、3 は予約値である
 - Hisui の `src/video/h265.rs` は出力パイプラインのフレームレートと CFR 方針を把握しているが、現行 API へ移行すると構築後の `HvccBox` を書き換える必要がある
-- 公開 struct にフィールドを追加すると既存の struct literal がコンパイルできなくなるため、値のデフォルトが 0 であっても Rust の API としては後方互換のない変更になる
 
 ## 設計方針
 
@@ -61,7 +60,7 @@ pub struct H265SampleEntryConfig {
 
 ### 変更履歴
 
-`CHANGES.md` の develop に `[CHANGE]` として、`H265SampleEntryConfig` の公開フィールド追加と既存 struct literal の更新が必要なことを記載する。
+`CHANGES.md` の develop にある H.265 bitstream の `[ADD]` エントリーへ、`H265SampleEntryConfig` からフレームレート情報を指定できることを追記する。
 
 ## 完了条件
 

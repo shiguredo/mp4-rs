@@ -38,6 +38,10 @@
   - AAC-LC の AudioSpecificConfig の解析・正規形エンコード、ADTS フレームの解析と raw AAC の相互変換、`Mp4aBox` の構築を提供する
   - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、ADTS の複数 raw data block は `crate::Error` として拒否する
   - @sile
+- [ADD] Opus ビットストリーム処理ユーティリティ (`bitstream::opus`) を追加する
+  - codec private 情報から `OpusBox` を構築する `OpusSampleEntryConfig` / `build_opus_box` を提供する
+  - `ChannelMappingFamily = 0` の mono / stereo (1 / 2 チャンネル) のみを受理し、対応しないチャンネル数は `crate::Error` として拒否する
+  - @sile
 - [ADD] H.264 の profile-level-id を扱う API を追加する
   - 3 バイトを保持する `H264ProfileLevelId` に、6 桁の RFC 4648 base16 をデコードする `from_hex` と、6 桁の小文字 hex へ変換する `to_hex` を追加する
   - `H264Sps` の先頭 3 バイトも `H264ProfileLevelId` として保持する（`AvccBox` は従来どおり）

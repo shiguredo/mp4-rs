@@ -8,8 +8,8 @@ use shiguredo_mp4::{
     Decode, Either, Encode, ErrorKind, Mp4File, Uint,
     bitstream::av1::{
         Av1FrameHeaderPrefix, Av1FrameType, Av1ObuParseContext, Av1ObuType, Av1SampleEntryConfig,
-        Av1SequenceHeader, build_av01_box, decode_leb128, parse_frame_header_prefix, parse_obus,
-        parse_sequence_header,
+        Av1SequenceHeader, build_av01_box, build_av01_box_from_config_obus, decode_leb128,
+        parse_frame_header_prefix, parse_obus, parse_sequence_header,
     },
     boxes::{RootBox, SampleEntry, StszBox, VisualSampleEntryFields},
 };
@@ -1055,6 +1055,133 @@ mod build {
         let encoded = box_.encode_to_vec().expect("encode");
         let (decoded, _) = shiguredo_mp4::boxes::Av01Box::decode(&encoded).expect("decode");
         assert_eq!(decoded, box_);
+    }
+}
+
+mod build_from_config_obus {
+    use super::*;
+
+    /// 実 fixture の configOBUs から `Av01Box` を構築でき、
+    /// profile / level / bit depth / chroma / 幅・高さ / config_obus が
+    /// Sequence Header と一致する
+    #[test]
+    fn fixture_black_av1_config_obus() {
+        let config_obus = include_bytes!("testdata/black-av1-config-obus.bin");
+        let obus = parse_obus(config_obus, Av1ObuParseContext::ConfigObus)
+            .expect("抽出した configOBUs を解析できる");
+        assert_eq!(obus[0].obu_type, Av1ObuType::SequenceHeader);
+        let seq = parse_sequence_header(obus[0].payload).expect("抽出 SH を解析できる");
+
+        let box_ = build_av01_box_from_config_obus(
+            config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect("configOBUs から av01 を構築できる");
+        assert_eq!(box_.av1c_box.seq_profile.get(), seq.seq_profile);
+        assert_eq!(box_.av1c_box.seq_level_idx_0.get(), seq.seq_level_idx_0);
+        assert_eq!(box_.av1c_box.seq_tier_0.get(), seq.seq_tier_0);
+        assert_eq!(
+            box_.av1c_box.high_bitdepth.get(),
+            u8::from(seq.high_bitdepth)
+        );
+        assert_eq!(box_.av1c_box.twelve_bit.get(), u8::from(seq.twelve_bit));
+        assert_eq!(box_.av1c_box.monochrome.get(), u8::from(seq.monochrome));
+        assert_eq!(
+            box_.av1c_box.chroma_subsampling_x.get(),
+            seq.chroma_subsampling_x
+        );
+        assert_eq!(
+            box_.av1c_box.chroma_subsampling_y.get(),
+            seq.chroma_subsampling_y
+        );
+        assert_eq!(
+            box_.av1c_box.chroma_sample_position.get(),
+            seq.chroma_sample_position
+        );
+        assert_eq!(box_.visual.width, seq.max_frame_width as u16);
+        assert_eq!(box_.visual.height, seq.max_frame_height as u16);
+        assert_eq!(box_.av1c_box.config_obus, config_obus);
+    }
+
+    /// 呼び出し側指定の initial_presentation_delay は反映される
+    #[test]
+    fn initial_presentation_delay_reflected() {
+        let config_obus = include_bytes!("testdata/black-av1-config-obus.bin");
+        let box_ = build_av01_box_from_config_obus(
+            config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: Some(7),
+            },
+        )
+        .expect("configOBUs から av01 を構築できる");
+        assert_eq!(
+            box_.av1c_box.initial_presentation_delay_minus_one,
+            Some(Uint::new(7))
+        );
+    }
+
+    /// 空入力は拒否する
+    #[test]
+    fn empty_config_obus_rejected() {
+        let err = build_av01_box_from_config_obus(
+            &[],
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect_err("空入力は Sequence Header がなく拒否する");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+
+    /// Sequence Header がない入力は拒否する
+    #[test]
+    fn no_sequence_header_rejected() {
+        let config_obus = wrap_obu(OBU_METADATA, &[0x01], true);
+        let err = build_av01_box_from_config_obus(
+            &config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect_err("Sequence Header なしは拒否する");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+
+    /// Sequence Header が先頭以外にある入力は拒否する
+    #[test]
+    fn sequence_header_not_first_rejected() {
+        let mut config_obus = wrap_obu(OBU_METADATA, &[0x01], true);
+        config_obus.extend(wrap_obu(
+            OBU_SEQUENCE_HEADER,
+            &reduced_still_sequence_header(320, 240),
+            true,
+        ));
+        let err = build_av01_box_from_config_obus(
+            &config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect_err("Sequence Header が先頭以外は拒否する");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+
+    /// Sequence Header が複数ある入力は拒否する
+    #[test]
+    fn multiple_sequence_headers_rejected() {
+        let payload = reduced_still_sequence_header(320, 240);
+        let mut config_obus = wrap_obu(OBU_SEQUENCE_HEADER, &payload, true);
+        config_obus.extend(wrap_obu(OBU_SEQUENCE_HEADER, &payload, true));
+        let err = build_av01_box_from_config_obus(
+            &config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect_err("Sequence Header が複数は拒否する");
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
     }
 }
 

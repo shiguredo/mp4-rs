@@ -30,6 +30,10 @@
   - `operating_points_cnt_minus_1` / `operating_point_idc_0` を公開する（`reduced_still_picture_header == 1` のときは暗黙値）
   - `chroma_sample_position == 3` (`CSP_RESERVED`) を `crate::Error` で拒否する
   - @sile
+- [ADD] `bitstream::av1` に `configOBUs` から `Av01Box` を構築する API を追加する
+  - `build_av01_box_from_config_obus` は OBU 列挙・Sequence Header 抽出・解析・既存 `build_av01_box` の呼び出しを 1 回で行う
+  - 空入力、Sequence Header がない、先頭以外にある、複数ある入力を `crate::Error` で拒否する
+  - @sile
 - [ADD] AAC ビットストリーム処理ユーティリティ (`bitstream::aac`) を追加する
   - AAC-LC の AudioSpecificConfig の解析・正規形エンコード、ADTS フレームの解析と raw AAC の相互変換、`Mp4aBox` の構築を提供する
   - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、ADTS の複数 raw data block は `crate::Error` として拒否する

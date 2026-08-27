@@ -878,6 +878,57 @@ pub fn build_av01_box(
     })
 }
 
+/// `configOBUs` から [`Av01Box`] を構築する
+///
+/// エンコーダーの codec private 情報として得られる `configOBUs` に対して、
+/// OBU 列挙・Sequence Header 抽出・Sequence Header 解析・
+/// [`build_av01_box`] 呼び出しを 1 回で行う convenience API。
+/// 構築結果の `av1C` レコード欄と幅・高さは `configOBUs` 内の Sequence Header から導出される
+///
+/// # 受理条件
+///
+/// - 先頭 OBU が Sequence Header であり、Sequence Header がちょうど 1 個だけある
+///
+/// # エラー条件
+///
+/// - `config_obus` が [`Av1ObuParseContext::ConfigObus`] 規則に違反する
+/// - 空入力、Sequence Header がない、先頭以外にある、複数ある
+/// - 内包する Sequence Header の解析失敗
+/// - [`build_av01_box`] のエラー条件 (寸法・レコード欄の範囲外など)
+///
+/// Sequence Header を別経路から得る場合や、Binding が許容する Sequence Header なしの
+/// `configOBUs` を扱う場合は [`build_av01_box`] を直接使うこと
+pub fn build_av01_box_from_config_obus(
+    config_obus: &[u8],
+    config: &Av1SampleEntryConfig,
+) -> Result<Av01Box> {
+    let obus = parse_obus(config_obus, Av1ObuParseContext::ConfigObus)?;
+
+    // 空入力 (parse_obus は空 configOBUs を Ok で返す) と先頭が Sequence Header でない入力を拒否する
+    let first = obus
+        .first()
+        .ok_or_else(|| Error::invalid_input("AV1 configOBUs must contain a Sequence Header OBU"))?;
+    if !matches!(first.obu_type, Av1ObuType::SequenceHeader) {
+        return Err(Error::invalid_input(
+            "AV1 configOBUs Sequence Header OBU must be the first OBU",
+        ));
+    }
+
+    // 先頭が Sequence Header なので 0 個はありえない。複数ある場合だけここで拒否する
+    let sequence_header_count = obus
+        .iter()
+        .filter(|obu| matches!(obu.obu_type, Av1ObuType::SequenceHeader))
+        .count();
+    if sequence_header_count != 1 {
+        return Err(Error::invalid_input(
+            "AV1 configOBUs must contain exactly one Sequence Header OBU",
+        ));
+    }
+
+    let seq = parse_sequence_header(first.payload)?;
+    build_av01_box(&seq, config_obus, config)
+}
+
 /// AV1 uncompressed header / Sequence Header の MSB-first ビット読み取り
 struct BitReader<'a> {
     input: &'a [u8],

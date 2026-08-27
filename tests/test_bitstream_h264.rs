@@ -1552,6 +1552,9 @@ fn real_h264_build_avc1_box_from_annexb() {
 // ===== parse_profile_level_id: 受理系 =====
 
 /// RFC 6184 Section 8.1 Table 5 の 12 sub-profile がすべて正しく正規化される
+///
+/// x (don't-care bit) を含む 7 行 (CB×3 / B×2 / M / E) は、x を全て 1 に
+/// 立てた表現も併せて確認する (x は 0 でも 1 でもよい)
 #[test]
 fn parse_profile_level_id_table5_all_profiles() {
     let cases: &[(u8, u8, H264Profile)] = &[
@@ -1559,13 +1562,20 @@ fn parse_profile_level_id_table5_all_profiles() {
         (0x42, 0b0100_0000, H264Profile::ConstrainedBaseline),
         (0x4D, 0b1000_0000, H264Profile::ConstrainedBaseline),
         (0x58, 0b1100_0000, H264Profile::ConstrainedBaseline),
+        (0x42, 0b1111_0000, H264Profile::ConstrainedBaseline), // x1xx0000 の x を全て 1
+        (0x4D, 0b1111_0000, H264Profile::ConstrainedBaseline), // 1xxx0000 の x を全て 1
+        (0x58, 0b1111_0000, H264Profile::ConstrainedBaseline), // 11xx0000 の x を全て 1
         // B: 42 (66) + x0xx0000 / 58 (88) + 10xx0000
         (0x42, 0b0000_0000, H264Profile::Baseline),
         (0x58, 0b1000_0000, H264Profile::Baseline),
+        (0x42, 0b1011_0000, H264Profile::Baseline), // x0xx0000 の x を全て 1
+        (0x58, 0b1011_0000, H264Profile::Baseline), // 10xx0000 の x を全て 1
         // M: 4D (77) + 0x0x0000
         (0x4D, 0b0000_0000, H264Profile::Main),
+        (0x4D, 0b0101_0000, H264Profile::Main), // 0x0x0000 の x を全て 1
         // E: 58 (88) + 00xx0000
         (0x58, 0b0000_0000, H264Profile::Extended),
+        (0x58, 0b0011_0000, H264Profile::Extended), // 00xx0000 の x を全て 1
         // H: 64 (100) + 00000000
         (0x64, 0b0000_0000, H264Profile::High),
         // H10 / H10I: 6E (110)
@@ -1617,6 +1627,10 @@ fn parse_profile_level_id_normalizes_equivalent_representations() {
 
 /// profile_idc が 66 / 77 / 88 では level_idc == 11 かつ constraint_set3_flag == 1
 /// が Level 1b になる
+///
+/// RFC 6184 Section 8.2.2 は Baseline / Constrained Baseline / Main / Extended
+/// のすべてで level_idc == 11 + constraint_set3_flag == 1 を Level 1b とする
+/// ため、Table 5 の各表現を網羅する
 #[test]
 fn parse_profile_level_id_level_1b_baseline_family() {
     // CB の各表現で constraint_set3_flag (bit 4) を立てる
@@ -1626,6 +1640,12 @@ fn parse_profile_level_id_level_1b_baseline_family() {
         (0x58, 0b1100_0000 | 0b0001_0000),
         // B (66) の表現 (x0xx0000) でも同様に constraint_set3_flag を立てる
         (0x42, 0b0001_0000),
+        // B (88) の表現 (10xx0000)
+        (0x58, 0b1000_0000 | 0b0001_0000),
+        // M (77) の表現 (0x0x0000)
+        (0x4D, 0b0001_0000),
+        // E (88) の表現 (00xx0000)
+        (0x58, 0b0001_0000),
     ];
     for &(profile_idc, profile_iop) in cases {
         let result = parse_profile_level_id(profile_idc, profile_iop, 11).unwrap_or_else(|_| {
@@ -1643,10 +1663,14 @@ fn parse_profile_level_id_level_1b_baseline_family() {
 /// が Level 1.1 になる
 #[test]
 fn parse_profile_level_id_level_1_1_baseline_family() {
+    // Level 1b と同じ全表現 (CB×3 / B×2 / M / E) で constraint_set3_flag == 0 を確認する
     for &(profile_idc, profile_iop) in &[
         (0x42, 0b0100_0000),
         (0x4D, 0b1000_0000),
         (0x58, 0b1100_0000),
+        (0x42, 0b0000_0000),
+        (0x58, 0b1000_0000),
+        (0x4D, 0b0000_0000),
         (0x58, 0b0000_0000),
     ] {
         let result = parse_profile_level_id(profile_idc, profile_iop, 11)
@@ -1816,14 +1840,17 @@ fn parse_profile_level_id_rejects_level_idc_9_for_baseline_family() {
 // ===== parse_profile_level_id_hex =====
 
 /// 6 桁 base16 (大文字 / 小文字 / 混在) が同一の結果へ正規化される
+///
+/// 入力は RFC 6184 Section 8.2.1 の例 42A01E (Baseline / Level 3.0)。
+/// A-F の字母を 2 文字含むため、「混在」は大文字 A と小文字 e の混在になる
 #[test]
 fn parse_profile_level_id_hex_accepts_upper_and_lower_case() {
-    let upper = parse_profile_level_id_hex("64001E").expect("大文字 hex は正規化成功する");
-    let lower = parse_profile_level_id_hex("64001e").expect("小文字 hex は正規化成功する");
-    let mixed = parse_profile_level_id_hex("64001e").expect("混在 hex は正規化成功する");
+    let upper = parse_profile_level_id_hex("42A01E").expect("大文字 hex は正規化成功する");
+    let lower = parse_profile_level_id_hex("42a01e").expect("小文字 hex は正規化成功する");
+    let mixed = parse_profile_level_id_hex("42A01e").expect("混在 hex は正規化成功する");
     assert_eq!(upper, lower);
     assert_eq!(upper, mixed);
-    assert_eq!(upper.profile, H264Profile::High);
+    assert_eq!(upper.profile, H264Profile::Baseline);
     assert_eq!(upper.level, H264Level::Level3);
 }
 
@@ -1836,6 +1863,18 @@ fn parse_profile_level_id_hex_rfc_example_baseline_level_1b() {
     let result = parse_profile_level_id_hex("42B00B").expect("42B00B は正規化成功する");
     assert_eq!(result.profile, H264Profile::Baseline);
     assert_eq!(result.level, H264Level::Level1b);
+}
+
+/// RFC 6184 Section 8.3 の offer 例 (42A00B = Baseline / Level 1.1) が正しく解釈される
+///
+/// profile_idc=0x42 (66) / profile-iop=0xA0 (x0xx0000 の x が非 0 で
+/// constraint_set3_flag=0) / level_idc=0x0B (11) で、Baseline の Level 1.1
+/// になる。don't-care bit を含む中間バイトが hex 経由でも受理されることを確認する
+#[test]
+fn parse_profile_level_id_hex_rfc_example_baseline_level_1_1() {
+    let result = parse_profile_level_id_hex("42A00B").expect("42A00B は正規化成功する");
+    assert_eq!(result.profile, H264Profile::Baseline);
+    assert_eq!(result.level, H264Level::Level1_1);
 }
 
 /// hex 経由の結果が 3 バイト直渡しと同一になる
@@ -1868,8 +1907,11 @@ fn parse_profile_level_id_hex_rejects_non_base16() {
 /// hex 経由でも Table 5 非該当・既知集合外 level_idc が拒否される
 #[test]
 fn parse_profile_level_id_hex_rejects_unknown_profile_and_level() {
-    // 64 00 03: profile-iop の reserved_zero_2bits が非 0 (Table 5 外)
-    let err = parse_profile_level_id_hex("640003").expect_err("Table 5 外は拒否される");
+    // 64 02 1E: profile-iop の reserved_zero_2bits が非 0 (Table 5 外)
+    let err = parse_profile_level_id_hex("64021E").expect_err("Table 5 外は拒否される");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    // 01 00 1E: profile_idc=0x01 は Table 5 に無い
+    let err = parse_profile_level_id_hex("01001E").expect_err("未知 profile_idc は拒否される");
     assert_eq!(err.kind, ErrorKind::InvalidInput);
     // 64 00 63: level_idc=0x63 (99) は既知集合外
     let err = parse_profile_level_id_hex("640063").expect_err("既知集合外 level_idc は拒否される");

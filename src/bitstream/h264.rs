@@ -780,7 +780,8 @@ fn level_from_idc(level_idc: u8) -> Result<H264Level> {
 ///   `level_idc == 11` なら Level 1.1。`constraint_set3_flag` は
 ///   sub-profile 判定に使い、Level 1b 判定には使わない
 fn parse_h264_level(profile_idc: u8, profile_iop: u8, level_idc: u8) -> Result<H264Level> {
-    // constraint_set3_flag は profile-iop の bit 4 (MSB から 5 番目)
+    // constraint_set3_flag は profile-iop の bit 4
+    // (RFC 6184 Section 8.1 の "bit 4 (constraint_set3_flag)" の表記どおり)
     let constraint_set3_flag = profile_iop & 0b0001_0000 != 0;
     if matches!(profile_idc, 66 | 77 | 88) {
         match level_idc {

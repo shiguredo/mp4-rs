@@ -1,7 +1,7 @@
 # H.264 の profile-level-id をパース・正規化する API を追加する
 
 - Created: 2026-08-26
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-27
 - Branch: feature/add-h264-profile-level-id
 - Polished: 2026-08-26
 
@@ -151,3 +151,13 @@ Level 1b の合図は、先に Table 5 で sub-profile を確定したうえで�
 - 決定的テスト（`tests/` 配下）が追加され、mock / stub、sleep、`#[ignore]`、外部 command、ネットワークを使用しない
 - `CHANGES.md` の develop に `[ADD]` として記載される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+`bitstream::h264` に RFC 6184 Section 8.1 の profile-level-id 正規化 API を追加した。
+
+- `parse_profile_level_id` は `profile_idc` / `profile-iop` / `level_idc` の 3 バイトから `H264ProfileLevelId` へ正規化する。`parse_sps` が返す `H264Sps` の 3 フィールドは変換せずに渡せる。`H264Sps` の生値は置き換えない
+- `parse_profile_level_id_hex` は RFC 4648 base16 のちょうど 6 桁 (`A-F` と `a-f`) を 3 バイトへデコードし、同じ関数へ渡す
+- sub-profile は Table 5 の 12 個だけを認識する。Table 5 外（Constrained High、RFC 6184 Section 8.1 が Note する common subset）は `Error::invalid_input` とする。Annex A の profile 追加や `reserved_zero_2bits` の非 0 定義が将来変更されても Table 5 に固定する
+- Level 1b は、profile_idc 66 / 77 / 88 では `level_idc == 11` かつ `constraint_set3_flag == 1`、それ以外の Table 5 profile では `level_idc == 9` で判定する。66 / 77 / 88 に対する `level_idc == 9` は拒否する
+- 決定的テストを `tests/test_bitstream_h264.rs` に追加し、`CHANGES.md` の develop に `[ADD]` を記載した

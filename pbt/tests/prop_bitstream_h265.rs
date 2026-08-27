@@ -516,7 +516,7 @@ fn build_sample_entry_invariants() -> noprop::TestResult {
         assert_eq!(hev1.hvcc_box.avg_frame_rate, avg_frame_rate);
         assert_eq!(
             hev1.hvcc_box.constant_frame_rate.get(),
-            constant_frame_rate.to_bits()
+            constant_frame_rate.as_u8()
         );
 
         // encode → decode でラウンドトリップ

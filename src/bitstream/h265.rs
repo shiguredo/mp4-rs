@@ -574,8 +574,8 @@ pub enum H265ConstantFrameRate {
 }
 
 impl H265ConstantFrameRate {
-    /// `constantFrameRate` の 2 ビット値 (0 / 1 / 2) を返す
-    pub const fn to_bits(self) -> u8 {
+    /// ビットストリーム上の `constantFrameRate` 値 (0 / 1 / 2)
+    pub const fn as_u8(self) -> u8 {
         match self {
             Self::Unknown => 0,
             Self::Constant => 1,
@@ -603,6 +603,13 @@ pub struct H265SampleEntryConfig {
 
     /// `hvcC` の `constantFrameRate` の状態
     pub constant_frame_rate: H265ConstantFrameRate,
+}
+
+impl H265SampleEntryConfig {
+    /// 平均フレームレートが未指定であることを表す [`Self::avg_frame_rate`] の値
+    ///
+    /// ISO/IEC 14496-15:2022 8.3.2.1.3 の `avgFrameRate == 0`
+    pub const AVG_FRAME_RATE_UNSPECIFIED: u16 = 0;
 }
 
 /// VPS / SPS / PPS の EBSP リストと設定値から [`Hev1Box`] を 1 つ構築する
@@ -820,7 +827,7 @@ fn build_hvcc_box_and_visual(
         // 呼び出し側指定の 16 ビット raw 値をそのまま写す
         avg_frame_rate: config.avg_frame_rate,
         // 呼び出し側指定の constantFrameRate 状態を 2 ビット値 (0 / 1 / 2) へ写す
-        constant_frame_rate: Uint::new(config.constant_frame_rate.to_bits()),
+        constant_frame_rate: Uint::new(config.constant_frame_rate.as_u8()),
         // 1..=7 (8.3.2.1.3 は 1 を非 temporal scalable とする)
         num_temporal_layers: Uint::new(sps.sps_max_sub_layers_minus1 + 1),
         temporal_id_nested: Uint::new(sps.sps_temporal_id_nesting_flag),

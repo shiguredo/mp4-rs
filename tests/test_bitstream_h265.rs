@@ -236,7 +236,7 @@ fn valid_pps() -> Vec<u8> {
 fn default_config() -> H265SampleEntryConfig {
     H265SampleEntryConfig {
         length_size: LengthSize::FourBytes,
-        avg_frame_rate: 0,
+        avg_frame_rate: H265SampleEntryConfig::AVG_FRAME_RATE_UNSPECIFIED,
         constant_frame_rate: H265ConstantFrameRate::Unknown,
     }
 }
@@ -1089,7 +1089,7 @@ fn build_hev1_box_fixed_and_derived_values() {
     });
     let config = H265SampleEntryConfig {
         length_size: LengthSize::TwoBytes,
-        avg_frame_rate: 0,
+        avg_frame_rate: H265SampleEntryConfig::AVG_FRAME_RATE_UNSPECIFIED,
         constant_frame_rate: H265ConstantFrameRate::Unknown,
     };
     let hev1 = build_hev1_box(

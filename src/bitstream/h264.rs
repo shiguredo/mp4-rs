@@ -585,7 +585,8 @@ pub enum H264Level {
 ///
 /// [`parse_profile_level_id`] / [`parse_profile_level_id_hex`] が返す。
 /// 元の 3 バイト (profile_idc / profile-iop / level_idc) は保持せず、
-/// 正規化した enum だけを持つ。
+/// 正規化した enum だけを持つ。正規化は非可逆であるため、
+/// 3 バイトや hex への逆変換メソッドは提供しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264ProfileLevelId {
     /// sub-profile (RFC 6184 Section 8.1 Table 5)

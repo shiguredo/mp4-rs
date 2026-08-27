@@ -1,7 +1,7 @@
 # H.265 sample entry のフレームレート設定を呼び出し側指定にする
 
 - Created: 2026-08-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-27
 - Branch: feature/add-h265-sample-entry-frame-rate
 - Polished: {YYYY-MM-DD}
 
@@ -72,3 +72,14 @@ pub struct H265SampleEntryConfig {
 - 決定的テストと PBT が更新される
 - `CHANGES.md` が更新される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+`H265SampleEntryConfig` からフレームレート情報を指定できるようにした。
+
+- `src/bitstream/h265.rs` に `H265ConstantFrameRate` enum (`Unknown` / `Constant` / `ConstantPerTemporalLayer`) を追加し、ISO/IEC 14496-15:2022 8.3.2.1.3 の `constantFrameRate` 0 / 1 / 2 に対応させた。予約値 3 は型で表現できない。ビットストリーム上の値は `as_u8` で返す
+- `H265SampleEntryConfig` に `avg_frame_rate: u16` (16 ビット raw 値、0 は未指定) と `constant_frame_rate: H265ConstantFrameRate` を追加し、`AVG_FRAME_RATE_UNSPECIFIED` 定数を用意した。Hisui 固有の `FrameRate` 型や CFR 強制方針は持ち込まない
+- `build_hev1_box` / `build_hvc1_box` と Annex B 版の構築関数は、設定値を `build_hvcc_box_and_visual` 経由で `HvccBox::avg_frame_rate` / `constant_frame_rate` に写す
+- `HvccBox` の `avg_frame_rate` / `constant_frame_rate` の doc コメントを仕様の単位と意味に合わせ、「CBR / VBR」表現を除去した
+- 決定的テスト (`tests/test_bitstream_h265.rs`) と PBT (`pbt/tests/prop_bitstream_h265.rs`) を更新し、0 / `Unknown` で従来どおり 0 / 0 が生成されることと、非ゼロ値 / 各状態が失われず `HvccBox` に写ることを確認した
+- `CHANGES.md` の develop にある H.265 bitstream の `[ADD]` エントリーへ追記した

@@ -815,10 +815,15 @@ pub struct HvccBox {
     /// 色差のビット深度から 8 を引いた値（3 ビット）
     pub bit_depth_chroma_minus8: Uint<u8, 3>,
 
-    /// 平均フレームレート（256 倍された値）
+    /// 平均フレームレート（256 秒あたりのフレーム数。0 は未指定）
+    ///
+    /// ISO/IEC 14496-15:2022 8.3.2.1.3 の `avgFrameRate`。値は 16 ビット raw
+    /// 値であり、0 は平均フレームレートが未指定であることを表す
     pub avg_frame_rate: u16,
 
-    /// フレームレートが定数か（2 ビット。1 なら CBR、0 なら VBR、2 は temporal sublayer 単位で CBR）
+    /// フレームレートが定数かどうか（2 ビット。0 は定フレームレートとは限らない、1 は定フレームレート、2 は temporal layer ごとに定フレームレート、3 は予約）
+    ///
+    /// ISO/IEC 14496-15:2022 8.3.2.1.3 の `constantFrameRate`
     pub constant_frame_rate: Uint<u8, 2, 6>,
 
     /// 一時レイヤー数（3 ビット）

@@ -7,7 +7,7 @@
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind,
     bitstream::h265::{
-        H265NalUnitType, H265SampleEntryConfig, LengthSize, build_hev1_box,
+        H265ConstantFrameRate, H265NalUnitType, H265SampleEntryConfig, LengthSize, build_hev1_box,
         build_hev1_box_from_annexb, build_hvc1_box, build_hvc1_box_from_annexb, collect_nal_units,
         parse_annexb_nal_units, parse_length_prefixed_nal_units, parse_sps,
     },
@@ -236,6 +236,8 @@ fn valid_pps() -> Vec<u8> {
 fn default_config() -> H265SampleEntryConfig {
     H265SampleEntryConfig {
         length_size: LengthSize::FourBytes,
+        avg_frame_rate: H265SampleEntryConfig::AVG_FRAME_RATE_UNSPECIFIED,
+        constant_frame_rate: H265ConstantFrameRate::Unknown,
     }
 }
 
@@ -1087,6 +1089,8 @@ fn build_hev1_box_fixed_and_derived_values() {
     });
     let config = H265SampleEntryConfig {
         length_size: LengthSize::TwoBytes,
+        avg_frame_rate: H265SampleEntryConfig::AVG_FRAME_RATE_UNSPECIFIED,
+        constant_frame_rate: H265ConstantFrameRate::Unknown,
     };
     let hev1 = build_hev1_box(
         core::slice::from_ref(&valid_vps()),
@@ -1115,8 +1119,6 @@ fn build_hev1_box_fixed_and_derived_values() {
     // 固定値
     assert_eq!(hvcc.min_spatial_segmentation_idc.get(), 0);
     assert_eq!(hvcc.parallelism_type.get(), 0);
-    assert_eq!(hvcc.avg_frame_rate, 0);
-    assert_eq!(hvcc.constant_frame_rate.get(), 0);
     assert_eq!(
         hev1.visual.data_reference_index,
         VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX
@@ -1140,8 +1142,64 @@ fn build_hev1_box_fixed_and_derived_values() {
     assert_eq!(hev1.visual.depth, VisualSampleEntryFields::DEFAULT_DEPTH);
     assert!(hev1.unknown_boxes.is_empty());
 
-    // 呼び出し側指定値 (長さ幅 2 → length_size_minus_one = 1)
+    // 呼び出し側指定値 (長さ幅 2 → length_size_minus_one = 1、フレームレート
+    // 0 / Unknown → avgFrameRate 0 / constantFrameRate 0)
     assert_eq!(hvcc.length_size_minus_one.get(), 1);
+    assert_eq!(hvcc.avg_frame_rate, 0);
+    assert_eq!(hvcc.constant_frame_rate.get(), 0);
+}
+
+/// 呼び出し側指定の avgFrameRate と constantFrameRate が HvccBox に写る
+///
+/// 非ゼロ avgFrameRate と 3 状態それぞれを hev1 / hvc1 の両方で検証する。
+/// 構築 → encode → decode のラウンドトリップでも失われない
+#[test]
+fn build_sample_entry_reflects_frame_rate_config() {
+    let sps = build_sps(&SpsParams::valid());
+    let vps = valid_vps();
+    let pps = valid_pps();
+    for (constant_frame_rate, expected_bits) in [
+        (H265ConstantFrameRate::Unknown, 0u8),
+        (H265ConstantFrameRate::Constant, 1),
+        (H265ConstantFrameRate::ConstantPerTemporalLayer, 2),
+    ] {
+        let config = H265SampleEntryConfig {
+            length_size: LengthSize::FourBytes,
+            avg_frame_rate: 3000,
+            constant_frame_rate,
+        };
+        let hev1 = build_hev1_box(
+            core::slice::from_ref(&vps),
+            core::slice::from_ref(&sps),
+            core::slice::from_ref(&pps),
+            &config,
+        )
+        .expect("有効な VPS / SPS / PPS は構築成功する");
+        assert_eq!(hev1.hvcc_box.avg_frame_rate, 3000, "avgFrameRate が写る");
+        assert_eq!(
+            hev1.hvcc_box.constant_frame_rate.get(),
+            expected_bits,
+            "constantFrameRate が写る"
+        );
+        let encoded = hev1.encode_to_vec().expect("encode 成功");
+        let (decoded, size) = Hev1Box::decode(&encoded).expect("decode 成功");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, hev1);
+
+        let hvc1 = build_hvc1_box(
+            core::slice::from_ref(&vps),
+            core::slice::from_ref(&sps),
+            core::slice::from_ref(&pps),
+            &config,
+        )
+        .expect("有効な VPS / SPS / PPS は構築成功する");
+        assert_eq!(hvc1.hvcc_box.avg_frame_rate, 3000, "avgFrameRate が写る");
+        assert_eq!(
+            hvc1.hvcc_box.constant_frame_rate.get(),
+            expected_bits,
+            "constantFrameRate が写る"
+        );
+    }
 }
 
 /// nalu_arrays が VPS / SPS / PPS の順でヘッダー込み EBSP を格納する

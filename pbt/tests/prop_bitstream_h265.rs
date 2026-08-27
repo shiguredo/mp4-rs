@@ -8,8 +8,8 @@ use std::cell::Cell;
 use shiguredo_mp4::{
     Decode, Encode,
     bitstream::h265::{
-        H265SampleEntryConfig, LengthSize, annexb_to_length_prefixed, build_hev1_box,
-        build_hvc1_box, length_prefixed_to_annexb, parse_annexb_nal_units,
+        H265ConstantFrameRate, H265SampleEntryConfig, LengthSize, annexb_to_length_prefixed,
+        build_hev1_box, build_hvc1_box, length_prefixed_to_annexb, parse_annexb_nal_units,
         parse_length_prefixed_nal_units, parse_sps,
     },
     boxes::{Hev1Box, Hvc1Box},
@@ -249,6 +249,17 @@ fn sample_length_size(ctx: &mut noprop::TestCaseContext) -> LengthSize {
     }
 }
 
+/// `constantFrameRate` の 3 状態をサンプリングする
+///
+/// 予約値 3 は型で表現できないため、0 / 1 / 2 の 3 値から選ぶ
+fn sample_constant_frame_rate(ctx: &mut noprop::TestCaseContext) -> H265ConstantFrameRate {
+    match noprop::sample_u64_in(ctx, 0..=2) {
+        0 => H265ConstantFrameRate::Unknown,
+        1 => H265ConstantFrameRate::Constant,
+        _ => H265ConstantFrameRate::ConstantPerTemporalLayer,
+    }
+}
+
 /// Annex B と length-prefixed の相互変換がラウンドトリップする
 ///
 /// - 生成した NAL 本体列を length-prefixed に組み、Annex B へ変換して戻した結果が
@@ -397,6 +408,8 @@ fn sps_bit_layout_invariants() -> noprop::TestResult {
 /// - VPS / SPS / PPS の EBSP が `nalu_arrays` に入力順で格納される
 /// - `array_completeness` が hev1 で 0、hvc1 で 1 になる
 /// - 長さ幅 1 / 2 / 4 が `length_size_minus_one` (0 / 1 / 3) に写る
+/// - 任意の `avg_frame_rate` と `constantFrameRate` の 3 状態が
+///   `avgFrameRate` / `constantFrameRate` に写る
 /// - encode → decode でラウンドトリップする
 #[test]
 fn build_sample_entry_invariants() -> noprop::TestResult {
@@ -411,7 +424,13 @@ fn build_sample_entry_invariants() -> noprop::TestResult {
         let vps = sample_parameter_set(ctx, 32);
         let pps = sample_parameter_set(ctx, 34);
         let length_size = sample_length_size(ctx);
-        let config = H265SampleEntryConfig { length_size };
+        let avg_frame_rate = noprop::sample_u16(ctx);
+        let constant_frame_rate = sample_constant_frame_rate(ctx);
+        let config = H265SampleEntryConfig {
+            length_size,
+            avg_frame_rate,
+            constant_frame_rate,
+        };
 
         let hev1 = build_hev1_box(
             core::slice::from_ref(&vps),
@@ -487,13 +506,17 @@ fn build_sample_entry_invariants() -> noprop::TestResult {
         // 固定値
         assert_eq!(hev1.hvcc_box.min_spatial_segmentation_idc.get(), 0);
         assert_eq!(hev1.hvcc_box.parallelism_type.get(), 0);
-        assert_eq!(hev1.hvcc_box.avg_frame_rate, 0);
-        assert_eq!(hev1.hvcc_box.constant_frame_rate.get(), 0);
 
-        // 呼び出し側指定値 (幅 1 / 2 / 4 → length_size_minus_one = 0 / 1 / 3)
+        // 呼び出し側指定値 (幅 1 / 2 / 4 → length_size_minus_one = 0 / 1 / 3、
+        // フレームレートは生成した値がそのまま写る)
         assert_eq!(
             hev1.hvcc_box.length_size_minus_one.get(),
             length_size.length_size_minus_one()
+        );
+        assert_eq!(hev1.hvcc_box.avg_frame_rate, avg_frame_rate);
+        assert_eq!(
+            hev1.hvcc_box.constant_frame_rate.get(),
+            constant_frame_rate.as_u8()
         );
 
         // encode → decode でラウンドトリップ

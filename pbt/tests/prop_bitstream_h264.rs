@@ -8,9 +8,9 @@ use std::cell::Cell;
 use shiguredo_mp4::{
     Decode, Encode,
     bitstream::h264::{
-        H264SampleEntryConfig, LengthSize, annexb_to_length_prefixed, build_avc1_box,
-        length_prefixed_to_annexb, parse_annexb_nal_units, parse_length_prefixed_nal_units,
-        parse_sps,
+        H264ProfileLevelId, H264SampleEntryConfig, LengthSize, annexb_to_length_prefixed,
+        build_avc1_box, length_prefixed_to_annexb, parse_annexb_nal_units,
+        parse_length_prefixed_nal_units, parse_sps,
     },
     boxes::Avc1Box,
 };
@@ -232,6 +232,38 @@ fn sample_length_size(ctx: &mut noprop::TestCaseContext) -> LengthSize {
         1 => LengthSize::TwoBytes,
         _ => LengthSize::FourBytes,
     }
+}
+
+/// 任意の 3 バイトについて `H264ProfileLevelId::from_hex` と `to_hex` がラウンドトリップする
+///
+/// - `to_hex` がちょうど 6 桁の小文字 base16 を返す
+/// - `H264ProfileLevelId::from_hex(&id.to_hex())` が元の値を返す
+#[test]
+fn h264_profile_level_id_hex_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    let mut runner = noprop::Runner::new(seed);
+
+    runner.run(CASES, |ctx| {
+        let id = H264ProfileLevelId {
+            profile_idc: noprop::sample_u8(ctx),
+            profile_iop: noprop::sample_u8(ctx),
+            level_idc: noprop::sample_u8(ctx),
+        };
+
+        let hex = id.to_hex();
+        assert_eq!(hex.len(), 6, "to_hex は 6 桁を返す");
+        assert!(
+            hex.bytes()
+                .all(|c| c.is_ascii_digit() || matches!(c, b'a'..=b'f')),
+            "to_hex は小文字 base16 のみを返す"
+        );
+
+        let roundtrip = H264ProfileLevelId::from_hex(&hex)
+            .expect("to_hex の出力は from_hex でデコード成功する");
+        assert_eq!(roundtrip, id, "from_hex(&id.to_hex()) が元の値を返す");
+        Ok(())
+    })?;
+    Ok(())
 }
 
 /// Annex B と length-prefixed の相互変換がラウンドトリップする

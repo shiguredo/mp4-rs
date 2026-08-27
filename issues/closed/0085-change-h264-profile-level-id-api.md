@@ -1,7 +1,7 @@
 # H.264 の profile-level-id API を可逆変換に限定する
 
 - Created: 2026-08-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-27
 - Branch: feature/change-h264-profile-level-id-api
 - Polished: {YYYY-MM-DD}
 
@@ -34,6 +34,11 @@
 pub fn from_hex(hex: &str) -> Result<Self>;
 pub fn to_hex(self) -> String;
 ```
+
+既存の `parse_sps` / `parse_sequence_header` / `parse_annexb_nal_units` などは、bitstream の構文を解析するモジュール関数である。
+一方、profile-level-id の hex は `H264ProfileLevelId` そのものの文字列表現であり、変換結果も常に同じ型になる。
+そのため、この変換は型に属する構築処理として `H264ProfileLevelId::from_hex` に置き、逆方向の `H264ProfileLevelId::to_hex` と対称な名前にする。
+この区別を明確にするため、既存の `parse_profile_level_id_hex` は互換 API として残さない。
 
 `from_hex` は、ちょうど 6 桁の RFC 4648 base16 文字列を `H264ProfileLevelId` へデコードする。
 従来の `parse_profile_level_id_hex` と同様に `A-F` と `a-f` の両方を受理し、桁数が異なる入力や base16 でない文字を含む入力は `crate::Error` で拒否する。
@@ -80,3 +85,15 @@ pub fn to_hex(self) -> String;
 - `CHANGES.md` の既存 `[ADD]` エントリーが最終的な公開 API に一致する
 - mock / stub、sleep、`#[ignore]`、外部 command、ネットワークをテストで使用しない
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+`H264ProfileLevelId` に `from_hex` / `to_hex` を追加し、正規化 API (`normalize` / `H264Profile` / `H264Level` / `H264ProfileLevel`) と `parse_profile_level_id_hex` を削除した。
+
+- `from_hex` はちょうど 6 桁の RFC 4648 base16 をデコードし、桁数エラーと非 base16 文字を `crate::Error` で拒否する
+- `to_hex` は 3 バイトを先頭ゼロを省略しない 6 桁の小文字 hex へ変換する
+- 任意の `H264ProfileLevelId` について `H264ProfileLevelId::from_hex(&id.to_hex())` が元の値を返す
+- `H264Sps::profile_level_id` と `parse_sps` の生値保持は維持した
+- `tests/test_bitstream_h264.rs` を `from_hex` / `to_hex` の決定的テストに更新し、`pbt/tests/prop_bitstream_h264.rs` にラウンドトリップ PBT を追加した
+- `CHANGES.md` の develop エントリーを最終 API の説明に更新した
+- `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通ることを確認した

@@ -531,7 +531,23 @@ impl H264ProfileLevelId {
     /// - 6 桁でない (桁数エラー)
     /// - base16 でない文字を含む
     pub fn from_hex(hex: &str) -> Result<Self> {
-        let [profile_idc, profile_iop, level_idc] = decode_profile_level_id_hex(hex)?;
+        let bytes = hex.as_bytes();
+        if bytes.len() != 6 {
+            return Err(Error::invalid_input(
+                "profile-level-id must be exactly 6 hexadecimal digits",
+            ));
+        }
+        let mut out = [0u8; 3];
+        for i in 0..3 {
+            let hi = hex_char_to_nibble(bytes[i * 2]).ok_or_else(|| {
+                Error::invalid_input("profile-level-id contains a non-base16 digit")
+            })?;
+            let lo = hex_char_to_nibble(bytes[i * 2 + 1]).ok_or_else(|| {
+                Error::invalid_input("profile-level-id contains a non-base16 digit")
+            })?;
+            out[i] = (hi << 4) | lo;
+        }
+        let [profile_idc, profile_iop, level_idc] = out;
         Ok(Self {
             profile_idc,
             profile_iop,
@@ -563,27 +579,6 @@ fn hex_char_to_nibble(c: u8) -> Option<u8> {
         b'a'..=b'f' => Some(c - b'a' + 10),
         _ => None,
     }
-}
-
-/// SDP の profile-level-id 文字列を 3 バイトへデコードする
-///
-/// ちょうど 6 桁の RFC 4648 base16 だけを受理する (RFC 6184 Section 8.1)
-fn decode_profile_level_id_hex(hex: &str) -> Result<[u8; 3]> {
-    let bytes = hex.as_bytes();
-    if bytes.len() != 6 {
-        return Err(Error::invalid_input(
-            "profile-level-id must be exactly 6 hexadecimal digits",
-        ));
-    }
-    let mut out = [0u8; 3];
-    for i in 0..3 {
-        let hi = hex_char_to_nibble(bytes[i * 2])
-            .ok_or_else(|| Error::invalid_input("profile-level-id contains a non-base16 digit"))?;
-        let lo = hex_char_to_nibble(bytes[i * 2 + 1])
-            .ok_or_else(|| Error::invalid_input("profile-level-id contains a non-base16 digit"))?;
-        out[i] = (hi << 4) | lo;
-    }
-    Ok(out)
 }
 
 /// [`Avc1Box`] の構築に必要な、ストリームから一意に決まらない設定値

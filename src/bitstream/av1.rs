@@ -878,7 +878,7 @@ pub fn build_av01_box(
     })
 }
 
-/// `configOBUs` だけから [`Av01Box`] を構築する
+/// `configOBUs` から [`Av01Box`] を構築する
 ///
 /// エンコーダーの codec private 情報として得られる `configOBUs` に対して、
 /// OBU 列挙・Sequence Header 抽出・Sequence Header 解析・

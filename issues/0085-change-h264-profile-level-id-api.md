@@ -35,6 +35,11 @@ pub fn from_hex(hex: &str) -> Result<Self>;
 pub fn to_hex(self) -> String;
 ```
 
+既存の `parse_sps` / `parse_sequence_header` / `parse_annexb_nal_units` などは、bitstream の構文を解析するモジュール関数である。
+一方、profile-level-id の hex は `H264ProfileLevelId` そのものの文字列表現であり、変換結果も常に同じ型になる。
+そのため、この変換は型に属する構築処理として `H264ProfileLevelId::from_hex` に置き、逆方向の `H264ProfileLevelId::to_hex` と対称な名前にする。
+この区別を明確にするため、既存の `parse_profile_level_id_hex` は互換 API として残さない。
+
 `from_hex` は、ちょうど 6 桁の RFC 4648 base16 文字列を `H264ProfileLevelId` へデコードする。
 従来の `parse_profile_level_id_hex` と同様に `A-F` と `a-f` の両方を受理し、桁数が異なる入力や base16 でない文字を含む入力は `crate::Error` で拒否する。
 

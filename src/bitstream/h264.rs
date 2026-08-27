@@ -237,22 +237,35 @@ where
         .collect()
 }
 
+/// H.264 の `profile_idc` / constraint フラグ 1 バイト全体 / `level_idc`
+///
+/// ITU-T H.264 7.4.2.1.1 の SPS 先頭 3 バイトと同じレイアウト。
+/// RFC 6184 Section 8.1 の SDP パラメータ profile-level-id も、この 3 バイトの
+/// base16 である。`profile_iop` は constraint_set0_flag から
+/// constraint_set5_flag と reserved_zero_2bits の 1 バイト。
+/// Table 5 の解釈は行わず、任意の 3 バイトを保持する。
+/// 正規化は [`Self::normalize`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct H264ProfileLevelId {
+    /// `profile_idc` (ITU-T H.264 7.4.2.1.1)
+    pub profile_idc: u8,
+
+    /// RFC 6184 Section 8.1 の profile-iop 1 バイト全体
+    ///
+    /// constraint_set0_flag から constraint_set5_flag と reserved_zero_2bits
+    pub profile_iop: u8,
+
+    /// `level_idc` (ITU-T H.264 7.4.2.1.1)
+    pub level_idc: u8,
+}
+
 /// SPS (Sequence Parameter Set) の解析結果
 ///
 /// ITU-T H.264 7.4.2.1.1 の `seq_parameter_set_data` から導出した値。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct H264Sps {
-    /// `profile_idc`
-    pub profile_idc: u8,
-
-    /// constraint フラグ 1 バイト全体
-    ///
-    /// `constraint_set0_flag` から `constraint_set5_flag` までの 6 ビットと
-    /// `reserved_zero_2bits` 2 ビットをそのまま保持する
-    pub constraint_set_flags: u8,
-
-    /// `level_idc`
-    pub level_idc: u8,
+    /// SPS 先頭 3 バイト (RFC 6184 の profile-level-id と同じレイアウト)
+    pub profile_level_id: H264ProfileLevelId,
 
     /// `chroma_format_idc`
     ///
@@ -489,9 +502,11 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
         .map_err(|_| Error::invalid_input("frame height exceeds u16::MAX"))?;
 
     Ok(H264Sps {
-        profile_idc,
-        constraint_set_flags,
-        level_idc,
+        profile_level_id: H264ProfileLevelId {
+            profile_idc,
+            profile_iop: constraint_set_flags,
+            level_idc,
+        },
         chroma_format_idc: chroma_format_idc as u8,
         bit_depth_luma_minus8: bit_depth_luma_minus8 as u8,
         bit_depth_chroma_minus8: bit_depth_chroma_minus8 as u8,
@@ -503,7 +518,7 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
 /// H.264 の sub-profile (RFC 6184 Section 8.1 Table 5 の 12 profile)
 ///
 /// 同じ sub-profile を表す複数の (profile_idc, profile-iop) 組み合わせは
-/// [`parse_profile_level_id`] でこの enum の 1 値へ正規化される。
+/// [`H264ProfileLevelId::normalize`] でこの enum の 1 値へ正規化される。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum H264Profile {
     /// Constrained Baseline (CB)
@@ -585,7 +600,7 @@ pub enum H264Level {
 ///
 /// RFC 6184 の SDP パラメータ `profile-level-id` (3 バイト / 6 桁 hex)
 /// そのものではなく、それが示す default sub-profile と default level である。
-/// [`parse_profile_level_id`] / [`parse_profile_level_id_hex`] が返す。
+/// [`H264ProfileLevelId::normalize`] が返す。
 /// 元の 3 バイト (profile_idc / profile-iop / level_idc) は保持せず、
 /// 正規化した enum だけを持つ。正規化は非可逆であるため、
 /// 3 バイトや hex への逆変換メソッドは提供しない。
@@ -805,47 +820,36 @@ fn parse_h264_level(profile_idc: u8, profile_iop: u8, level_idc: u8) -> Result<H
     }
 }
 
-/// H.264 の profile-level-id を 3 バイト (profile_idc / profile-iop / level_idc)
-/// から [`H264ProfileLevel`] へ正規化する
-///
-/// # 入力の解釈
-///
-/// - `profile_idc`: SPS の `profile_idc` (ITU-T H.264 7.4.2.1.1)
-/// - `profile_iop`: RFC 6184 Section 8.1 の profile-iop 1 バイト全体。
-///   [`H264Sps::constraint_set_flags`] と同一レイアウト
-///   (constraint_set0_flag から constraint_set5_flag と reserved_zero_2bits)
-///   なので、[`parse_sps`] の 3 フィールドは変換せずに渡せる。
-///   [`parse_sps`] の成功は本関数の成功を意味しない。`parse_sps` は Table 5
-///   外の `profile_idc` も生値で返す
-/// - `level_idc`: SPS の `level_idc`
-///
-/// sub-profile は RFC 6184 Section 8.1 Table 5 の 12 profile へ正規化する。
-/// Table 5 の複数表現は同一の [`H264Profile`] になり、元の 3 バイトは
-/// 保持しない (非可逆)。Level 1b は profile と profile-iop / level_idc の
-/// 組み合わせで判定する。Annex A の profile 追加や `reserved_zero_2bits` の
-/// 意味が将来変更される可能性があっても、本 API は Table 5 の 12 sub-profile
-/// に固定する。
-///
-/// # エラー条件
-///
-/// - Table 5 に載っていない (profile_idc, profile-iop) の組み合わせ。
-///   Constrained High や、RFC 6184 Section 8.1 が Note する multiple
-///   profiles の common subset もここに含む
-/// - Annex A Table A-1 の既知集合外の `level_idc`
-/// - profile_idc が 66 / 77 / 88 のときの `level_idc == 9`
-///
-/// # 対象外
-///
-/// - SDP の level 大小比較、互換判定、`max-recv-level` の解釈
-/// - C API / WASM バインディング
-pub fn parse_profile_level_id(
-    profile_idc: u8,
-    profile_iop: u8,
-    level_idc: u8,
-) -> Result<H264ProfileLevel> {
-    let profile = parse_h264_profile(profile_idc, profile_iop)?;
-    let level = parse_h264_level(profile_idc, profile_iop, level_idc)?;
-    Ok(H264ProfileLevel { profile, level })
+impl H264ProfileLevelId {
+    /// H.264 の profile-level-id を [`H264ProfileLevel`] へ正規化する
+    ///
+    /// RFC 6184 Section 8.1 Table 5 の 12 sub-profile と ITU-T H.264
+    /// (06/2026) Annex A Table A-1 の level へ写す。Table 5 の複数表現は
+    /// 同一の [`H264Profile`] になり、元の 3 バイトは保持しない (非可逆)。
+    /// Level 1b は profile と profile-iop / level_idc の組み合わせで判定する。
+    /// Annex A の profile 追加や `reserved_zero_2bits` の意味が将来変更される
+    /// 可能性があっても、本 API は Table 5 の 12 sub-profile に固定する。
+    ///
+    /// [`parse_sps`] の成功は本メソッドの成功を意味しない。`parse_sps` は
+    /// Table 5 外の `profile_idc` も [`H264ProfileLevelId`] の生値で返す。
+    ///
+    /// # エラー条件
+    ///
+    /// - Table 5 に載っていない (profile_idc, profile-iop) の組み合わせ。
+    ///   Constrained High や、RFC 6184 Section 8.1 が Note する multiple
+    ///   profiles の common subset もここに含む
+    /// - Annex A Table A-1 の既知集合外の `level_idc`
+    /// - profile_idc が 66 / 77 / 88 のときの `level_idc == 9`
+    ///
+    /// # 対象外
+    ///
+    /// - SDP の level 大小比較、互換判定、`max-recv-level` の解釈
+    /// - 3 バイトや hex への逆変換
+    pub fn normalize(self) -> Result<H264ProfileLevel> {
+        let profile = parse_h264_profile(self.profile_idc, self.profile_iop)?;
+        let level = parse_h264_level(self.profile_idc, self.profile_iop, self.level_idc)?;
+        Ok(H264ProfileLevel { profile, level })
+    }
 }
 
 /// RFC 4648 base16 の 1 文字を 4 bit へ変換する
@@ -881,22 +885,25 @@ fn decode_profile_level_id_hex(hex: &str) -> Result<[u8; 3]> {
     Ok(out)
 }
 
-/// SDP の profile-level-id 文字列を [`H264ProfileLevel`] へ正規化する
+/// SDP の profile-level-id 文字列を [`H264ProfileLevelId`] へデコードする
 ///
 /// # 入力の解釈
 ///
 /// ちょうど 6 桁の RFC 4648 base16 文字列 (RFC 6184 Section 8.1)。
-/// `A-F` と `a-f` の両方を受理する。3 バイト (profile_idc / profile-iop /
-/// level_idc) へデコードして [`parse_profile_level_id`] に渡す薄いラッパー。
+/// `A-F` と `a-f` の両方を受理する。Table 5 の解釈は行わず、3 バイトを
+/// そのまま返す。正規化は [`H264ProfileLevelId::normalize`]。
 ///
 /// # エラー条件
 ///
 /// - 6 桁でない (桁数エラー)
 /// - base16 でない文字を含む
-/// - [`parse_profile_level_id`] のエラー条件
-pub fn parse_profile_level_id_hex(hex: &str) -> Result<H264ProfileLevel> {
+pub fn parse_profile_level_id_hex(hex: &str) -> Result<H264ProfileLevelId> {
     let [profile_idc, profile_iop, level_idc] = decode_profile_level_id_hex(hex)?;
-    parse_profile_level_id(profile_idc, profile_iop, level_idc)
+    Ok(H264ProfileLevelId {
+        profile_idc,
+        profile_iop,
+        level_idc,
+    })
 }
 
 /// [`Avc1Box`] の構築に必要な、ストリームから一意に決まらない設定値
@@ -927,8 +934,8 @@ pub struct H264SampleEntryConfig {
 /// # ストリーム導出値 (先頭 SPS から写す)
 ///
 /// - [`AvccBox::avc_profile_indication`] / [`AvccBox::profile_compatibility`] /
-///   [`AvccBox::avc_level_indication`]: SPS の `profile_idc` / constraint フラグ
-///   1 バイト全体 / `level_idc`
+///   [`AvccBox::avc_level_indication`]: SPS の [`H264ProfileLevelId`]
+///   (`profile_idc` / `profile_iop` / `level_idc`)
 /// - [`AvccBox::sps_list`] / [`AvccBox::pps_list`]: 呼び出し側が渡した EBSP を、
 ///   開始コードを付けず、emulation prevention byte を残したまま格納する
 /// - [`AvccBox::chroma_format`] / [`AvccBox::bit_depth_luma_minus8`] /
@@ -1019,7 +1026,7 @@ pub fn build_avc1_box(
     // 追加構文の値か推論値が常に定まるため、必ず Some にして encode が
     // 必須欄欠落で失敗しないようにする
     let (chroma_format, bit_depth_luma_minus8, bit_depth_chroma_minus8) =
-        if matches!(sps.profile_idc, 66 | 77 | 88) {
+        if matches!(sps.profile_level_id.profile_idc, 66 | 77 | 88) {
             (None, None, None)
         } else {
             (
@@ -1030,9 +1037,9 @@ pub fn build_avc1_box(
         };
 
     let avcc_box = AvccBox {
-        avc_profile_indication: sps.profile_idc,
-        profile_compatibility: sps.constraint_set_flags,
-        avc_level_indication: sps.level_idc,
+        avc_profile_indication: sps.profile_level_id.profile_idc,
+        profile_compatibility: sps.profile_level_id.profile_iop,
+        avc_level_indication: sps.profile_level_id.level_idc,
         length_size_minus_one,
         sps_list: sps_list.to_vec(),
         pps_list: pps_list.to_vec(),

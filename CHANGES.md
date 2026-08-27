@@ -28,10 +28,11 @@
   - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、ADTS の複数 raw data block は `crate::Error` として拒否する
   - @sile
 - [ADD] H.264 の profile-level-id をパース・正規化する API を追加する
-  - RFC 6184 Section 8.1 Table 5 の 12 sub-profile と ITU-T H.264 Annex A Table A-1 の level へ正規化する `parse_profile_level_id` を追加する
+  - 3 バイトを保持する `H264ProfileLevelId` と、RFC 6184 Section 8.1 Table 5 の 12 sub-profile / ITU-T H.264 Annex A Table A-1 の level へ正規化する `normalize` を追加する
+  - `H264Sps` の先頭 3 バイトも `H264ProfileLevelId` として保持する（`AvccBox` は従来どおり）
   - 正規化結果の型は `H264ProfileLevel`（3 バイトの SDP パラメータそのものではなく sub-profile と level）
   - Level 1b は profile_idc 66 / 77 / 88 の constraint_set3_flag 表現と、それ以外の profile の level_idc 9 表現の 2 系統で判別する
-  - 6 桁の RFC 4648 base16 文字列を受理する `parse_profile_level_id_hex` も追加する
+  - 6 桁の RFC 4648 base16 文字列を `H264ProfileLevelId` へデコードする `parse_profile_level_id_hex` も追加する
   - @sile
 - [FIX] `UnknownBox` のデコードでトップレベル以外の可変長ボックスを拒否する
   - コンテナボックス内部の未知ボックスループが末尾のゼロ埋めを 1 個の `UnknownBox` として誤認識するのを防ぐ

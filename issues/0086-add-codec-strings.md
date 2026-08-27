@@ -3,7 +3,7 @@
 - Created: 2026-08-27
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-codec-strings
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-08-27
 
 ## 目的
 
@@ -39,14 +39,31 @@ HLS / DASH などの利用側が `avcC` / `hvcC` / `av1C` / `vpcC` / `esds` を�
 pub fn from_sample_entry(entry: &SampleEntry) -> Result<String>;
 ```
 
-既知の `SampleEntry` は次の規則で文字列化する。
+既知の `SampleEntry` は次の規則で文字列化する。hex の大小文字は各コーデックの慣例に合わせる（H.264 / AAC の OTI は小文字、HEVC は大文字）。
 
-- `Avc1`: `avc1.PPCCLL`。`AvccBox` の `avc_profile_indication` / `profile_compatibility` / `avc_level_indication` をこの順の 6 桁 hex にする
-- `Hev1` / `Hvc1`: ISO/IEC 14496-15 Annex E の profile space / profile IDC / bit reverse した compatibility flags / tier / level / constraint bytes を使う。constraint bytes は末尾のゼロバイトを省略する
-- `Av01`: AV1 binding で必須の `av01.P.LLT.DD` までを `Av1cBox` から生成する。色特性は `Av1cBox` だけでは決定できないため、任意フィールドは付けない
-- `Vp08` / `Vp09`: VP binding で必須の `<4CC>.PP.LL.DD` を `VpccBox` から生成する。任意の色特性フィールドは付けない
-- `Mp4a`: `DecoderConfigDescriptor::object_type_indication` を 2 桁 hex にする。値が `0x40` の場合は `DecoderSpecificInfo::payload` 先頭の `audioObjectType` を読み、`mp4a.40.AOT` とする。AOT 31 のエスケープ形式も 11 ビットから復元する
-- `Opus` / `Flac` / `Stpp` / `Wvtt` / `Tx3g`: 登録済み sample entry 4CC を返す
+- `Avc1`: `avc1.` + `AvccBox` の `avc_profile_indication` / `profile_compatibility` / `avc_level_indication` をこの順に並べた 6 桁の小文字 hex（例: `avc1.640028`）。`H264ProfileLevelId::to_hex` と同じ表記でよい
+- `Hev1` / `Hvc1`: ISO/IEC 14496-15 Annex E に基づき、次の完成形とする（プレフィックスは sample entry 4CC。`hev1` / `hvc1`）
+
+  `{4CC}.{space}{profile_idc}.{compatHex}.{tier}{level}(.{XX})*`
+
+  - `space`: `HvccBox::general_profile_space` が 0 なら空、1→`A`、2→`B`、3→`C`
+  - `profile_idc`: `general_profile_idc` の十進（先頭ゼロなし）
+  - `compatHex`: `general_profile_compatibility_flags` を bit-reverse した 32 bit 値の大文字 hex（先頭ゼロは省略可。値が 0 なら `0`）
+  - `tier`: `general_tier_flag` が 0 なら `L`、1 なら `H`
+  - `level`: `general_level_idc` の十進（先頭ゼロなし）
+  - constraint: `general_constraint_indicator_flags`（48 bit）を 6 バイトの大文字 2 桁 hex（`.` 区切り）にする。末尾のゼロバイトは省略する。全バイトがゼロのときは最低 1 バイト `00` を残す（サフィックスごと省略しない）
+  - 例: `hev1.1.6.L93.B0`
+- `Av01`: AV1 Codec ISO Media File Format Binding v1.3.0 Section 5 の必須形 `av01.<profile>.<level><tier>.<bitDepth>` のみを `Av1cBox` から生成する。任意フィールド（monochrome / chroma / CICP / range）は付けない
+
+  - `profile`: `seq_profile` の十進 1 桁
+  - `level`: `seq_level_idx_0` の 2 桁十進（ゼロ埋め）
+  - `tier`: `seq_tier_0` が 0 なら `M`、1 なら `H`
+  - `bitDepth`: AV1 の `BitDepth` と同じ導出（`bitstream::av1` の `color_config` 解釈と一致させる）。`seq_profile == 2` かつ `high_bitdepth` なら `twelve_bit` で 12 / 10、それ以外で `high_bitdepth` なら 10、そうでなければ 8。2 桁十進（ゼロ埋め）
+  - 例: `av01.0.01M.08`
+- `Vp08` / `Vp09`: VP Codec ISO Media File Format Binding の必須形 `<4CC>.<profile>.<level>.<bitDepth>` のみを `VpccBox` から生成する。任意欄（`chromaSubsampling` / `colourPrimaries` / `transferCharacteristics` / `matrixCoefficients` / `videoFullRangeFlag`）は相互包含のため、色特性に限らず一切付けない。各数値は 2 桁十進（ゼロ埋め）。4CC は `vp08` / `vp09`
+  - 例: `vp09.00.31.08`
+- `Mp4a`: 常に `mp4a.` + `DecoderConfigDescriptor::object_type_indication` の 2 桁小文字 hex とする（例: `mp4a.40`）。OTI が `0x40` のときだけ `DecoderSpecificInfo::payload` 先頭から `audioObjectType` を読み、`mp4a.40.<AOT>` とする。`<AOT>` は十進（先頭ゼロなし。例: `mp4a.40.2`）。AOT が 31 のエスケープ形式は先頭 5 bit が 31 のとき続き 6 bit を読み、`32 + その値` を十進で出す
+- `Opus` / `Flac` / `Stpp` / `Wvtt` / `Tx3g`: 各ボックスの `TYPE`（登録済み sample entry 4CC）をそのまま返す。返す値は `Opus` / `fLaC` / `stpp` / `wvtt` / `tx3g`（大文字小文字を含む）
 
 `SampleEntry::Unknown` は、未知ボックスの意味や RFC 6381 の追加部分を判断できないため `ErrorKind::Unsupported` とする。
 
@@ -54,8 +71,8 @@ pub fn from_sample_entry(entry: &SampleEntry) -> Result<String>;
 
 ### テスト
 
-- `tests/test_codec_string.rs` に各 `SampleEntry` の仕様例、HEVC constraint bytes の末尾ゼロ省略、AAC の通常 AOT / エスケープ AOT / 欠落エラー、`Unknown` のエラーを追加する
-- `pbt/tests/prop_codec_string.rs` に任意の H.264 3 バイトが常に 6 桁 hex へ保存されることと、HEVC constraint bytes の非ゼロ末尾が失われないことを確認する PBT を追加する
+- `tests/test_codec_string.rs` に各 `SampleEntry` の仕様例（H.264 / HEVC / AV1 / VP / AAC / 4CC のみ）、HEVC constraint の末尾ゼロ省略と全ゼロ時の `00`、AAC の通常 AOT / エスケープ AOT / 欠落エラー、`Unknown` のエラーを追加する
+- `pbt/tests/prop_codec_string.rs` に任意の H.264 3 バイトが常に 6 桁小文字 hex へ保存されることと、HEVC constraint bytes の非ゼロ末尾が失われないことを確認する PBT を追加する
 - mock / stub、外部 command、ネットワークは使用しない
 
 ### 変更履歴
@@ -65,8 +82,8 @@ pub fn from_sample_entry(entry: &SampleEntry) -> Result<String>;
 ## 完了条件
 
 - `codec_string::from_sample_entry` が公開される
-- H.264 / H.265 / AV1 / VP8 / VP9 / AAC の構造化フィールドから仕様どおりの文字列が生成される
-- Opus は ISOBMFF の sample entry 4CC と同じ `Opus` になる
+- H.264 / H.265 / AV1 / VP8 / VP9 / AAC の構造化フィールドから、上記設計方針どおりの文字列が生成される
+- Opus / FLAC は ISOBMFF の sample entry 4CC と同じ `Opus` / `fLaC` になる
 - AAC の情報欠落を AAC-LC として補完しない
 - `SampleEntry::Unknown` が `ErrorKind::Unsupported` になる
 - 決定的テストと PBT が追加される

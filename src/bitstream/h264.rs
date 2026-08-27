@@ -559,8 +559,7 @@ impl H264ProfileLevelId {
     ///
     /// profile_idc / profile-iop / level_idc の順に並べ、各バイトをゼロ埋めした
     /// 2 桁の小文字 hex にする。profile や level の意味検証は行わない。
-    /// 任意の [`H264ProfileLevelId`] について、
-    /// [`H264ProfileLevelId::from_hex`]`(&id.to_hex())` が元の値を返す。
+    /// `to_hex` の出力は [`H264ProfileLevelId::from_hex`] で元の値へ戻せる。
     pub fn to_hex(self) -> String {
         format!(
             "{:02x}{:02x}{:02x}",

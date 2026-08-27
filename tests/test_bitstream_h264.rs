@@ -279,6 +279,47 @@ fn default_config() -> H264SampleEntryConfig {
     }
 }
 
+// ===== LengthSize 変換 =====
+
+/// lengthSizeMinusOne の正当値 0 / 1 / 3 が対応する LengthSize に変換される
+#[test]
+fn length_size_from_length_size_minus_one_converts_valid_values() {
+    for value in [0, 1, 3] {
+        let length_size = LengthSize::from_length_size_minus_one(value)
+            .unwrap_or_else(|_| panic!("lengthSizeMinusOne {} は変換成功する", value));
+        // 逆変換で元の値に戻る (0 / 1 / 3 の正当値は往復で一致する)
+        assert_eq!(length_size.length_size_minus_one(), value);
+    }
+    assert_eq!(
+        LengthSize::from_length_size_minus_one(0).expect("0 は OneByte に変換される"),
+        LengthSize::OneByte
+    );
+    assert_eq!(
+        LengthSize::from_length_size_minus_one(1).expect("1 は TwoBytes に変換される"),
+        LengthSize::TwoBytes
+    );
+    assert_eq!(
+        LengthSize::from_length_size_minus_one(3).expect("3 は FourBytes に変換される"),
+        LengthSize::FourBytes
+    );
+}
+
+/// lengthSizeMinusOne の予約値 2 (幅 3) は Error
+#[test]
+fn length_size_from_length_size_minus_one_rejects_reserved_2() {
+    let err = LengthSize::from_length_size_minus_one(2).expect_err("予約値 2 は Error");
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// lengthSizeMinusOne の範囲外値 (4 以上) は Error
+#[test]
+fn length_size_from_length_size_minus_one_rejects_out_of_range() {
+    for value in 4..=u8::MAX {
+        let err = LengthSize::from_length_size_minus_one(value).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::InvalidInput);
+    }
+}
+
 // ===== parse_annexb_nal_units: 受理系 =====
 
 /// 4 バイト開始コードの単一 NAL を解析できる

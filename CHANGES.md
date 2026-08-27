@@ -11,6 +11,10 @@
 
 ## develop
 
+- [ADD] `SampleEntry` から RFC 6381 および各コーデック binding の `codecs` パラメーター文字列を生成する API (`codec_string::from_sample_entry`) を追加する
+  - H.264 / H.265 / AV1 / VP8 / VP9 / AAC は設定ボックスの構造化フィールドから必須形を生成し、Opus / FLAC / 字幕系は登録済み sample entry 4CC を返す
+  - 未知の `SampleEntry` と AAC の情報欠落はエラーとし、欠落情報を仮定して補完しない
+  - @sile
 - [ADD] VP8 ビットストリーム処理ユーティリティ (`bitstream::vp8`) を追加する
   - @sile
 - [ADD] VP9 ビットストリーム処理ユーティリティ (`bitstream::vp9`) を追加する

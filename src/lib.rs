@@ -12,6 +12,7 @@ mod boxes_fmp4;
 mod boxes_moov_tree;
 mod boxes_sample_entry;
 mod codec;
+pub mod codec_string;
 pub mod demux;
 mod demux_fmp4_file;
 mod demux_fmp4_segment;

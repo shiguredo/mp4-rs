@@ -583,12 +583,14 @@ pub enum H264Level {
 
 /// H.264 の sub-profile と level の正規化結果
 ///
+/// RFC 6184 の SDP パラメータ `profile-level-id` (3 バイト / 6 桁 hex)
+/// そのものではなく、それが示す default sub-profile と default level である。
 /// [`parse_profile_level_id`] / [`parse_profile_level_id_hex`] が返す。
 /// 元の 3 バイト (profile_idc / profile-iop / level_idc) は保持せず、
 /// 正規化した enum だけを持つ。正規化は非可逆であるため、
 /// 3 バイトや hex への逆変換メソッドは提供しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct H264ProfileLevelId {
+pub struct H264ProfileLevel {
     /// sub-profile (RFC 6184 Section 8.1 Table 5)
     pub profile: H264Profile,
 
@@ -804,7 +806,7 @@ fn parse_h264_level(profile_idc: u8, profile_iop: u8, level_idc: u8) -> Result<H
 }
 
 /// H.264 の profile-level-id を 3 バイト (profile_idc / profile-iop / level_idc)
-/// から [`H264ProfileLevelId`] へ正規化する
+/// から [`H264ProfileLevel`] へ正規化する
 ///
 /// # 入力の解釈
 ///
@@ -840,10 +842,10 @@ pub fn parse_profile_level_id(
     profile_idc: u8,
     profile_iop: u8,
     level_idc: u8,
-) -> Result<H264ProfileLevelId> {
+) -> Result<H264ProfileLevel> {
     let profile = parse_h264_profile(profile_idc, profile_iop)?;
     let level = parse_h264_level(profile_idc, profile_iop, level_idc)?;
-    Ok(H264ProfileLevelId { profile, level })
+    Ok(H264ProfileLevel { profile, level })
 }
 
 /// RFC 4648 base16 の 1 文字を 4 bit へ変換する
@@ -879,7 +881,7 @@ fn decode_profile_level_id_hex(hex: &str) -> Result<[u8; 3]> {
     Ok(out)
 }
 
-/// SDP の profile-level-id 文字列を [`H264ProfileLevelId`] へ正規化する
+/// SDP の profile-level-id 文字列を [`H264ProfileLevel`] へ正規化する
 ///
 /// # 入力の解釈
 ///
@@ -892,7 +894,7 @@ fn decode_profile_level_id_hex(hex: &str) -> Result<[u8; 3]> {
 /// - 6 桁でない (桁数エラー)
 /// - base16 でない文字を含む
 /// - [`parse_profile_level_id`] のエラー条件
-pub fn parse_profile_level_id_hex(hex: &str) -> Result<H264ProfileLevelId> {
+pub fn parse_profile_level_id_hex(hex: &str) -> Result<H264ProfileLevel> {
     let [profile_idc, profile_iop, level_idc] = decode_profile_level_id_hex(hex)?;
     parse_profile_level_id(profile_idc, profile_iop, level_idc)
 }

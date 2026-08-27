@@ -560,6 +560,30 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H265Sps> {
     })
 }
 
+/// `hvcC` の `constantFrameRate` の状態 (ISO/IEC 14496-15:2022 8.3.2.1.3)
+///
+/// 0 / 1 / 2 の 3 状態だけを表し、予約値 3 はこの型では表現できない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum H265ConstantFrameRate {
+    /// 定フレームレートとは限らない (`constantFrameRate == 0`)
+    Unknown,
+    /// 定フレームレート (`constantFrameRate == 1`)
+    Constant,
+    /// 各 temporal layer 内で定フレームレート (`constantFrameRate == 2`)
+    ConstantPerTemporalLayer,
+}
+
+impl H265ConstantFrameRate {
+    /// `constantFrameRate` の 2 ビット値 (0 / 1 / 2) を返す
+    pub const fn to_bits(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Constant => 1,
+            Self::ConstantPerTemporalLayer => 2,
+        }
+    }
+}
+
 /// [`Hev1Box`] / [`Hvc1Box`] の構築に必要な、ストリームから一意に決まらない
 /// 設定値
 ///
@@ -570,6 +594,15 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H265Sps> {
 pub struct H265SampleEntryConfig {
     /// NAL 長フィールド幅
     pub length_size: LengthSize,
+
+    /// `hvcC` の `avgFrameRate` の 16 ビット raw 値
+    ///
+    /// 0 は未指定、非ゼロ値は 256 秒あたりのフレーム数 (ISO/IEC 14496-15:2022
+    /// 8.3.2.1.3)。利用側固有の `FrameRate` 型や丸め方は持ち込まない
+    pub avg_frame_rate: u16,
+
+    /// `hvcC` の `constantFrameRate` の状態
+    pub constant_frame_rate: H265ConstantFrameRate,
 }
 
 /// VPS / SPS / PPS の EBSP リストと設定値から [`Hev1Box`] を 1 つ構築する
@@ -588,8 +621,7 @@ pub struct H265SampleEntryConfig {
 /// - [`VisualSampleEntryFields::data_reference_index`] =
 ///   [`VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX`]
 /// - [`Hev1Box::unknown_boxes`] = 空 `Vec`
-/// - [`HvccBox::min_spatial_segmentation_idc`] = 0 / [`HvccBox::parallelism_type`] = 0 /
-///   [`HvccBox::avg_frame_rate`] = 0 / [`HvccBox::constant_frame_rate`] = 0
+/// - [`HvccBox::min_spatial_segmentation_idc`] = 0 / [`HvccBox::parallelism_type`] = 0
 /// - [`HvccBox`] の configurationVersion は 1 (encode 側が書く)
 ///
 /// # ストリーム導出値 (先頭 SPS から写す)
@@ -602,6 +634,10 @@ pub struct H265SampleEntryConfig {
 /// # 呼び出し側指定値
 ///
 /// - [`H265SampleEntryConfig::length_size`]: NAL 長フィールド幅 ([`LengthSize`])
+/// - [`H265SampleEntryConfig::avg_frame_rate`]: `hvcC` の `avgFrameRate` の
+///   16 ビット raw 値 (0 は未指定、非ゼロ値は 256 秒あたりのフレーム数)
+/// - [`H265SampleEntryConfig::constant_frame_rate`]: `hvcC` の `constantFrameRate`
+///   の状態 ([`H265ConstantFrameRate`])
 ///
 /// # エラー条件
 ///
@@ -781,10 +817,10 @@ fn build_hvcc_box_and_visual(
         chroma_format_idc: Uint::new(sps.chroma_format_idc),
         bit_depth_luma_minus8: Uint::new(sps.bit_depth_luma_minus8),
         bit_depth_chroma_minus8: Uint::new(sps.bit_depth_chroma_minus8),
-        // 0 は unspecified average frame rate (8.3.2.1.3)
-        avg_frame_rate: 0,
-        // 0 は「定フレームレートであるとは限らない」(8.3.2.1.3)
-        constant_frame_rate: Uint::new(0),
+        // 呼び出し側指定の 16 ビット raw 値をそのまま写す
+        avg_frame_rate: config.avg_frame_rate,
+        // 呼び出し側指定の constantFrameRate 状態を 2 ビット値 (0 / 1 / 2) へ写す
+        constant_frame_rate: Uint::new(config.constant_frame_rate.to_bits()),
         // 1..=7 (8.3.2.1.3 は 1 を非 temporal scalable とする)
         num_temporal_layers: Uint::new(sps.sps_max_sub_layers_minus1 + 1),
         temporal_id_nested: Uint::new(sps.sps_temporal_id_nesting_flag),

@@ -23,6 +23,7 @@
   - @sile
 - [ADD] H.265 ビットストリーム処理ユーティリティ (`bitstream::h265`) を追加する
   - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、VPS / SPS / PPS 抽出、`hev1` / `hvc1` / `hvcC` の構築を提供する
+  - `H265SampleEntryConfig` から `avgFrameRate` (256 秒あたりのフレーム数) と `constantFrameRate` の状態 (`H265ConstantFrameRate`) を指定できる
   - @sile
 - [ADD] AV1 ビットストリーム処理ユーティリティ (`bitstream::av1`) を追加する
   - @sile

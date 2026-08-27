@@ -612,6 +612,9 @@ struct H264ProfilePattern {
 /// profile-iop は MSB から constraint_set0_flag から constraint_set5_flag
 /// と reserved_zero_2bits の 1 バイトで、全パターンが reserved_zero_2bits
 /// (下位 2 bit) に 0 を要求する。Table 5 の `x` はどちらでもよい。
+/// Annex A の profile 追加や `reserved_zero_2bits` の非 0 定義が
+/// 将来変更される可能性があっても、本テーブルは Table 5 の 12 sub-profile
+/// に固定する。
 const H264_PROFILE_PATTERNS: &[H264ProfilePattern] = &[
     // CB: profile_idc 42 (66) + x1xx0000
     H264ProfilePattern {
@@ -767,7 +770,7 @@ fn level_from_idc(level_idc: u8) -> Result<H264Level> {
     }
 }
 
-/// profile と profile-iop から [`H264Level`] を決める
+/// profile_idc / profile-iop / level_idc から [`H264Level`] を決める
 ///
 /// Level 1b の ad hoc 表現 (RFC 6184 Section 8.1 と Section 8.2.2 の
 /// informative note、ITU-T H.264 7.4.2.1.1) を先に判定する。
@@ -808,19 +811,30 @@ fn parse_h264_level(profile_idc: u8, profile_iop: u8, level_idc: u8) -> Result<H
 /// - `profile_iop`: RFC 6184 Section 8.1 の profile-iop 1 バイト全体。
 ///   [`H264Sps::constraint_set_flags`] と同一レイアウト
 ///   (constraint_set0_flag から constraint_set5_flag と reserved_zero_2bits)
-///   なので、`parse_sps` の結果をそのまま渡せる
+///   なので、[`parse_sps`] の 3 フィールドは変換せずに渡せる。
+///   [`parse_sps`] の成功は本関数の成功を意味しない。`parse_sps` は Table 5
+///   外の `profile_idc` も生値で返す
 /// - `level_idc`: SPS の `level_idc`
 ///
 /// sub-profile は RFC 6184 Section 8.1 Table 5 の 12 profile へ正規化する。
 /// Table 5 の複数表現は同一の [`H264Profile`] になり、元の 3 バイトは
 /// 保持しない (非可逆)。Level 1b は profile と profile-iop / level_idc の
-/// 組み合わせで判定する。
+/// 組み合わせで判定する。Annex A の profile 追加や `reserved_zero_2bits` の
+/// 意味が将来変更される可能性があっても、本 API は Table 5 の 12 sub-profile
+/// に固定する。
 ///
 /// # エラー条件
 ///
-/// - Table 5 に載っていない (profile_idc, profile-iop) の組み合わせ
+/// - Table 5 に載っていない (profile_idc, profile-iop) の組み合わせ。
+///   Constrained High や、RFC 6184 Section 8.1 が Note する multiple
+///   profiles の common subset もここに含む
 /// - Annex A Table A-1 の既知集合外の `level_idc`
 /// - profile_idc が 66 / 77 / 88 のときの `level_idc == 9`
+///
+/// # 対象外
+///
+/// - SDP の level 大小比較、互換判定、`max-recv-level` の解釈
+/// - C API / WASM バインディング
 pub fn parse_profile_level_id(
     profile_idc: u8,
     profile_iop: u8,

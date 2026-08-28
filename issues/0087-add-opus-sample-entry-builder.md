@@ -1,7 +1,7 @@
 # Opus の sample entry 構築 API を追加する
 
 - Created: 2026-08-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-28
 - Branch: feature/add-opus-sample-entry-builder
 - Polished: {YYYY-MM-DD}
 
@@ -82,3 +82,11 @@ pub fn build_opus_box(config: &OpusSampleEntryConfig) -> OpusBox;
 - 決定的テストと PBT が追加される
 - `CHANGES.md` が更新される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+- `src/bitstream/opus.rs` に `ChannelCount` / `OpusSampleEntryConfig` / `build_opus_box` を追加し、`src/bitstream.rs` から `pub mod opus;` として公開する
+- `build_opus_box` は Audio Sample Entry の固定値 (data reference index / samplesize = 16 / samplerate = 48000 / 空 `unknown_boxes`) と、設定値をそのまま写す `dOps` を組み立てる
+- チャンネル数は `ChannelCount` enum (`Mono` / `Stereo`) で表現し、`ChannelMappingFamily = 0` の mono / stereo のみを型として許容する
+- `tests/test_bitstream_opus.rs` に決定的テスト、`pbt/tests/prop_bitstream_opus.rs` に PBT を追加する
+- `CHANGES.md` の develop に `[ADD]` として記載する

@@ -1,7 +1,6 @@
-//! `SampleEntry` から RFC 6381 系の `codecs` パラメーター文字列を生成する
+//! RFC 6381 系の `codecs` パラメーター文字列と ISOBMFF 上のコーデック表現を扱う。
 //!
-//! コーデック設定ボックスの構造化フィールドを解釈する。AAC の `audioObjectType` だけは
-//! AudioSpecificConfig の先頭ビットから読む。書式は RFC 6381 および各 ISOBMFF binding に従う。
+//! 書式は RFC 6381 および各 ISOBMFF バインディングに従う。
 
 use alloc::{format, string::String};
 
@@ -17,9 +16,20 @@ use crate::{
 
 /// [`SampleEntry`] から `codecs` パラメーター文字列を生成する
 ///
-/// 設定ボックスの構造化フィールドから必須形を組み立てる。H.264 なら `avcC` の 3 バイト、
-/// HEVC なら `hvcC`、AV1 / VP なら各 binding の必須欄、AAC なら `esds` の OTI と AOT。
-/// Opus / FLAC / 字幕は登録済み sample entry 4CC そのものになる。
+/// サンプルエントリーに付属するコーデック設定を読み、各バインディングが定める `codecs` 表記を返す。
+/// 映像・音声コーデックは設定ボックスのフィールドからパラメーター部を組み立て、
+/// バインディング上パラメーターが不要なコーデックはサンプルエントリーの 4CC だけを返す。
+///
+/// # 対応
+///
+/// - `Avc1`: [`AvccBox`] の profile / compatibility / level を RFC 6381 の 3 バイト表記へ（例: `avc1.640028`）
+/// - `Hev1` / `Hvc1`: [`HvccBox`] の general_* フィールドから ISO/IEC 14496-15 Annex E 形を組み立てる（例: `hev1.1.6.L93.B0`）
+/// - `Av01`: [`Av1cBox`] の必須欄のみから AV1 バインディングの形を組み立てる（例: `av01.0.01M.08`）
+/// - `Vp08` / `Vp09`: [`VpccBox`] の profile / level / bit depth から VP バインディングの形を組み立てる（例: `vp09.00.31.08`）
+/// - `Mp4a`: [`DecoderConfigDescriptor`] の object type indication に加え、OTI が `0x40` のときは
+///   AudioSpecificConfig 先頭から audio object type を読む（例: `mp4a.40.2`）
+/// - `Opus` / `Flac` / `Stpp` / `Wvtt` / `Tx3g`: バインディングで追加パラメーターが不要なため、
+///   サンプルエントリーの 4CC だけを返す（`Opus` / `fLaC` / `stpp` / `wvtt` / `tx3g`）
 ///
 /// # Examples
 ///
@@ -66,7 +76,7 @@ use crate::{
 ///
 /// # エラー条件
 ///
-/// - [`SampleEntry::Unknown`]: 未知の sample entry は解釈できないため [`ErrorKind::Unsupported`][crate::ErrorKind::Unsupported]
+/// - [`SampleEntry::Unknown`]: 未知のサンプルエントリーは解釈できないため [`ErrorKind::Unsupported`][crate::ErrorKind::Unsupported]
 /// - `mp4a` かつ OTI が `0x40` なのに `DecoderSpecificInfo` が欠落、または AOT ビット列が切り詰められている:
 ///   [`ErrorKind::InvalidData`][crate::ErrorKind::InvalidData]
 pub fn from_sample_entry(entry: &SampleEntry) -> Result<String> {

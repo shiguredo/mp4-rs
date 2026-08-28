@@ -1,8 +1,7 @@
 //! `SampleEntry` から RFC 6381 系の `codecs` パラメーター文字列を生成する
 //!
 //! 構築済みのコーデック設定ボックスを解釈する機能であり、ビットストリーム解析は行わない。
-//! 書式の根拠は各コーデックの ISOBMFF binding / RFC 6381 であり、将来の仕様改訂で
-//! 変わる可能性がある。
+//! 書式は RFC 6381 および各コーデックの ISOBMFF binding に従う。
 
 use alloc::{format, string::String};
 
@@ -17,6 +16,56 @@ use crate::{
 };
 
 /// [`SampleEntry`] から `codecs` パラメーター文字列を生成する
+///
+/// 設定ボックスの構造化フィールドから必須形を組み立てる。H.264 なら `avcC` の 3 バイト、
+/// HEVC なら `hvcC`、AV1 / VP なら各 binding の必須欄、AAC なら `esds` の OTI と AOT。
+/// Opus / FLAC / 字幕は登録済み sample entry 4CC そのものになる。
+///
+/// # Examples
+///
+/// H.264 High Profile Level 4.0 は `avc1.640028` になる:
+///
+/// ```
+/// use shiguredo_mp4::{
+///     Uint,
+///     boxes::{Avc1Box, AvccBox, SampleEntry, VisualSampleEntryFields},
+///     codec_string,
+/// };
+///
+/// # fn main() -> shiguredo_mp4::Result<()> {
+/// let entry = SampleEntry::Avc1(Avc1Box {
+///     visual: VisualSampleEntryFields {
+///         data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+///         width: 1920,
+///         height: 1080,
+///         horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+///         vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+///         frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+///         compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+///         depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+///     },
+///     avcc_box: AvccBox {
+///         avc_profile_indication: 100,
+///         profile_compatibility: 0x00,
+///         avc_level_indication: 40,
+///         length_size_minus_one: Uint::new(3),
+///         sps_list: Vec::new(),
+///         pps_list: Vec::new(),
+///         chroma_format: None,
+///         bit_depth_luma_minus8: None,
+///         bit_depth_chroma_minus8: None,
+///         sps_ext_list: Vec::new(),
+///     },
+///     unknown_boxes: Vec::new(),
+/// });
+///
+/// assert_eq!(codec_string::from_sample_entry(&entry)?, "avc1.640028");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// 他コーデックの例: HEVC は `hev1.1.6.L93.B0`、AV1 必須形は `av01.0.00M.08`、
+/// AAC-LC は `mp4a.40.2`、Opus は `Opus`。
 ///
 /// # エラー条件
 ///

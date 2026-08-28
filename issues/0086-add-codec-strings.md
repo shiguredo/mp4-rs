@@ -1,7 +1,7 @@
 # SampleEntry からコーデック文字列を生成する
 
 - Created: 2026-08-27
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-08-28
 - Branch: feature/add-codec-strings
 - Polished: 2026-08-27
 
@@ -89,3 +89,14 @@ pub fn from_sample_entry(entry: &SampleEntry) -> Result<String>;
 - 決定的テストと PBT が追加される
 - `CHANGES.md` が更新される
 - `cargo fmt --all -- --check`、`cargo clippy --workspace -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` が通る
+
+## 解決方法
+
+`src/codec_string.rs` を新設し、`codec_string::from_sample_entry` を公開した。
+
+- H.264 / HEVC / AV1 / VP8 / VP9 / AAC は各設定ボックスの構造化フィールドから RFC 6381 および各 ISOBMFF バインディングの必須形を生成する
+- Opus / FLAC / 字幕系は ISOBMFF のサンプルエントリー 4CC（`Opus` / `fLaC` / `stpp` / `wvtt` / `tx3g`）をそのまま返す
+- AAC の OTI `0x40` で `DecoderSpecificInfo` が欠落、または AOT ビット列が切り詰められている場合は `ErrorKind::InvalidData` とし、AAC-LC を仮定しない
+- `SampleEntry::Unknown` は `ErrorKind::Unsupported` とする
+- `tests/test_codec_string.rs` と `pbt/tests/prop_codec_string.rs` を追加し、`CHANGES.md` を更新した
+- 公開 rustdoc を整理し、モジュール doc と `from_sample_entry` の説明を改善した

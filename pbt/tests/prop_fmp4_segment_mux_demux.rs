@@ -5,7 +5,7 @@
 
 use std::num::NonZeroU32;
 
-use proptest::prelude::*;
+use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
@@ -16,7 +16,7 @@ use shiguredo_mp4::{
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
-mod common;
+mod helpers;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 const AUDIO_TIMESCALE: u32 = 48_000;
@@ -88,37 +88,69 @@ struct TestSample {
     data: Vec<u8>,
 }
 
-fn arb_video_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
-    (
-        1u32..3001,
-        any::<bool>(),
-        prop::collection::vec(any::<u8>(), 1..256),
-    )
-        .prop_map(move |(duration, keyframe, data)| TestSample {
-            track_index,
-            duration,
-            keyframe,
-            data,
-        })
+fn arb_video_sample(ctx: &mut TestCaseContext, track_index: usize) -> TestSample {
+    let duration = noprop::sample_u64_in(ctx, 1..3001) as u32;
+    let keyframe = noprop::sample_bool(ctx);
+    let data_len = noprop::sample_usize_in(ctx, 1..256);
+    let data = noprop::sample_bytes_vec(ctx, data_len);
+    TestSample {
+        track_index,
+        duration,
+        keyframe,
+        data,
+    }
 }
 
 fn arb_video_sample_with_cto(
+    ctx: &mut TestCaseContext,
     track_index: usize,
-) -> impl Strategy<Value = (TestSample, Option<i64>)> {
-    (
-        arb_video_sample(track_index),
-        prop::option::of(-3000i64..3001),
-    )
+) -> (TestSample, Option<i64>) {
+    let sample = arb_video_sample(ctx, track_index);
+    // 1/2 選択で Some/None を決める（旧 `prop::option::of` と同じ確率）
+    let cto = if noprop::sample_bool(ctx) {
+        Some(noprop::sample_u64_in(ctx, 0..6001) as i64 - 3000)
+    } else {
+        None
+    };
+    (sample, cto)
 }
 
-fn arb_audio_sample(track_index: usize) -> impl Strategy<Value = TestSample> {
-    (1u32..1921, prop::collection::vec(any::<u8>(), 1..128)).prop_map(move |(duration, data)| {
-        TestSample {
-            track_index,
-            duration,
-            keyframe: true,
-            data,
-        }
+fn arb_audio_sample(ctx: &mut TestCaseContext, track_index: usize) -> TestSample {
+    let duration = noprop::sample_u64_in(ctx, 1..1921) as u32;
+    let data_len = noprop::sample_usize_in(ctx, 1..128);
+    let data = noprop::sample_bytes_vec(ctx, data_len);
+    TestSample {
+        track_index,
+        duration,
+        keyframe: true,
+        data,
+    }
+}
+
+/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
+fn sample_vec<T>(
+    ctx: &mut TestCaseContext,
+    range: std::ops::Range<usize>,
+    mut elem: impl FnMut(&mut TestCaseContext) -> T,
+) -> Vec<T> {
+    let len = noprop::sample_usize_in(ctx, range);
+    let mut result = Vec::new();
+    for _ in 0..len {
+        result.push(elem(ctx));
+    }
+    result
+}
+
+/// `[64, 1921)` の範囲で `width1` と衝突しない `u16` を引く
+///
+/// 「異なる sample entry を作りたい」という前提条件は draw 時点で決まるため、
+/// noprop skill の指針に従い、ケース全体を捨てる `ctx.reject_case()` ではなく
+/// 局所リトライの `sample_with_rejection` を使う。値域は 1857 通りあるので
+/// 最大 4 回のリトライで実質確実に別の値を得られる
+fn sample_distinct_width(ctx: &mut TestCaseContext, width1: u16) -> u16 {
+    noprop::sample_with_rejection(ctx, 4, |ctx| {
+        let w = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        (w != width1).then_some(w)
     })
 }
 
@@ -322,26 +354,28 @@ fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
     rewritten
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+/// このファイルで共通の PBT ケース数（旧 `with_cases(256)` を維持）
+const CASES: usize = 256;
 
-    /// Options で指定した language / name が init セグメントの demux で復元される
-    ///
-    /// 3 kind（映像・音声・字幕）すべてで反映されることを固定する
-    #[test]
-    fn track_metadata_roundtrip(
-        video_meta in common::arb_track_metadata(),
-        audio_meta in common::arb_track_metadata(),
-        subtitle_meta in common::arb_track_metadata(),
-    ) {
+/// Options で指定した language / name が init セグメントの demux で復元される
+///
+/// 3 kind（映像・音声・字幕）すべてで反映されることを固定する
+#[test]
+fn track_metadata_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let video_meta = helpers::arb_track_metadata(ctx);
+        let audio_meta = helpers::arb_track_metadata(ctx);
+        let subtitle_meta = helpers::arb_track_metadata(ctx);
+
         let options = SegmentMuxerOptions {
             video_track: video_meta.clone(),
             audio_track: audio_meta.clone(),
             subtitle_track: subtitle_meta.clone(),
             ..Default::default()
         };
-        let mut muxer =
-            Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+        let mut muxer = Fmp4SegmentMuxer::with_options(options)
+            .expect("Fmp4SegmentMuxer::with_options に失敗した");
 
         let video_entry = create_avc1_sample_entry(320, 240);
         let audio_entry = create_opus_sample_entry();
@@ -371,23 +405,24 @@ proptest! {
         ];
         let payloads: [&[u8]; 3] = [&video.data, &audio.data, &subtitle.data];
         let _segment_bytes = build_complete_media_segment(&mut muxer, &samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let (ftyp_box, ftyp_size) =
             FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
         let _ = ftyp_box;
         let moov_bytes = &init_bytes[ftyp_size..];
-        let (moov_box, moov_size) =
-            MoovBox::decode(moov_bytes).expect("moov のデコードに失敗した");
-        prop_assert_eq!(
+        let (moov_box, moov_size) = MoovBox::decode(moov_bytes).expect("moov のデコードに失敗した");
+        assert_eq!(
             moov_size,
             moov_bytes.len(),
             "moov の decode サイズがバイト列長と一致しない"
         );
-        prop_assert_eq!(moov_box.trak_boxes.len(), 3);
-        common::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta)?;
-        common::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta)?;
-        common::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta)?;
+        assert_eq!(moov_box.trak_boxes.len(), 3);
+        helpers::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta);
+        helpers::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta);
+        helpers::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta);
 
         // demuxer でも init を受理できることを確認する
         let mut demuxer = Fmp4SegmentDemuxer::new();
@@ -395,16 +430,21 @@ proptest! {
             .handle_init_segment(&init_bytes)
             .expect("init セグメントの処理に失敗した");
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 3);
-    }
+        assert_eq!(tracks.len(), 3);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 単一映像トラックの init + メディアセグメント roundtrip
-    #[test]
-    fn video_only_roundtrip(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        samples in prop::collection::vec(arb_video_sample(0), 1..10),
-    ) {
+/// 単一映像トラックの init + メディアセグメント roundtrip
+#[test]
+fn video_only_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let samples = sample_vec(ctx, 1..10, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -412,9 +452,14 @@ proptest! {
             .iter()
             .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -422,32 +467,37 @@ proptest! {
             .expect("init セグメントの処理に失敗した");
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert_eq!(tracks[0].kind, TrackKind::Video);
-        prop_assert_eq!(tracks[0].timescale.get(), 90000);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].kind, TrackKind::Video);
+        assert_eq!(tracks[0].timescale.get(), 90000);
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed.len(), samples.len());
+        assert_eq!(demuxed.len(), samples.len());
 
         for (orig, ds) in samples.iter().zip(demuxed.iter()) {
-            prop_assert_eq!(ds.duration, orig.duration);
-            prop_assert_eq!(ds.keyframe, orig.keyframe);
-            prop_assert_eq!(ds.data_size, orig.data.len());
+            assert_eq!(ds.duration, orig.duration);
+            assert_eq!(ds.keyframe, orig.keyframe);
+            assert_eq!(ds.data_size, orig.data.len());
 
             let actual =
                 &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
-            prop_assert_eq!(actual, orig.data.as_slice());
+            assert_eq!(actual, orig.data.as_slice());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 単一音声トラックの roundtrip
-    #[test]
-    fn audio_only_roundtrip(
-        samples in prop::collection::vec(arb_audio_sample(0), 1..10),
-    ) {
+/// 単一音声トラックの roundtrip
+#[test]
+fn audio_only_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let samples = sample_vec(ctx, 1..10, |ctx| arb_audio_sample(ctx, 0));
+
         let sample_entry = create_opus_sample_entry();
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -455,9 +505,14 @@ proptest! {
             .iter()
             .map(|sample| audio_segment_sample(&sample_entry, sample))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -465,31 +520,36 @@ proptest! {
             .expect("init セグメントの処理に失敗した");
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert_eq!(tracks[0].kind, TrackKind::Audio);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].kind, TrackKind::Audio);
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed.len(), samples.len());
+        assert_eq!(demuxed.len(), samples.len());
 
         for (orig, ds) in samples.iter().zip(demuxed.iter()) {
-            prop_assert_eq!(ds.duration, orig.duration);
+            assert_eq!(ds.duration, orig.duration);
             let actual =
                 &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
-            prop_assert_eq!(actual, orig.data.as_slice());
+            assert_eq!(actual, orig.data.as_slice());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 同一トラック内で 2 番目以降のサンプルが `sample_entry: None` でも
-    /// 直前に観測した sample entry を継承してメディアセグメントを生成できることを確認する
-    #[test]
-    fn sample_entry_can_be_omitted_after_first_sample(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        samples in prop::collection::vec(arb_video_sample(0), 2..10),
-    ) {
+/// 同一トラック内で 2 番目以降のサンプルが `sample_entry: None` でも
+/// 直前に観測した sample entry を継承してメディアセグメントを生成できることを確認する
+#[test]
+fn sample_entry_can_be_omitted_after_first_sample() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let samples = sample_vec(ctx, 2..10, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -504,9 +564,14 @@ proptest! {
                 segment_sample
             })
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -517,31 +582,36 @@ proptest! {
             .handle_media_segment(&segment_bytes)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed.len(), samples.len());
-        prop_assert_eq!(demuxed[0].sample_entry, Some(&sample_entry));
+        assert_eq!(demuxed.len(), samples.len());
+        assert_eq!(demuxed[0].sample_entry, Some(&sample_entry));
         for sample in demuxed.iter().skip(1) {
-            prop_assert!(sample.sample_entry.is_none());
+            assert!(sample.sample_entry.is_none());
         }
 
         for (orig, demuxed_sample) in samples.iter().zip(demuxed.iter()) {
-            prop_assert_eq!(demuxed_sample.duration, orig.duration);
-            prop_assert_eq!(demuxed_sample.keyframe, orig.keyframe);
-            prop_assert_eq!(demuxed_sample.data_size, orig.data.len());
+            assert_eq!(demuxed_sample.duration, orig.duration);
+            assert_eq!(demuxed_sample.keyframe, orig.keyframe);
+            assert_eq!(demuxed_sample.data_size, orig.data.len());
 
             let actual = &segment_bytes[demuxed_sample.data_offset as usize
                 ..demuxed_sample.data_offset as usize + demuxed_sample.data_size];
-            prop_assert_eq!(actual, orig.data.as_slice());
+            assert_eq!(actual, orig.data.as_slice());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 映像＋音声の 2 トラック roundtrip
-    #[test]
-    fn video_audio_roundtrip(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        video_samples in prop::collection::vec(arb_video_sample(0), 1..5),
-        audio_samples in prop::collection::vec(arb_audio_sample(1), 1..5),
-    ) {
+/// 映像＋音声の 2 トラック roundtrip
+#[test]
+fn video_audio_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let video_samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+        let audio_samples = sample_vec(ctx, 1..5, |ctx| arb_audio_sample(ctx, 1));
+
         let video_sample_entry = create_avc1_sample_entry(width, height);
         let audio_sample_entry = create_opus_sample_entry();
         let mut muxer = Fmp4SegmentMuxer::new().expect("muxer の作成に失敗した");
@@ -567,9 +637,14 @@ proptest! {
                 }
             })
             .collect();
-        let payloads: Vec<&[u8]> = all_samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = all_samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -577,36 +652,41 @@ proptest! {
             .expect("init セグメントの処理に失敗した");
 
         let demux_tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(demux_tracks.len(), 2);
+        assert_eq!(demux_tracks.len(), 2);
 
         let demuxed = demuxer
             .handle_media_segment(&segment_bytes)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed.len(), video_samples.len() + audio_samples.len());
+        assert_eq!(demuxed.len(), video_samples.len() + audio_samples.len());
 
         let demuxed_video: Vec<_> = demuxed.iter().filter(|s| s.track.track_id == 1).collect();
-        prop_assert_eq!(demuxed_video.len(), video_samples.len());
+        assert_eq!(demuxed_video.len(), video_samples.len());
         for (orig, ds) in video_samples.iter().zip(demuxed_video.iter()) {
             let actual =
                 &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
-            prop_assert_eq!(actual, orig.data.as_slice());
+            assert_eq!(actual, orig.data.as_slice());
         }
 
         let demuxed_audio: Vec<_> = demuxed.iter().filter(|s| s.track.track_id == 2).collect();
-        prop_assert_eq!(demuxed_audio.len(), audio_samples.len());
+        assert_eq!(demuxed_audio.len(), audio_samples.len());
         for (orig, ds) in audio_samples.iter().zip(demuxed_audio.iter()) {
             let actual =
                 &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
-            prop_assert_eq!(actual, orig.data.as_slice());
+            assert_eq!(actual, orig.data.as_slice());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// composition_time_offset が roundtrip で保持されることを確認する
-    #[test]
-    fn composition_time_offset_roundtrip(
-        samples_with_cto in prop::collection::vec(arb_video_sample_with_cto(0), 1..10),
-    ) {
+/// composition_time_offset が roundtrip で保持されることを確認する
+#[test]
+fn composition_time_offset_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let samples_with_cto = sample_vec(ctx, 1..10, |ctx| arb_video_sample_with_cto(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(320, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -619,7 +699,9 @@ proptest! {
             .map(|(sample, _)| sample.data.as_slice())
             .collect();
         let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -630,7 +712,7 @@ proptest! {
             .handle_media_segment(&segment_bytes)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed.len(), samples_with_cto.len());
+        assert_eq!(demuxed.len(), samples_with_cto.len());
 
         // いずれかのサンプルに CTO がある場合、muxer は全サンプルを Some(x) に正規化する
         let has_any_cto = samples_with_cto.iter().any(|(_, c)| c.is_some());
@@ -641,18 +723,22 @@ proptest! {
             } else {
                 None
             };
-            prop_assert_eq!(ds.composition_time_offset, normalized);
+            assert_eq!(ds.composition_time_offset, normalized);
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// mfra_bytes が正しいバイト列を生成することを確認する
-    #[test]
-    fn mfra_bytes_roundtrip(
-        segments in prop::collection::vec(
-            prop::collection::vec(arb_video_sample(0), 1..5),
-            1..5,
-        ),
-    ) {
+/// mfra_bytes が正しいバイト列を生成することを確認する
+#[test]
+fn mfra_bytes_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let segments = sample_vec(ctx, 1..5, |ctx| {
+            sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0))
+        });
+
         let sample_entry = create_avc1_sample_entry(320, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let mut segment_sizes = Vec::new();
@@ -670,16 +756,18 @@ proptest! {
             segment_sizes.push(segment.len() as u64);
         }
 
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
 
         // mfra が valid な MP4 ボックスとしてデコードできること
         let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
-        prop_assert_eq!(decoded_size, mfra.len());
+        assert_eq!(decoded_size, mfra.len());
 
         // tfra のエントリ数はセグメント数と一致すること
-        prop_assert_eq!(mfra_box.tfra_boxes.len(), 1);
-        prop_assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
+        assert_eq!(mfra_box.tfra_boxes.len(), 1);
+        assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
 
         let init_size = init_bytes.len() as u64;
         let mut expected_moof_offset = init_size;
@@ -688,25 +776,31 @@ proptest! {
             .iter()
             .zip(segment_sizes.iter().copied())
         {
-            prop_assert_eq!(entry.moof_offset, expected_moof_offset);
+            assert_eq!(entry.moof_offset, expected_moof_offset);
             expected_moof_offset += segment_size;
         }
 
         // mfro.size が mfra 全体のサイズと一致すること
-        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
-    }
+        assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// sidx あり／なしを混在させたときにも tfra.moof_offset が実 moof 位置を指すことを確認する
-    ///
-    /// sidx 付きセグメントはメディアセグメントの直前に sidx を置くため、
-    /// tfra.moof_offset は init + それまでのセグメント合計 + 自セグメントの sidx サイズ を指す必要がある。
-    #[test]
-    fn mfra_bytes_roundtrip_with_sidx_mix(
-        segments in prop::collection::vec(
-            (prop::collection::vec(arb_video_sample(0), 1..5), any::<bool>()),
-            1..5,
-        ),
-    ) {
+/// sidx あり／なしを混在させたときにも tfra.moof_offset が実 moof 位置を指すことを確認する
+///
+/// sidx 付きセグメントはメディアセグメントの直前に sidx を置くため、
+/// tfra.moof_offset は init + それまでのセグメント合計 + 自セグメントの sidx サイズ を指す必要がある。
+#[test]
+fn mfra_bytes_roundtrip_with_sidx_mix() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let segments = sample_vec(ctx, 1..5, |ctx| {
+            let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+            let with_sidx = noprop::sample_bool(ctx);
+            (samples, with_sidx)
+        });
+
         let sample_entry = create_avc1_sample_entry(320, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -740,15 +834,17 @@ proptest! {
             segment_layouts.push((sidx_size, segment.len() as u64));
         }
 
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
 
         let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
-        prop_assert_eq!(decoded_size, mfra.len());
+        assert_eq!(decoded_size, mfra.len());
 
         // 単一映像トラックのみのため tfra_box は 1 つ、エントリ数はセグメント数と一致する
-        prop_assert_eq!(mfra_box.tfra_boxes.len(), 1);
-        prop_assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
+        assert_eq!(mfra_box.tfra_boxes.len(), 1);
+        assert_eq!(mfra_box.tfra_boxes[0].entries.len(), segments.len());
 
         // 実 moof 位置 = セグメント先頭 + sidx サイズ（sidx なしなら 0）を各エントリで検証する
         let init_size = init_bytes.len() as u64;
@@ -759,31 +855,34 @@ proptest! {
             .zip(segment_layouts.iter().copied())
         {
             let expected_moof_offset = media_head + sidx_size;
-            prop_assert_eq!(entry.moof_offset, expected_moof_offset);
+            assert_eq!(entry.moof_offset, expected_moof_offset);
             media_head += segment_size;
         }
 
         // mfro.size が mfra 全体のサイズと一致すること
-        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
-    }
+        assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 映像 + 音声のマルチトラックで sidx あり／なし混在時にも tfra.moof_offset が実 moof 位置を指すことを確認する
-    ///
-    /// 各セグメントで音声サンプルを 0 個以上（映像は必ず 1 個以上）に振り分けることで、以下の分岐をカバーする:
-    /// - 両トラックが同じセグメントに含まれる（両方の tfra エントリに sidx 加算が入ることの検証）
-    /// - 音声トラックが 2 セグメント目以降に初めて登場する（`pre_tfra_lens.get(track_index) = None → unwrap_or(0)` に落ちる経路）
-    /// - 既存トラックで今回サンプルが無い（`entries.len() == pre_len` で加算スキップされる経路）
-    #[test]
-    fn mfra_bytes_roundtrip_with_sidx_mix_multi_track(
-        segments in prop::collection::vec(
-            (
-                prop::collection::vec(arb_video_sample(0), 1..3),
-                prop::collection::vec(arb_audio_sample(1), 0..3),
-                any::<bool>(),
-            ),
-            1..5,
-        ),
-    ) {
+/// 映像 + 音声のマルチトラックで sidx あり／なし混在時にも tfra.moof_offset が実 moof 位置を指すことを確認する
+///
+/// 各セグメントで音声サンプルを 0 個以上（映像は必ず 1 個以上）に振り分けることで、以下の分岐をカバーする:
+/// - 両トラックが同じセグメントに含まれる（両方の tfra エントリに sidx 加算が入ることの検証）
+/// - 音声トラックが 2 セグメント目以降に初めて登場する（`pre_tfra_lens.get(track_index) = None → unwrap_or(0)` に落ちる経路）
+/// - 既存トラックで今回サンプルが無い（`entries.len() == pre_len` で加算スキップされる経路）
+#[test]
+fn mfra_bytes_roundtrip_with_sidx_mix_multi_track() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let segments = sample_vec(ctx, 1..5, |ctx| {
+            let video_samples = sample_vec(ctx, 1..3, |ctx| arb_video_sample(ctx, 0));
+            let audio_samples = sample_vec(ctx, 0..3, |ctx| arb_audio_sample(ctx, 1));
+            let with_sidx = noprop::sample_bool(ctx);
+            (video_samples, audio_samples, with_sidx)
+        });
+
         let video_entry = create_avc1_sample_entry(320, 240);
         let audio_entry = create_opus_sample_entry();
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
@@ -825,16 +924,18 @@ proptest! {
             cumulative_bytes += segment.len() as u64;
         }
 
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
 
         let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
-        prop_assert_eq!(decoded_size, mfra.len());
+        assert_eq!(decoded_size, mfra.len());
 
         // 映像トラックは全セグメントで必ずサンプルを持つ。音声はサンプルがあるセグメントだけ tfra エントリを持つ
         let has_audio_any = segment_moof_positions.iter().any(|(_, a)| *a);
         let expected_track_count = 1 + usize::from(has_audio_any);
-        prop_assert_eq!(mfra_box.tfra_boxes.len(), expected_track_count);
+        assert_eq!(mfra_box.tfra_boxes.len(), expected_track_count);
 
         let init_size = init_bytes.len() as u64;
 
@@ -844,13 +945,13 @@ proptest! {
             .iter()
             .find(|t| t.track_id == 1)
             .expect("track_id=1 の video tfra_box が存在する");
-        prop_assert_eq!(video_tfra.entries.len(), segment_moof_positions.len());
+        assert_eq!(video_tfra.entries.len(), segment_moof_positions.len());
         for (entry, (moof_pos, _)) in video_tfra
             .entries
             .iter()
             .zip(segment_moof_positions.iter().copied())
         {
-            prop_assert_eq!(entry.moof_offset, init_size + moof_pos);
+            assert_eq!(entry.moof_offset, init_size + moof_pos);
         }
 
         // 音声トラック（track_id=2）は音声サンプルがあったセグメントの moof のみを指すこと
@@ -865,23 +966,28 @@ proptest! {
                 .filter(|(_, a)| *a)
                 .map(|(p, _)| init_size + *p)
                 .collect();
-            prop_assert_eq!(audio_tfra.entries.len(), expected_audio_offsets.len());
+            assert_eq!(audio_tfra.entries.len(), expected_audio_offsets.len());
             for (entry, expected) in audio_tfra.entries.iter().zip(expected_audio_offsets.iter()) {
-                prop_assert_eq!(entry.moof_offset, *expected);
+                assert_eq!(entry.moof_offset, *expected);
             }
         }
 
         // mfro.size が mfra 全体のサイズと一致すること
-        prop_assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
-    }
+        assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// sidx 付きセグメントが正しく demux できることを確認する
-    #[test]
-    fn sidx_roundtrip(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        samples in prop::collection::vec(arb_video_sample(0), 1..5),
-    ) {
+/// sidx 付きセグメントが正しく demux できることを確認する
+#[test]
+fn sidx_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -891,10 +997,15 @@ proptest! {
             .collect();
 
         // sidx 付きセグメントを生成する
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes =
             build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -906,26 +1017,31 @@ proptest! {
             .handle_media_segment(&segment_bytes)
             .expect("sidx セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed.len(), samples.len());
+        assert_eq!(demuxed.len(), samples.len());
 
         for (orig, ds) in samples.iter().zip(demuxed.iter()) {
-            prop_assert_eq!(ds.duration, orig.duration);
-            prop_assert_eq!(ds.keyframe, orig.keyframe);
-            prop_assert_eq!(ds.data_size, orig.data.len());
+            assert_eq!(ds.duration, orig.duration);
+            assert_eq!(ds.keyframe, orig.keyframe);
+            assert_eq!(ds.data_size, orig.data.len());
 
             let actual =
                 &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
-            prop_assert_eq!(actual, orig.data.as_slice());
+            assert_eq!(actual, orig.data.as_slice());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// sidx.referenced_size が payload を含むセグメント全体サイズを指すことを確認する
-    #[test]
-    fn sidx_referenced_size_includes_payload(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        samples in prop::collection::vec(arb_video_sample(0), 1..5),
-    ) {
+/// sidx.referenced_size が payload を含むセグメント全体サイズを指すことを確認する
+#[test]
+fn sidx_referenced_size_includes_payload() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -933,32 +1049,41 @@ proptest! {
             .iter()
             .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes =
             build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
 
-        let (sidx_box, sidx_size) = SidxBox::decode(&segment_bytes).expect("sidx のデコードに失敗した");
-        prop_assert_eq!(sidx_box.references.len(), 1);
-        prop_assert_eq!(
+        let (sidx_box, sidx_size) =
+            SidxBox::decode(&segment_bytes).expect("sidx のデコードに失敗した");
+        assert_eq!(sidx_box.references.len(), 1);
+        assert_eq!(
             sidx_box.references[0].referenced_size as usize,
             segment_bytes.len() - sidx_size,
         );
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// CTO=None 入力では sidx の `starts_with_sap` / `sap_type` が
-    /// samples[0].keyframe と一致すること
-    ///
-    /// arb_video_sample は keyframe: bool をランダム化するが CTO=None のため PTS は
-    /// 単調非減少で samples[0] が最小 PTS を採る。したがって EPT サンプル == samples[0]
-    /// となり、`starts_with_sap == samples[0].keyframe` /
-    /// `sap_type == u8::from(samples[0].keyframe)` を任意入力で固定する。
-    /// `sap_delta_time` は現行の `0` のまま変更されない。
-    #[test]
-    fn sidx_starts_with_sap_matches_first_sample_keyframe(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        samples in prop::collection::vec(arb_video_sample(0), 1..5),
-    ) {
+/// CTO=None 入力では sidx の `starts_with_sap` / `sap_type` が
+/// samples[0].keyframe と一致すること
+///
+/// arb_video_sample は keyframe: bool をランダム化するが CTO=None のため PTS は
+/// 単調非減少で samples[0] が最小 PTS を採る。したがって EPT サンプル == samples[0]
+/// となり、`starts_with_sap == samples[0].keyframe` /
+/// `sap_type == u8::from(samples[0].keyframe)` を任意入力で固定する。
+/// `sap_delta_time` は現行の `0` のまま変更されない。
+#[test]
+fn sidx_starts_with_sap_matches_first_sample_keyframe() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -966,27 +1091,42 @@ proptest! {
             .iter()
             .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let segment_bytes =
             build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
 
         let (sidx_box, _) = SidxBox::decode(&segment_bytes).expect("sidx のデコードに失敗した");
-        prop_assert_eq!(sidx_box.references.len(), 1);
+        assert_eq!(sidx_box.references.len(), 1);
 
         let expected_starts_with_sap = samples[0].keyframe;
-        prop_assert_eq!(sidx_box.references[0].starts_with_sap, expected_starts_with_sap);
-        prop_assert_eq!(sidx_box.references[0].sap_type, u8::from(expected_starts_with_sap));
-        prop_assert_eq!(sidx_box.references[0].sap_delta_time, 0);
-    }
+        assert_eq!(
+            sidx_box.references[0].starts_with_sap,
+            expected_starts_with_sap
+        );
+        assert_eq!(
+            sidx_box.references[0].sap_type,
+            u8::from(expected_starts_with_sap)
+        );
+        assert_eq!(sidx_box.references[0].sap_delta_time, 0);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 最初のサンプルに `sample_entry` がない場合は
-    /// `create_media_segment_metadata_with_sidx()` がエラーを返すことを確認する
-    #[test]
-    fn sidx_rejects_missing_sample_entry_on_first_sample(
-        duration in 1u32..3001,
-        keyframe in any::<bool>(),
-        data in prop::collection::vec(any::<u8>(), 1..256),
-    ) {
+/// 最初のサンプルに `sample_entry` がない場合は
+/// `create_media_segment_metadata_with_sidx()` がエラーを返すことを確認する
+#[test]
+fn sidx_rejects_missing_sample_entry_on_first_sample() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let duration = noprop::sample_u64_in(ctx, 1..3001) as u32;
+        let keyframe = noprop::sample_bool(ctx);
+        let data_len = noprop::sample_usize_in(ctx, 1..256);
+        let data = noprop::sample_bytes_vec(ctx, data_len);
+
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let sample = Sample {
             track_kind: TrackKind::Video,
@@ -1002,39 +1142,45 @@ proptest! {
         let result = muxer.create_media_segment_metadata_with_sidx(&[sample]);
 
         match result {
-            Err(shiguredo_mp4::mux::MuxError::MissingSampleEntry {
-                track_kind,
-            }) => {
-                prop_assert_eq!(track_kind, TrackKind::Video);
+            Err(shiguredo_mp4::mux::MuxError::MissingSampleEntry { track_kind }) => {
+                assert_eq!(track_kind, TrackKind::Video);
             }
-            other => prop_assert!(false, "予期しない結果: {other:?}"),
+            other => panic!("予期しない結果: {other:?}"),
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// `trex.default_sample_description_index` が `stsd` の先頭以外を指す場合でも
-    /// 対応する sample entry が使われることを確認する
-    #[test]
-    fn sample_entry_uses_trex_default_index(
-        width1 in 64u16..1921,
-        width2 in 64u16..1921,
-        samples in prop::collection::vec(arb_video_sample(0), 1..5),
-    ) {
-        prop_assume!(width1 != width2);
+/// `trex.default_sample_description_index` が `stsd` の先頭以外を指す場合でも
+/// 対応する sample entry が使われることを確認する
+#[test]
+fn sample_entry_uses_trex_default_index() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
-        let bootstrap_sample =
-            video_segment_sample(&alternative_sample_entry, &samples[0], None);
+        let bootstrap_sample = video_segment_sample(&alternative_sample_entry, &samples[0], None);
         let bootstrap_segment = build_complete_media_segment(
             &mut muxer,
             &[bootstrap_sample],
             &[samples[0].data.as_slice()],
         );
-        prop_assert!(!bootstrap_segment.is_empty());
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
-        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry.clone(), 2);
+        assert!(!bootstrap_segment.is_empty());
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+        let init_bytes = append_sample_entry_and_set_trex_default(
+            &init_bytes,
+            alternative_sample_entry.clone(),
+            2,
+        );
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
@@ -1043,7 +1189,10 @@ proptest! {
                 ..video_segment_sample(&original_sample_entry, sample, None)
             })
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
@@ -1054,45 +1203,59 @@ proptest! {
             .handle_media_segment(&media_segment)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(
-            demuxed[0].sample_entry,
-            Some(&alternative_sample_entry),
-        );
+        assert_eq!(demuxed[0].sample_entry, Some(&alternative_sample_entry));
         for sample in demuxed.iter().skip(1) {
-            prop_assert!(sample.sample_entry.is_none());
+            assert!(sample.sample_entry.is_none());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// `tfhd.sample_description_index` が `trex.default_sample_description_index` より優先されることを確認する
-    #[test]
-    fn sample_entry_prefers_tfhd_index(
-        width1 in 64u16..1921,
-        width2 in 64u16..1921,
-        samples in prop::collection::vec(arb_video_sample(0), 1..5),
-    ) {
-        prop_assume!(width1 != width2);
+/// `tfhd.sample_description_index` が `trex.default_sample_description_index` より優先されることを確認する
+#[test]
+fn sample_entry_prefers_tfhd_index() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let _ = build_complete_media_segment(
             &mut muxer,
-            &[video_segment_sample(&original_sample_entry, &samples[0], None)],
+            &[video_segment_sample(
+                &original_sample_entry,
+                &samples[0],
+                None,
+            )],
             &[samples[0].data.as_slice()],
         );
         let _ = build_complete_media_segment(
             &mut muxer,
-            &[video_segment_sample(&alternative_sample_entry, &samples[0], None)],
+            &[video_segment_sample(
+                &alternative_sample_entry,
+                &samples[0],
+                None,
+            )],
             &[samples[0].data.as_slice()],
         );
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
-        let init_bytes = append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry, 2);
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+        let init_bytes =
+            append_sample_entry_and_set_trex_default(&init_bytes, alternative_sample_entry, 2);
 
         let fmp4_samples: Vec<Sample> = samples
             .iter()
             .map(|sample| video_segment_sample(&original_sample_entry, sample, None))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
         let media_segment =
             rewrite_media_segment_tfhd_sample_description_index(&media_segment, Some(1));
@@ -1105,22 +1268,25 @@ proptest! {
             .handle_media_segment(&media_segment)
             .expect("media セグメントの処理に失敗した");
 
-        prop_assert_eq!(demuxed[0].sample_entry, Some(&original_sample_entry));
+        assert_eq!(demuxed[0].sample_entry, Some(&original_sample_entry));
         for sample in demuxed.iter().skip(1) {
-            prop_assert!(sample.sample_entry.is_none());
+            assert!(sample.sample_entry.is_none());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// sample description index が切り替わった最初のサンプルでだけ
-    /// `sample_entry` が再度 `Some` になることを確認する
-    #[test]
-    fn sample_entry_is_emitted_only_on_change(
-        width1 in 64u16..1921,
-        width2 in 64u16..1921,
-        first_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
-        second_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
-    ) {
-        prop_assume!(width1 != width2);
+/// sample description index が切り替わった最初のサンプルでだけ
+/// `sample_entry` が再度 `Some` になることを確認する
+#[test]
+fn sample_entry_is_emitted_only_on_change() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        let first_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
+        let second_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
@@ -1147,7 +1313,9 @@ proptest! {
             build_complete_media_segment(&mut muxer, &first_segment_input, &first_payloads);
         let second_segment =
             build_complete_media_segment(&mut muxer, &second_segment_input, &second_payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer
@@ -1157,35 +1325,37 @@ proptest! {
         let first_demuxed = demuxer
             .handle_media_segment(&first_segment)
             .expect("最初の media セグメントの処理に失敗した");
-        prop_assert_eq!(
-            first_demuxed[0].sample_entry,
-            Some(&original_sample_entry),
-        );
+        assert_eq!(first_demuxed[0].sample_entry, Some(&original_sample_entry));
         for sample in first_demuxed.iter().skip(1) {
-            prop_assert!(sample.sample_entry.is_none());
+            assert!(sample.sample_entry.is_none());
         }
 
         let second_demuxed = demuxer
             .handle_media_segment(&second_segment)
             .expect("2 つ目の media セグメントの処理に失敗した");
-        prop_assert_eq!(
+        assert_eq!(
             second_demuxed[0].sample_entry,
-            Some(&alternative_sample_entry),
+            Some(&alternative_sample_entry)
         );
         for sample in second_demuxed.iter().skip(1) {
-            prop_assert!(sample.sample_entry.is_none());
+            assert!(sample.sample_entry.is_none());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// `handle_media_segment()` が複数の `moof` + `mdat` ペアを 1 回で受け取った場合に
-    /// 末尾データを黙って無視せずエラーを返すことを確認する
-    #[test]
-    fn rejects_multiple_moof_mdat_pairs_in_one_input(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        first_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
-        second_segment_samples in prop::collection::vec(arb_video_sample(0), 1..4),
-    ) {
+/// `handle_media_segment()` が複数の `moof` + `mdat` ペアを 1 回で受け取った場合に
+/// 末尾データを黙って無視せずエラーを返すことを確認する
+#[test]
+fn rejects_multiple_moof_mdat_pairs_in_one_input() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let first_segment_samples = sample_vec(ctx, 1..4, |ctx| arb_video_sample(ctx, 0));
+        let second_segment_samples = sample_vec(ctx, 1..4, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -1208,7 +1378,9 @@ proptest! {
             .collect();
         let mut concatenated =
             build_complete_media_segment(&mut muxer, &first_segment_input, &first_payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         concatenated.extend_from_slice(&build_complete_media_segment(
             &mut muxer,
             &second_segment_input,
@@ -1221,18 +1393,21 @@ proptest! {
             .expect("init セグメントの処理に失敗した");
 
         let result = demuxer.handle_media_segment(&concatenated);
-        prop_assert!(matches!(result, Err(DemuxError::DecodeError(_))));
-    }
+        assert!(matches!(result, Err(DemuxError::DecodeError(_))));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Fmp4FileDemuxer でも sample entry の切り替わりが反映されることを確認する
-    #[test]
-    fn fmp4_file_demuxer_propagates_sample_entry_changes(
-        width1 in 64u16..1921,
-        width2 in 64u16..1921,
-        first_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
-        second_segment_samples in prop::collection::vec(arb_video_sample(0), 2..5),
-    ) {
-        prop_assume!(width1 != width2);
+/// Fmp4FileDemuxer でも sample entry の切り替わりが反映されることを確認する
+#[test]
+fn fmp4_file_demuxer_propagates_sample_entry_changes() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        let first_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
+        let second_segment_samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
@@ -1259,7 +1434,9 @@ proptest! {
             build_complete_media_segment(&mut muxer, &first_segment_input, &first_payloads);
         let second_segment =
             build_complete_media_segment(&mut muxer, &second_segment_input, &second_payloads);
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
 
         let mut file_data = init_bytes;
         file_data.extend_from_slice(&first_segment);
@@ -1274,7 +1451,9 @@ proptest! {
                 match demuxer.next_sample() {
                     Ok(Some(sample)) => break Some(sample),
                     Ok(None) => break None,
-                    Err(DemuxError::InputRequired(_)) => feed_fmp4_file_demuxer(&mut demuxer, &file_data),
+                    Err(DemuxError::InputRequired(_)) => {
+                        feed_fmp4_file_demuxer(&mut demuxer, &file_data)
+                    }
                     Err(error) => panic!("next_sample エラー: {error}"),
                 }
             };
@@ -1286,28 +1465,41 @@ proptest! {
             sample_entry_flags.push(sample_entry);
         }
 
-        prop_assert_eq!(sample_entry_flags.len(), first_segment_samples.len() + second_segment_samples.len());
-        prop_assert_eq!(sample_entry_flags[0].as_ref(), Some(&original_sample_entry));
-        for sample_entry in sample_entry_flags.iter().take(first_segment_samples.len()).skip(1) {
-            prop_assert!(sample_entry.is_none());
+        assert_eq!(
+            sample_entry_flags.len(),
+            first_segment_samples.len() + second_segment_samples.len()
+        );
+        assert_eq!(sample_entry_flags[0].as_ref(), Some(&original_sample_entry));
+        for sample_entry in sample_entry_flags
+            .iter()
+            .take(first_segment_samples.len())
+            .skip(1)
+        {
+            assert!(sample_entry.is_none());
         }
-        prop_assert_eq!(
+        assert_eq!(
             sample_entry_flags[first_segment_samples.len()].as_ref(),
             Some(&alternative_sample_entry),
         );
-        for sample_entry in sample_entry_flags.iter().skip(first_segment_samples.len() + 1) {
-            prop_assert!(sample_entry.is_none());
+        for sample_entry in sample_entry_flags
+            .iter()
+            .skip(first_segment_samples.len() + 1)
+        {
+            assert!(sample_entry.is_none());
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// 範囲外の sample description index はエラーになることを確認する
-    #[test]
-    fn invalid_sample_description_index_is_rejected(
-        width1 in 64u16..1921,
-        width2 in 64u16..1921,
-        samples in prop::collection::vec(arb_video_sample(0), 1..5),
-    ) {
-        prop_assume!(width1 != width2);
+/// 範囲外の sample description index はエラーになることを確認する
+#[test]
+fn invalid_sample_description_index_is_rejected() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
 
         let original_sample_entry = create_avc1_sample_entry(width1, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
@@ -1320,7 +1512,9 @@ proptest! {
             )],
             &[samples[0].data.as_slice()],
         );
-        let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         let init_bytes = append_sample_entry_and_set_trex_default(
             &init_bytes,
             create_avc1_sample_entry(width2, 240),
@@ -1331,7 +1525,10 @@ proptest! {
             .iter()
             .map(|sample| video_segment_sample(&original_sample_entry, sample, None))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
         let media_segment =
             rewrite_media_segment_tfhd_sample_description_index(&media_segment, Some(3));
@@ -1342,22 +1539,23 @@ proptest! {
             .expect("init セグメントの処理に失敗した");
         let result = demuxer.handle_media_segment(&media_segment);
 
-        prop_assert!(matches!(
-            result,
-            Err(DemuxError::DecodeError(_))
-        ));
-    }
+        assert!(matches!(result, Err(DemuxError::DecodeError(_))));
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// Fmp4FileDemuxer が mux したファイルを正しく demux できることを確認する
-    #[test]
-    fn fmp4_file_demuxer_roundtrip(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        segments in prop::collection::vec(
-            prop::collection::vec(arb_video_sample(0), 1..5),
-            1..4,
-        ),
-    ) {
+/// Fmp4FileDemuxer が mux したファイルを正しく demux できることを確認する
+#[test]
+fn fmp4_file_demuxer_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let segments = sample_vec(ctx, 1..4, |ctx| {
+            sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0))
+        });
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -1374,12 +1572,13 @@ proptest! {
                 .iter()
                 .map(|sample| sample.data.as_slice())
                 .collect();
-            let segment_bytes =
-                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+            let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
             all_samples.extend_from_slice(segment_samples);
             file_data.extend_from_slice(&segment_bytes);
         }
-        let mut init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let mut init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         init_bytes.extend_from_slice(&file_data);
         let file_data = init_bytes;
 
@@ -1388,9 +1587,9 @@ proptest! {
 
         // トラック情報の確認
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert_eq!(tracks[0].kind, TrackKind::Video);
-        prop_assert_eq!(tracks[0].timescale.get(), 90000);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].kind, TrackKind::Video);
+        assert_eq!(tracks[0].timescale.get(), 90000);
 
         // サンプルを順番に取り出して元データと照合する
         let mut expected_decode_time: u64 = 0;
@@ -1406,15 +1605,16 @@ proptest! {
                 }
             };
 
-            prop_assert_eq!(sample.track.track_id, 1);
-            prop_assert_eq!(sample.timestamp, expected_decode_time);
-            prop_assert_eq!(sample.duration, orig.duration);
-            prop_assert_eq!(sample.keyframe, orig.keyframe);
-            prop_assert_eq!(
-                &file_data[sample.data_offset as usize..sample.data_offset as usize + sample.data_size],
+            assert_eq!(sample.track.track_id, 1);
+            assert_eq!(sample.timestamp, expected_decode_time);
+            assert_eq!(sample.duration, orig.duration);
+            assert_eq!(sample.keyframe, orig.keyframe);
+            assert_eq!(
+                &file_data
+                    [sample.data_offset as usize..sample.data_offset as usize + sample.data_size],
                 orig.data.as_slice(),
             );
-            prop_assert_eq!(sample.sample_entry.is_some(), i == 0);
+            assert_eq!(sample.sample_entry.is_some(), i == 0);
 
             expected_decode_time += orig.duration as u64;
         }
@@ -1422,17 +1622,25 @@ proptest! {
         // 全サンプルを読み終えたら None が返ることを確認する
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
         let last = demuxer.next_sample().expect("next_sample エラー");
-        prop_assert!(last.is_none(), "これ以上 sample は無い想定だが {:?} が返った", last);
-    }
+        assert!(
+            last.is_none(),
+            "これ以上 sample は無い想定だが {last:?} が返った"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// `mdat size=0` のメディアセグメントを含む fMP4 ファイルでも
-    /// `Fmp4FileDemuxer` が末尾までの `mdat` として処理できることを確認する
-    #[test]
-    fn fmp4_file_demuxer_accepts_mdat_size_zero(
-        width in 64u16..1921,
-        height in 64u16..1081,
-        samples in prop::collection::vec(arb_video_sample(0), 1..10),
-    ) {
+/// `mdat size=0` のメディアセグメントを含む fMP4 ファイルでも
+/// `Fmp4FileDemuxer` が末尾までの `mdat` として処理できることを確認する
+#[test]
+fn fmp4_file_demuxer_accepts_mdat_size_zero() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let height = noprop::sample_u64_in(ctx, 64..1081) as u16;
+        let samples = sample_vec(ctx, 1..10, |ctx| arb_video_sample(ctx, 0));
+
         let sample_entry = create_avc1_sample_entry(width, height);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -1440,19 +1648,24 @@ proptest! {
             .iter()
             .map(|sample| video_segment_sample(&sample_entry, sample, None))
             .collect();
-        let payloads: Vec<&[u8]> = samples.iter().map(|sample| sample.data.as_slice()).collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
         let media_segment = build_complete_media_segment(&mut muxer, &segment_samples, &payloads);
         let media_segment = rewrite_media_segment_mdat_size_zero(&media_segment);
 
-        let mut file_data = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+        let mut file_data = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
         file_data.extend_from_slice(&media_segment);
 
         let mut demuxer = Fmp4FileDemuxer::new();
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
 
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
-        prop_assert_eq!(tracks.len(), 1);
-        prop_assert_eq!(tracks[0].kind, TrackKind::Video);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].kind, TrackKind::Video);
 
         let mut expected_decode_time = 0u64;
         for (i, expected) in samples.iter().enumerate() {
@@ -1467,31 +1680,39 @@ proptest! {
                 }
             };
 
-            prop_assert_eq!(sample.track.track_id, 1);
-            prop_assert_eq!(sample.timestamp, expected_decode_time);
-            prop_assert_eq!(sample.duration, expected.duration);
-            prop_assert_eq!(sample.keyframe, expected.keyframe);
-            prop_assert_eq!(
-                &file_data[sample.data_offset as usize..sample.data_offset as usize + sample.data_size],
+            assert_eq!(sample.track.track_id, 1);
+            assert_eq!(sample.timestamp, expected_decode_time);
+            assert_eq!(sample.duration, expected.duration);
+            assert_eq!(sample.keyframe, expected.keyframe);
+            assert_eq!(
+                &file_data
+                    [sample.data_offset as usize..sample.data_offset as usize + sample.data_size],
                 expected.data.as_slice(),
             );
-            prop_assert_eq!(sample.sample_entry.is_some(), i == 0);
+            assert_eq!(sample.sample_entry.is_some(), i == 0);
             expected_decode_time += expected.duration as u64;
         }
 
         feed_fmp4_file_demuxer(&mut demuxer, &file_data);
         let last = demuxer.next_sample().expect("next_sample エラー");
-        prop_assert!(last.is_none(), "これ以上 sample は無い想定だが {:?} が返った", last);
-    }
+        assert!(
+            last.is_none(),
+            "これ以上 sample は無い想定だが {last:?} が返った"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// timestamp が複数セグメントにわたって正しく累積されることを確認する
-    #[test]
-    fn timestamp_accumulation(
-        samples_per_segment in prop::collection::vec(
-            prop::collection::vec(arb_video_sample(0), 1..5),
-            2..5,
-        ),
-    ) {
+/// timestamp が複数セグメントにわたって正しく累積されることを確認する
+#[test]
+fn timestamp_accumulation() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let samples_per_segment = sample_vec(ctx, 2..5, |ctx| {
+            sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0))
+        });
+
         let sample_entry = create_avc1_sample_entry(320, 240);
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
 
@@ -1508,10 +1729,11 @@ proptest! {
                 .iter()
                 .map(|sample| sample.data.as_slice())
                 .collect();
-            let segment_bytes =
-                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+            let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
             if !initialized {
-                let init_bytes = muxer.init_segment_bytes().expect("init セグメントの構築に失敗した");
+                let init_bytes = muxer
+                    .init_segment_bytes()
+                    .expect("init セグメントの構築に失敗した");
                 demuxer
                     .handle_init_segment(&init_bytes)
                     .expect("init セグメントの処理に失敗した");
@@ -1522,19 +1744,26 @@ proptest! {
                 .handle_media_segment(&segment_bytes)
                 .expect("media セグメントの処理に失敗した");
 
-            prop_assert_eq!(demuxed[0].timestamp, expected_decode_time);
+            assert_eq!(demuxed[0].timestamp, expected_decode_time);
 
-            expected_decode_time +=
-                segment_samples.iter().map(|s| s.duration as u64).sum::<u64>();
+            expected_decode_time += segment_samples
+                .iter()
+                .map(|s| s.duration as u64)
+                .sum::<u64>();
         }
-    }
+        Ok(())
+    })?;
+    Ok(())
+}
 
-    /// トラック payload 間に隙間がある配置は拒否する
-    #[test]
-    fn rejects_gapped_track_payload_layout(
-        video_size in 1usize..256,
-        audio_size in 1usize..256,
-    ) {
+/// トラック payload 間に隙間がある配置は拒否する
+#[test]
+fn rejects_gapped_track_payload_layout() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let video_size = noprop::sample_usize_in(ctx, 1..256);
+        let audio_size = noprop::sample_usize_in(ctx, 1..256);
+
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let video_sample = Sample {
             track_kind: TrackKind::Video,
@@ -1558,6 +1787,11 @@ proptest! {
         };
 
         let result = muxer.create_media_segment_metadata(&[video_sample, audio_sample]);
-        prop_assert!(matches!(result, Err(shiguredo_mp4::mux::MuxError::EncodeError(_))));
-    }
+        assert!(matches!(
+            result,
+            Err(shiguredo_mp4::mux::MuxError::EncodeError(_))
+        ));
+        Ok(())
+    })?;
+    Ok(())
 }

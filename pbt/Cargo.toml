@@ -6,5 +6,5 @@ publish = false
 
 [dev-dependencies]
 # Property-Based Testing フレームワーク
-proptest = "1.11"
+noprop = "0.2"
 shiguredo_mp4 = { path = "../" }

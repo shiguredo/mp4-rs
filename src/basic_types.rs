@@ -661,11 +661,20 @@ impl<A: BaseBox, B: BaseBox> BaseBox for Either<A, B> {
 /// - `T`: 数値の内部的な型。 最低限 `BITS` 分の数値を表現可能な型である必要がある。
 /// - `BITS`: 数値のビット数
 /// - `OFFSET`: 一つの `T` に複数の [`Uint`] 値がパックされる場合の、この数値のオフセット位置（ビット数）
+///
+/// 本型の不変条件として、保持する値は常に `BITS` ビットで表現できる範囲
+/// （`0..=2^BITS - 1`）に収まっている必要がある。
+/// [`Uint::from_bits()`] 経由で作られた値は常にこの条件を満たすが、
+/// [`Uint::new()`] は検証しないため、呼び出し側が範囲を保証すること。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Uint<T, const BITS: u32, const OFFSET: u32 = 0>(T);
 
 impl<T, const BITS: u32, const OFFSET: u32> Uint<T, BITS, OFFSET> {
     /// 指定された数値を受け取ってインスタンスを作成する
+    ///
+    /// `v` は `BITS` ビットで表現できる範囲（`0..=2^BITS - 1`）に収まっている必要がある。
+    /// 収まらない値を渡した場合、[`Uint::to_bits()`] が隣接フィールドのビットを侵食するなど
+    /// 不正なエンコード結果になるため、呼び出し側が範囲を保証すること。
     pub const fn new(v: T) -> Self {
         Self(v)
     }
@@ -692,6 +701,10 @@ where
     /// このインスタンスに対応する `T` 内のビット列を返す
     ///
     /// なお `OFFSET` が `0` の場合には、このメソッドは [`Uint::get()`] と等価である
+    ///
+    /// 保持する値が `BITS` ビットに収まっていない場合（[`Uint::new()`] に範囲外の値を
+    /// 渡した場合など）、ビット列が隣接フィールドを侵食するなど不正な結果になるため、
+    /// 呼び出し側が不変条件（本構造体のドキュメントを参照）を保証すること。
     pub fn to_bits(self) -> T {
         self.0 << OFFSET
     }

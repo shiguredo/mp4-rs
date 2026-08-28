@@ -119,14 +119,22 @@ Sample implementations using WebAssembly are available on GitHub Pages.
 
 ## Specifications
 
+- ISO/IEC 13818-7
 - ISO/IEC 14496-1
+- ISO/IEC 14496-3
 - ISO/IEC 14496-12
 - ISO/IEC 14496-14
 - ISO/IEC 14496-15
 - ISO/IEC 14496-30
 - 3GPP TS 26.245
+- [ITU-T H.264](https://www.itu.int/rec/T-REC-H.264/en)
+- [RFC 6184: RTP Payload Format for H.264 Video](https://www.rfc-editor.org/rfc/rfc6184)
+- [RFC 6381: The 'Codecs' and 'Profiles' Parameters for "Bucket" Media Types](https://www.rfc-editor.org/rfc/rfc6381)
 - [VP Codec ISO Media File Format Binding](https://www.webmproject.org/vp9/mp4/)
+- [RFC 6386: VP8 Data Format and Decoding Guide](https://www.rfc-editor.org/rfc/rfc6386)
+- [VP9 Bitstream and Decoding Process Specification](https://www.webmproject.org/vp9/)
 - [AV1 Codec ISO Media File Format Binding](https://aomediacodec.github.io/av1-isobmff/)
+- [AV1 Bitstream & Decoding Process Specification](https://aomediacodec.github.io/av1-spec/)
 - [Encapsulation of Opus in ISO Base Media File Format](https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html)
 - [Encapsulation of FLAC in ISO Base Media File Format](https://github.com/xiph/flac/blob/master/doc/isoflac.txt)
 

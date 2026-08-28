@@ -11,6 +11,75 @@
 
 ## develop
 
+## 2026.5.0
+
+- [ADD] `SampleEntry` から RFC 6381 および各コーデック binding の `codecs` パラメーター文字列を生成する API (`codec_string::from_sample_entry`) を追加する
+  - H.264 / H.265 / AV1 / VP8 / VP9 / AAC は設定ボックスの構造化フィールドから必須形を生成し、Opus / FLAC / 字幕系は登録済み sample entry 4CC を返す
+  - 未知の `SampleEntry` と AAC の情報欠落はエラーとし、欠落情報を仮定して補完しない
+  - @sile
+- [ADD] VP8 ビットストリーム処理ユーティリティ (`bitstream::vp8`) を追加する
+  - @sile
+- [ADD] VP9 ビットストリーム処理ユーティリティ (`bitstream::vp9`) を追加する
+  - @sile
+- [ADD] H.264 ビットストリーム処理ユーティリティ (`bitstream::h264`) を追加する
+  - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、SPS / PPS 抽出、`avc1` / `avcC` の構築を提供する
+  - @sile
+- [ADD] `LengthSize` に `lengthSizeMinusOne` から検証付きで変換する `from_length_size_minus_one` を追加する
+  - 0 / 1 / 3 を対応する `LengthSize` へ変換し、予約値 2 と範囲外の値は `crate::Error` (`ErrorKind::InvalidInput`) として拒否する
+  - @sile
+- [ADD] H.265 ビットストリーム処理ユーティリティ (`bitstream::h265`) を追加する
+  - Annex B / length-prefixed の NAL ユニット列の解析と相互変換、SPS 解析、VPS / SPS / PPS 抽出、`hev1` / `hvc1` / `hvcC` の構築を提供する
+  - `H265SampleEntryConfig` から `avgFrameRate` (256 秒あたりのフレーム数) と `constantFrameRate` の状態 (`H265ConstantFrameRate`) を指定できる
+  - @sile
+- [ADD] AV1 ビットストリーム処理ユーティリティ (`bitstream::av1`) を追加する
+  - @sile
+- [ADD] `bitstream::av1` の `Av1SequenceHeader` に operating point 情報を公開し、`chroma_sample_position` の予約値を拒否する
+  - `operating_points_cnt_minus_1` / `operating_point_idc_0` を公開する（`reduced_still_picture_header == 1` のときは暗黙値）
+  - `chroma_sample_position == 3` (`CSP_RESERVED`) を `crate::Error` で拒否する
+  - @sile
+- [ADD] `bitstream::av1` に `configOBUs` から `Av01Box` を構築する API を追加する
+  - `build_av01_box_from_config_obus` は OBU 列挙・Sequence Header 抽出・解析・既存 `build_av01_box` の呼び出しを 1 回で行う
+  - 空入力、Sequence Header がない、先頭以外にある、複数ある入力を `crate::Error` で拒否する
+  - @sile
+- [ADD] AAC ビットストリーム処理ユーティリティ (`bitstream::aac`) を追加する
+  - AAC-LC の AudioSpecificConfig の解析・正規形エンコード、ADTS フレームの解析と raw AAC の相互変換、`Mp4aBox` の構築を提供する
+  - AOT 2 以外、GASpecificConfig 必須 3 フラグの非ゼロ、後続の SBR/PS 拡張、ADTS の複数 raw data block は `crate::Error` として拒否する
+  - @sile
+- [ADD] Opus ビットストリーム処理ユーティリティ (`bitstream::opus`) を追加する
+  - codec private 相当の各フィールドを `OpusSampleEntryConfig` で指定して `OpusBox` を構築する API を提供する
+  - チャンネル数は `ChannelCount` enum (`Mono` / `Stereo`) で表し、`ChannelMappingFamily = 0` の mono / stereo のみを表現する
+  - @sile
+- [ADD] H.264 の profile-level-id を扱う API を追加する
+  - 3 バイトを保持する `H264ProfileLevelId` に、6 桁の RFC 4648 base16 をデコードする `from_hex` と、6 桁の小文字 hex へ変換する `to_hex` を追加する
+  - `H264Sps` の先頭 3 バイトも `H264ProfileLevelId` として保持する（`AvccBox` は従来どおり）
+  - profile / level の意味検証や正規化は行わず、利用側が生の 3 バイトに対して必要な判定を行う
+  - @sile
+- [FIX] `UnknownBox` のデコードでトップレベル以外の可変長ボックスを拒否する
+  - コンテナボックス内部の未知ボックスループが末尾のゼロ埋めを 1 個の `UnknownBox` として誤認識するのを防ぐ
+  - トップレベルの未知ボックス（`RootBox` 経由）は従来どおり可変長ボックスを受理する
+  - @sile
+- [FIX] `Error` の `Display` 出力からビルド環境依存の絶対パスを除去する
+  - `core::panic::Location::file()` が返すパスから最後方の `src/` 以降だけを残して表示する
+  - @sile
+- [FIX] `StszBox::Fixed` で `SampleTableAccessor::new` がサンプル数に比例するメモリを確保しないようにする
+  - `data_offset()` を算術で算出し、`new` はオーバーフロー検出のみ行う
+  - 従来はわずか数バイトの `stsz` から最大約 34 GB の確保に到達できた
+  - @sile
+- [FIX] `SampleTableAccessor::new` が `StszBox::Fixed` の `sample_count` を `stts` 合計と突き合わせるようにする
+  - `Variable` と同様に不一致なら `InconsistentSampleCount` を返す
+  - これまで `Fixed` では食い違っていても素通りしていた
+  - @sile
+
+### misc
+
+- [UPDATE] PBT を proptest から noprop に移行する
+  - @sile
+- [UPDATE] `pbt/tests/` のテスト配置をコーディング規約に適合するよう整理する
+  - 共通ヘルパ `common.rs` を `helpers.rs` に配置換えする
+  - 単体テストのみの 2 ファイルを本体 crate の `tests/` に移動する
+  - `prop_*.rs` に混在していた単体テストを `tests/test_*.rs` へ移す
+  - @sile
+
 ## 2026.4.0
 
 - [CHANGE] `MdhdBox::language` の型を `[u8; 3]` から `LanguageCode` に置き換える

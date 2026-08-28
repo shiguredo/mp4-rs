@@ -1,9 +1,10 @@
 # mp4-rs
 
-[![shiguredo_mp4](https://img.shields.io/crates/v/shiguredo_mp4.svg)](https://crates.io/crates/shiguredo_mp4)
-[![Documentation](https://docs.rs/shiguredo_mp4/badge.svg)](https://docs.rs/shiguredo_mp4)
-[![GitHub Actions](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/shiguredo_mp4.svg)](https://crates.io/crates/shiguredo_mp4)
+[![docs.rs](https://docs.rs/shiguredo_mp4/badge.svg)](https://docs.rs/shiguredo_mp4)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![GitHub Actions](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/shiguredo/mp4-rs/actions/workflows/ci.yml)
+[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?logo=discord&logoColor=white)](https://discord.gg/shiguredo)
 
 ## About Shiguredo's open source software
 
@@ -121,16 +122,34 @@ WebAssembly を使ったサンプルを GitHub Pages に用意しています。
 - [MP4 Dump](https://shiguredo.github.io/mp4-rs/examples/dump/)
 - [MP4 Transcode](https://shiguredo.github.io/mp4-rs/examples/transcode/)
 
+## Agent Skills
+
+[Agent Skills](https://agentskills.io/) 形式のスキルを同梱しています。`gh skill install` コマンドで対応する AI エージェント (Claude Code, Cursor, GitHub Copilot, Gemini CLI 等) にインストールでき、エージェントがこのライブラリの API や規格準拠仕様を理解した上で支援できるようになります。
+
+```bash
+gh skill install shiguredo/mp4-rs shiguredo-mp4
+```
+
+スキルの内容は [`skills/shiguredo-mp4/SKILL.md`](skills/shiguredo-mp4/SKILL.md) を参照してください。
+
 ## 規格書
 
+- ISO/IEC 13818-7
 - ISO/IEC 14496-1
+- ISO/IEC 14496-3
 - ISO/IEC 14496-12
 - ISO/IEC 14496-14
 - ISO/IEC 14496-15
 - ISO/IEC 14496-30
 - 3GPP TS 26.245
+- [ITU-T H.264](https://www.itu.int/rec/T-REC-H.264/en)
+- [RFC 6184: RTP Payload Format for H.264 Video](https://www.rfc-editor.org/rfc/rfc6184)
+- [RFC 6381: The 'Codecs' and 'Profiles' Parameters for "Bucket" Media Types](https://www.rfc-editor.org/rfc/rfc6381)
 - [VP Codec ISO Media File Format Binding](https://www.webmproject.org/vp9/mp4/)
+- [RFC 6386: VP8 Data Format and Decoding Guide](https://www.rfc-editor.org/rfc/rfc6386)
+- [VP9 Bitstream and Decoding Process Specification](https://www.webmproject.org/vp9/)
 - [AV1 Codec ISO Media File Format Binding](https://aomediacodec.github.io/av1-isobmff/)
+- [AV1 Bitstream & Decoding Process Specification](https://aomediacodec.github.io/av1-spec/)
 - [Encapsulation of Opus in ISO Base Media File Format](https://gitlab.xiph.org/xiph/opus/-/blob/main/doc/opus_in_isobmff.html)
 - [Encapsulation of FLAC in ISO Base Media File Format](https://github.com/xiph/flac/blob/master/doc/isoflac.txt)
 

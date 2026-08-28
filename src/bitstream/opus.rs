@@ -1,7 +1,8 @@
 //! Opus ビットストリーム処理ユーティリティ
 //!
-//! Opus の codec private 情報 (Ogg Opus identification header の一部) から、
-//! ISOBMFF の固定値と `dOps` の対応関係を満たす `OpusBox` を構築する。
+//! codec private 情報 (Ogg Opus identification header の一部) の各フィールドを
+//! [`OpusSampleEntryConfig`] で指定して、ISOBMFF の固定値と `dOps` の対応関係を
+//! 満たす `OpusBox` を構築する。
 //!
 //! 参照仕様は以下のとおり。
 //!
@@ -68,7 +69,8 @@ pub struct OpusSampleEntryConfig {
     pub output_gain: i16,
 }
 
-/// codec private 情報と設定から [`OpusBox`] を 1 つ構築する
+/// codec private 相当の各フィールドを [`OpusSampleEntryConfig`] で指定して
+/// [`OpusBox`] を 1 つ構築する
 ///
 /// [`SampleEntry`](crate::boxes::SampleEntry) には包まない。`dOps` ボックスは
 /// [`OpusBox::dops_box`] として中に置く。

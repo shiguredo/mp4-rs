@@ -18,7 +18,7 @@ const CASES: usize = 500;
 /// 受理条件を満たす [`OpusSampleEntryConfig`] を生成する
 ///
 /// - `channel_count` は mono / stereo (1 / 2) に閉じる
-/// - `pre_skip` / `input_sample_rate` / `output_gain` は全範囲を境界化する
+/// - `pre_skip` は全範囲を境界化し、`input_sample_rate` / `output_gain` は全域一様に生成する
 fn sample_opus_config(ctx: &mut noprop::TestCaseContext) -> OpusSampleEntryConfig {
     let channel_count = if noprop::sample_bool(ctx) {
         ChannelCount::Mono

@@ -136,6 +136,45 @@ fn hevc_omits_trailing_zero_constraint_bytes() {
     );
 }
 
+/// HEVC: profile_space と High tier が文字列に反映される
+#[test]
+fn hevc_profile_space_and_high_tier() {
+    let mut hvcc = empty_hvcc();
+    hvcc.general_profile_space = Uint::new(1);
+    hvcc.general_tier_flag = Uint::new(1);
+    hvcc.general_profile_idc = Uint::new(2);
+
+    let entry = SampleEntry::Hev1(Hev1Box {
+        visual: visual_fields(),
+        hvcc_box: hvcc,
+        unknown_boxes: vec![],
+    });
+
+    assert_eq!(
+        codec_string::from_sample_entry(&entry).expect("Hev1 は成功する"),
+        "hev1.A2.6.H93.B0"
+    );
+}
+
+/// HEVC: constraint 中間のゼロバイトは省略せず残す
+#[test]
+fn hevc_keeps_middle_zero_constraint_bytes() {
+    let mut hvcc = empty_hvcc();
+    // B0, 00, 01 の 3 バイト目まで非ゼロ末尾 → 末尾ゼロのみ省略
+    hvcc.general_constraint_indicator_flags = Uint::new(0x0000_B000_0100_0000);
+
+    let entry = SampleEntry::Hev1(Hev1Box {
+        visual: visual_fields(),
+        hvcc_box: hvcc,
+        unknown_boxes: vec![],
+    });
+
+    assert_eq!(
+        codec_string::from_sample_entry(&entry).expect("Hev1 は成功する"),
+        "hev1.1.6.L93.B0.00.01"
+    );
+}
+
 /// HEVC: constraint が全ゼロでも最低 1 バイト `00` を残す
 #[test]
 fn hevc_keeps_one_zero_byte_when_all_constraints_zero() {
@@ -178,6 +217,33 @@ fn av01_main_8bit() {
     assert_eq!(
         codec_string::from_sample_entry(&entry).expect("Av01 は成功する"),
         "av01.0.00M.08"
+    );
+}
+
+/// AV1 High Profile / 10-bit
+#[test]
+fn av01_high_profile_10bit() {
+    let entry = SampleEntry::Av01(Av01Box {
+        visual: visual_fields(),
+        av1c_box: Av1cBox {
+            seq_profile: Uint::new(1),
+            seq_level_idx_0: Uint::new(0),
+            seq_tier_0: Uint::new(0),
+            high_bitdepth: Uint::new(1),
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),
+            chroma_subsampling_y: Uint::new(1),
+            chroma_sample_position: Uint::new(0),
+            initial_presentation_delay_minus_one: None,
+            config_obus: vec![],
+        },
+        unknown_boxes: vec![],
+    });
+
+    assert_eq!(
+        codec_string::from_sample_entry(&entry).expect("Av01 は成功する"),
+        "av01.1.00M.10"
     );
 }
 

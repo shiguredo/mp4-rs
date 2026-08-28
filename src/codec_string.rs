@@ -9,7 +9,10 @@ use alloc::{format, string::String};
 use crate::{
     Error, Result,
     bitstream::h264::H264ProfileLevelId,
-    boxes::{Av1cBox, AvccBox, HvccBox, SampleEntry, VpccBox},
+    boxes::{
+        Av1cBox, AvccBox, FlacBox, HvccBox, OpusBox, SampleEntry, StppBox, Tx3gBox, VpccBox,
+        WvttBox,
+    },
     descriptors::DecoderConfigDescriptor,
 };
 
@@ -29,11 +32,11 @@ pub fn from_sample_entry(entry: &SampleEntry) -> Result<String> {
         SampleEntry::Vp08(b) => Ok(vp_codec_string("vp08", &b.vpcc_box)),
         SampleEntry::Vp09(b) => Ok(vp_codec_string("vp09", &b.vpcc_box)),
         SampleEntry::Mp4a(b) => mp4a_codec_string(&b.esds_box.es.dec_config_descr),
-        SampleEntry::Opus(_) => Ok(String::from("Opus")),
-        SampleEntry::Flac(_) => Ok(String::from("fLaC")),
-        SampleEntry::Stpp(_) => Ok(String::from("stpp")),
-        SampleEntry::Wvtt(_) => Ok(String::from("wvtt")),
-        SampleEntry::Tx3g(_) => Ok(String::from("tx3g")),
+        SampleEntry::Opus(_) => Ok(format!("{}", OpusBox::TYPE)),
+        SampleEntry::Flac(_) => Ok(format!("{}", FlacBox::TYPE)),
+        SampleEntry::Stpp(_) => Ok(format!("{}", StppBox::TYPE)),
+        SampleEntry::Wvtt(_) => Ok(format!("{}", WvttBox::TYPE)),
+        SampleEntry::Tx3g(_) => Ok(format!("{}", Tx3gBox::TYPE)),
         SampleEntry::Unknown(b) => Err(Error::unsupported(format!(
             "codec string is unsupported for unknown sample entry type `{}`",
             b.box_type
@@ -100,7 +103,9 @@ fn av01_codec_string(av1c: &Av1cBox) -> String {
     format!("av01.{profile}.{level:02}{tier}.{bit_depth:02}")
 }
 
-/// AV1 の `BitDepth` 導出（`bitstream::av1` の `color_config` 解釈と一致）
+/// AV1 の `BitDepth` 導出（issue 0086 / AV1 binding の公式に従う）
+///
+/// 合法な `seq_profile` 0..=2 では `bitstream::av1` の `read_color_config` と一致する。
 fn av1_bit_depth(seq_profile: u8, high_bitdepth: u8, twelve_bit: u8) -> u8 {
     if seq_profile == 2 && high_bitdepth != 0 {
         if twelve_bit != 0 { 12 } else { 10 }

@@ -152,10 +152,11 @@ fn av01_codec_string(av1c: &Av1cBox) -> String {
     format!("av01.{profile}.{level:02}{tier}.{bit_depth:02}")
 }
 
-/// AV1 の `BitDepth` 導出（issue 0086 / AV1 binding の公式に従う）
-///
-/// 合法な `seq_profile` 0..=2 では `bitstream::av1` の `read_color_config` と一致する。
+/// AV1 Binding の `BitDepth` を `av1C` の構造化フラグから導出する
 fn av1_bit_depth(seq_profile: u8, high_bitdepth: u8, twelve_bit: u8) -> u8 {
+    // `seq_profile == 2` かつ `high_bitdepth` なら `twelve_bit` で 12 / 10。
+    // それ以外は `high_bitdepth` なら 10、そうでなければ 8。
+    // 合法な `seq_profile` 0..=2 では `bitstream::av1` の `read_color_config` と同じ分岐になる。
     if seq_profile == 2 && high_bitdepth != 0 {
         if twelve_bit != 0 { 12 } else { 10 }
     } else if high_bitdepth != 0 {

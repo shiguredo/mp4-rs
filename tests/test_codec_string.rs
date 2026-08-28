@@ -175,6 +175,24 @@ fn hevc_keeps_middle_zero_constraint_bytes() {
     );
 }
 
+/// HEVC: `general_profile_compatibility_flags` が 0 なら hex は `0`（欄ごと省略しない）
+#[test]
+fn hevc_zero_compatibility_flags_emits_zero_hex() {
+    let mut hvcc = empty_hvcc();
+    hvcc.general_profile_compatibility_flags = 0;
+
+    let entry = SampleEntry::Hev1(Hev1Box {
+        visual: visual_fields(),
+        hvcc_box: hvcc,
+        unknown_boxes: vec![],
+    });
+
+    assert_eq!(
+        codec_string::from_sample_entry(&entry).expect("Hev1 は成功する"),
+        "hev1.1.0.L93.B0"
+    );
+}
+
 /// HEVC: constraint が全ゼロでも最低 1 バイト `00` を残す
 #[test]
 fn hevc_keeps_one_zero_byte_when_all_constraints_zero() {
@@ -271,6 +289,33 @@ fn av01_bit_depth_ignores_twelve_bit_outside_profile_2() {
     assert_eq!(
         codec_string::from_sample_entry(&entry).expect("Av01 は成功する"),
         "av01.0.01M.10"
+    );
+}
+
+/// AV1: profile 2 + high_bitdepth + twelve_bit=0 で 10-bit（内側 else）
+#[test]
+fn av01_profile2_ten_bit() {
+    let entry = SampleEntry::Av01(Av01Box {
+        visual: visual_fields(),
+        av1c_box: Av1cBox {
+            seq_profile: Uint::new(2),
+            seq_level_idx_0: Uint::new(4),
+            seq_tier_0: Uint::new(1),
+            high_bitdepth: Uint::new(1),
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),
+            chroma_subsampling_y: Uint::new(1),
+            chroma_sample_position: Uint::new(0),
+            initial_presentation_delay_minus_one: None,
+            config_obus: vec![],
+        },
+        unknown_boxes: vec![],
+    });
+
+    assert_eq!(
+        codec_string::from_sample_entry(&entry).expect("Av01 は成功する"),
+        "av01.2.04H.10"
     );
 }
 
@@ -398,6 +443,17 @@ fn mp4a_escaped_audio_object_type() {
     assert_eq!(
         codec_string::from_sample_entry(&entry).expect("エスケープ AOT は成功する"),
         "mp4a.40.32"
+    );
+}
+
+/// AOT 31 エスケープの非ゼロ ext: 下位 3 bit と次バイト上位 3 bit を両方踏む
+#[test]
+fn mp4a_escaped_audio_object_type_nonzero_ext() {
+    // 0xF9 = 0b11111_001、0x20 = 0b00100000 → ext = 0b001_001 = 9 → AOT 41
+    let entry = mp4a_with_asc(Some(vec![0xF9, 0x20]));
+    assert_eq!(
+        codec_string::from_sample_entry(&entry).expect("非ゼロ ext のエスケープ AOT は成功する"),
+        "mp4a.40.41"
     );
 }
 

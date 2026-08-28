@@ -7,7 +7,7 @@
 
 ## 目的
 
-Opus の codec private 情報から、ISOBMFF の固定値と `dOps` の対応関係を満たす `OpusBox` を構築できるようにする。
+codec private 情報の各フィールドを `OpusSampleEntryConfig` で指定して、ISOBMFF の固定値と `dOps` の対応関係を満たす `OpusBox` を構築できるようにする。
 
 利用側で `AudioSampleEntryFields` と `DopsBox` を手組みする必要をなくし、AAC や映像コーデックと同様に sample entry 構築の正規形を `bitstream` モジュールで提供する。
 

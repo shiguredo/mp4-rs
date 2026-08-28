@@ -8,7 +8,7 @@ use std::cell::Cell;
 
 use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber,
-    bitstream::opus::{OpusSampleEntryConfig, build_opus_box},
+    bitstream::opus::{ChannelCount, OpusSampleEntryConfig, build_opus_box},
     boxes::{AudioSampleEntryFields, OpusBox},
 };
 
@@ -17,12 +17,16 @@ const CASES: usize = 500;
 
 /// 受理条件を満たす [`OpusSampleEntryConfig`] を生成する
 ///
-/// - `output_channel_count` は mono / stereo (1 / 2) に閉じる
+/// - `channel_count` は mono / stereo (1 / 2) に閉じる
 /// - `pre_skip` / `input_sample_rate` / `output_gain` は全範囲を境界化する
 fn sample_opus_config(ctx: &mut noprop::TestCaseContext) -> OpusSampleEntryConfig {
-    let output_channel_count = if noprop::sample_bool(ctx) { 1 } else { 2 };
+    let channel_count = if noprop::sample_bool(ctx) {
+        ChannelCount::Mono
+    } else {
+        ChannelCount::Stereo
+    };
     OpusSampleEntryConfig {
-        output_channel_count,
+        channel_count,
         pre_skip: noprop::sample_with_boundaries(
             ctx,
             &[0u16, u16::MAX],
@@ -50,13 +54,13 @@ fn build_opus_box_preserves_fixed_and_config_values() -> noprop::TestResult {
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
         let config = sample_opus_config(ctx);
-        if config.output_channel_count == 1 {
+        if config.channel_count == ChannelCount::Mono {
             mono_reached.set(mono_reached.get() + 1);
         } else {
             stereo_reached.set(stereo_reached.get() + 1);
         }
 
-        let opus = build_opus_box(&config).expect("有効な設定は構築成功する");
+        let opus = build_opus_box(&config);
 
         // 固定値
         assert_eq!(
@@ -76,11 +80,11 @@ fn build_opus_box_preserves_fixed_and_config_values() -> noprop::TestResult {
         // 設定値の写り込み
         assert_eq!(
             opus.audio.channelcount,
-            u16::from(config.output_channel_count)
+            u16::from(config.channel_count.as_u8())
         );
         assert_eq!(
             opus.dops_box.output_channel_count,
-            config.output_channel_count
+            config.channel_count.as_u8()
         );
         assert_eq!(opus.dops_box.pre_skip, config.pre_skip);
         assert_eq!(opus.dops_box.input_sample_rate, config.input_sample_rate);
@@ -105,7 +109,7 @@ fn build_opus_box_encode_decode_roundtrip() -> noprop::TestResult {
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
         let config = sample_opus_config(ctx);
-        let opus = build_opus_box(&config).expect("有効な設定は構築成功する");
+        let opus = build_opus_box(&config);
 
         let encoded = opus.encode_to_vec().expect("encode 成功");
         let (decoded, size) = OpusBox::decode(&encoded).expect("decode 成功");

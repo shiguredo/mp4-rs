@@ -40,7 +40,7 @@
   - @sile
 - [ADD] Opus ビットストリーム処理ユーティリティ (`bitstream::opus`) を追加する
   - codec private 情報から `OpusBox` を構築する `OpusSampleEntryConfig` / `build_opus_box` を提供する
-  - `ChannelMappingFamily = 0` の mono / stereo (1 / 2 チャンネル) のみを受理し、対応しないチャンネル数は `crate::Error` として拒否する
+  - チャンネル数は `ChannelCount` enum (`Mono` / `Stereo`) で表し、`ChannelMappingFamily = 0` の mono / stereo のみを表現する
   - @sile
 - [ADD] H.264 の profile-level-id を扱う API を追加する
   - 3 バイトを保持する `H264ProfileLevelId` に、6 桁の RFC 4648 base16 をデコードする `from_hex` と、6 桁の小文字 hex へ変換する `to_hex` を追加する

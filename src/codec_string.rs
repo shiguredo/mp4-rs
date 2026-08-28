@@ -1,16 +1,16 @@
 //! `SampleEntry` から RFC 6381 系の `codecs` パラメーター文字列を生成する
 //!
-//! 構築済みのコーデック設定ボックスを解釈する機能であり、ビットストリーム解析は行わない。
-//! 書式は RFC 6381 および各コーデックの ISOBMFF binding に従う。
+//! コーデック設定ボックスの構造化フィールドを解釈する。AAC の `audioObjectType` だけは
+//! AudioSpecificConfig の先頭ビットから読む。書式は RFC 6381 および各 ISOBMFF binding に従う。
 
 use alloc::{format, string::String};
 
 use crate::{
-    Error, Result,
+    BoxType, Error, Result,
     bitstream::h264::H264ProfileLevelId,
     boxes::{
-        Av1cBox, AvccBox, FlacBox, HvccBox, OpusBox, SampleEntry, StppBox, Tx3gBox, VpccBox,
-        WvttBox,
+        Av01Box, Av1cBox, Avc1Box, AvccBox, FlacBox, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox,
+        SampleEntry, StppBox, Tx3gBox, Vp08Box, Vp09Box, VpccBox, WvttBox,
     },
     descriptors::DecoderConfigDescriptor,
 };
@@ -64,9 +64,6 @@ use crate::{
 /// # }
 /// ```
 ///
-/// 他コーデックの例: HEVC は `hev1.1.6.L93.B0`、AV1 必須形は `av01.0.00M.08`、
-/// AAC-LC は `mp4a.40.2`、Opus は `Opus`。
-///
 /// # エラー条件
 ///
 /// - [`SampleEntry::Unknown`]: 未知の sample entry は解釈できないため [`ErrorKind::Unsupported`][crate::ErrorKind::Unsupported]
@@ -75,11 +72,11 @@ use crate::{
 pub fn from_sample_entry(entry: &SampleEntry) -> Result<String> {
     match entry {
         SampleEntry::Avc1(b) => Ok(avc1_codec_string(&b.avcc_box)),
-        SampleEntry::Hev1(b) => Ok(hevc_codec_string("hev1", &b.hvcc_box)),
-        SampleEntry::Hvc1(b) => Ok(hevc_codec_string("hvc1", &b.hvcc_box)),
+        SampleEntry::Hev1(b) => Ok(hevc_codec_string(Hev1Box::TYPE, &b.hvcc_box)),
+        SampleEntry::Hvc1(b) => Ok(hevc_codec_string(Hvc1Box::TYPE, &b.hvcc_box)),
         SampleEntry::Av01(b) => Ok(av01_codec_string(&b.av1c_box)),
-        SampleEntry::Vp08(b) => Ok(vp_codec_string("vp08", &b.vpcc_box)),
-        SampleEntry::Vp09(b) => Ok(vp_codec_string("vp09", &b.vpcc_box)),
+        SampleEntry::Vp08(b) => Ok(vp_codec_string(Vp08Box::TYPE, &b.vpcc_box)),
+        SampleEntry::Vp09(b) => Ok(vp_codec_string(Vp09Box::TYPE, &b.vpcc_box)),
         SampleEntry::Mp4a(b) => mp4a_codec_string(&b.esds_box.es.dec_config_descr),
         SampleEntry::Opus(_) => Ok(format!("{}", OpusBox::TYPE)),
         SampleEntry::Flac(_) => Ok(format!("{}", FlacBox::TYPE)),
@@ -101,11 +98,11 @@ fn avc1_codec_string(avcc: &AvccBox) -> String {
         level_idc: avcc.avc_level_indication,
     }
     .to_hex();
-    format!("avc1.{hex}")
+    format!("{}.{hex}", Avc1Box::TYPE)
 }
 
 /// HEVC: ISO/IEC 14496-15 Annex E の `codecs` パラメーター
-fn hevc_codec_string(prefix: &str, hvcc: &HvccBox) -> String {
+fn hevc_codec_string(prefix: BoxType, hvcc: &HvccBox) -> String {
     let space = match hvcc.general_profile_space.get() {
         1 => "A",
         2 => "B",
@@ -149,7 +146,11 @@ fn av01_codec_string(av1c: &Av1cBox) -> String {
     let level = av1c.seq_level_idx_0.get();
     let tier = if av1c.seq_tier_0.get() == 0 { 'M' } else { 'H' };
     let bit_depth = av1_bit_depth(profile, av1c.high_bitdepth.get(), av1c.twelve_bit.get());
-    format!("av01.{profile}.{level:02}{tier}.{bit_depth:02}")
+    format!(
+        "{}.{}.{level:02}{tier}.{bit_depth:02}",
+        Av01Box::TYPE,
+        profile
+    )
 }
 
 /// AV1 Binding の `BitDepth` を `av1C` の構造化フラグから導出する
@@ -167,9 +168,10 @@ fn av1_bit_depth(seq_profile: u8, high_bitdepth: u8, twelve_bit: u8) -> u8 {
 }
 
 /// VP8 / VP9: Binding の必須形 `<4CC>.PP.LL.DD` のみ
-fn vp_codec_string(prefix: &str, vpcc: &VpccBox) -> String {
+fn vp_codec_string(prefix: BoxType, vpcc: &VpccBox) -> String {
     format!(
-        "{prefix}.{:02}.{:02}.{:02}",
+        "{}.{:02}.{:02}.{:02}",
+        prefix,
         vpcc.profile,
         vpcc.level,
         vpcc.bit_depth.get(),
@@ -179,7 +181,7 @@ fn vp_codec_string(prefix: &str, vpcc: &VpccBox) -> String {
 /// AAC / MPEG-4 Audio: RFC 6381 の `mp4a.<OTI>[.<AOT>]`
 fn mp4a_codec_string(dec_config: &DecoderConfigDescriptor) -> Result<String> {
     let oti = dec_config.object_type_indication;
-    let mut s = format!("mp4a.{oti:02x}");
+    let mut s = format!("{}.{:02x}", Mp4aBox::TYPE, oti);
 
     if oti == DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3 {
         let Some(info) = &dec_config.dec_specific_info else {

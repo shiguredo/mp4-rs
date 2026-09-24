@@ -1796,8 +1796,19 @@ enum Mp4Error fmp4_segment_demuxer_get_tracks(struct Fmp4SegmentDemuxer *demuxer
                                               uint32_t *out_count);
 
 /**
- * メディアセグメント（`moof` + `mdat` または `sidx` + `moof` + `mdat`）を処理して
- * サンプルの配列を返す
+ * メディアセグメント（`moof` + `mdat`）を処理してサンプルの配列を返す
+ *
+ * `moof` より前にあるトップレベルボックス（`styp` / `sidx` / `ssix` / `prft` / `free` など）は、
+ * 種別を問わず中身を解釈せずに読み飛ばす。
+ * `ftyp` / `moov` / `mdat` も同じく読み飛ばし、`moov` があってもその内容は反映しない。
+ * トラックの設定には、常に `fmp4_segment_demuxer_handle_init_segment()` で処理した内容を使う。
+ * サンプルの `data_offset` は `data` の先頭からのバイトオフセットであり、
+ * `moof` より前のボックスを読み飛ばした場合も基準は変わらない。
+ *
+ * 1 回の呼び出しで処理できるのは単一の `moof` + `mdat` ペアのみ。
+ * 複数のペアが含まれる場合や、`mdat` の後ろに追加データがある場合はエラーになる。
+ * `moof` が見つからない場合や、`moof` より前にサイズが 0 のボックス
+ * （size=0、または size=1 + largesize=0）がある場合もエラーになる。
  *
  * # 引数
  *

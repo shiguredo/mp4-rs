@@ -1,6 +1,6 @@
-//! `Fmp4SegmentDemuxer` の `DemuxError::InvalidState` 経路の単体テスト
+//! `Fmp4SegmentDemuxer` の意図的なエラーパスの単体テスト
 //!
-//! 対象は次の 3 経路:
+//! `DemuxError::InvalidState` を返す次の 3 つのエラーパスを対象にする:
 //! - 二重 `handle_init_segment`
 //! - init 前の `tracks`
 //! - init 前の `handle_media_segment`（正当な `moof` + `mdat` を渡した場合）
@@ -9,13 +9,22 @@
 //! 空・不正バイト列では `DecodeError` になるため、別の `Fmp4SegmentMuxer` で
 //! 正当なセグメントを組み立ててから未初期化 demuxer に渡す。
 //!
+//! `handle_media_segment` が `DemuxError::DecodeError` を返す次のエラーパスを対象にする:
+//! - 空のデータ
+//! - `moof` が見つからないデータ（`styp` だけのデータ、`sidx` だけのデータ、
+//!   `moof` より前のボックスの宣言サイズが入力の末尾を超えるデータ）
+//! - `moof` より前にサイズが 0 のボックスがあるデータ（32 ビットの size=0 と、size=1 + largesize=0 の両方）
+//! - `moof` より前のボックスのサイズが大きすぎて、次のボックスの位置を計算できないデータ
+//! - `moof` より前のボックスの後ろで、次のボックスのヘッダーが途中で切れているデータ
+//!
+//! `moof` より前のボックスを読み飛ばせる正常系は PBT で検証する。
 //! 意図的なエラーパスは固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
-    TrackKind, Uint,
-    boxes::{Avc1Box, AvccBox, SampleEntry, VisualSampleEntryFields},
+    Decode, Error, ErrorKind, TrackKind, Uint,
+    boxes::{Avc1Box, AvccBox, SampleEntry, SidxBox, VisualSampleEntryFields},
     demux::{DemuxError, Fmp4SegmentDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
 };
@@ -51,30 +60,32 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
     })
 }
 
-/// 正当な init セグメントとメディアセグメント（`moof` + `mdat` payload 付き）を組み立てる
-///
-/// demux 側の `InvalidState` 検証では、構文的に正しいバイト列が必要なため、
-/// 別 muxer の公開 API だけで生成する。
-fn build_init_and_media_segments() -> (Vec<u8>, Vec<u8>) {
-    let sample_entry = create_avc1_sample_entry(320, 240);
-    // payload 長は demux 経路の検証（`InvalidState` への到達）には無関係の任意値。
-    // `mdat` header は payload サイズに応じて 8 / 16 バイトを選ぶため、
-    // `u32::MAX` を超えない範囲であれば境界の選択に影響しない。
-    let payload = [0u8; 16];
-    let sample = Sample {
+/// payload が `data_size` バイトの映像サンプル 1 個分の `Sample` を組み立てる
+fn create_video_sample(data_size: usize) -> Sample {
+    Sample {
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
-        sample_entry: Some(sample_entry),
+        sample_entry: Some(create_avc1_sample_entry(320, 240)),
         duration: 3000,
         keyframe: true,
         composition_time_offset: None,
         data_offset: 0,
-        data_size: payload.len(),
-    };
+        data_size,
+    }
+}
+
+/// 正当な init セグメントとメディアセグメント（`moof` + `mdat` payload 付き）を組み立てる
+///
+/// demux 側の検証では構文的に正しいバイト列が必要なため、別 muxer の公開 API だけで生成する。
+fn build_init_and_media_segments() -> (Vec<u8>, Vec<u8>) {
+    // payload 長はこのファイルで検証するエラーパスには無関係の任意値。
+    // `mdat` のヘッダーは payload サイズに応じて 8 / 16 バイトを選ぶため、
+    // `u32::MAX - 8` を超えない範囲であれば境界の選択に影響しない。
+    let payload = [0u8; 16];
 
     let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
     let mut media_segment = muxer
-        .create_media_segment_metadata(&[sample])
+        .create_media_segment_metadata(&[create_video_sample(payload.len())])
         .expect("media セグメントの作成に失敗した");
     media_segment.extend_from_slice(&payload);
 
@@ -126,5 +137,248 @@ fn invalid_state_media_before_init() {
         matches!(result, Err(DemuxError::InvalidState(_))),
         "init 前の handle_media_segment では InvalidState を期待したが {:?} だった",
         result
+    );
+}
+
+/// `init_segment` で初期化した新しい demuxer に `data` を `handle_media_segment` で渡し、`DecodeError` の中身を返す
+///
+/// 成功した場合や `DecodeError` 以外のエラーになった場合は、テスト失敗としてパニックする
+fn expect_media_segment_decode_error(init_segment: &[u8], data: &[u8]) -> Error {
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(init_segment)
+        .expect("handle_init_segment に失敗した");
+
+    match demuxer.handle_media_segment(data) {
+        Err(DemuxError::DecodeError(error)) => error,
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// 空のデータを渡すと `InvalidInput` の `DecodeError` になること
+///
+/// 空のデータは、呼び出し側がセグメントを渡し損ねたものとして `InvalidInput` にする。
+/// 中身はあるのに `moof` が見つからない壊れたセグメント（`InvalidData`）とは区別する
+#[test]
+fn decode_error_empty_media_segment() {
+    let (init_segment, _media_segment) = build_init_and_media_segments();
+
+    let error = expect_media_segment_decode_error(&init_segment, &[]);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidInput,
+        "空のデータでは InvalidInput を期待した"
+    );
+    assert_eq!(
+        error.reason, "empty media segment",
+        "空のデータ専用のエラー理由を期待した"
+    );
+}
+
+/// `styp` だけで `moof` がないデータを渡すと `InvalidData` の `DecodeError` になること
+///
+/// `moof` より前のボックスは読み飛ばすが、読み飛ばした結果として末尾に達した場合は
+/// `moof` が見つからないことをエラーにする
+#[test]
+fn decode_error_moof_not_found_after_styp() {
+    let (init_segment, _media_segment) = build_init_and_media_segments();
+
+    // size=24 + 種別 `styp` + major_brand + minor_version + compatible_brands (2 個)
+    //
+    // ブランドは demuxer が解釈しないため任意の値でよいが、
+    // DASH のメディアセグメントでよく使われる `msdh` / `msix` にしておく
+    let mut styp = Vec::new();
+    styp.extend_from_slice(&24u32.to_be_bytes());
+    styp.extend_from_slice(b"styp");
+    styp.extend_from_slice(b"msdh");
+    styp.extend_from_slice(&0u32.to_be_bytes());
+    styp.extend_from_slice(b"msdh");
+    styp.extend_from_slice(b"msix");
+
+    let error = expect_media_segment_decode_error(&init_segment, &styp);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidData,
+        "moof がないデータでは InvalidData を期待した"
+    );
+    assert_eq!(
+        error.reason, "moof box not found in media segment",
+        "moof が見つからないことを示すエラー理由を期待した"
+    );
+}
+
+/// `sidx` だけで `moof` がないデータを渡すと、`styp` だけの場合と同じ `InvalidData` の `DecodeError` になること
+///
+/// `sidx` もほかのボックスと同じく読み飛ばす対象であり、`sidx` を特別扱いしないことを確認する
+#[test]
+fn decode_error_moof_not_found_after_sidx() {
+    // muxer が生成する `sidx` 付きメディアセグメントから、先頭の `sidx` だけを切り出す
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    // payload 長はこのテストの検証内容には無関係の任意値。payload 自体は付けない
+    let media_segment_metadata = muxer
+        .create_media_segment_metadata_with_sidx(&[create_video_sample(16)])
+        .expect("sidx 付き media セグメントの作成に失敗した");
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+    let (_sidx_box, sidx_size) =
+        SidxBox::decode(&media_segment_metadata).expect("先頭の sidx のデコードに失敗した");
+
+    let error =
+        expect_media_segment_decode_error(&init_segment, &media_segment_metadata[..sidx_size]);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidData,
+        "sidx だけのデータでは InvalidData を期待した"
+    );
+    assert_eq!(
+        error.reason, "moof box not found in media segment",
+        "moof が見つからないことを示すエラー理由を期待した"
+    );
+}
+
+/// `moof` より前のボックスの宣言サイズが入力の末尾を超えると、`moof` が見つからない `InvalidData` の `DecodeError` になること
+///
+/// 宣言サイズで読み飛ばした先の位置は、入力の末尾をちょうど指すとは限らず、末尾を超えることがある。
+/// 位置が末尾と一致する場合だけを判定する誤りがあると、範囲外のスライスで panic するため、
+/// 末尾を超える場合も `moof` が見つからないエラーになることを固定する
+#[test]
+fn decode_error_box_exceeds_media_segment() {
+    let (init_segment, _media_segment) = build_init_and_media_segments();
+
+    // size=100 を宣言した `styp` ボックスのヘッダーの後ろに 16 バイトだけ置く（合計 24 バイト）
+    let mut data = Vec::new();
+    data.extend_from_slice(&100u32.to_be_bytes());
+    data.extend_from_slice(b"styp");
+    data.extend_from_slice(&[0u8; 16]);
+
+    let error = expect_media_segment_decode_error(&init_segment, &data);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidData,
+        "宣言サイズが入力を超えるボックスでは InvalidData を期待した"
+    );
+    assert_eq!(
+        error.reason, "moof box not found in media segment",
+        "moof が見つからないことを示すエラー理由を期待した"
+    );
+}
+
+/// `moof` より前に 32 ビットの size=0 のボックスがあると `InvalidData` の `DecodeError` になること
+///
+/// size=0 のボックスは入力の末尾まで続くことを意味し、その後ろに `moof` は存在し得ない。
+/// 後ろに `moof` + `mdat` のバイト列が続いていても、仕様上はそれもこのボックスの中身にあたるため、
+/// `moof` としては扱わずエラーにする
+#[test]
+fn decode_error_size_zero_box_before_moof() {
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    // size=0 の `free` ボックスのヘッダーだけを正当なメディアセグメントの前に置く
+    let mut data = Vec::new();
+    data.extend_from_slice(&0u32.to_be_bytes());
+    data.extend_from_slice(b"free");
+    data.extend_from_slice(&media_segment);
+
+    let error = expect_media_segment_decode_error(&init_segment, &data);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidData,
+        "moof より前の size=0 のボックスでは InvalidData を期待した"
+    );
+    assert_eq!(
+        error.reason, "found box with size=0 before moof in media segment",
+        "moof より前の size=0 のボックスを示すエラー理由を期待した"
+    );
+}
+
+/// `moof` より前に size=1 + largesize=0 のボックスがあると、32 ビットの size=0 と同じエラーになること
+///
+/// largesize=0 は仕様上の意味が定められておらず、読み飛ばし先を決められない。
+/// ボックスサイズとしては 32 ビットの size=0 と同じく 0 になるため、同じエラーにする
+#[test]
+fn decode_error_large_size_zero_box_before_moof() {
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    // size=1 + 種別 `free` + largesize=0 のヘッダーだけを正当なメディアセグメントの前に置く
+    let mut data = Vec::new();
+    data.extend_from_slice(&1u32.to_be_bytes());
+    data.extend_from_slice(b"free");
+    data.extend_from_slice(&0u64.to_be_bytes());
+    data.extend_from_slice(&media_segment);
+
+    let error = expect_media_segment_decode_error(&init_segment, &data);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidData,
+        "moof より前の largesize=0 のボックスでは InvalidData を期待した"
+    );
+    assert_eq!(
+        error.reason, "found box with size=0 before moof in media segment",
+        "moof より前の size=0 のボックスを示すエラー理由を期待した"
+    );
+}
+
+/// `moof` より前のボックスの largesize が大きすぎて次のボックスの位置を計算できないと、
+/// `InvalidData` の `DecodeError` になること
+///
+/// 64 ビット環境では位置の加算がオーバーフローし、32 ビット環境ではボックスサイズを `usize` に変換できない。
+/// どちらも次のボックスを読めないため、同じ種別のエラーにする。
+///
+/// largesize を 32 ビットに切り詰めるような誤りがあった場合も、エラー理由の違いで検出できる。
+/// 64 ビット環境では位置の加算がオーバーフローせずに `moof` が見つからないエラーになり、
+/// 32 ビット環境では `usize` への変換を通過して位置の加算がオーバーフローするためである
+#[test]
+fn decode_error_box_offset_overflow_before_moof() {
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    // 8 バイトの `free` ボックスの後ろに、largesize=u64::MAX の `free` ボックスのヘッダーを置く。
+    // 64 ビット環境では、先頭の `free` がないと位置が 0 のまま u64::MAX を足すことになり、オーバーフローしない
+    let mut data = Vec::new();
+    data.extend_from_slice(&8u32.to_be_bytes());
+    data.extend_from_slice(b"free");
+    data.extend_from_slice(&1u32.to_be_bytes());
+    data.extend_from_slice(b"free");
+    data.extend_from_slice(&u64::MAX.to_be_bytes());
+    data.extend_from_slice(&media_segment);
+
+    let error = expect_media_segment_decode_error(&init_segment, &data);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InvalidData,
+        "位置を計算できないボックスでは InvalidData を期待した"
+    );
+    let expected_reason = if cfg!(target_pointer_width = "64") {
+        "box offset overflow in media segment"
+    } else {
+        "box size exceeds usize::MAX"
+    };
+    assert_eq!(
+        error.reason, expected_reason,
+        "位置を計算できないことを示すエラー理由を期待した"
+    );
+}
+
+/// `moof` より前のボックスを読み飛ばした後ろで、次のボックスのヘッダーが途中で切れていると、
+/// `InsufficientBuffer` の `DecodeError` になること
+///
+/// ボックスヘッダーを読むのに足りないバイト列は、`BoxHeader` のデコードエラーをそのまま返す。
+/// `handle_init_segment` の読み飛ばしや `moof` / `mdat` の解析でも同じ扱いであり、
+/// ここだけ別の種別に変換しない
+#[test]
+fn decode_error_truncated_box_header_after_skipped_box() {
+    let (init_segment, _media_segment) = build_init_and_media_segments();
+
+    // 8 バイトの `styp` ボックス（ヘッダーだけ）の後ろに、ボックスヘッダーの最小サイズ（8 バイト）に
+    // 満たない 4 バイトだけを置く
+    let mut data = Vec::new();
+    data.extend_from_slice(&8u32.to_be_bytes());
+    data.extend_from_slice(b"styp");
+    data.extend_from_slice(&[0u8; 4]);
+
+    let error = expect_media_segment_decode_error(&init_segment, &data);
+    assert_eq!(
+        error.kind,
+        ErrorKind::InsufficientBuffer,
+        "ヘッダーが途中で切れているデータでは InsufficientBuffer を期待した"
     );
 }

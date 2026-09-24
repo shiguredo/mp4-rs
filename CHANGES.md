@@ -11,6 +11,13 @@
 
 ## develop
 
+- [FIX] `Fmp4SegmentDemuxer::handle_media_segment` が `moof` より前の `styp` などのトップレベルボックスを読み飛ばすようにする
+  - これまでは先頭の `sidx` を 1 個だけ読み飛ばしていたため、`styp` + `moof` + `mdat` や `sidx` + `sidx` + `moof` + `mdat` など ISO/IEC 14496-12 で有効なメディアセグメントをエラーにしていた
+  - 読み飛ばすボックスの中身は種別を問わず解釈しない。`data_offset` はこれまでどおり渡したデータの先頭を基準にする
+  - `moof` より前のボックスを読み飛ばした結果、`moof` が見つからないまま入力の末尾に達した場合は `DemuxError::DecodeError`（`ErrorKind::InvalidData`、C API は `MP4_ERROR_INVALID_DATA`）を返す
+  - このため、先頭の `sidx` のペイロードの途中または直後で入力が終わる場合に返るエラー種別が、`ErrorKind::InvalidInput`（C API は `MP4_ERROR_INVALID_INPUT`）から `ErrorKind::InvalidData`（C API は `MP4_ERROR_INVALID_DATA`）に変わる
+  - @voluntas
+
 ## 2026.5.0
 
 - [ADD] `SampleEntry` から RFC 6381 および各コーデック binding の `codecs` パラメーター文字列を生成する API (`codec_string::from_sample_entry`) を追加する

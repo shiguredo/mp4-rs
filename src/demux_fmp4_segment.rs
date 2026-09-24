@@ -9,6 +9,7 @@
 //!
 //! - **初期化セグメント**: `ftyp` + `moov` (`mvex` / `trex` を含む)
 //! - **メディアセグメント**: `moof` + `mdat` のペア（繰り返し）
+//!   - `moof` の前に `styp` / `sidx` などのボックスが置かれることがある
 //!
 //! # Examples
 //!
@@ -40,7 +41,7 @@ use alloc::{format, vec::Vec};
 
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
-    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, SidxBox, TfhdBox, TrexBox},
+    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrexBox},
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
 
@@ -197,8 +198,15 @@ impl Fmp4SegmentDemuxer {
 
     /// メディアセグメント（`moof` + `mdat`）を処理してサンプルのリストを返す
     ///
+    /// `moof` より前にあるトップレベルボックス（`styp` / `sidx` / `ssix` / `prft` / `free` など）は、
+    /// 種別を問わず中身を解釈せずに読み飛ばす。
+    /// `ftyp` / `moov` / `mdat` も同じく読み飛ばし、`moov` があってもその内容は反映しない。
+    /// トラックの設定には、常に [`handle_init_segment()`](Self::handle_init_segment) で処理した内容を使う。
+    ///
     /// 返される [`Sample`] の `data_offset` は、
     /// `data` スライスの先頭からのバイトオフセットである。
+    /// `moof` より前のボックスを読み飛ばした場合も、
+    /// `data_offset` の基準は `moof` の先頭ではなく `data` スライスの先頭のままである。
     ///
     /// `sample_entry` は各トラックの最初のサンプル、または
     /// sample description index が変わったサンプルでのみ `Some` になる。
@@ -207,8 +215,9 @@ impl Fmp4SegmentDemuxer {
     ///
     /// 1 回の呼び出しで処理できるのは単一の `moof` + `mdat` ペアのみ。
     /// セグメント内に複数の `moof` + `mdat` ペアが含まれる場合や、
-    /// `mdat` の末尾に追加データが存在する場合はエラーになる。
-    /// 先頭に `sidx` ボックスが存在する場合は自動的にスキップされる。
+    /// `mdat` の後ろに追加データが存在する場合はエラーになる。
+    /// `moof` が見つからない場合や、`moof` より前にサイズが 0 のボックス
+    /// （size=0、または size=1 + largesize=0）がある場合もエラーになる。
     ///
     /// # サポートする `base_data_offset` モード
     ///
@@ -216,36 +225,45 @@ impl Fmp4SegmentDemuxer {
     /// - `default_base_is_moof = true` かつ `base_data_offset` なし: moof 先頭を基準とする
     /// - `default_base_is_moof = false` かつ `base_data_offset` なし: 最初の `traf` は moof 先頭、2 番目以降は前の `traf` のデータ末尾を基準とする（ISO 14496-12 Section 8.8.8）
     pub fn handle_media_segment(&mut self, data: &[u8]) -> Result<Vec<Sample<'_>>, DemuxError> {
-        let mut offset = 0;
-
-        if data.len().saturating_sub(offset) >= BoxHeader::MIN_SIZE {
-            let (header, _) = BoxHeader::decode(&data[offset..])?;
-            if header.box_type == SidxBox::TYPE {
-                let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
-                    DemuxError::DecodeError(Error::invalid_data("sidx box size exceeds usize::MAX"))
-                })?;
-                if box_size == 0 {
-                    return Err(DemuxError::DecodeError(Error::invalid_data(
-                        "sidx box has size=0",
-                    )));
-                }
-                offset = offset.checked_add(box_size).ok_or_else(|| {
-                    DemuxError::DecodeError(Error::invalid_data("sidx box offset overflow"))
-                })?;
-            }
-        }
-
-        if offset >= data.len() {
+        if data.is_empty() {
             return Err(DemuxError::DecodeError(Error::invalid_input(
                 "empty media segment",
             )));
         }
-        let (header, _) = BoxHeader::decode(&data[offset..])?;
-        if header.box_type != MoofBox::TYPE {
-            return Err(DemuxError::DecodeError(Error::invalid_data(format!(
-                "expected moof box but got {:?}",
-                header.box_type
-            ))));
+
+        // ISO/IEC 14496-12:2022 では、メディアセグメントの `moof` の前に
+        // `styp` (8.16.2) / `sidx` (8.16.3、複数可) / `ssix` (8.16.4) / `prft` (8.16.5) が置かれ得る。
+        // `free` / `skip` (8.1.2) も置かれ得るうえ、未知のボックスは無視して読み飛ばすことになっている (4.2.2)。
+        // そのため、これらを種別ごとに列挙せず、`moof` が出るまで汎用的に読み飛ばす。
+        // `styp` が先頭にあるかどうかも検証しない (8.16.2 では、先頭にない `styp` は無視してよい)。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+        let mut offset = 0;
+        loop {
+            if offset >= data.len() {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "moof box not found in media segment",
+                )));
+            }
+            let (header, _) = BoxHeader::decode(&data[offset..])?;
+            if header.box_type == MoofBox::TYPE {
+                break;
+            }
+            let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+            })?;
+            // size=0 のボックスはトップレベルのコンテナの最後のボックスでなければならない (4.2.2)。
+            // メディアセグメント単体を渡すこの API では入力全体をそのコンテナとみなすため、その後ろに `moof` は存在し得ない。
+            // size=1 + largesize=0 は仕様上の意味が定められておらず、読み飛ばし先を決められない。
+            // どちらもボックスサイズは 0 になるため、ここでまとめてエラーにする。
+            // この検査がないと `offset` が進まず、ループが終わらなくなる。
+            if box_size == 0 {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "found box with size=0 before moof in media segment",
+                )));
+            }
+            offset = offset.checked_add(box_size).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("box offset overflow in media segment"))
+            })?;
         }
         let moof_offset = offset;
         let (moof, moof_size) = MoofBox::decode(&data[offset..])?;

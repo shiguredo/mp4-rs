@@ -114,7 +114,7 @@ while let Ok(Some(sample)) = demuxer.next_sample() {
 | `new()` | インスタンス生成 |
 | `handle_init_segment(&[u8])` | 初期化セグメントを処理する (2 回目以降は `InvalidState`) |
 | `tracks()` | 初期化済みトラック情報 `&[TrackInfo]` を返す |
-| `handle_media_segment(&[u8])` | メディアセグメントを処理し `Vec<Sample>` を返す。先頭の `sidx` は自動スキップ。1 回の呼び出しで 1 つの `moof` + `mdat` ペアのみ |
+| `handle_media_segment(&[u8])` | メディアセグメントを処理し `Vec<Sample>` を返す。`moof` より前のトップレベルボックス (`styp` / `sidx` / `ssix` / `prft` / `free` 等) は読み飛ばす。1 回の呼び出しで 1 つの `moof` + `mdat` ペアのみ (複数ペアや `mdat` の後ろの追加データはエラー) |
 
 `Sample.data_offset` は `handle_media_segment()` に渡したバッファ先頭からの相対位置。
 

@@ -83,12 +83,19 @@ while let Ok(Some(sample)) = demuxer.next_sample() {
 `Fmp4SegmentMuxer` でメディアセグメントを生成し、`Fmp4SegmentDemuxer` で読み戻せます。
 
 ```rust
-use shiguredo_mp4::mux::{Fmp4SegmentMuxer, SegmentSample};
+use shiguredo_mp4::mux::{Fmp4SegmentMuxer, Sample};
 use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
+
+// samples: &[Sample] はセグメントに含めるサンプルの一覧
+// Sample の data_offset は、このセグメントの mdat ペイロード領域の先頭からの相対位置で指定する
+// payload: &[u8] は samples が参照するサンプルデータを data_offset どおりに並べたバイト列
 
 // Muxer でメディアセグメントを生成する
 let mut muxer = Fmp4SegmentMuxer::new()?;
-let segment = muxer.create_media_segment(&samples)?;
+// 返り値は moof と mdat ヘッダーだけなので、後ろに mdat ペイロードを付ける
+let mut segment = muxer.create_media_segment_metadata(&samples)?;
+segment.extend_from_slice(&payload);
+// 初期化セグメントは、メディアセグメントの生成で観測したトラック情報から作る
 let init_segment = muxer.init_segment_bytes()?;
 
 // Demuxer で読み戻す

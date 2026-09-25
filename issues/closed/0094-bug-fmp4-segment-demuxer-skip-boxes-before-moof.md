@@ -1,7 +1,7 @@
 # `Fmp4SegmentDemuxer::handle_media_segment` が `moof` より前の `styp` などのトップレベルボックスを受け付けない
 
 - Created: 2026-09-24
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-24
 - Branch: feature/fix-fmp4-segment-demuxer-skip-boxes-before-moof
 - Polished: 2026-09-24
 
@@ -58,19 +58,37 @@
 
 ## 解決方法
 
+`Fmp4SegmentDemuxer::handle_media_segment` の先頭にあった `sidx` 1 個だけのスキップ処理を、`moof` が出るまでトップレベルボックスを種別を問わず読み飛ばすループに置き換えた。
+
+### 実装
+
 - `src/demux_fmp4_segment.rs`
-  - `Fmp4SegmentDemuxer::handle_media_segment` の先頭にある `sidx` スキップ処理を、`moof` が出るまでトップレベルボックスを読み飛ばすループに置き換える
-  - モジュール doc の「メディアセグメント」の説明と、`handle_media_segment` の doc（制限事項にある `sidx` 自動スキップの記述）を更新する
-- `crates/c-api/src/fmp4_segment_demux.rs`
-  - `fmp4_segment_demuxer_handle_media_segment` の doc（「`moof` + `mdat` または `sidx` + `moof` + `mdat`」）を更新し、cbindgen で `crates/c-api/include/mp4.h` を再生成する
-- `skills/shiguredo-mp4/SKILL.md`
-  - `handle_media_segment` の行（「先頭の `sidx` は自動スキップ」）を更新する
-- テスト（shiguredo-rust の役割分担に従い、正常系は PBT、PBT で扱えないエラーケースだけを単体テストにする）
-  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`
-    - `build_complete_media_segment` と `build_complete_media_segment_with_sidx` で生成したセグメントの前に、`moof` 以外のトップレベルボックスを任意の種類・個数で付けるプロパティを追加する
-    - 付けるボックスの種類は `styp` / `sidx` / `ssix` / `prft` / `free` / `skip` と任意の 4CC から引く（`moof` と、拡張型が必要な `uuid` は除く）
-    - 何も付けない場合と比べて、サンプル列が一致し、`data_offset` が付けたボックスの合計サイズ分だけずれることを確認する
-  - `tests/test_demux_fmp4_segment.rs`
-    - エラーケースとして、`styp` だけのデータと、`moof` の前に size=0 のボックスがあるデータを追加する
-    - モジュール doc（今は `InvalidState` 経路だけを対象とする記述）を、`DecodeError` 経路も含む記述に更新する
-- `CHANGES.md` に `[FIX]` として記載する
+  - `data` が空なら、これまでどおり `empty media segment`（`Error::invalid_input`）を返す
+  - ループでは `BoxHeader` だけをデコードし、`moof` でなければボックスサイズの分だけ位置を進める。ボックスの中身は解釈しない
+  - エラーは次のとおり
+    - 読み飛ばした結果、`moof` が見つからないまま入力の末尾に達した場合: `moof box not found in media segment`（`Error::invalid_data`）
+    - サイズが 0 のボックス（size=0、または size=1 + largesize=0）がある場合: `found box with size=0 before moof in media segment`
+    - `usize` への変換の失敗とオフセットのオーバーフロー: `box size exceeds usize::MAX` / `box offset overflow in media segment`（`handle_init_segment` と同じ形）
+  - `data_offset` と明示された `base_data_offset` の基準は `data` の先頭のまま。`moof` 以降の処理は変更していない
+  - 実装コメントに ISO/IEC 14496-12:2022 の節番号（4.2.2、8.1.2、8.16.2〜8.16.5）と、将来の改訂で変わる可能性があることを書いた
+  - モジュール doc と `handle_media_segment` の doc を更新した。読み飛ばすボックスの例、`ftyp` / `moov` / `mdat` も読み飛ばして `moov` の内容は反映しないこと、`data_offset` の基準、エラー条件を書いた
+- `crates/c-api/src/fmp4_segment_demux.rs`: `fmp4_segment_demuxer_handle_media_segment` の doc を Rust 側に合わせて更新し、`crates/c-api/include/mp4.h` を再生成した
+- `skills/shiguredo-mp4/SKILL.md`: `handle_media_segment` の行を更新した
+- `CHANGES.md`: `[FIX]` を追加した。`sidx` のペイロードの途中または直後で入力が終わる場合のエラー種別が `InvalidInput` から `InvalidData` に変わることも書いた
+
+### テスト
+
+- `pbt/tests/prop_fmp4_segment_mux_demux.rs` に `leading_boxes_before_moof_are_skipped` を追加した
+  - `sidx` あり / なしのセグメントの前に、`styp` / `sidx` / `ssix` / `prft` / `free` / `skip` / `ftyp` / `moov` / `mdat` と任意の 4CC（`moof` と `uuid` を除く）のボックスを 1〜4 個置く
+  - ヘッダーは 32 ビットの size と、size=1 + largesize の両方の形式を使う
+  - `default_base_is_moof` は、muxer の出力そのままの true と、`moof` を書き換えた false の両方を確認する
+  - 置かない場合と比べて、`data_offset` 以外のフィールドが一致し、`data_offset` が置いたボックスの合計サイズ分だけずれることを確認する
+- `tests/test_demux_fmp4_segment.rs` にエラーパスの単体テストを 8 件追加した
+  - 空のデータ、`styp` だけ、`sidx` だけ、宣言サイズが入力の末尾を超えるボックス、size=0、size=1 + largesize=0、オフセットのオーバーフロー、読み飛ばした後ろでヘッダーが途中で切れているデータ
+- 修正前の実装や、判定・基準の計算を変えた変異版で、追加したテストが失敗することを確認した
+
+### 見送ったもの
+
+- `handle_init_segment` と読み飛ばしループの共通化（`handle_init_segment` の文言にも手を入れることになるため）
+- ヘッダーが途中で切れた場合の `InsufficientBuffer` を別の種別に変換すること（`moof` / `mdat` の解析や `handle_init_segment` と同じ扱いに揃える）
+- largesize 形式の `uuid` は、`BoxHeader` が usertype と largesize を ISO/IEC 14496-12 の 4.2.2 と逆の順で読み書きしているため、正しく読み飛ばせない。既存の不具合として別に扱う

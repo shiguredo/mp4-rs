@@ -234,6 +234,19 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_get_tracks(
 ///   - 返された配列は `fmp4_segment_demuxer_free_samples()` で解放する必要がある
 /// - `out_count`: サンプル数を受け取るポインタ
 ///
+/// # 内部の状態
+///
+/// エラーを返したどの場合も、内部の（Rust 側の）`Fmp4SegmentDemuxer` の状態
+/// （次の呼び出しで `sample_entry` を返すかどうかの判定に使う、各トラックの直前に使った
+/// sample description index）は変更しない。
+///
+/// 保証の範囲は内部の `Fmp4SegmentDemuxer` の状態に限る。エラーを返すときも
+/// `last_error_string` は更新され（引数が NULL の場合は `MP4_ERROR_NULL_POINTER` を返すだけで
+/// 更新しない）、変換に成功したサンプルエントリーが C API 側のサンプルエントリーのキャッシュに
+/// 残ることがある。
+///
+/// 引数が NULL でない場合、エラーを返すときは `out_samples` に NULL、`out_count` に 0 を書き込む。
+///
 /// # 戻り値
 ///
 /// - `MP4_ERROR_OK`: 正常に処理された
@@ -261,88 +274,98 @@ pub unsafe extern "C" fn fmp4_segment_demuxer_handle_media_segment(
         return error;
     }
 
-    match demuxer.inner.handle_media_segment(data) {
-        Ok(samples) => {
-            let mut c_samples: Vec<Mp4DemuxSample> = Vec::new();
-            for s in samples {
-                let sample_entry = if let Some(sample_entry) = s.sample_entry {
-                    let sample_entry_box_type = sample_entry.box_type();
-                    if let Some(entry) = demuxer
-                        .sample_entries
-                        .iter()
-                        .find_map(|entry| (entry.0 == *sample_entry).then_some(&entry.2))
-                    {
-                        Some(&**entry)
-                    } else {
-                        let Some(entry_owned) = Mp4SampleEntryOwned::new(sample_entry.clone())
-                        else {
-                            unsafe {
-                                *out_samples = std::ptr::null_mut();
-                                *out_count = 0;
-                            }
-                            demuxer.set_last_error(&format!(
-                                "[fmp4_segment_demuxer_handle_media_segment] Unsupported sample entry box type: {sample_entry_box_type}",
-                            ));
-                            return Mp4Error::MP4_ERROR_UNSUPPORTED;
-                        };
-                        let entry = Box::new(entry_owned.to_mp4_sample_entry());
-                        demuxer
-                            .sample_entries
-                            .push((sample_entry.clone(), entry_owned, entry));
-                        demuxer.sample_entries.last().map(|entry| &*entry.2)
-                    }
-                } else {
-                    None
-                };
-                let Some(track) = demuxer.tracks_cache.as_ref().and_then(|tracks| {
-                    tracks
-                        .iter()
-                        .find(|track| track.track_id == s.track.track_id)
-                }) else {
-                    unsafe {
-                        *out_samples = std::ptr::null_mut();
-                        *out_count = 0;
-                    }
-                    demuxer.set_last_error(
-                        "[fmp4_segment_demuxer_handle_media_segment] track info not found for sample",
-                    );
-                    return Mp4Error::MP4_ERROR_OTHER;
-                };
-                c_samples.push(Mp4DemuxSample::new(s, track, sample_entry));
-            }
-
-            let count = match u32::try_from(c_samples.len()) {
-                Ok(v) => v,
-                Err(_) => {
-                    unsafe {
-                        *out_samples = std::ptr::null_mut();
-                        *out_count = 0;
-                    }
-                    demuxer.set_last_error(
-                        "[fmp4_segment_demuxer_handle_media_segment] sample count exceeds u32::MAX",
-                    );
-                    return Mp4Error::MP4_ERROR_OTHER;
-                }
-            };
-            let mut boxed = c_samples.into_boxed_slice();
-            let ptr = boxed.as_mut_ptr();
-            std::mem::forget(boxed);
-
-            unsafe {
-                *out_samples = ptr;
-                *out_count = count;
-            }
-            Mp4Error::MP4_ERROR_OK
-        }
+    // サンプルの変換に失敗した場合は内部の demuxer の状態を呼び出し前に戻せるように、複製しておく。
+    // 内部の demuxer は成功した呼び出しとして状態を更新しているためである。
+    // 複製はセグメントごとに 1 回で、変換の失敗は例外的な入力でしか起きないため、このコストは許容する
+    let inner_state_before = demuxer.inner.clone();
+    let samples = match demuxer.inner.handle_media_segment(data) {
+        Ok(samples) => samples,
         Err(e) => {
             unsafe {
                 *out_samples = std::ptr::null_mut();
                 *out_count = 0;
             }
             demuxer.set_last_error(&format!("[fmp4_segment_demuxer_handle_media_segment] {e}"));
-            e.into()
+            return e.into();
         }
+    };
+
+    let mut c_samples: Vec<Mp4DemuxSample> = Vec::new();
+    let mut conversion_error = None;
+    for s in samples {
+        let sample_entry = if let Some(sample_entry) = s.sample_entry {
+            let sample_entry_box_type = sample_entry.box_type();
+            if let Some(entry) = demuxer
+                .sample_entries
+                .iter()
+                .find_map(|entry| (entry.0 == *sample_entry).then_some(&entry.2))
+            {
+                Some(&**entry)
+            } else {
+                // 状態を戻してから return する必要があるため、復元を 1 か所にまとめられるよう
+                // エラーを記録してループを抜け、ループの後で戻す
+                let Some(entry_owned) = Mp4SampleEntryOwned::new(sample_entry.clone()) else {
+                    demuxer.set_last_error(&format!(
+                        "[fmp4_segment_demuxer_handle_media_segment] Unsupported sample entry box type: {sample_entry_box_type}",
+                    ));
+                    conversion_error = Some(Mp4Error::MP4_ERROR_UNSUPPORTED);
+                    break;
+                };
+                let entry = Box::new(entry_owned.to_mp4_sample_entry());
+                demuxer
+                    .sample_entries
+                    .push((sample_entry.clone(), entry_owned, entry));
+                demuxer.sample_entries.last().map(|entry| &*entry.2)
+            }
+        } else {
+            None
+        };
+        let Some(track) = demuxer.tracks_cache.as_ref().and_then(|tracks| {
+            tracks
+                .iter()
+                .find(|track| track.track_id == s.track.track_id)
+        }) else {
+            demuxer.set_last_error(
+                "[fmp4_segment_demuxer_handle_media_segment] track info not found for sample",
+            );
+            conversion_error = Some(Mp4Error::MP4_ERROR_OTHER);
+            break;
+        };
+        c_samples.push(Mp4DemuxSample::new(s, track, sample_entry));
     }
+
+    // サンプルの変換に失敗した場合は、内部の demuxer の状態を呼び出し前に戻す。
+    // `sample_entries` のキャッシュと `last_error_string` は戻さない
+    if let Some(error) = conversion_error {
+        demuxer.inner = inner_state_before;
+        unsafe {
+            *out_samples = std::ptr::null_mut();
+            *out_count = 0;
+        }
+        return error;
+    }
+
+    let Ok(count) = u32::try_from(c_samples.len()) else {
+        demuxer.inner = inner_state_before;
+        unsafe {
+            *out_samples = std::ptr::null_mut();
+            *out_count = 0;
+        }
+        demuxer.set_last_error(
+            "[fmp4_segment_demuxer_handle_media_segment] sample count exceeds u32::MAX",
+        );
+        return Mp4Error::MP4_ERROR_OTHER;
+    };
+
+    let mut boxed = c_samples.into_boxed_slice();
+    let ptr = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
+
+    unsafe {
+        *out_samples = ptr;
+        *out_count = count;
+    }
+    Mp4Error::MP4_ERROR_OK
 }
 
 /// `fmp4_segment_demuxer_handle_media_segment()` で割り当てられたサンプル配列を解放する

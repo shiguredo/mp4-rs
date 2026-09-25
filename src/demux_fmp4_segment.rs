@@ -41,7 +41,10 @@ use alloc::{format, vec::Vec};
 
 use crate::{
     BoxHeader, BoxSize, Decode, Error, TrackKind,
-    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrexBox},
+    boxes::{
+        FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrafBox, TrexBox,
+        TrunSample,
+    },
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
 
@@ -50,6 +53,19 @@ struct TrackRuntime {
     sample_entries: Vec<SampleEntry>,
     trex: TrexBox,
     current_sample_description_index: Option<u32>,
+}
+
+/// 初期化セグメントで読み飛ばしたトラック
+///
+/// 映像・音声・字幕以外のハンドラー種別のトラックは、サンプルを返さないためトラック情報に登録しない。
+/// ただし、メディアセグメントの `traf` を読み飛ばすために、track_id と `trex` を記録する
+#[derive(Debug, Clone)]
+struct SkippedTrack {
+    track_id: u32,
+
+    /// `trex` は `moov` の各トラックに 1 つずつ必須とされている（ISO/IEC 14496-12:2022 の 8.8.3.1）が、
+    /// 読み飛ばすトラックでは初期化セグメントの時点で欠落をエラーにしないため `Option` で持つ
+    trex: Option<TrexBox>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +91,7 @@ struct PendingSample {
 pub struct Fmp4SegmentDemuxer {
     track_infos: Vec<TrackInfo>,
     track_runtimes: Option<Vec<TrackRuntime>>,
+    skipped_tracks: Vec<SkippedTrack>,
 }
 
 impl Fmp4SegmentDemuxer {
@@ -84,6 +101,7 @@ impl Fmp4SegmentDemuxer {
         Self {
             track_infos: Vec::new(),
             track_runtimes: None,
+            skipped_tracks: Vec::new(),
         }
     }
 
@@ -91,6 +109,11 @@ impl Fmp4SegmentDemuxer {
     ///
     /// このメソッドはトラック情報と `trex` のデフォルト値を初期化する。
     /// 2 回目以降の呼び出しは [`DemuxError::InvalidState`] を返す。
+    ///
+    /// ハンドラー種別が `vide` / `soun` / `subt` / `text` 以外のトラックは、
+    /// サンプルを返さないためトラック情報に登録せずに読み飛ばす。
+    /// 読み飛ばしたトラックの track_id と `trex` は、メディアセグメントでそのトラックの `traf` を
+    /// 読み飛ばすために記録する。`trex` がなくても初期化は成功する。
     pub fn handle_init_segment(&mut self, data: &[u8]) -> Result<(), DemuxError> {
         if self.track_runtimes.is_some() {
             return Err(DemuxError::InvalidState(
@@ -141,6 +164,7 @@ impl Fmp4SegmentDemuxer {
 
         let mut track_infos = Vec::new();
         let mut track_runtimes = Vec::new();
+        let mut skipped_tracks = Vec::new();
         for trak in moov_box.trak_boxes {
             let track_id = trak.tkhd_box.track_id;
             let kind = match trak.mdia_box.hdlr_box.handler_type {
@@ -148,7 +172,17 @@ impl Fmp4SegmentDemuxer {
                 HdlrBox::HANDLER_TYPE_SOUN => TrackKind::Audio,
                 // 字幕トラックのハンドラー種別は `subt` (stpp) / `text` (wvtt / tx3g) の 2 種類
                 HdlrBox::HANDLER_TYPE_SUBT | HdlrBox::HANDLER_TYPE_TEXT => TrackKind::Subtitle,
-                _ => continue,
+                _ => {
+                    // 対応していないトラックはサンプルを返さないため、トラック情報には登録しない。
+                    // メディアセグメントの `traf` を読み飛ばすために、track_id と `trex` だけ記録する。
+                    // `trex` の欠落はここではエラーにしない
+                    let trex = trex_list
+                        .iter()
+                        .find(|trex_box| trex_box.track_id == track_id)
+                        .cloned();
+                    skipped_tracks.push(SkippedTrack { track_id, trex });
+                    continue;
+                }
             };
 
             let sample_entries = trak.mdia_box.minf_box.stbl_box.stsd_box.entries;
@@ -183,6 +217,7 @@ impl Fmp4SegmentDemuxer {
 
         self.track_infos = track_infos;
         self.track_runtimes = Some(track_runtimes);
+        self.skipped_tracks = skipped_tracks;
         Ok(())
     }
 
@@ -213,6 +248,15 @@ impl Fmp4SegmentDemuxer {
     ///
     /// `sample_entry` は各トラックの最初のサンプル、または
     /// sample description index が変わったサンプルでのみ `Some` になる。
+    ///
+    /// # 対応していないトラック
+    ///
+    /// [`handle_init_segment()`](Self::handle_init_segment) で読み飛ばしたトラックの `traf` からは
+    /// サンプルを返さない。ただし `default_base_is_moof = false` かつ `base_data_offset` なしの場合は、
+    /// 2 番目以降の `traf` の基準位置が直前の `traf` のデータ末尾になるため、
+    /// 読み飛ばす `traf` についてもデータ末尾を計算しておく。
+    /// その計算で `trex` の既定値（`default_sample_size`）が要るのに `trex` がない場合はエラーになる。
+    /// `moov` に存在しない track_id の `traf` もエラーになる。
     ///
     /// # 制限事項
     ///
@@ -373,13 +417,31 @@ impl Fmp4SegmentDemuxer {
             for traf in &moof.traf_boxes {
                 let track_index = track_infos
                     .iter()
-                    .position(|track_info| track_info.track_id == traf.tfhd_box.track_id)
-                    .ok_or_else(|| {
-                        DemuxError::DecodeError(Error::invalid_data(format!(
-                            "unknown track_id in media segment: {}",
-                            traf.tfhd_box.track_id
-                        )))
-                    })?;
+                    .position(|track_info| track_info.track_id == traf.tfhd_box.track_id);
+
+                // 初期化セグメントで読み飛ばしたトラックの `traf` はサンプルを返さない。
+                // ただし `default_base_is_moof = false` の場合は次の `traf` の基準位置が
+                // この `traf` のデータ末尾になるため、`default_base_is_moof` の値によらずデータ末尾を計算する
+                let Some(track_index) = track_index else {
+                    let skipped_track = self
+                        .skipped_tracks
+                        .iter()
+                        .find(|skipped| skipped.track_id == traf.tfhd_box.track_id)
+                        .ok_or_else(|| {
+                            DemuxError::DecodeError(Error::invalid_data(format!(
+                                "unknown track_id in media segment: {}",
+                                traf.tfhd_box.track_id
+                            )))
+                        })?;
+                    prev_traf_data_end = Some(skipped_traf_data_end(
+                        traf,
+                        skipped_track,
+                        moof_offset,
+                        prev_traf_data_end,
+                    )?);
+                    continue;
+                };
+
                 let track_runtime = &track_runtimes[track_index];
 
                 let sample_description_index =
@@ -398,18 +460,8 @@ impl Fmp4SegmentDemuxer {
                     .map(|tfdt_box| tfdt_box.base_media_decode_time)
                     .unwrap_or(0);
 
-                let base_data_offset = if let Some(explicit_offset) = traf.tfhd_box.base_data_offset
-                {
-                    usize::try_from(explicit_offset).map_err(|_| {
-                        DemuxError::DecodeError(Error::invalid_data(
-                            "base_data_offset exceeds usize::MAX",
-                        ))
-                    })?
-                } else if traf.tfhd_box.default_base_is_moof {
-                    moof_offset
-                } else {
-                    prev_traf_data_end.unwrap_or(moof_offset)
-                };
+                let base_data_offset =
+                    traf_base_data_offset(traf, moof_offset, prev_traf_data_end)?;
 
                 let mut trun_decode_time = base_media_decode_time;
                 let mut traf_data_end = base_data_offset;
@@ -431,10 +483,12 @@ impl Fmp4SegmentDemuxer {
                             .or(traf.tfhd_box.default_sample_duration)
                             .unwrap_or(track_runtime.trex.default_sample_duration);
                         let size = usize::try_from(
-                            trun_sample
-                                .size
-                                .or(traf.tfhd_box.default_sample_size)
-                                .unwrap_or(track_runtime.trex.default_sample_size),
+                            resolve_sample_size(
+                                trun_sample,
+                                &traf.tfhd_box,
+                                Some(&track_runtime.trex),
+                            )
+                            .expect("bug: a supported track always has a trex box"),
                         )
                         .map_err(|_| {
                             DemuxError::DecodeError(Error::invalid_data(
@@ -578,6 +632,87 @@ impl Fmp4SegmentDemuxer {
             })
             .collect())
     }
+}
+
+/// 読み飛ばす `traf` のデータ末尾を計算する
+///
+/// サンプルは返さないが、`default_base_is_moof = false` かつ `base_data_offset` なしの場合は、
+/// 次の `traf` の基準位置がこの `traf` のデータ末尾になるため、サンプルサイズからデータ末尾だけを求める。
+/// サンプルサイズは対応しているトラックと同じ順（`trun`、`tfhd` の `default_sample_size`、
+/// `trex` の `default_sample_size`）で決める。
+/// `trex` の既定値が要るのに `trex` がない場合はエラーになる
+fn skipped_traf_data_end(
+    traf: &TrafBox,
+    skipped_track: &SkippedTrack,
+    moof_offset: usize,
+    prev_traf_data_end: Option<usize>,
+) -> Result<usize, DemuxError> {
+    let base_data_offset = traf_base_data_offset(traf, moof_offset, prev_traf_data_end)?;
+
+    let mut traf_data_end = base_data_offset;
+    for trun in &traf.trun_boxes {
+        let mut sample_data_offset = base_data_offset
+            .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
+            .ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("data_offset calculation overflow"))
+            })?;
+
+        for trun_sample in &trun.samples {
+            let size =
+                resolve_sample_size(trun_sample, &traf.tfhd_box, skipped_track.trex.as_ref())
+                    .ok_or_else(|| {
+                        DemuxError::DecodeError(Error::invalid_data(format!(
+                            "trex not found for skipped track_id={}",
+                            skipped_track.track_id,
+                        )))
+                    })?;
+            let size = usize::try_from(size).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("sample size exceeds usize::MAX"))
+            })?;
+            sample_data_offset = sample_data_offset.checked_add(size).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("sample data offset overflow"))
+            })?;
+        }
+
+        traf_data_end = traf_data_end.max(sample_data_offset);
+    }
+
+    Ok(traf_data_end)
+}
+
+/// `traf` のデータの基準位置を決める
+///
+/// `tfhd` に `base_data_offset` が明示されている場合はその値、`default_base_is_moof` が true の場合は
+/// `moof` の先頭、どちらでもない場合は直前の `traf` のデータ末尾（最初の `traf` は `moof` の先頭）を使う
+fn traf_base_data_offset(
+    traf: &TrafBox,
+    moof_offset: usize,
+    prev_traf_data_end: Option<usize>,
+) -> Result<usize, DemuxError> {
+    if let Some(explicit_offset) = traf.tfhd_box.base_data_offset {
+        return usize::try_from(explicit_offset).map_err(|_| {
+            DemuxError::DecodeError(Error::invalid_data("base_data_offset exceeds usize::MAX"))
+        });
+    }
+    if traf.tfhd_box.default_base_is_moof {
+        return Ok(moof_offset);
+    }
+    Ok(prev_traf_data_end.unwrap_or(moof_offset))
+}
+
+/// `trun` のサンプルサイズを決める
+///
+/// `trun` の値、`tfhd` の `default_sample_size`、`trex` の `default_sample_size` の順に使う。
+/// `trex` の既定値が要るのに `trex` がない場合は `None` を返す
+fn resolve_sample_size(
+    trun_sample: &TrunSample,
+    tfhd_box: &TfhdBox,
+    trex_box: Option<&TrexBox>,
+) -> Option<u32> {
+    trun_sample
+        .size
+        .or(tfhd_box.default_sample_size)
+        .or_else(|| trex_box.map(|trex_box| trex_box.default_sample_size))
 }
 
 fn resolve_sample_description_index(

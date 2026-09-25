@@ -41,6 +41,11 @@
   - ファイル全体を渡す場合も、`required_input()` が `Some` を返す間は `handle_input` を繰り返し呼び出す必要がある
   - 位置 0 からファイル全体を渡した場合、要求された範囲が入力の終端を超えるときの扱いが変わる。これまでは要求された位置から入力が始まる場合を除いてその入力を拒否して `ErrorKind::InvalidInput` を返していたが、いまは要求された位置を含む入力を受理して入力の終端をファイルの終端とみなす。これにより、`available_bytes` でデータを取り出す処理では、要求された範囲のデータが足りないときに返るエラー種別が `ErrorKind::InvalidInput` から `ErrorKind::InvalidData` に変わる
   - @voluntas
+- [FIX] fMP4 のデマルチプレクサーが、未対応のハンドラー種別のトラックの `traf` を読み飛ばすようにする
+  - これまでは、初期化セグメントで読み飛ばしたトラックの `traf` がメディアセグメントにあると `unknown track_id in media segment` を返していたため、そのトラックを含むファイルを 1 つも処理できなかった
+  - 未対応のトラックはサンプルを返さないが、`default_base_is_moof = false` かつ `base_data_offset` なしの場合は次の `traf` の基準位置になるため、`default_base_is_moof` の値によらずデータ末尾を計算する。サンプルサイズは対応しているトラックと同じ順（`trun`、`tfhd`、`trex`）で決める
+  - その計算で `trex` の既定値（`default_sample_size`）が要るのに `trex` がない場合は、`unknown track_id in media segment` ではなく `trex not found for skipped track_id=...` の `DemuxError::DecodeError` になる。`moov` に存在しない track_id の `traf` はこれまでどおりエラーになる
+  - @voluntas
 
 ## 2026.5.0
 

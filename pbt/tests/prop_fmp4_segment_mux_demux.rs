@@ -3539,6 +3539,191 @@ fn fmp4_file_demuxer_accepts_whole_file_input() -> noprop::TestResult {
     Ok(())
 }
 
+/// 未対応のハンドラー種別のトラックを含む fMP4 でも、対応しているトラックのサンプルが取り出せることを確認する
+///
+/// 1 トラックの `hdlr` のハンドラー種別を `moov` の書き換えで `meta` に変える。
+/// 返るサンプル列が、書き換えない場合の結果からそのトラックのサンプルを除いたものと一致することを確かめる。
+/// `Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の両方と、`default_base_is_moof` が true / false の両方を含める
+#[test]
+fn unsupported_track_traf_is_skipped() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // 先頭の `traf` のトラックを読み飛ばしたケース数。
+    // `default_base_is_moof = false` の場合、2 番目以降の `traf` の基準位置が読み飛ばす `traf` のデータ末尾になる
+    let first_traf_skipped_cases = std::cell::Cell::new(0usize);
+    // `default_base_is_moof = false` に書き換えたケース数。各ケースで 1/2 の確率で選ぶ
+    let base_is_moof_false_cases = std::cell::Cell::new(0usize);
+    // 先頭の `traf` を読み飛ばし、かつ `default_base_is_moof = false` のケース数。
+    // この組み合わせでだけ、読み飛ばす `traf` のデータ末尾が次の `traf` の基準位置になる
+    let first_traf_skipped_with_base_is_moof_false_cases = std::cell::Cell::new(0usize);
+    // 映像のトラックを読み飛ばしたケース数と音声のトラックを読み飛ばしたケース数。各ケースで 1/2 の確率で選ぶ
+    let skip_video_cases = std::cell::Cell::new(0usize);
+    let skip_audio_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let video_samples = sample_vec(ctx, 1..4, |ctx| arb_video_sample(ctx, 0));
+        let audio_samples = sample_vec(ctx, 1..4, |ctx| arb_audio_sample(ctx, 1));
+        let skip_video = noprop::sample_bool(ctx);
+        let default_base_is_moof = noprop::sample_bool(ctx);
+
+        let video_sample_entry = create_avc1_sample_entry(320, 240);
+        let audio_sample_entry = create_opus_sample_entry();
+
+        // 映像と音声を交互に並べる
+        let mut fmp4_samples = Vec::new();
+        let mut payloads: Vec<&[u8]> = Vec::new();
+        for i in 0..video_samples.len().max(audio_samples.len()) {
+            if let Some(sample) = video_samples.get(i) {
+                fmp4_samples.push(video_segment_sample(&video_sample_entry, sample, None));
+                payloads.push(&sample.data);
+            }
+            if let Some(sample) = audio_samples.get(i) {
+                fmp4_samples.push(audio_segment_sample(&audio_sample_entry, sample));
+                payloads.push(&sample.data);
+            }
+        }
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // `default_base_is_moof = false` の場合は、比較元と比較先の両方に同じ書き換えを使う
+        let segment_bytes = if default_base_is_moof {
+            segment_bytes
+        } else {
+            let (rewritten, traf_count) =
+                rewrite_media_segment_default_base_is_moof_false(&segment_bytes, 0);
+            assert!(traf_count >= 2, "映像と音声の 2 つの traf がある");
+            base_is_moof_false_cases.set(base_is_moof_false_cases.get() + 1);
+            rewritten
+        };
+
+        // 読み飛ばすトラックを選び、その `hdlr` のハンドラー種別を `meta` に書き換える。
+        // muxer は映像のトラックを先に登録するため、trak の順は映像、音声になる
+        let skip_track_index = if skip_video { 0 } else { 1 };
+        let skipped_track_id = std::cell::Cell::new(0u32);
+        let rewritten_init = rewrite_init_segment(&init_bytes, |moov_box| {
+            let trak = &mut moov_box.trak_boxes[skip_track_index];
+            let expected_handler_type = if skip_video { *b"vide" } else { *b"soun" };
+            assert_eq!(
+                trak.mdia_box.hdlr_box.handler_type, expected_handler_type,
+                "書き換えるトラックのハンドラー種別が想定と異なる"
+            );
+            skipped_track_id.set(trak.tkhd_box.track_id);
+            trak.mdia_box.hdlr_box.handler_type = *b"meta";
+        });
+        let skipped_track_id = skipped_track_id.get();
+
+        // 読み飛ばすトラックが先頭の `traf` かどうかを数える
+        let (moof_box, _) = MoofBox::decode(&segment_bytes)
+            .expect("書き換えたメディアセグメントからの moof デコードに失敗した");
+        if moof_box.traf_boxes[0].tfhd_box.track_id == skipped_track_id {
+            first_traf_skipped_cases.set(first_traf_skipped_cases.get() + 1);
+            if !default_base_is_moof {
+                first_traf_skipped_with_base_is_moof_false_cases
+                    .set(first_traf_skipped_with_base_is_moof_false_cases.get() + 1);
+            }
+        }
+
+        // 参考: ハンドラー種別を書き換えない init セグメントで、両方のトラックのサンプルを取り出す
+        let mut reference_demuxer = Fmp4SegmentDemuxer::new();
+        reference_demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let reference_samples = to_comparable_samples(
+            &reference_demuxer
+                .handle_media_segment(&segment_bytes)
+                .expect("media セグメントの処理に失敗した"),
+        );
+        let expected: Vec<ComparableSample> = reference_samples
+            .into_iter()
+            .filter(|sample| sample.track.track_id != skipped_track_id)
+            .collect();
+        assert!(
+            !expected.is_empty(),
+            "読み飛ばすトラック以外のサンプルが 1 つもない"
+        );
+
+        // 実際: ハンドラー種別を `meta` に書き換えた init セグメント
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&rewritten_init)
+            .expect("init セグメントの処理に失敗した");
+        let track_count = demuxer.tracks().expect("tracks の取得に失敗した").len();
+        assert_eq!(
+            track_count, 1,
+            "未対応のハンドラー種別のトラックはトラック情報に登録されない"
+        );
+        let actual = to_comparable_samples(
+            &demuxer
+                .handle_media_segment(&segment_bytes)
+                .expect("media セグメントの処理に失敗した"),
+        );
+        assert_eq!(
+            actual, expected,
+            "未対応のトラックのサンプルを取り除いた結果と一致しない"
+        );
+
+        // メディアセグメントを 2 つ連結したファイルでも同じことを確認する
+        let mut reference_file = init_bytes;
+        let mut actual_file = rewritten_init;
+        for _ in 0..2 {
+            reference_file.extend_from_slice(&segment_bytes);
+            actual_file.extend_from_slice(&segment_bytes);
+        }
+
+        let mut reference_file_demuxer = Fmp4FileDemuxer::new();
+        let reference_file_samples =
+            collect_comparable_samples(&mut reference_file_demuxer, &reference_file);
+        let expected_file: Vec<ComparableSample> = reference_file_samples
+            .into_iter()
+            .filter(|sample| sample.track.track_id != skipped_track_id)
+            .collect();
+        assert!(
+            !expected_file.is_empty(),
+            "Fmp4FileDemuxer で読み飛ばすトラック以外のサンプルが 1 つもない"
+        );
+
+        let mut file_demuxer = Fmp4FileDemuxer::new();
+        let actual_file_samples = collect_comparable_samples(&mut file_demuxer, &actual_file);
+        assert_eq!(
+            actual_file_samples, expected_file,
+            "Fmp4FileDemuxer で未対応のトラックのサンプルを取り除いた結果と一致しない"
+        );
+
+        if skip_video {
+            skip_video_cases.set(skip_video_cases.get() + 1);
+        } else {
+            skip_audio_cases.set(skip_audio_cases.get() + 1);
+        }
+        Ok(())
+    })?;
+
+    assert!(
+        first_traf_skipped_cases.get() > 0,
+        "先頭の traf のトラックを読み飛ばしたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        base_is_moof_false_cases.get() > 0,
+        "default_base_is_moof = false に書き換えたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        first_traf_skipped_with_base_is_moof_false_cases.get() > 0,
+        "先頭の traf を読み飛ばし、かつ default_base_is_moof = false のケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        skip_video_cases.get() > 0,
+        "映像のトラックを読み飛ばしたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        skip_audio_cases.get() > 0,
+        "音声のトラックを読み飛ばしたケースが 1 つもなかった\n{runner}"
+    );
+    Ok(())
+}
+
 /// timestamp が複数セグメントにわたって正しく累積されることを確認する
 #[test]
 fn timestamp_accumulation() -> noprop::TestResult {

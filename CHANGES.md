@@ -17,6 +17,11 @@
   - `moof` より前のボックスを読み飛ばした結果、`moof` が見つからないまま入力の末尾に達した場合は `DemuxError::DecodeError`（`ErrorKind::InvalidData`、C API は `MP4_ERROR_INVALID_DATA`）を返す
   - このため、先頭の `sidx` のペイロードの途中または直後で入力が終わる場合に返るエラー種別が、`ErrorKind::InvalidInput`（C API は `MP4_ERROR_INVALID_INPUT`）から `ErrorKind::InvalidData`（C API は `MP4_ERROR_INVALID_DATA`）に変わる
   - @voluntas
+- [FIX] `Fmp4SegmentDemuxer::handle_media_segment` がエラーを返したときに内部状態を変更しないようにする
+  - これまではエラーを返す前に、その呼び出しでエラーより前にサンプルを処理したトラックについて、直前の sample description index を更新することがあった
+  - このため、その後に渡したメディアセグメントで、トラックの最初のサンプルや sample description index が変わったサンプルの `sample_entry` が `None` になることや、sample description index が変わっていないサンプルの `sample_entry` が `Some` になることがあった
+  - `Fmp4FileDemuxer` では、このエラーの後に要求された範囲を渡して再試行すると panic することがあった
+  - @voluntas
 
 ## 2026.5.0
 

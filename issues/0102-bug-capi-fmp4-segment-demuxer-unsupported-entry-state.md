@@ -1,7 +1,7 @@
 # C API の `fmp4_segment_demuxer_handle_media_segment` が内部の状態を確定させた後で `MP4_ERROR_UNSUPPORTED` を返す
 
 - Created: 2026-09-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-capi-fmp4-segment-demuxer-unsupported-entry-state
 - Polished: 2026-09-25
 

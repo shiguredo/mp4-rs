@@ -3,7 +3,7 @@
 - Created: 2026-09-25
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-capi-fmp4-segment-demuxer-unsupported-entry-state
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 
@@ -21,7 +21,7 @@ C API の `fmp4_segment_demuxer_handle_media_segment` がエラーを返した�
 
 wasm の `fmp4_segment_demuxer_handle_media_segment_json`（`crates/wasm/src/fmp4_segment_demux.rs`）は、この関数を呼ぶため同じ経路を通る。
 
-再現手順（develop のコードを複製した環境で確認）:
+再現手順:
 
 1. 映像（`avc1`）と、C API が変換できないサンプルエントリーの音声（`ac-3` など）を含む fMP4 の init セグメントを、`fmp4_segment_demuxer_handle_init_segment` に渡す
 2. 1 つ目のメディアセグメントを `fmp4_segment_demuxer_handle_media_segment` に渡すと、`MP4_ERROR_UNSUPPORTED`（サンプル数 0）になる
@@ -30,7 +30,7 @@ wasm の `fmp4_segment_demuxer_handle_media_segment_json`（`crates/wasm/src/fmp
 ## 設計方針
 
 - `fmp4_segment_demuxer_handle_media_segment` がエラーを返す場合は、内部の demuxer を呼び出し前の状態に戻す
-  - `Fmp4SegmentDemuxer` は `Clone` を実装しているため、呼び出し前の状態を複製しておき、変換に失敗したら複製で置き換える
+  - 内部の（Rust 側の）`Fmp4SegmentDemuxer` は `Clone` を実装しているため、呼び出し前の状態を複製しておき、変換に失敗したら複製で置き換える
 - C API が変換できないサンプルエントリーを持つトラックがあるとき、メディアセグメント全体をエラーにする今の振る舞いは変えない（そのトラックのサンプルだけを除くかどうかは、この issue では扱わない）
 - 関連 issue: issue 0096 は、Rust 側の `handle_media_segment` がエラーを返した場合に状態を変えないようにする。この issue は、Rust 側が成功した後に C API 側でエラーにする経路を扱う。0096 の対応では直らない
 
@@ -42,5 +42,7 @@ wasm の `fmp4_segment_demuxer_handle_media_segment_json`（`crates/wasm/src/fmp
 ## 解決方法
 
 - `crates/c-api/src/fmp4_segment_demux.rs` の `fmp4_segment_demuxer_handle_media_segment` と doc を更新し、cbindgen で `crates/c-api/include/mp4.h` を再生成する
+  - doc には、エラーを返したどの場合も、内部の（Rust 側の）`Fmp4SegmentDemuxer` の状態（次の呼び出しで `sample_entry` を返すかどうかの判定に使う、各トラックの直前に使った sample description index）を変更しないことを書く
+  - 保証の範囲は内部の `Fmp4SegmentDemuxer` の状態に限ることを書く。エラーを返すときも `last_error_string` は更新され、変換に成功したサンプルエントリーが `sample_entries` のキャッシュに残ることがあるため、「内部状態を変更しない」とだけ書くと不正確になる
 - `crates/c-api/tests/test_fmp4_segment_demux.rs`（新設）に、完了条件の確認方法どおりのテストを追加する。C API が変換できないサンプルエントリーは、`SampleEntry::Unknown` になるボックス種別で init セグメントを組み立てて作る
 - `CHANGES.md` に `[FIX]` として記載する

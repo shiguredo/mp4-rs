@@ -501,7 +501,7 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H265Sps> {
         1 => (2, 2),
         2 => (2, 1),
         3 => (1, 1),
-        _ => unreachable!("chroma_format_idc > 3 は上で拒否済み"),
+        _ => unreachable!("chroma_format_idc > 3 is already rejected above"),
     };
 
     // クロップ適用。7.4.3.2.1 は SubWidthC * (left + right) が

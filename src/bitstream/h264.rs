@@ -457,7 +457,7 @@ pub fn parse_sps(nal_unit: &[u8]) -> Result<H264Sps> {
             1 => (2, 2),
             2 => (2, 1),
             3 => (1, 1),
-            _ => unreachable!("chroma_format_idc 0 は chroma_array_type 0 の分岐で処理される"),
+            _ => unreachable!("chroma_format_idc 0 is handled by the chroma_array_type 0 branch"),
         };
         (
             sub_width_c,

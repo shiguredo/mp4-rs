@@ -41,21 +41,31 @@ issue 0094 の対応で `moof` より前のボックスを読み飛ばすよう�
 ## 設計方針
 
 - 状態の更新は、そのメディアセグメントのすべての検証が通った後にまとめて反映する
-  - サンプルを組み立てる間は、トラックごとの新しい sample description index をローカルに持ち、成功が確定してから `track_runtimes` に書き戻す
-  - ループの後にある `mdat` の後ろの追加データの検査も、この書き戻しより前に評価される。このため、検査の位置は変えない
+  - 呼び出しの最初に、各トラックの `current_sample_description_index` を作業用の配列に複製する
+  - `emit_sample_entry` の判定（直前の sample description index と比べる）と、サンプルごとの更新は、この作業用の値に対して行う。`track_runtimes` の値と比べてはいけない
+    - ISO/IEC 14496-12:2022 の 8.8.6.1 は、1 つの `moof` に同じトラックの `traf` を複数置くことを認めている（"Within the movie fragment there is a set of track fragments, zero or more per track."）。2 つ目以降の `traf` は、同じ呼び出しで先に処理した `traf` の結果と比べる必要がある
+    - `track_runtimes` の値と比べると、sample description index が同じ `traf` が続く場合は二重に通知し、途中で変わって元に戻る場合は通知が漏れる。今の実装は、ループの中で `track_runtimes` を更新しているため、この場合も正しく判定できている
+  - `mdat` の後ろの追加データの検査を通った後で、作業用の値を `track_runtimes` に書き戻す。この検査はループの後にあり、書き戻しより前に評価される。このため、検査の位置は変えない
 - `handle_media_segment` の doc に、エラーを返した場合は内部状態を変更しないことを書く（`src/mux_mp4_file.rs` の `Mp4FileMuxer::append_sample` の doc にある「# エラー返却時の内部状態」節の書き方にならう）
-- 次の 2 つは本 issue を直しても残る別の問題なので、対象外とし、別の issue で扱う
-  - `Fmp4FileDemuxer::build_sample` は `then_some` の引数を先に評価する。このため、`sample_entry` をキャッシュしていないトラックに `sample_entry` が `None` のサンプルが来ると、エラーを経なくても panic する（同じトラックの `traf` が 2 つあり、2 つ目の `tfdt` の方が小さいため、並べ替えで `None` のサンプルが先頭に来る場合など）
-  - C API の `fmp4_segment_demuxer_handle_media_segment`（`crates/c-api/src/fmp4_segment_demux.rs`）は、内部の `handle_media_segment` が成功して状態を確定した後で、未対応のサンプルエントリーがあると `MP4_ERROR_UNSUPPORTED` を返す。その後のセグメントでは、対応しているトラックも含めて `sample_entry` が NULL になる。wasm の `fmp4_segment_demuxer_handle_media_segment_json` も同じ経路を通る
-- C API の `fmp4_segment_demuxer_handle_media_segment` の doc には、「エラーを返した場合は内部状態を変更しない」という保証を書き写さない。上記の C API の経路が直るまでは成り立たないためである
+- 次の 2 つは本 issue を直しても残る別の問題なので、対象外とする
+  - `Fmp4FileDemuxer::build_sample` は `then_some` の引数を先に評価する。このため、`sample_entry` をキャッシュしていないトラックに `sample_entry` が `None` のサンプルが来ると、エラーを経なくても panic する（同じトラックの `traf` が 2 つあり、2 つ目の `tfdt` の方が小さいため、並べ替えで `None` のサンプルが先頭に来る場合など）。issue 0101 で扱う
+  - C API の `fmp4_segment_demuxer_handle_media_segment`（`crates/c-api/src/fmp4_segment_demux.rs`）は、内部の `handle_media_segment` が成功して状態を確定した後で、未対応のサンプルエントリーがあると `MP4_ERROR_UNSUPPORTED` を返す。その後のセグメントでは、対応しているトラックも含めて `sample_entry` が NULL になる。wasm の `fmp4_segment_demuxer_handle_media_segment_json` も同じ経路を通る。issue 0102 で扱う
+- C API の `fmp4_segment_demuxer_handle_media_segment` の doc（cbindgen で `crates/c-api/include/mp4.h` に出力される）に、エラーを返した場合の状態についての保証を書くかどうかは、実装に着手した時点で issue 0102 が入っているかどうかで決める
+  - issue 0102 がまだ入っていない場合: 書かない。上記の C API の経路が残っており、保証が成り立たないためである。C API 側の保証は、issue 0102 の対応で書く
+  - issue 0102 がすでに入っている場合: どのエラーを返した場合も、内部の `Fmp4SegmentDemuxer` の状態（次の呼び出しで `sample_entry` を返すかどうかの判定に使う、各トラックの sample description index）を変更しないことを書き、`mp4.h` を再生成する
+  - 保証の範囲は、内部の `Fmp4SegmentDemuxer` の状態に限る。C API の `Fmp4SegmentDemuxer` 構造体は、`inner` のほかに `last_error_string`、変換済みのサンプルエントリーのキャッシュ（`sample_entries`）、トラック情報のキャッシュ（`tracks_cache`）を持つ。エラーのときも `fmp4_segment_demuxer_get_last_error()` が返すメッセージは更新されるため、「内部状態を変更しない」とだけ書くと不正確になる
 - 関連 issue との関係
-  - issue 0097 は、同じ `mdat` の後ろの検査を「`moof` 以外のボックスは読み飛ばし、`moof` が出たらエラーにする」形に変える。issue 0098 と issue 0100 は、同じ `traf` のループを変える
+  - issue 0097 は、同じ `mdat` の後ろの検査を「`moof` 以外のボックスは読み飛ばし、`moof` が出たらエラーにする」形に変える。issue 0100 と issue 0103 は、同じ `traf` / `trun` のループを変える。pending の issue 0098 も、案 A を採った場合は同じ `traf` のループを変える
   - どの issue が先に入っても、後から入る側で「エラーを返した場合は内部状態を変更しない」ことを保つ
+  - issue 0101 と issue 0102 は、上記の対象外とした 2 つを扱う
 
 ## 完了条件
 
 - `handle_media_segment` がどのエラーを返した場合も、呼び出しの前後で demuxer の内部状態が変わらない
 - エラーの後に正しいメディアセグメントを渡すと、各トラックの最初のサンプルで `sample_entry` が `Some` になる
+- 成功した呼び出しで `sample_entry` が `Some` になるサンプルは、修正の前後で変わらない。同じ `moof` に同じトラックの `traf` が複数ある次の場合を含む
+  - 2 つの `traf` の sample description index が同じ（例: 1 → 1）
+  - 直前のセグメントと同じ sample description index に、同じ `moof` の中で一度変わってから戻る（例: 直前のセグメントが 1 で、今回の `traf` が 2 → 1）
 
 ## 解決方法
 
@@ -67,4 +77,8 @@ issue 0094 の対応で `moof` より前のボックスを読み飛ばすよう�
     - 2 番目の `traf` の track_id を、`moov` に存在しない値に書き換えた入力
     - 2 番目以降のサンプルが `mdat` の範囲を超える入力（最初のサンプルは範囲内にする）
   - 修正前の実装で、これらのプロパティが失敗することを確認する
+  - 成功した呼び出しで `sample_entry` の出方が変わらないことを確認するプロパティを追加する
+    - `Fmp4SegmentMuxer` はトラックごとに `traf` を 1 つしか出力しないため、`moof` を書き換えて同じトラックの `traf` を 2 つに分けた入力を作る
+    - 完了条件の 2 つの場合について、2 つ目の `traf` の最初のサンプルの `sample_entry` を確認する。1 → 1 では `None`、直前のセグメントが 1 で今回が 2 → 1 では `Some`（sample description index 1 のサンプルエントリー）になる
+    - このプロパティは修正前の実装でも通る。判定の誤りを検出できることは、実装中に一時的に判定を `track_runtimes` の値と比べる形に変え、このプロパティが失敗することで確認する
 - `CHANGES.md` に `[FIX]` として記載する

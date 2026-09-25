@@ -3,7 +3,7 @@
 - Created: 2026-09-24
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-box-header-uuid-largesize-order
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 
@@ -26,14 +26,14 @@
 - `Fmp4FileDemuxer` のトップレベルボックスの読み飛ばし
 - `UnknownBox` / `RootBox` のデコード
 
-issue 0094 の対応で追加する PBT（`pbt/tests/prop_fmp4_segment_mux_demux.rs` の `arb_leading_box`）は、この問題があるため `uuid` を `moof` より前に置くボックスの候補から外している。
+issue 0094 の対応で追加された PBT（`pbt/tests/prop_fmp4_segment_mux_demux.rs` の `arb_leading_box`）は、この問題があるため largesize 形式の `uuid` を `moof` より前に置くボックスの候補から外している。32 ビット size の `uuid` は usertype を含めて size が 24 以上なら読み飛ばせるが、形式を分けて生成する複雑さに見合わないため、32 ビット形式もまとめて候補から外している。
 
 ## 設計方針
 
 - `BoxHeader` のデコードとエンコードを、size、type、largesize、usertype の順に直す
 - 32 ビット size の `uuid` ボックスと、`uuid` 以外の largesize 形式のボックスのバイト列は変わらない（usertype と largesize の両方を持つ場合だけ順序が変わる）
 - `BoxHeader::external_size` / `BoxHeader::MAX_SIZE` は順序に依存しないため変更しない
-- 仕様由来の順序であることを、資料名・節番号とともにコードコメントに書く
+- 仕様由来の順序であることを、資料名・節番号と、将来の改訂で変わる可能性があることをコードコメントに明記する
 
 ## 完了条件
 
@@ -47,5 +47,5 @@ issue 0094 の対応で追加する PBT（`pbt/tests/prop_fmp4_segment_mux_demux
 - テスト
   - `tests/test_basic_types.rs`: 仕様どおりの順序の固定バイト列（size=1、`uuid`、largesize、usertype）をデコード・エンコードする単体テストを追加する
   - `pbt/tests/prop_basic_types.rs`: largesize 形式の `uuid` ヘッダーのラウンドトリップに、バイト列の並びの検証を加える
-  - issue 0094 の対応がマージ済みであれば、`arb_leading_box` で `uuid` を候補に戻し、除外理由のコメントを削除する
+  - `arb_leading_box` で `uuid` を候補に戻し、除外理由のコメントを削除する（issue 0094 の対応はマージ済み）
 - `CHANGES.md` に `[FIX]` として記載する

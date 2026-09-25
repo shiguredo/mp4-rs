@@ -3,7 +3,7 @@
 - Created: 2026-09-24
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-segment-demuxer-state-on-error
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 
@@ -44,5 +44,9 @@ issue 0094 の対応の後は、`styp` で始まり `moof` + `mdat` を複数含
 
 - `src/demux_fmp4_segment.rs` の `handle_media_segment` で、状態の更新を成功後に移す。検査の順序を見直す。doc を更新する
 - `tests/test_demux_fmp4_segment.rs` に単体テストを追加する
-  - `mdat` の後ろに追加データがある入力、2 番目の `traf` の track_id が未知の入力、サンプル範囲が `mdat` を超える入力のそれぞれでエラーになった後、正しいメディアセグメントを渡して最初のサンプルの `sample_entry` が `Some` になることを確認する
+  - エラー入力は次の 3 つを使う
+    - `mdat` の後ろに追加データがある入力: `moof` + `mdat` が 2 組連結した入力。`mdat` の後ろに `free` などだけを置く入力は使わない。issue 0097 の対応後は `mdat` の後ろの `free` などは読み飛ばして成功するため、エラー入力として使えなくなる
+    - 2 番目の `traf` の track_id が未知の入力: 未知の track_id は `moov` に存在しないものにする。issue 0100 の対応後は、`moov` に存在するが未対応ハンドラーの track_id の `traf` は読み飛ばしになりエラーではなくなるため
+    - サンプル範囲が `mdat` を超える入力
+  - それぞれのエラーになった後、正しいメディアセグメントを渡して最初のサンプルの `sample_entry` が `Some` になることを確認する
 - `CHANGES.md` に `[FIX]` として記載する

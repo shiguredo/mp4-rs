@@ -43,7 +43,7 @@ use crate::{
     BoxHeader, BoxSize, Decode, Error, TrackKind,
     boxes::{
         FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrafBox, TrexBox,
-        TrunSample,
+        TrunBox, TrunSample,
     },
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
@@ -465,15 +465,11 @@ impl Fmp4SegmentDemuxer {
 
                 let mut trun_decode_time = base_media_decode_time;
                 let mut traf_data_end = base_data_offset;
+                let mut prev_trun_data_end: Option<usize> = None;
 
                 for trun in &traf.trun_boxes {
-                    let trun_data_start = base_data_offset
-                        .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
-                        .ok_or_else(|| {
-                            DemuxError::DecodeError(Error::invalid_data(
-                                "data_offset calculation overflow",
-                            ))
-                        })?;
+                    let trun_data_start =
+                        resolve_trun_data_start(trun, base_data_offset, prev_trun_data_end)?;
 
                     let mut sample_data_offset = trun_data_start;
 
@@ -545,6 +541,7 @@ impl Fmp4SegmentDemuxer {
                         sample_data_offset = sample_data_end;
                     }
 
+                    prev_trun_data_end = Some(sample_data_offset);
                     traf_data_end = traf_data_end.max(sample_data_offset);
                 }
 
@@ -650,12 +647,10 @@ fn skipped_traf_data_end(
     let base_data_offset = traf_base_data_offset(traf, moof_offset, prev_traf_data_end)?;
 
     let mut traf_data_end = base_data_offset;
+    let mut prev_trun_data_end: Option<usize> = None;
     for trun in &traf.trun_boxes {
-        let mut sample_data_offset = base_data_offset
-            .checked_add_signed(trun.data_offset.unwrap_or(0) as isize)
-            .ok_or_else(|| {
-                DemuxError::DecodeError(Error::invalid_data("data_offset calculation overflow"))
-            })?;
+        let mut sample_data_offset =
+            resolve_trun_data_start(trun, base_data_offset, prev_trun_data_end)?;
 
         for trun_sample in &trun.samples {
             let size =
@@ -674,10 +669,32 @@ fn skipped_traf_data_end(
             })?;
         }
 
+        prev_trun_data_end = Some(sample_data_offset);
         traf_data_end = traf_data_end.max(sample_data_offset);
     }
 
     Ok(traf_data_end)
+}
+
+/// `trun` のデータの開始位置を決める
+///
+/// `data_offset` がある場合は `traf` の基準位置にその値を足した位置から始まり（ISO/IEC 14496-12:2022 の
+/// 8.8.8.3）、ない場合は直前の run のデータ末尾から始まる（同 8.8.8.1）。
+/// `traf` の最初の run に `data_offset` がない場合は基準位置から始まる。
+/// この扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある
+fn resolve_trun_data_start(
+    trun: &TrunBox,
+    base_data_offset: usize,
+    prev_trun_data_end: Option<usize>,
+) -> Result<usize, DemuxError> {
+    match trun.data_offset {
+        Some(data_offset) => base_data_offset
+            .checked_add_signed(data_offset as isize)
+            .ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("data_offset calculation overflow"))
+            }),
+        None => Ok(prev_trun_data_end.unwrap_or(base_data_offset)),
+    }
 }
 
 /// `traf` のデータの基準位置を決める

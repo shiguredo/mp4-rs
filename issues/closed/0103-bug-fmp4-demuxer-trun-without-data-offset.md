@@ -1,7 +1,7 @@
 # `Fmp4SegmentDemuxer::handle_media_segment` が `data_offset` のない 2 つ目以降の `trun` を `traf` の基準位置から読む
 
 - Created: 2026-09-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-fmp4-demuxer-trun-without-data-offset
 - Polished: 2026-09-25
 
@@ -39,8 +39,15 @@
 
 ## 解決方法
 
-- `src/demux_fmp4_segment.rs` の `handle_media_segment` を変更する
-  - run の開始位置の規則の根拠（資料名・節番号・将来の改訂で変わりうること）をコードコメントに書く
+- `src/demux_fmp4_segment.rs`
+  - `resolve_trun_data_start` を追加し、`trun` のデータの開始位置を「`data_offset` があれば基準位置にその値を足した位置（ISO/IEC 14496-12:2022 の 8.8.8.3）、なければ直前の run のデータ末尾（`traf` の最初の run は基準位置）（同 8.8.8.1）」で決めるようにした。規則の根拠（資料名・節番号・将来の改訂で変わりうること）は関数の doc とコメントに書いた
+  - `handle_media_segment` と `skipped_traf_data_end`（0100 で追加した、読み飛ばすトラックの `traf` のデータ末尾の計算）の両方をこの関数を使うようにした。片方だけ直すと、読み飛ばす `traf` のデータ末尾がずれて次の `traf` の基準位置が誤るためである
 - テスト
-  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: muxer の出力の `trun` を複数に分け、2 つ目以降の `trun` の `data_offset` を省いた入力で、分けない場合と比べて、`data_offset` 以外のフィールドと、`data_offset` / `data_size` が指すバイト列が一致することを確認するプロパティを追加する。`Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の両方で確認する
-- `CHANGES.md` に `[FIX]` として記載する
+  - `tests/test_demux_fmp4_segment.rs`: `skipped_track_data_end_uses_previous_run` を追加した。読み飛ばすトラックの `traf` を 2 つの `trun` に分け、2 つ目の `data_offset` を省いた入力で、読み飛ばすトラックのデータ末尾が直前の `trun` のデータの直後になり、次のトラックのサンプルの `data_offset` がその分ずれることを確認する
+  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: `trun_without_data_offset_starts_after_previous_run` を追加した。muxer の出力の `trun` をサンプルごとに分け、2 つ目以降の `data_offset` を省いた入力で、分けない場合と比べて、`data_offset` 以外のフィールドと、`data_offset` と `data_size` が指すバイト列が一致することを `Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の両方で確認する。既存の書き換えヘルパー `rewrite_media_segment_moof` は、`data_offset` がない `trun` を補正しないように一般化した
+- `CHANGES.md` に `[FIX]` として記載した
+
+### 確認したこと
+
+- `src/demux_fmp4_segment.rs` の変更を `git stash` で戻した状態では、`trun_without_data_offset_starts_after_previous_run` が「data_offset と data_size が指すバイト列が一致する」で失敗する（`moof` のヘッダーのバイト列をサンプルデータとして返している）。`skipped_track_data_end_uses_previous_run` も失敗する（読み飛ばすトラックのデータ末尾が短くなる）
+- `cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check` が通ることを確認した

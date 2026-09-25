@@ -520,6 +520,8 @@ fn rewrite_media_segment_default_base_is_moof_false(
 /// 書き換えで `moof` のサイズが変わると、後ろに続く `mdat` の位置も同じだけずれる。
 /// そのため、サイズの差を各 `trun` の `data_offset` に足して、サンプルデータを指す位置を保つ。
 ///
+/// `data_offset` がない `trun` は補正しない（直前の `trun` のデータ末尾から始まるため）。
+///
 /// `f` の中で書く `data_offset` は、書き換える前の `moof` の先頭を基準にした値にする
 fn rewrite_media_segment_moof(media_segment: &[u8], f: impl FnOnce(&mut MoofBox)) -> Vec<u8> {
     let (mut moof_box, moof_box_size) =
@@ -548,14 +550,14 @@ fn rewrite_media_segment_moof(media_segment: &[u8], f: impl FnOnce(&mut MoofBox)
         .expect("moof のサイズの差は i32 に収まる");
     for traf_box in &mut moof_box.traf_boxes {
         for trun_box in &mut traf_box.trun_boxes {
-            let data_offset = trun_box
-                .data_offset
-                .expect("muxer は trun に data_offset を書く");
-            trun_box.data_offset = Some(
-                data_offset
-                    .checked_add(size_delta)
-                    .expect("補正した data_offset は i32 に収まる"),
-            );
+            // `data_offset` がない `trun` は直前の `trun` のデータ末尾から始まるため、補正が要らない
+            if let Some(data_offset) = trun_box.data_offset {
+                trun_box.data_offset = Some(
+                    data_offset
+                        .checked_add(size_delta)
+                        .expect("補正した data_offset は i32 に収まる"),
+                );
+            }
         }
     }
 
@@ -3818,6 +3820,180 @@ fn fmp4_file_demuxer_swapped_traf_order_keeps_sample_entry_contract() -> noprop:
         swapped_order_cases.get() > 0,
         "並べ替えで traf の並び順と取り出し順が入れ替わったケースが 1 つもなかった\n{runner}"
     );
+    Ok(())
+}
+
+/// `data_offset` を除いた比較用のフィールドをまとめる
+///
+/// `ComparableSample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、
+/// `..` を使わずに分解する
+fn comparable_without_data_offset(
+    sample: &ComparableSample,
+) -> (
+    TrackInfo,
+    Option<SampleEntry>,
+    bool,
+    u64,
+    u32,
+    usize,
+    Option<i64>,
+) {
+    let ComparableSample {
+        track,
+        sample_entry,
+        keyframe,
+        timestamp,
+        duration,
+        data_offset: _,
+        data_size,
+        composition_time_offset,
+    } = sample;
+    (
+        track.clone(),
+        sample_entry.clone(),
+        *keyframe,
+        *timestamp,
+        *duration,
+        *data_size,
+        *composition_time_offset,
+    )
+}
+
+/// 2 つのサンプル列が、`data_offset` 以外のフィールドと、`data_offset` と `data_size` が指す
+/// バイト列で一致することを確認する
+fn assert_samples_match_without_data_offset(
+    reference_samples: &[ComparableSample],
+    reference_data: &[u8],
+    actual_samples: &[ComparableSample],
+    actual_data: &[u8],
+) {
+    assert_eq!(
+        actual_samples.len(),
+        reference_samples.len(),
+        "サンプル数が一致する"
+    );
+    for (reference_sample, actual_sample) in reference_samples.iter().zip(actual_samples) {
+        // `data_offset` は `moof` のサイズが変わる分だけずれるので、それ以外を比較する
+        assert_eq!(
+            comparable_without_data_offset(actual_sample),
+            comparable_without_data_offset(reference_sample),
+            "data_offset 以外が一致する"
+        );
+        assert_eq!(
+            &actual_data[actual_sample.data_offset as usize..][..actual_sample.data_size],
+            &reference_data[reference_sample.data_offset as usize..][..reference_sample.data_size],
+            "data_offset と data_size が指すバイト列が一致する"
+        );
+    }
+}
+
+/// `data_offset` のない 2 つ目以降の `trun` のサンプルが、直前の `trun` のデータの直後から
+/// 取り出されることを確認する
+///
+/// muxer の出力の `trun` をサンプルごとに分け、2 つ目以降の `data_offset` を省く。
+/// 分けない場合と比べて、`data_offset` 以外のフィールドと、`data_offset` と `data_size` が指す
+/// バイト列が一致することを `Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の両方で確かめる
+#[test]
+fn trun_without_data_offset_starts_after_previous_run() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut fmp4_samples = Vec::new();
+        let mut payloads: Vec<&[u8]> = Vec::new();
+        for sample in &samples {
+            fmp4_samples.push(video_segment_sample(&sample_entry, sample, None));
+            payloads.push(&sample.data);
+        }
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+        let init_segment = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // `trun` をサンプルごとに分け、2 つ目以降の `data_offset` を省く
+        let split_segment = rewrite_media_segment_moof(&media_segment, |moof_box| {
+            let trun_box = moof_box.traf_boxes[0].trun_boxes[0].clone();
+            let data_offset = trun_box.data_offset.expect("muxer は data_offset を書く");
+            let mut split_trun_boxes = Vec::new();
+            for (i, sample) in trun_box.samples.iter().enumerate() {
+                let mut split_trun_box = trun_box.clone();
+                split_trun_box.samples = vec![sample.clone()];
+                split_trun_box.data_offset = (i == 0).then_some(data_offset);
+                split_trun_boxes.push(split_trun_box);
+            }
+            moof_box.traf_boxes[0].trun_boxes = split_trun_boxes;
+        });
+
+        // 分けた後の `trun` が 2 つ以上あり、2 つ目以降の `data_offset` が省かれていることを確かめる
+        let (split_moof_box, _) = MoofBox::decode(&split_segment)
+            .expect("書き換えたメディアセグメントからの moof デコードに失敗した");
+        let split_trun_boxes = &split_moof_box.traf_boxes[0].trun_boxes;
+        assert_eq!(
+            split_trun_boxes.len(),
+            samples.len(),
+            "サンプルごとに trun を分ける"
+        );
+        assert!(
+            split_trun_boxes[1..]
+                .iter()
+                .all(|trun_box| trun_box.data_offset.is_none()),
+            "2 つ目以降の trun の data_offset を省く"
+        );
+
+        // 比較元: 分けない場合
+        let mut reference_demuxer = Fmp4SegmentDemuxer::new();
+        reference_demuxer
+            .handle_init_segment(&init_segment)
+            .expect("init セグメントの処理に失敗した");
+        let reference_samples = to_comparable_samples(
+            &reference_demuxer
+                .handle_media_segment(&media_segment)
+                .expect("分割前の media セグメントの処理に失敗した"),
+        );
+
+        // 比較先: `data_offset` を省いた `trun` に分けた場合
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_segment)
+            .expect("init セグメントの処理に失敗した");
+        let actual_samples = to_comparable_samples(
+            &demuxer
+                .handle_media_segment(&split_segment)
+                .expect("分割後の media セグメントの処理に失敗した"),
+        );
+
+        assert_samples_match_without_data_offset(
+            &reference_samples,
+            &media_segment,
+            &actual_samples,
+            &split_segment,
+        );
+
+        // `Fmp4FileDemuxer` でも同じことを確かめる
+        let mut reference_file = init_segment.clone();
+        reference_file.extend_from_slice(&media_segment);
+        let mut split_file = init_segment;
+        split_file.extend_from_slice(&split_segment);
+
+        let mut reference_file_demuxer = Fmp4FileDemuxer::new();
+        let reference_file_samples =
+            collect_comparable_samples(&mut reference_file_demuxer, &reference_file);
+        let mut file_demuxer = Fmp4FileDemuxer::new();
+        let actual_file_samples = collect_comparable_samples(&mut file_demuxer, &split_file);
+
+        assert_samples_match_without_data_offset(
+            &reference_file_samples,
+            &reference_file,
+            &actual_file_samples,
+            &split_file,
+        );
+
+        Ok(())
+    })?;
+
     Ok(())
 }
 

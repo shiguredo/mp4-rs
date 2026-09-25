@@ -50,6 +50,10 @@
   - 並べ替えの結果、内部の demuxer が `sample_entry` を付けなかったサンプルが同じトラックの先頭に来ると、`bug: sample entry must be cached before borrowing` で panic していた
   - `build_sample` は `sample_entry` を持つサンプルのときだけキャッシュを参照し、ファイル全体の取り出し順で各トラックの最初のサンプルとサンプルエントリーが変わったサンプルにだけ `sample_entry` を付けるようにした
   - @voluntas
+- [FIX] C API の `fmp4_segment_demuxer_handle_media_segment` が、変換できないサンプルエントリーで `MP4_ERROR_UNSUPPORTED` を返したときに内部の `Fmp4SegmentDemuxer` の状態を変えないようにする
+  - これまでは内部の demuxer が成功した呼び出しとして状態を更新した後でエラーを返していたため、次のメディアセグメントでは対応しているトラックも含めて `sample_entry` が NULL になっていた
+  - 呼び出し前の内部の状態を複製しておき、サンプルの変換に失敗した場合は元に戻す
+  - @voluntas
 
 ## 2026.5.0
 

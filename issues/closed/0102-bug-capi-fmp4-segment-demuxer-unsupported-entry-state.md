@@ -1,7 +1,7 @@
 # C API の `fmp4_segment_demuxer_handle_media_segment` が内部の状態を確定させた後で `MP4_ERROR_UNSUPPORTED` を返す
 
 - Created: 2026-09-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-capi-fmp4-segment-demuxer-unsupported-entry-state
 - Polished: 2026-09-25
 
@@ -41,8 +41,16 @@ wasm の `fmp4_segment_demuxer_handle_media_segment_json`（`crates/wasm/src/fmp
 
 ## 解決方法
 
-- `crates/c-api/src/fmp4_segment_demux.rs` の `fmp4_segment_demuxer_handle_media_segment` と doc を更新し、cbindgen で `crates/c-api/include/mp4.h` を再生成する
-  - doc には、エラーを返したどの場合も、内部の（Rust 側の）`Fmp4SegmentDemuxer` の状態（次の呼び出しで `sample_entry` を返すかどうかの判定に使う、各トラックの直前に使った sample description index）を変更しないことを書く
-  - 保証の範囲は内部の `Fmp4SegmentDemuxer` の状態に限ることを書く。エラーを返すときも `last_error_string` は更新され、変換に成功したサンプルエントリーが `sample_entries` のキャッシュに残ることがあるため、「内部状態を変更しない」とだけ書くと不正確になる
-- `crates/c-api/tests/test_fmp4_segment_demux.rs`（新設）に、完了条件の確認方法どおりのテストを追加する。C API が変換できないサンプルエントリーは、`SampleEntry::Unknown` になるボックス種別で init セグメントを組み立てて作る
-- `CHANGES.md` に `[FIX]` として記載する
+- `crates/c-api/src/fmp4_segment_demux.rs`
+  - `fmp4_segment_demuxer_handle_media_segment` を、内部の `Fmp4SegmentDemuxer::handle_media_segment` を呼ぶ前に `demuxer.inner` を複製し、サンプルの変換に失敗した場合（`MP4_ERROR_UNSUPPORTED`、トラック情報が見つからない場合、サンプル数が `u32` に収まらない場合）に複製で置き換えるようにした。変換のループは即時 return ではなくエラーを記録して抜け、ループの後で状態を戻す（サンプルが内部の demuxer を借用しているため）
+  - `Fmp4SegmentDemuxer::handle_media_segment` 自体がエラーを返した場合は、Rust 側が状態を変えないため複製は不要である（そのままエラーを返す）
+  - doc に「エラーを返したどの場合も、内部の（Rust 側の）`Fmp4SegmentDemuxer` の状態（次の呼び出しで `sample_entry` を返すかどうかの判定に使う、各トラックの直前に使った sample description index）は変更しない。保証の範囲は内部の `Fmp4SegmentDemuxer` の状態に限り、エラーを返すときも `last_error_string` は更新され、変換に成功したサンプルエントリーが C API 側のサンプルエントリーのキャッシュに残ることがある」を追加した
+  - cbindgen で `crates/c-api/include/mp4.h` を再生成した
+- テスト
+  - `crates/c-api/tests/test_fmp4_segment_demux.rs`（新設）: `handle_media_segment_with_unsupported_sample_entry_keeps_state` を追加した。映像（`avc1`）と、C API が変換できない `ac-3`（`SampleEntry::Unknown`）の音声の init セグメントを作り、映像と音声を含む 1 つ目のメディアセグメントが `MP4_ERROR_UNSUPPORTED`（サンプル数 0）になること、その後に映像だけを含む 2 つ目のメディアセグメントを渡すと `MP4_ERROR_OK` になり、映像トラックの最初のサンプルに `sample_entry` が付くことを確認する
+- `CHANGES.md` に `[FIX]` として記載した
+
+### 確認したこと
+
+- `crates/c-api/src/fmp4_segment_demux.rs` の変更を `git stash` で戻した状態では、新設したテストが「エラーを返した呼び出しの後に、対応しているトラックの最初のサンプルに `sample_entry` が付く」で失敗する
+- `cargo test --workspace`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check` が通ることを確認した

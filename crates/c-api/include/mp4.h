@@ -1831,6 +1831,19 @@ enum Mp4Error fmp4_segment_demuxer_get_tracks(struct Fmp4SegmentDemuxer *demuxer
  *   - 返された配列は `fmp4_segment_demuxer_free_samples()` で解放する必要がある
  * - `out_count`: サンプル数を受け取るポインタ
  *
+ * # 内部の状態
+ *
+ * エラーを返したどの場合も、内部の（Rust 側の）`Fmp4SegmentDemuxer` の状態
+ * （次の呼び出しで `sample_entry` を返すかどうかの判定に使う、各トラックの直前に使った
+ * sample description index）は変更しない。
+ *
+ * 保証の範囲は内部の `Fmp4SegmentDemuxer` の状態に限る。エラーを返すときも
+ * `last_error_string` は更新され（引数が NULL の場合は `MP4_ERROR_NULL_POINTER` を返すだけで
+ * 更新しない）、変換に成功したサンプルエントリーが C API 側のサンプルエントリーのキャッシュに
+ * 残ることがある。
+ *
+ * 引数が NULL でない場合、エラーを返すときは `out_samples` に NULL、`out_count` に 0 を書き込む。
+ *
  * # 戻り値
  *
  * - `MP4_ERROR_OK`: 正常に処理された

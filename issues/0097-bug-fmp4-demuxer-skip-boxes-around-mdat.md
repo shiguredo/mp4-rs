@@ -1,7 +1,7 @@
 # fMP4 のデマルチプレクサーが `moof` と `mdat` の間や `mdat` の後ろにある `free` などのボックスをエラーにする
 
 - Created: 2026-09-24
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-fmp4-demuxer-skip-boxes-around-mdat
 - Polished: 2026-09-25
 
@@ -73,25 +73,53 @@ issue 0094 では `moof` より前のボックスだけを対象にし、`moof` 
 
 ## 解決方法
 
-- `src/demux_fmp4_segment.rs`: `handle_media_segment` の読み飛ばし処理と、モジュール doc・`handle_media_segment` の doc（「# 制限事項」）を更新する
-- `src/demux_fmp4_file.rs`: `read_mdat_box_header` と、`Phase::ReadMdatBoxHeader` / `Phase::ReadMediaSegment` の範囲の計算を更新する
-- `crates/c-api/src/fmp4_segment_demux.rs`: `fmp4_segment_demuxer_handle_media_segment` の doc（「`mdat` の後ろに追加データがある場合はエラーになる」）を更新し、cbindgen で `crates/c-api/include/mp4.h` を再生成する
-- `skills/shiguredo-mp4/SKILL.md`: `handle_media_segment` の行（「複数ペアや `mdat` の後ろの追加データはエラー」）を更新する
-- テスト
-  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`
-    - `moof` と `mdat` の間、`mdat` の後ろに任意のボックスを置くプロパティを、両方のデマルチプレクサーについて追加する
-    - 間に置く場合は、`trun` の `data_offset` を置いたボックスの合計サイズだけ増やした入力を作る。対象は、`default_base_is_moof` が true ならすべての `traf`、false なら今の実装では最初の `traf` だけである
-    - 置くボックスの種類からは、間では `mdat` と `moof` を、後ろでは `moof` を除く。`arb_leading_box` を流用する場合は、`LEADING_BOX_TYPES` に `mdat` が含まれることに注意する
-    - `Fmp4SegmentDemuxer` では、置かない場合と比べて、`data_offset` 以外のフィールドが一致すること、`data_offset` が間に置いた場合は合計サイズ分ずれ、後ろに置いた場合はずれないことを確認する。後ろに置くボックスの最後が、32 ビットの size=0 のボックスになる場合も含める
-    - `Fmp4FileDemuxer` では、次のトップレベルボックスの位置が `mdat` の末尾になることを確かめるため、メディアセグメントを 2 つ以上連結したファイルを使う。`data_offset` はファイル先頭からの位置なので、各サンプルの `data_offset` が、ファイル上でそのサンプルのデータより前に置いたボックス（前のメディアセグメントに置いたものも含む）の合計サイズ分ずれることを確認する
-    - `rejects_multiple_moof_mdat_pairs_in_one_input` の doc（「末尾データを黙って無視せずエラーを返すことを確認する」）を、`mdat` の後ろの `moof` を拒否する趣旨に直す
-  - `tests/test_demux_fmp4_segment.rs`: エラーケースとして次の入力を追加する
-    - `mdat` の前に `moof` が出る入力
-    - `moof` と `mdat` の間に size=0 のボックスがある入力
-    - `mdat` の後ろに size=1 + largesize=0 のボックスがある入力
-    - `mdat` の後ろに、宣言サイズが入力の末尾を超えるボックスがある入力
-    - `mdat` の後ろに 8 バイト未満の端数がある入力
-  - `tests/test_demux_fmp4_file.rs`（新設）: メディアセグメントが 1 つで、その `moof` と `mdat` の間に size=0 のボックス（32 ビットの size=0 と、size=1 + largesize=0 の両方）があるファイルを、`required_input()` が `Some` の間だけ要求された範囲を渡すループで処理する。ループが回数の上限内に終わることと、`next_sample()` が `DecodeError` を返すことを確認する
-    - size=0 の検査がないと `mdat_offset` が進まず、エラーにならないまま同じ範囲を要求し続けてループが終わらなくなる。これを検出するため、ループには回数の上限を設ける
-    - エラーを `next_sample()` などで取り出した後に、`required_input()` が同じ範囲をもう一度要求するのは既存の挙動であり（issue 0096 の現状を参照）、この issue では変えない
-- `CHANGES.md` に `[FIX]` として記載する
+`Fmp4SegmentDemuxer::handle_media_segment` と `Fmp4FileDemuxer` を次のように直した。
+
+### 実装
+
+- `src/demux_fmp4_segment.rs`
+  - `moof` の直後は、`mdat` が出るまでトップレベルボックスを種別を問わず読み飛ばすループに置き換えた。`moof` の後ろで `mdat` より先に別の `moof` が出た場合は、これまでと同じ `expected mdat box after moof but got ...` を返す
+  - `moof` と `mdat` の間にサイズが 0 のボックス（32 ビットの size=0、または size=1 + largesize=0）がある場合は `found box with size=0 between moof and mdat in media segment` を返す。この検査がないと読み飛ばし位置が進まずループが終わらない
+  - `mdat` の後ろは、入力の末尾まで `moof` 以外のトップレベルボックスを読み飛ばすループに置き換えた。`moof` が出た場合は `found moof box after mdat in media segment` を返す。32 ビットの size=0 のボックスは、入力の末尾まで続くものとして受け付ける。size=1 + largesize=0 のボックスは `found box with size=0 after mdat in media segment`、宣言サイズが入力の末尾を超えるボックスは `box after mdat exceeds media segment boundary` を返す
+  - 読み飛ばしたボックスの分は `data_offset` に足さない。`mdat` の末尾の位置（サンプル範囲の上限検査に使う値）も変えない
+  - 読み飛ばしは `traf` のループの後ろ（`mdat` の後ろの追加データの検査と同じ位置）に置いた。作業用の sample description index の書き戻しはそのままその後ろにあり、「エラーを返した場合は内部状態を変更しない」は保たれる
+  - `mdat` の後ろの 8 バイト未満の端数は、専用のエラーにせず `BoxHeader` のデコードエラー（`ErrorKind::InsufficientBuffer`）を返す。`moof` より前と `moof` と `mdat` の間の読み飛ばしと同じ扱いである
+  - モジュール doc と `handle_media_segment` の doc（「# 制限事項」）を更新した
+- `src/demux_fmp4_file.rs`
+  - `Phase::ReadMdatBoxHeader` で `mdat` / `moof` 以外のボックスを読んだら、`mdat_offset` をそのボックスのサイズだけ進めて同じ `Phase` に留まるようにした。`moof` が出た場合は今と同じ `expected mdat box after moof`、サイズが 0 のボックスは `found box with size=0 between moof and mdat in media segment` を返す。後者の検査がないと `mdat_offset` が進まず、`required_input()` が同じ範囲を要求し続ける
+  - メディアセグメントの範囲を `moof` の先頭から `mdat` の末尾まで（読み飛ばしたボックスを含む）に変え、次のトップレベルボックスの位置を `mdat` の末尾にした。`Phase::ReadMdatBoxHeader` の `moof_size` は不要になったため削除した
+  - 範囲の計算に伴い、`segment size overflow` を `segment size exceeds usize::MAX` に、`segment offset overflow` を `mdat offset overflow` に置き換えた
+  - モジュール doc の「# 制限事項」に、`moof` と `mdat` の間の読み飛ばしとエラー条件を追記した
+- `crates/c-api/src/fmp4_segment_demux.rs`: `fmp4_segment_demuxer_handle_media_segment` の doc を Rust 側に合わせて更新し、cbindgen で `crates/c-api/include/mp4.h` を再生成した
+- `skills/shiguredo-mp4/SKILL.md`: `handle_media_segment` の行を更新した
+- `CHANGES.md`: `[FIX]` を追加した。`mdat` の後ろの `moof` の扱いが `Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` で異なること、エラーになる条件として増えるもの（`moof` と `mdat` の間の size=0）、エラー理由・エラー種別が変わる箇所（`mdat` の後ろの `moof`、`mdat` の後ろの 8 バイト未満の端数、`Fmp4SegmentDemuxer` の `mdat` の後ろの size=1 + largesize=0 と宣言サイズが入力の末尾を超えるボックス・`moof` の後ろの宣言サイズが入力の末尾を超えるボックス・`moof` と `mdat` の間の size=0、`Fmp4FileDemuxer` の `moof` と `mdat` の間の size=0 と `moof` の後ろの宣言サイズがファイルの末尾を超えるボックス、どちらのデマルチプレクサーでもセグメントの範囲の計算のエラー）も書いた
+
+### テスト
+
+- `pbt/tests/prop_fmp4_segment_mux_demux.rs`
+  - `boxes_between_moof_and_mdat_and_after_mdat_are_skipped` を追加した。`moof` と `mdat` の間、`mdat` の後ろに任意のトップレベルボックス（largesize 形式を含む）を置いても、置かない場合と比べて `data_offset` 以外のフィールドが一致し、`data_offset` が間に置いたボックスの合計サイズ分だけずれることを確認する。`default_base_is_moof` が true / false の両方、`mdat` の後ろの最後が 32 ビットの size=0 のボックスになる場合、`mdat` の size が 0 で間にボックスを置く場合を含める
+  - `fmp4_file_demuxer_skips_boxes_between_moof_and_mdat` を追加した。メディアセグメントを 2 つ以上連結したファイルで、次のトップレベルボックスの位置が `mdat` の末尾になることと、各サンプルの `data_offset` がファイル上でそのサンプルより前に置いたボックスの合計サイズ分だけずれることを確認する。最後のセグメントの `mdat` の size を 0 にする場合を含める
+  - `arb_leading_box` の生成処理を `arb_skippable_box(ctx, excluded_types)` に一般化し、間に置くボックスから `mdat` を外せるようにした。種別の候補は `SKIPPABLE_BOX_TYPES` に改名した
+  - `rejects_multiple_moof_mdat_pairs_in_one_input` の doc を、`mdat` の後ろの `moof` を拒否する趣旨に直し、`InvalidMediaSegmentKind::ConcatenatedPairs` の期待するエラー理由を `found moof box after mdat in media segment` に変えた
+  - `feed_fmp4_file_demuxer` に供給回数の上限を設け、`required_input()` が同じ範囲を要求し続ける回帰がハングではなく失敗になるようにした
+- `tests/test_demux_fmp4_segment.rs`: エラーケースとして次の 9 件を追加した
+  - `mdat` より先に `moof` が出る入力
+  - `moof` の後ろのボックスの宣言サイズが入力の末尾を超える入力
+  - `moof` と `mdat` の間に size=0 のボックスがある入力（32 ビットの size=0 と size=1 + largesize=0 の 2 件）
+  - `mdat` の後ろに size=1 + largesize=0 のボックスがある入力
+  - `mdat` の後ろのボックスの宣言サイズが入力の末尾を超える入力
+  - `mdat` の後ろに 8 バイト未満の端数がある入力
+  - `moof` と `mdat` の間、および `mdat` の後ろのボックスの largesize が大きすぎて位置を計算できない入力（2 件）
+- `tests/test_demux_fmp4_file.rs`（新設）: 次の 4 件を追加した。いずれも `required_input()` が `Some` の間だけ要求された範囲を渡すループで処理する
+  - `moof` と `mdat` の間に size=0 のボックス（32 ビットの size=0 と size=1 + largesize=0 の両方）があるファイル。size=0 の検査がないと `mdat_offset` が進まず、エラーにならないまま同じ範囲を要求し続けてループが終わらなくなるため、ループには回数の上限を設ける
+  - `mdat` より先に `moof` が出るファイル
+  - `moof` と `mdat` の間のボックスの largesize が大きすぎて位置を計算できないファイル
+  - `moof` と `mdat` の間のボックスの宣言サイズがファイルの末尾を超えるファイル
+
+### 確認したこと
+
+- `src/` の変更を `git stash` で戻した状態でのテスト結果
+  - `tests/test_demux_fmp4_segment.rs`: 追加した 9 件のうち 8 件が失敗する。`decode_error_moof_before_mdat` は変更の前後で同じエラーになる契約テストなので、どちらでも通る
+  - `tests/test_demux_fmp4_file.rs`: 追加した 4 件のうち 3 件が失敗する。`decode_error_moof_before_mdat` は同じ理由でどちらでも通る
+  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: 追加した 2 件と、期待するエラー理由を変えた `media_segment_error_does_not_change_state` と `rejects_multiple_moof_mdat_pairs_in_one_input` が失敗する
+- `cargo test --workspace --exclude c-api`、`cargo test -p c-api --lib`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check`、`RUSTDOCFLAGS=-D warnings cargo doc` が通ることを確認した

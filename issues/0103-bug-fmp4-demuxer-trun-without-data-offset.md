@@ -1,7 +1,7 @@
 # `Fmp4SegmentDemuxer::handle_media_segment` が `data_offset` のない 2 つ目以降の `trun` を `traf` の基準位置から読む
 
 - Created: 2026-09-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-fmp4-demuxer-trun-without-data-offset
 - Polished: 2026-09-25
 

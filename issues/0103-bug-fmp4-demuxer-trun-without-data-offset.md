@@ -15,9 +15,9 @@
 
 - `src/demux_fmp4_segment.rs` の `Fmp4SegmentDemuxer::handle_media_segment` は、各 `trun` のデータの開始位置を、`traf` の基準位置（`base_data_offset`）に `trun.data_offset.unwrap_or(0)` を足して求める。`data_offset` がない `trun` は、何番目の run でも `traf` の基準位置から始まる
 - `Fmp4FileDemuxer` も、内部で `Fmp4SegmentDemuxer` を使うため同じ動きになる
-- `Fmp4SegmentMuxer` は、`traf` ごとに `data_offset` 付きの `trun` を 1 つだけ出力するため、自身の出力では起きない。ほかの実装が出力したファイルで起きる
+- `Fmp4SegmentMuxer` は、`traf` ごとに `data_offset` 付きの `trun` を 1 つだけ出力するため、自身の出力では起きない。`data_offset` を省略した `trun` を持つ入力で起きる
 
-再現手順（develop で確認）:
+再現手順:
 
 1. `Fmp4SegmentMuxer` で、映像 1 トラック、2 サンプル（ペイロードは 16 バイトずつで、1 つ目を 0x11、2 つ目を 0x22 で埋める）の init セグメントとメディアセグメントを作る
 2. メディアセグメントの `moof` の `trun` を、1 サンプルずつの 2 つの `trun` に分け、2 つ目の `trun` の `data_offset` を省く。1 つ目の `trun` の `data_offset` は `moof` の先頭からの相対値なので、`moof` が大きくなった分だけ足し直す
@@ -30,7 +30,7 @@
 - `data_offset` がある `trun` は、今と同じく `traf` の基準位置に `data_offset` を足した位置から始める（8.8.8.1 と 8.8.8.3）
 - 関連 issue
   - issue 0098（pending）は、`traf` の基準位置の規則を扱う。この issue は `traf` の中の `trun` の並びを扱うもので、0098 の結論に依存しない
-  - issue 0096 / 0100 は、同じ `traf` / `trun` のループを変える。0096 が先に入っていれば、この issue の変更でも「エラーを返した場合は内部状態を変更しない」ことを保つ
+  - issue 0096 / 0100 は、同じ `traf` / `trun` のループを変える。0096 は develop に入っており、この issue の変更でも「エラーを返した場合は内部状態を変更しない」ことを保つ
 
 ## 完了条件
 
@@ -40,6 +40,7 @@
 ## 解決方法
 
 - `src/demux_fmp4_segment.rs` の `handle_media_segment` を変更する
+  - run の開始位置の規則の根拠（資料名・節番号・将来の改訂で変わりうること）をコードコメントに書く
 - テスト
   - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: muxer の出力の `trun` を複数に分け、2 つ目以降の `trun` の `data_offset` を省いた入力で、分けない場合と比べて、`data_offset` 以外のフィールドと、`data_offset` / `data_size` が指すバイト列が一致することを確認するプロパティを追加する。`Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の両方で確認する
 - `CHANGES.md` に `[FIX]` として記載する

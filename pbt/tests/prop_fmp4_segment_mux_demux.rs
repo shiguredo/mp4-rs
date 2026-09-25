@@ -9,8 +9,9 @@ use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
-        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MfraBox, MoofBox, MoovBox,
-        OpusBox, SampleEntry, SidxBox, StppBox, TfdtBox, VisualSampleEntryFields,
+        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, FtypBox,
+        Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, SampleEntry, SidxBox,
+        StppBox, TfdtBox, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
@@ -48,6 +49,95 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
         },
         unknown_boxes: vec![],
     })
+}
+
+/// テスト用の Hev1（HEVC）SampleEntry を作成
+fn create_hev1_sample_entry(width: u16, height: u16) -> SampleEntry {
+    SampleEntry::Hev1(Hev1Box {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        hvcc_box: create_hvcc_box(),
+        unknown_boxes: vec![],
+    })
+}
+
+/// テスト用の Hvc1（HEVC）SampleEntry を作成
+fn create_hvc1_sample_entry(width: u16, height: u16) -> SampleEntry {
+    SampleEntry::Hvc1(Hvc1Box {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        hvcc_box: create_hvcc_box(),
+        unknown_boxes: vec![],
+    })
+}
+
+/// テスト用の Av01（AV1）SampleEntry を作成
+fn create_av01_sample_entry(width: u16, height: u16) -> SampleEntry {
+    SampleEntry::Av01(Av01Box {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        av1c_box: Av1cBox {
+            seq_profile: Uint::new(0),
+            seq_level_idx_0: Uint::new(0),
+            seq_tier_0: Uint::new(0),
+            high_bitdepth: Uint::new(0),
+            twelve_bit: Uint::new(0),
+            monochrome: Uint::new(0),
+            chroma_subsampling_x: Uint::new(1),
+            chroma_subsampling_y: Uint::new(1),
+            chroma_sample_position: Uint::new(0),
+            initial_presentation_delay_minus_one: None,
+            config_obus: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// Hev1 / Hvc1 用の `hvcc` ボックスを組み立てる
+fn create_hvcc_box() -> HvccBox {
+    HvccBox {
+        general_profile_space: Uint::new(0),
+        general_tier_flag: Uint::new(0),
+        general_profile_idc: Uint::new(1),
+        general_profile_compatibility_flags: 0,
+        general_constraint_indicator_flags: Uint::new(0),
+        general_level_idc: 93,
+        min_spatial_segmentation_idc: Uint::new(0),
+        parallelism_type: Uint::new(0),
+        chroma_format_idc: Uint::new(1),
+        bit_depth_luma_minus8: Uint::new(0),
+        bit_depth_chroma_minus8: Uint::new(0),
+        avg_frame_rate: 0,
+        constant_frame_rate: Uint::new(0),
+        num_temporal_layers: Uint::new(1),
+        temporal_id_nested: Uint::new(0),
+        length_size_minus_one: Uint::new(3),
+        nalu_arrays: vec![],
+    }
 }
 
 fn create_opus_sample_entry() -> SampleEntry {
@@ -257,6 +347,15 @@ fn build_complete_media_segment_impl(
     .expect("media セグメントの作成に失敗した");
     segment.extend_from_slice(&payload_bytes);
     segment
+}
+
+/// 1 サンプルだけを含むメディアセグメントを生成し、muxer にトラックとサンプルエントリーを観測させる
+///
+/// 生成したメディアセグメントのバイト列はここでは使わない。
+/// 観測させたサンプルエントリーが init セグメントに反映されたかどうかは、
+/// 呼び出し側が `init_segment_bytes()` の `stsd` を確認する
+fn observe_single_sample_segment(muxer: &mut Fmp4SegmentMuxer, sample: Sample, payload: &[u8]) {
+    let _ = build_complete_media_segment(muxer, core::slice::from_ref(&sample), &[payload]);
 }
 
 /// 入力の供給ループの回数の上限
@@ -657,6 +756,161 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
+/// init セグメントの `ftyp` が `default-base-is-moof` と両立する brand だけを含むことを確認する
+///
+/// `build_moof` はすべての `tfhd` で `default_base_is_moof` を true にするが、
+/// ISO/IEC 14496-12:2022 8.8.7.1 はこのフラグを `iso5` より前の brand や互換 brand を含む
+/// ファイルで使ってはならないと定めており、附属書 E の NOTE も `isom` / `avc1` を付けた
+/// ファイルではこのフラグを立てられないとしている。そのため init セグメントの
+/// `compatible_brands` からこれらを外す。任意のサンプルエントリーの組み合わせで
+/// init セグメントを作り、サンプルエントリーに応じた brand だけを従来と同じ並びで含むことを確認する
+#[test]
+fn ftyp_compatible_brands_are_compatible_with_default_base_is_moof() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // avc1 を選んだケース数。avc1 は brand に影響しなくなったため、
+    // この分岐を通ったことを別途確認しないと検証が空虚になりうる。
+    // codec_mask は 1..16 なので avc1 は 8/15 の確率で選ばれ、
+    // CASES（256）ケースで一度も選ばれない確率は (7/15)^256 以下になる
+    let avc1_cases = std::cell::Cell::new(0usize);
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        // 4 種類の映像サンプルエントリーから空でない部分集合を選ぶ（1..16 は 0 を含まない）
+        let codec_mask = noprop::sample_u64_in(ctx, 1..16);
+        let has_audio = noprop::sample_bool(ctx);
+        let has_subtitle = noprop::sample_bool(ctx);
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let payload = [0x11u8; 4];
+
+        // 映像トラックには、選んだサンプルエントリーごとに別々のセグメントを作る。
+        // 1 セグメントに複数のサンプルエントリーは置けないため、
+        // 複数のセグメントに分けてトラックへ観測させることで、
+        // init セグメントの stsd に複数のサンプルエントリーが並ぶ状況を作る
+        let mut video_sample_entries = Vec::new();
+        if (codec_mask & 0b0001) != 0 {
+            avc1_cases.set(avc1_cases.get() + 1);
+            video_sample_entries.push(create_avc1_sample_entry(320, 240));
+        }
+        if (codec_mask & 0b0010) != 0 {
+            video_sample_entries.push(create_hev1_sample_entry(320, 240));
+        }
+        if (codec_mask & 0b0100) != 0 {
+            video_sample_entries.push(create_hvc1_sample_entry(320, 240));
+        }
+        if (codec_mask & 0b1000) != 0 {
+            video_sample_entries.push(create_av01_sample_entry(320, 240));
+        }
+        // 選んだサンプルエントリーごとに別々のセグメントを作るため、
+        // 1 サンプル分の情報はループの外で組み立てる
+        let video_test_sample = TestSample {
+            track_index: 0,
+            duration: 3000,
+            keyframe: true,
+            data: payload.to_vec(),
+        };
+        for sample_entry in &video_sample_entries {
+            let sample = video_segment_sample(sample_entry, &video_test_sample, None);
+            observe_single_sample_segment(&mut muxer, sample, &payload);
+        }
+
+        // 音声・字幕トラックは brand に影響しないが、
+        // これらのトラックが加わっても映像由来の brand が変わらないことを確認する
+        if has_audio {
+            let sample_entry = create_opus_sample_entry();
+            let test_sample = TestSample {
+                track_index: 1,
+                duration: 960,
+                keyframe: true,
+                data: payload.to_vec(),
+            };
+            let sample = audio_segment_sample(&sample_entry, &test_sample);
+            observe_single_sample_segment(&mut muxer, sample, &payload);
+        }
+        if has_subtitle {
+            let sample_entry = create_stpp_sample_entry();
+            let test_sample = TestSample {
+                track_index: 2,
+                duration: 1000,
+                keyframe: true,
+                data: payload.to_vec(),
+            };
+            let sample = subtitle_segment_sample(&sample_entry, &test_sample);
+            observe_single_sample_segment(&mut muxer, sample, &payload);
+        }
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+        let (ftyp_box, ftyp_size) =
+            FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
+        let (moov_box, moov_size) =
+            MoovBox::decode(&init_bytes[ftyp_size..]).expect("moov のデコードに失敗した");
+        // init セグメントは ftyp + moov だけで構成される。
+        // moov の後ろに余分なボックスが付いても見逃さないようにする
+        assert_eq!(
+            ftyp_size + moov_size,
+            init_bytes.len(),
+            "init セグメントは ftyp + moov のみを含む"
+        );
+
+        // 観測させた数のトラックが moov に入っていることを確認する。
+        // 映像は必ず 1 トラック作られる（codec_mask は 1..16）ため、期待する trak 数は
+        // 1 + 音声トラックの有無 + 字幕トラックの有無になる
+        assert_eq!(
+            moov_box.trak_boxes.len(),
+            1 + usize::from(has_audio) + usize::from(has_subtitle),
+            "moov の trak 数が観測させたトラック数と一致しない"
+        );
+
+        // 観測させた映像サンプルエントリーが init セグメントの stsd に反映されていることを確認する。
+        // avc1 は brand に影響しないため、この確認をしないと
+        // 「観測させられなかった」場合と「観測したが意図どおり brand から外した」場合を区別できない。
+        // 先頭の trak が映像トラックであることは、映像のサンプルエントリーが
+        // その stsd に含まれることであわせて確認できる
+        let stsd_entries = &moov_box.trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box
+            .stsd_box
+            .entries;
+        for sample_entry in &video_sample_entries {
+            assert!(
+                stsd_entries.contains(sample_entry),
+                "init セグメントの stsd に観測させたサンプルエントリーが無い"
+            );
+        }
+
+        // isom と avc1 は default-base-is-moof と両立しないため含めず、
+        // サンプルエントリーに応じた他の brand を従来と同じ並びで含める
+        let mut expected_brands = vec![Brand::ISO5, Brand::ISO6, Brand::MP41];
+        if (codec_mask & 0b0010) != 0 {
+            expected_brands.push(Brand::HEV1);
+        }
+        if (codec_mask & 0b0100) != 0 {
+            expected_brands.push(Brand::HVC1);
+        }
+        if (codec_mask & 0b1000) != 0 {
+            expected_brands.push(Brand::AV01);
+        }
+
+        assert_eq!(
+            ftyp_box.major_brand,
+            Brand::ISO5,
+            "major_brand が iso5 でない"
+        );
+        assert_eq!(
+            ftyp_box.compatible_brands, expected_brands,
+            "compatible_brands が期待どおりでない"
+        );
+        Ok(())
+    })?;
+    assert!(
+        avc1_cases.get() > 0,
+        "avc1 を選んだケースが 1 つもなく、avc1 が compatible_brands から外れることを検証できていない\n{runner}"
+    );
+    Ok(())
+}
+
 /// 単一映像トラックの init + メディアセグメント roundtrip
 #[test]
 fn video_only_roundtrip() -> noprop::TestResult {
@@ -734,6 +988,20 @@ fn audio_only_roundtrip() -> noprop::TestResult {
         let init_bytes = muxer
             .init_segment_bytes()
             .expect("init セグメントの構築に失敗した");
+
+        // 映像サンプルエントリーを 1 つも観測していない init セグメントでも、
+        // compatible_brands が default_base_is_moof と両立する brand だけになることを確認する
+        let (ftyp_box, _) = FtypBox::decode(&init_bytes).expect("ftyp のデコードに失敗した");
+        assert_eq!(
+            ftyp_box.major_brand,
+            Brand::ISO5,
+            "major_brand が iso5 でない"
+        );
+        assert_eq!(
+            ftyp_box.compatible_brands,
+            vec![Brand::ISO5, Brand::ISO6, Brand::MP41],
+            "音声のみの init セグメントの compatible_brands が期待どおりでない"
+        );
 
         let mut demuxer = Fmp4SegmentDemuxer::new();
         demuxer

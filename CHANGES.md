@@ -59,6 +59,12 @@
   - ISO/IEC 14496-12:2022 の 8.8.8.1 に合わせた。`data_offset` のある `trun` と `traf` の最初の `trun` の扱いは変わらない
   - 読み飛ばすトラックの `traf` のデータ末尾の計算にも同じ規則を適用した
   - @voluntas
+- [FIX] `Fmp4SegmentMuxer::build_ftyp` が `default-base-is-moof` と両立しない `isom` / `avc1` を `compatible_brands` に含めないようにする
+  - `build_moof` はすべての `tfhd` で `default_base_is_moof` を true にするが、ISO/IEC 14496-12:2022 8.8.7.1 はこのフラグを `iso5` より前の brand や互換 brand を含むファイルで使うことを禁じており、附属書 E の NOTE も `isom` と `avc1` を付けたファイルではこのフラグを立てられないとしている
+  - これまでは `major_brand` が `iso5` であっても `compatible_brands` に `isom` と、H.264 を含む場合は `avc1` を含めていた
+  - `compatible_brands` の `iso5` / `iso6` / `mp41` と、サンプルエントリーに応じた `hev1` / `hvc1` / `av01` は変わらない
+  - このため init セグメントの `ftyp` のバイト列が変わる
+  - @voluntas
 
 ## 2026.5.0
 

@@ -3,7 +3,7 @@
 - Created: 2026-09-24
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-demuxer-skip-boxes-around-mdat
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 
@@ -30,12 +30,17 @@ issue 0094 では `moof` より前のボックスだけを対象にし、`moof` 
   - size=0 のボックス（`mdat` 以外）が出たら、`moof` より前の読み飛ばしと同じくエラーにする
 - `Fmp4SegmentDemuxer::handle_media_segment` では、`mdat` の後ろも `moof` 以外のボックスは読み飛ばす
   - `moof` が出たら、1 回の呼び出しで処理できるのは `moof` + `mdat` 1 組だけという制限のため、今と同じくエラーにする
+  - size=0 のボックス（size=0、または size=1 + largesize=0）が出たら、読み飛ばしを終了して成功とする。size=0 は入力の末尾まで続くことを意味し、その後ろにボックスは存在しないためである（`moof` を探す読み飛ばしとは目的が異なり、エラーにしない）
+  - ボックスヘッダーが途中で切れている場合は、`BoxHeader` のデコードエラーをそのまま返す（`moof` より前の読み飛ばしと同じ扱い）
+  - 宣言サイズを足した位置が入力の末尾を超える場合はエラーにする（入力の末尾でボックスが途中で切れているため）。位置が末尾とちょうど一致する場合だけ読み飛ばしを終了して成功とする
 - `Fmp4FileDemuxer` では、メディアセグメントの範囲を `moof` の先頭から `mdat` の末尾までとして求める
 - サンプル範囲の上限検査に使う `mdat` の末尾の位置は変えない
 
 ## 完了条件
 
-- `Fmp4SegmentDemuxer::handle_media_segment` が、`moof` + `free` + `mdat` と `moof` + `mdat` + `free` のメディアセグメントを処理でき、`free` がない場合と同じサンプル列を返す（`data_offset` は `free` の位置に応じてずれる）
+- `Fmp4SegmentDemuxer::handle_media_segment` が、`moof` + `free` + `mdat` と `moof` + `mdat` + `free` のメディアセグメントを処理でき、`free` がない場合と同じサンプル列を返す
+  - `moof` + `free` + `mdat` の入力では、`mdat` とサンプルデータの位置が `free` のサイズ分後ろに動く。テスト入力では `trun` の `data_offset`（`moof` 先頭からの相対値）も `free` のサイズ分後ろにずらし、返る `data_offset` が `free` がない場合より `free` のサイズ分大きいことと、ずれた先にサンプルデータがあることを確認する
+  - `moof` + `mdat` + `free` の入力では、`mdat` の位置は変わらないため、返る `data_offset` も `free` がない場合と同じである
 - `Fmp4FileDemuxer` が、`moof` と `mdat` の間に `free` を含むファイルを処理できる
 - `moof` + `mdat` が 2 組ある入力は、今と同じく `Fmp4SegmentDemuxer::handle_media_segment` でエラーになる
 

@@ -9,7 +9,7 @@
 //!
 //! - **初期化セグメント**: `ftyp` + `moov` (`mvex` / `trex` を含む)
 //! - **メディアセグメント**: `moof` + `mdat` のペア（繰り返し）
-//!   - `moof` の前に `styp` / `sidx` などのボックスが置かれることがある
+//!   - `moof` の前に `styp` / `sidx` など、`moof` と `mdat` の間や `mdat` の後ろに `free` などのボックスが置かれることがある
 //!
 //! # Examples
 //!
@@ -40,7 +40,7 @@
 use alloc::{format, vec::Vec};
 
 use crate::{
-    BoxHeader, Decode, Error, TrackKind,
+    BoxHeader, BoxSize, Decode, Error, TrackKind,
     boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrexBox},
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
@@ -198,15 +198,18 @@ impl Fmp4SegmentDemuxer {
 
     /// メディアセグメント（`moof` + `mdat`）を処理してサンプルのリストを返す
     ///
-    /// `moof` より前にあるトップレベルボックス（`styp` / `sidx` / `ssix` / `prft` / `free` など）は、
-    /// 種別を問わず中身を解釈せずに読み飛ばす。
-    /// `ftyp` / `moov` / `mdat` も同じく読み飛ばし、`moov` があってもその内容は反映しない。
+    /// `moof` より前、`moof` と `mdat` の間、`mdat` の後ろにあるトップレベルボックス
+    /// （`styp` / `sidx` / `ssix` / `prft` / `free` など）は、種別を問わず中身を解釈せずに読み飛ばす。
+    /// `moof` より前にある `ftyp` / `moov` / `mdat` も同じく読み飛ばし、`moov` があってもその内容は反映しない。
     /// トラックの設定には、常に [`handle_init_segment()`](Self::handle_init_segment) で処理した内容を使う。
+    ///
+    /// 読み飛ばしたボックスの分は `data_offset` に足さない。
+    /// `trun` の `data_offset` は `tfhd` で決まる基準（ISO/IEC 14496-12:2022 の 8.8.7.1）に足す値であり（同 8.8.8.3）、
+    /// `moof` と `mdat` の間にボックスがあるファイルでは、書き手がその分を含めた値を `trun` に書く。
     ///
     /// 返される [`Sample`] の `data_offset` は、
     /// `data` スライスの先頭からのバイトオフセットである。
-    /// `moof` より前のボックスを読み飛ばした場合も、
-    /// `data_offset` の基準は `moof` の先頭ではなく `data` スライスの先頭のままである。
+    /// 読み飛ばしたボックスがあっても、基準は `moof` の先頭ではなく `data` スライスの先頭のままである。
     ///
     /// `sample_entry` は各トラックの最初のサンプル、または
     /// sample description index が変わったサンプルでのみ `Some` になる。
@@ -214,10 +217,19 @@ impl Fmp4SegmentDemuxer {
     /// # 制限事項
     ///
     /// 1 回の呼び出しで処理できるのは単一の `moof` + `mdat` ペアのみ。
-    /// セグメント内に複数の `moof` + `mdat` ペアが含まれる場合や、
-    /// `mdat` の後ろに追加データが存在する場合はエラーになる。
-    /// `moof` が見つからない場合や、`moof` より前にサイズが 0 のボックス
-    /// （size=0、または size=1 + largesize=0）がある場合もエラーになる。
+    /// `mdat` の後ろに `moof` がある場合（入力に `moof` + `mdat` のペアが複数含まれる場合）や、
+    /// `moof` の後ろで `mdat` より先に別の `moof` が出た場合はエラーになる。
+    ///
+    /// 次の入力もエラーになる。
+    ///
+    /// - `moof` が見つからない場合
+    /// - `mdat` が見つからないまま入力の末尾に達した場合
+    /// - `moof` より前にサイズが 0 のボックス（32 ビットの size=0、または size=1 + largesize=0）がある場合
+    /// - `moof` と `mdat` の間にサイズが 0 のボックスがある場合
+    /// - `mdat` の後ろに、size=1 + largesize=0 のボックス、宣言サイズが入力の末尾を超えるボックス、
+    ///   ボックスヘッダーに満たない端数がある場合
+    ///
+    /// `mdat` の後ろにある 32 ビットの size=0 のボックスは、入力の末尾まで続くボックスとして受け付ける。
     ///
     /// # サポートする `base_data_offset` モード
     ///
@@ -278,22 +290,48 @@ impl Fmp4SegmentDemuxer {
             .checked_add(moof_size)
             .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("moof offset overflow")))?;
 
-        if offset >= data.len() {
-            return Err(DemuxError::DecodeError(Error::invalid_data(
-                "mdat box not found after moof",
-            )));
-        }
-        let (mdat_header, _) = BoxHeader::decode(&data[offset..])?;
-        if mdat_header.box_type != MdatBox::TYPE {
-            return Err(DemuxError::DecodeError(Error::invalid_data(format!(
-                "expected mdat box after moof but got {:?}",
-                mdat_header.box_type
-            ))));
-        }
+        // `moof` の後ろも、`mdat` が出るまでトップレベルボックスを種別を問わず読み飛ばす。
+        // ISO/IEC 14496-12:2022 の 4.2.2 は認識できない種別のボックスを無視して読み飛ばすことを求めており、
+        // `free` / `skip` (8.1.2) も `moof` と `mdat` の間に置かれ得る。
+        // ただし、`mdat` より先に `moof` が出た場合は、1 回の呼び出しで扱えるのは 1 組だけなのでエラーにする。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+        let (mdat_header, mdat_offset) = loop {
+            if offset >= data.len() {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "mdat box not found after moof",
+                )));
+            }
+            let (header, _) = BoxHeader::decode(&data[offset..])?;
+            if header.box_type == MdatBox::TYPE {
+                break (header, offset);
+            }
+            if header.box_type == MoofBox::TYPE {
+                return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+                    "expected mdat box after moof but got {:?}",
+                    header.box_type
+                ))));
+            }
+            let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+            })?;
+            // size=0 のボックスは読み飛ばし先を決められない。
+            // 32 ビットの size=0 はコンテナの最後のボックスなので、その後ろに `mdat` は存在し得ず、
+            // size=1 + largesize=0 は仕様上の意味が定められていない。
+            // `moof` より前の読み飛ばしと同じ理由でエラーにする。
+            // この検査がないと `offset` が進まず、ループが終わらなくなる
+            if box_size == 0 {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "found box with size=0 between moof and mdat in media segment",
+                )));
+            }
+            offset = offset.checked_add(box_size).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("box offset overflow in media segment"))
+            })?;
+        };
         let mdat_end = if mdat_header.box_size.get() == 0 {
             data.len()
         } else {
-            offset
+            mdat_offset
                 .checked_add(usize::try_from(mdat_header.box_size.get()).map_err(|_| {
                     DemuxError::DecodeError(Error::invalid_data("mdat box size exceeds usize::MAX"))
                 })?)
@@ -462,10 +500,45 @@ impl Fmp4SegmentDemuxer {
             (pending_samples, current_sample_description_indices)
         };
 
-        if mdat_end != data.len() {
-            return Err(DemuxError::DecodeError(Error::invalid_data(
-                "media segment contains trailing data after mdat",
-            )));
+        // `mdat` の後ろも、入力の末尾まで `moof` 以外のトップレベルボックスを読み飛ばす。
+        // この検査を `traf` のループの後ろに置くのは、エラーを返した場合に内部状態を変えないためである
+        // （作業用の sample description index の書き戻しは、この検査より後ろにある）。
+        // 32 ビットの size=0 のボックスは、4.2.2 によりコンテナの最後のボックスなので、
+        // 入力の末尾まで続くものとして受け付ける（`Fmp4FileDemuxer` が `mdat` の後ろの size=0 を受け付けるのと揃える）。
+        // size=1 + largesize=0 は仕様上の意味が定められておらず、読み飛ばし先を決められない。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+        let mut trailing_offset = mdat_end;
+        while trailing_offset < data.len() {
+            // ボックスヘッダーに満たない端数は、`BoxHeader` のデコードエラー
+            // （`ErrorKind::InsufficientBuffer`）をそのまま返す。`moof` より前や `moof` と `mdat` の間の
+            // 読み飛ばしでも同じ扱いであり、ここだけ別のエラーに変換しない
+            let (header, _) = BoxHeader::decode(&data[trailing_offset..])?;
+            if header.box_type == MoofBox::TYPE {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "found moof box after mdat in media segment",
+                )));
+            }
+            if header.box_size == BoxSize::VARIABLE_SIZE {
+                break;
+            }
+            let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+            })?;
+            // size=1 + largesize=0
+            if box_size == 0 {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "found box with size=0 after mdat in media segment",
+                )));
+            }
+            let next_offset = trailing_offset.checked_add(box_size).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("box offset overflow in media segment"))
+            })?;
+            if next_offset > data.len() {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "box after mdat exceeds media segment boundary",
+                )));
+            }
+            trailing_offset = next_offset;
         }
 
         // ここより後でエラーを返すことはないので、作業用の sample description index を書き戻す

@@ -259,7 +259,15 @@ fn build_complete_media_segment_impl(
     segment
 }
 
+/// 入力の供給ループの回数の上限
+///
+/// `required_input()` が同じ範囲を要求し続ける回帰が入ると、ループが終わらずテストがハングする。
+/// 正当なファイルの供給は `ftyp` + `moov` + `moof` + `mdat` で 10 回に満たないため、
+/// 余裕を持たせた上限を設けてハングではなく失敗にする
+const MAX_FEED_COUNT: usize = 64;
+
 fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
+    let mut count = 0;
     while let Some(required) = demuxer.required_input() {
         let start = required.position as usize;
         let end = if let Some(required_size) = required.size {
@@ -272,7 +280,32 @@ fn feed_fmp4_file_demuxer(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
             position: required.position,
             data,
         });
+
+        count += 1;
+        assert!(
+            count <= MAX_FEED_COUNT,
+            "入力の供給が {MAX_FEED_COUNT} 回を超えた。required_input() が同じ範囲を要求し続けている"
+        );
     }
+}
+
+/// `Fmp4FileDemuxer` から全サンプルを [`ComparableSample`] として取り出す
+///
+/// 入力が必要になったら、`file_data` から要求された範囲を渡して続ける
+fn collect_comparable_samples(
+    demuxer: &mut Fmp4FileDemuxer,
+    file_data: &[u8],
+) -> Vec<ComparableSample> {
+    let mut samples = Vec::new();
+    loop {
+        match demuxer.next_sample() {
+            Ok(Some(sample)) => samples.push(to_comparable_sample(&sample)),
+            Ok(None) => break,
+            Err(DemuxError::InputRequired(_)) => feed_fmp4_file_demuxer(demuxer, file_data),
+            Err(error) => panic!("next_sample エラー: {error}"),
+        }
+    }
+    samples
 }
 
 fn rewrite_init_segment(init_segment: &[u8], f: impl FnOnce(&mut MoovBox)) -> Vec<u8> {
@@ -1171,39 +1204,62 @@ fn sidx_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
-/// `moof` より前に置くトップレベルボックスの種別の候補
+/// 読み飛ばせるトップレベルボックスの種別の候補
 ///
 /// ISO/IEC 14496-12:2022 では、`styp` (8.16.2) / `sidx` (8.16.3) / `ssix` (8.16.4) / `prft` (8.16.5) が
 /// メディアセグメントの `moof` の前に置かれ得る。`free` / `skip` (8.1.2) も置かれ得る。
 /// `ftyp` / `moov` / `mdat` は 8.16 でメディアセグメントの `moof` の前に置くものとして挙がっていないが、
 /// `handle_media_segment` の doc で読み飛ばすと明記しているため候補に含める
-const LEADING_BOX_TYPES: [[u8; 4]; 9] = [
+const SKIPPABLE_BOX_TYPES: [[u8; 4]; 9] = [
     *b"styp", *b"sidx", *b"ssix", *b"prft", *b"free", *b"skip", *b"ftyp", *b"moov", *b"mdat",
 ];
 
 /// `moof` より前に置くトップレベルボックスを 1 個生成し、エンコード済みのバイト列と、largesize 形式を使ったかどうかを返す
+fn arb_leading_box(ctx: &mut TestCaseContext) -> (Vec<u8>, bool) {
+    arb_skippable_box(ctx, &[])
+}
+
+/// `moof` より前、`moof` と `mdat` の間、`mdat` の後ろに置くトップレベルボックスを 1 個生成し、
+/// エンコード済みのバイト列と、largesize 形式を使ったかどうかを返す
 ///
-/// 種別は [`LEADING_BOX_TYPES`] と、`moof` / `uuid` 以外の任意の 4CC から引く。
+/// 種別は [`SKIPPABLE_BOX_TYPES`] と、`moof` / `uuid` 以外の任意の 4CC から引く。
 /// demuxer はこれらのボックスの中身を解釈しないため、ペイロードは任意のバイト列でよい。
 /// ヘッダーは 32 ビットの size と、size=1 + 種別に続く 64 ビットの largesize の両方の形式を使う。
 ///
-/// `uuid` は候補から外す。
+/// `excluded_types` の種別は候補から外す。`mdat` を置けない位置で使う。
+///
+/// `moof` は常に候補から外す。`moof` は `mdat` を探す読み飛ばしの終了条件であり、
+/// `mdat` より先や後ろに置くと、1 回の呼び出しで扱える `moof` + `mdat` 1 組という制限に反するためである。
+/// `uuid` も常に候補から外す。
 /// ISO/IEC 14496-12:2022 の 4.2.2 では largesize の後ろに 16 バイトの usertype が続くが、
 /// `BoxHeader` は usertype を largesize より前にあるものとして読み書きするため、
 /// largesize 形式の `uuid` を正しく読み飛ばせない。
 /// 32 ビット size の `uuid` は usertype を含めて size が 24 以上なら読み飛ばせるが、
 /// 形式を分けて生成する複雑さに見合わないため、こちらも候補から外す
-fn arb_leading_box(ctx: &mut TestCaseContext) -> (Vec<u8>, bool) {
+fn arb_skippable_box(ctx: &mut TestCaseContext, excluded_types: &[[u8; 4]]) -> (Vec<u8>, bool) {
+    let candidates: Vec<[u8; 4]> = SKIPPABLE_BOX_TYPES
+        .iter()
+        .copied()
+        .filter(|box_type| !excluded_types.contains(box_type))
+        .collect();
+    assert!(
+        !candidates.is_empty(),
+        "除外した結果、選べる既知の種別が 1 つもない"
+    );
+
     // 既知の種別それぞれと任意の 4CC を同じ重みで選ぶ。
     // 既知の種別の枝には種別の数だけ重みを与え、その中から一様に選ぶ
-    let box_type = match noprop::sample_weighted_index(ctx, &[LEADING_BOX_TYPES.len() as u32, 1]) {
-        0 => noprop::sample_choice(ctx, &LEADING_BOX_TYPES),
+    let box_type = match noprop::sample_weighted_index(ctx, &[candidates.len() as u32, 1]) {
+        0 => noprop::sample_choice(ctx, &candidates),
         _ => {
-            // `moof` / `uuid` を引く確率は 1 回あたり 2 / 2^32 なので、
+            // `moof` / `uuid` / 除外した種別を引く確率は 1 回あたり 2 / 2^32 以下なので、
             // 最大 4 回の局所リトライで実質確実に別の値を得られる
             noprop::sample_with_rejection(ctx, 4, |ctx| {
                 let box_type = noprop::sample_bytes::<4>(ctx);
-                (box_type != *b"moof" && box_type != *b"uuid").then_some(box_type)
+                (box_type != *b"moof"
+                    && box_type != *b"uuid"
+                    && !excluded_types.contains(&box_type))
+                .then_some(box_type)
             })
         }
     };
@@ -1224,6 +1280,67 @@ fn arb_leading_box(ctx: &mut TestCaseContext) -> (Vec<u8>, bool) {
     }
     box_bytes.extend_from_slice(&payload);
     (box_bytes, large_size)
+}
+
+/// 32 ビットの size=0 のボックス（入力の末尾まで続く）を生成する
+///
+/// 種別は `free` とし、ペイロードは任意のバイト列にする。
+/// 入力の末尾に置く前提であり、後ろに別のボックスを置いてはいけない
+fn build_size_zero_box(ctx: &mut TestCaseContext) -> Vec<u8> {
+    let payload_len = noprop::sample_usize_in(ctx, 0..64);
+    let payload = noprop::sample_bytes_vec(ctx, payload_len);
+
+    let mut box_bytes = Vec::new();
+    box_bytes.extend_from_slice(&0u32.to_be_bytes());
+    box_bytes.extend_from_slice(b"free");
+    box_bytes.extend_from_slice(&payload);
+    box_bytes
+}
+
+/// メディアセグメントの `moof` の直後に `between_bytes` を挿し込み、`trun` の `data_offset` をその合計サイズだけ増やす
+///
+/// `adjust_all_trafs` が true ならすべての `traf` の `trun` を、false なら最初の `traf` の `trun` だけを増やす。
+/// `default_base_is_moof = true` では 2 番目以降の `traf` も `moof` の先頭を基準にするため true を、
+/// `default_base_is_moof = false` では 2 番目以降の `traf` が直前の `traf` のデータ末尾を基準にするため false を使う。
+/// 後者では、最初の `traf` のデータ末尾が動くことで 2 番目以降の基準も同じだけ動く
+fn insert_boxes_between_moof_and_mdat(
+    media_segment: &[u8],
+    between_bytes: &[u8],
+    adjust_all_trafs: bool,
+) -> Vec<u8> {
+    let (mut moof_box, moof_box_size) =
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
+    let size_delta =
+        i32::try_from(between_bytes.len()).expect("挿し込むボックスの合計サイズは i32 に収まる");
+
+    for (index, traf_box) in moof_box.traf_boxes.iter_mut().enumerate() {
+        if !adjust_all_trafs && index > 0 {
+            continue;
+        }
+        for trun_box in &mut traf_box.trun_boxes {
+            let data_offset = trun_box
+                .data_offset
+                .expect("muxer は trun に data_offset を書く");
+            trun_box.data_offset = Some(
+                data_offset
+                    .checked_add(size_delta)
+                    .expect("補正した data_offset は i32 に収まる"),
+            );
+        }
+    }
+
+    let mut rewritten = moof_box
+        .encode_to_vec()
+        .expect("media セグメント書き換え中の moof エンコードに失敗した");
+    // `data_offset` の値だけを変えるので `moof` のサイズは変わらない
+    assert_eq!(
+        rewritten.len(),
+        moof_box_size,
+        "data_offset の補正で moof のサイズが変わった"
+    );
+    rewritten.extend_from_slice(between_bytes);
+    rewritten.extend_from_slice(&media_segment[moof_box_size..]);
+    rewritten
 }
 
 /// `moof` より前に任意のトップレベルボックスを置いても、置かない場合と比べて `data_offset` 以外は同じサンプル列が得られることを確認する
@@ -1437,6 +1554,253 @@ fn leading_boxes_before_moof_are_skipped() -> noprop::TestResult {
     assert!(
         large_size_cases.get() > 0,
         "largesize 形式のボックスを置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        base_is_moof_false_multi_traf_cases.get() > 0,
+        "default_base_is_moof = false で traf が 2 個以上のケースが 1 つもなかった\n{runner}"
+    );
+    Ok(())
+}
+
+/// `moof` と `mdat` の間、および `mdat` の後ろに任意のトップレベルボックスを置いても、
+/// 置かない場合と比べて `data_offset` 以外は同じサンプル列が得られることを確認する
+///
+/// `moof` と `mdat` の間に置いたボックスの合計サイズだけ `data_offset` がずれる。
+/// `mdat` の後ろに置いたボックスは `data_offset` に影響しない。
+/// `mdat` の後ろの最後のボックスが 32 ビットの size=0 になる場合も確認する。
+///
+/// `default_base_is_moof` は、muxer の出力そのままの true と、
+/// [`rewrite_media_segment_default_base_is_moof_false`] で false に書き換えた場合の両方を確認する。
+/// false の場合、2 番目以降の `traf` の基準は直前の `traf` のデータ末尾なので、
+/// `data_offset` を増やすのは最初の `traf` の `trun` だけになる。
+///
+/// ここでは置いた場合と置かない場合の差分だけを見る。
+/// 置かない場合の demux 結果そのものの正しさは `video_audio_roundtrip` などの roundtrip に任せる
+#[test]
+fn boxes_between_moof_and_mdat_and_after_mdat_are_skipped() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // 間にボックスを置いたケース数。空でない確率は 3/4 なので、
+    // `CASES`（256）ケースで一度も通らない確率は (1/4)^256 程度
+    let with_between_cases = std::cell::Cell::new(0usize);
+    // 後ろにボックスを置いたケース数。空でない確率は 3/4
+    let with_after_cases = std::cell::Cell::new(0usize);
+    // 後ろの最後のボックスを 32 ビットの size=0 にしたケース数。
+    // `mdat` の size を 0 にする場合は後ろにボックスを置けないため、各ケースで 1/4 の確率で選ぶ
+    let with_size_zero_after_cases = std::cell::Cell::new(0usize);
+    // largesize 形式のボックスを読み飛ばせたケース数。各ボックスで 1/2 の確率で選ぶ
+    let large_size_cases = std::cell::Cell::new(0usize);
+    // `mdat` の size を 0 にしたケース数。各ケースで 1/2 の確率で選ぶ
+    let with_mdat_size_zero_cases = std::cell::Cell::new(0usize);
+    // `mdat` の size が 0 で、かつ `moof` と `mdat` の間にボックスを置いたケース数。
+    // 各ケースで 1/2 × 3/4 の確率で選ぶので、`CASES`（256）ケースで一度も通らない確率は (5/8)^256 程度
+    let mdat_size_zero_with_between_cases = std::cell::Cell::new(0usize);
+    // default_base_is_moof = false で traf が 2 個以上あるケース数。
+    // false を 1/2、音声サンプルが 1 個以上（traf が 2 個）を 4/5 の確率で選ぶので 1 ケースあたり 2/5 となる
+    let base_is_moof_false_multi_traf_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let video_samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+        // 音声トラックがない場合と、traf が 2 個になる場合の両方を含める
+        let audio_samples = sample_vec(ctx, 0..5, |ctx| arb_audio_sample(ctx, 1));
+        let default_base_is_moof = noprop::sample_bool(ctx);
+        // 間に置くボックスからは `mdat` を外す。`mdat` を置くと、そこが `mdat` として扱われる
+        let between_boxes = sample_vec(ctx, 0..4, |ctx| arb_skippable_box(ctx, &[*b"mdat"]));
+        // 後ろに置くボックスは `mdat` でもよい。`mdat` の後ろの `mdat` も読み飛ばしの対象である
+        let after_boxes = sample_vec(ctx, 0..4, |ctx| arb_skippable_box(ctx, &[]));
+        let with_size_zero_after = noprop::sample_bool(ctx);
+
+        let video_sample_entry = create_avc1_sample_entry(320, 240);
+        let audio_sample_entry = create_opus_sample_entry();
+
+        // 映像と音声を交互に並べる
+        let mut fmp4_samples = Vec::new();
+        let mut payloads: Vec<&[u8]> = Vec::new();
+        for i in 0..video_samples.len().max(audio_samples.len()) {
+            if let Some(sample) = video_samples.get(i) {
+                fmp4_samples.push(video_segment_sample(&video_sample_entry, sample, None));
+                payloads.push(&sample.data);
+            }
+            if let Some(sample) = audio_samples.get(i) {
+                fmp4_samples.push(audio_segment_sample(&audio_sample_entry, sample));
+                payloads.push(&sample.data);
+            }
+        }
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let mut segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // `mdat` の size を 0 にすると `mdat` が入力の末尾まで続くため、`mdat` の後ろにはボックスを置けない。
+        // `mdat` と読み飛ばしの組み合わせで `mdat` の位置の扱いが崩れないことを確認する
+        let with_mdat_size_zero = noprop::sample_bool(ctx);
+        if with_mdat_size_zero {
+            segment_bytes = rewrite_media_segment_mdat_size_zero(&segment_bytes);
+        }
+
+        let mut between_bytes = Vec::new();
+        let mut uses_large_size = false;
+        for (box_bytes, large_size) in &between_boxes {
+            between_bytes.extend_from_slice(box_bytes);
+            uses_large_size |= *large_size;
+        }
+        let mut after_bytes = Vec::new();
+        if !with_mdat_size_zero {
+            for (box_bytes, large_size) in &after_boxes {
+                after_bytes.extend_from_slice(box_bytes);
+                uses_large_size |= *large_size;
+            }
+            if with_size_zero_after {
+                after_bytes.extend_from_slice(&build_size_zero_box(ctx));
+            }
+        }
+
+        // 比較元のセグメント。`default_base_is_moof = false` の場合は、書き換えた後のものを比較元にする
+        let (reference_segment, rewritten_traf_count) = if default_base_is_moof {
+            (segment_bytes, None)
+        } else {
+            let (rewritten, traf_count) =
+                rewrite_media_segment_default_base_is_moof_false(&segment_bytes, 0);
+            (rewritten, Some(traf_count))
+        };
+
+        // ボックスを挿し込む側のセグメント。
+        // `default_base_is_moof = false` では、`data_offset` を増やすのは最初の `traf` の `trun` だけになる
+        let mut inserted_segment = insert_boxes_between_moof_and_mdat(
+            &reference_segment,
+            &between_bytes,
+            default_base_is_moof,
+        );
+        inserted_segment.extend_from_slice(&after_bytes);
+
+        // demuxer はトラックごとに直前の sample description index を覚えており、
+        // 2 回目の呼び出しでは sample_entry が None になる。
+        // 比較する 2 つの入力は、それぞれ別の demuxer で処理する
+        let mut expected_demuxer = Fmp4SegmentDemuxer::new();
+        expected_demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let expected = expected_demuxer
+            .handle_media_segment(&reference_segment)
+            .expect("ボックスを置かない media セグメントの処理に失敗した");
+
+        let mut actual_demuxer = Fmp4SegmentDemuxer::new();
+        actual_demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let actual = actual_demuxer
+            .handle_media_segment(&inserted_segment)
+            .expect("ボックスを置いた media セグメントの処理に失敗した");
+
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "ボックスを置いてもサンプル数は変わらない"
+        );
+        for (index, (actual_sample, expected_sample)) in actual.iter().zip(expected.iter()).enumerate()
+        {
+            // `Sample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、
+            // 期待値側を `..` を使わずに分解する
+            let shiguredo_mp4::demux::Sample {
+                track,
+                sample_entry,
+                keyframe,
+                timestamp,
+                duration,
+                data_offset,
+                data_size,
+                composition_time_offset,
+            } = *expected_sample;
+            assert_eq!(
+                (
+                    actual_sample.track,
+                    actual_sample.sample_entry,
+                    actual_sample.keyframe,
+                    actual_sample.timestamp,
+                    actual_sample.duration,
+                    actual_sample.data_size,
+                    actual_sample.composition_time_offset,
+                ),
+                (
+                    track,
+                    sample_entry,
+                    keyframe,
+                    timestamp,
+                    duration,
+                    data_size,
+                    composition_time_offset,
+                ),
+                "{index} 番目のサンプルの data_offset 以外のフィールドは、ボックスを置いても変わらない"
+            );
+            // `moof` と `mdat` の間に置いたボックスの合計サイズ分だけずれる。
+            // `mdat` の後ろに置いたボックスは `data_offset` に影響しない
+            assert_eq!(
+                actual_sample.data_offset,
+                data_offset + between_bytes.len() as u64,
+                "{index} 番目のサンプルの data_offset は、間に置いたボックスの合計サイズ分だけずれる"
+            );
+
+            // ずれた先に元のサンプルデータがある
+            let actual_start = actual_sample.data_offset as usize;
+            let expected_start = data_offset as usize;
+            assert_eq!(
+                &inserted_segment[actual_start..actual_start + actual_sample.data_size],
+                &reference_segment[expected_start..expected_start + data_size],
+                "{index} 番目のサンプルのずれた先に元のサンプルデータがない"
+            );
+        }
+
+        if !between_bytes.is_empty() {
+            with_between_cases.set(with_between_cases.get() + 1);
+        }
+        if !after_bytes.is_empty() {
+            with_after_cases.set(with_after_cases.get() + 1);
+        }
+        if with_size_zero_after && !with_mdat_size_zero {
+            with_size_zero_after_cases.set(with_size_zero_after_cases.get() + 1);
+        }
+        if uses_large_size {
+            large_size_cases.set(large_size_cases.get() + 1);
+        }
+        if with_mdat_size_zero {
+            with_mdat_size_zero_cases.set(with_mdat_size_zero_cases.get() + 1);
+        }
+        if with_mdat_size_zero && !between_bytes.is_empty() {
+            mdat_size_zero_with_between_cases
+                .set(mdat_size_zero_with_between_cases.get() + 1);
+        }
+        if rewritten_traf_count.is_some_and(|count| count >= 2) {
+            base_is_moof_false_multi_traf_cases
+                .set(base_is_moof_false_multi_traf_cases.get() + 1);
+        }
+        Ok(())
+    })?;
+
+    assert!(
+        with_between_cases.get() > 0,
+        "moof と mdat の間にボックスを置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_after_cases.get() > 0,
+        "mdat の後ろにボックスを置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_size_zero_after_cases.get() > 0,
+        "mdat の後ろの最後のボックスを 32 ビットの size=0 にしたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        large_size_cases.get() > 0,
+        "largesize 形式のボックスを置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_mdat_size_zero_cases.get() > 0,
+        "mdat の size を 0 にしたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        mdat_size_zero_with_between_cases.get() > 0,
+        "mdat の size を 0 にして、かつ間にボックスを置いたケースが 1 つもなかった\n{runner}"
     );
     assert!(
         base_is_moof_false_multi_traf_cases.get() > 0,
@@ -1758,7 +2122,10 @@ fn sample_entry_is_emitted_only_on_change() -> noprop::TestResult {
 }
 
 /// `handle_media_segment()` が複数の `moof` + `mdat` ペアを 1 回で受け取った場合に
-/// 末尾データを黙って無視せずエラーを返すことを確認する
+/// `mdat` の後ろの `moof` を読み飛ばさずエラーを返すことを確認する
+///
+/// `mdat` の後ろの `moof` 以外のトップレベルボックスは読み飛ばすが、
+/// `moof` は 1 回の呼び出しで扱えるペアが 1 組だけという制限に反するためエラーにする
 #[test]
 fn rejects_multiple_moof_mdat_pairs_in_one_input() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
@@ -1804,8 +2171,17 @@ fn rejects_multiple_moof_mdat_pairs_in_one_input() -> noprop::TestResult {
             .handle_init_segment(&init_bytes)
             .expect("init セグメントの処理に失敗した");
 
-        let result = demuxer.handle_media_segment(&concatenated);
-        assert!(matches!(result, Err(DemuxError::DecodeError(_))));
+        // `mdat` の後ろの `moof` を読み飛ばさず、狙った理由でエラーになることを確認する
+        match demuxer.handle_media_segment(&concatenated) {
+            Err(DemuxError::DecodeError(error)) => {
+                assert_eq!(
+                    error.reason, "found moof box after mdat in media segment",
+                    "mdat の後ろの moof を拒否したことを示すエラー理由を期待した"
+                );
+            }
+            Err(other) => panic!("DecodeError を期待したが {other:?} だった"),
+            Ok(samples) => panic!("DecodeError を期待したが Ok({}) だった", samples.len()),
+        }
         Ok(())
     })?;
     Ok(())
@@ -1827,34 +2203,34 @@ struct ComparableSample {
     composition_time_offset: Option<i64>,
 }
 
+/// demux したサンプル 1 個を、比較できる形 [`ComparableSample`] に変換する
+fn to_comparable_sample(sample: &shiguredo_mp4::demux::Sample<'_>) -> ComparableSample {
+    // `Sample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、`..` を使わずに分解する
+    let shiguredo_mp4::demux::Sample {
+        track,
+        sample_entry,
+        keyframe,
+        timestamp,
+        duration,
+        data_offset,
+        data_size,
+        composition_time_offset,
+    } = *sample;
+    ComparableSample {
+        track: track.clone(),
+        sample_entry: sample_entry.cloned(),
+        keyframe,
+        timestamp,
+        duration,
+        data_offset,
+        data_size,
+        composition_time_offset,
+    }
+}
+
 /// demux したサンプルの列を、比較できる形 [`ComparableSample`] の列に変換する
 fn to_comparable_samples(samples: &[shiguredo_mp4::demux::Sample<'_>]) -> Vec<ComparableSample> {
-    samples
-        .iter()
-        .map(|sample| {
-            // `Sample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、`..` を使わずに分解する
-            let shiguredo_mp4::demux::Sample {
-                track,
-                sample_entry,
-                keyframe,
-                timestamp,
-                duration,
-                data_offset,
-                data_size,
-                composition_time_offset,
-            } = *sample;
-            ComparableSample {
-                track: track.clone(),
-                sample_entry: sample_entry.cloned(),
-                keyframe,
-                timestamp,
-                duration,
-                data_offset,
-                data_size,
-                composition_time_offset,
-            }
-        })
-        .collect()
+    samples.iter().map(to_comparable_sample).collect()
 }
 
 /// `handle_media_segment()` がエラーを返す入力の種類
@@ -1862,7 +2238,7 @@ fn to_comparable_samples(samples: &[shiguredo_mp4::demux::Sample<'_>]) -> Vec<Co
 /// いずれも、同じ呼び出しでサンプルを 1 つ以上処理した後でエラーになる
 #[derive(Debug, Clone, Copy)]
 enum InvalidMediaSegmentKind {
-    /// `moof` + `mdat` を 2 組連結した入力（`mdat` の後ろに追加データがあるためエラーになる）
+    /// `moof` + `mdat` を 2 組連結した入力（`mdat` の後ろに `moof` があるためエラーになる）
     ConcatenatedPairs,
     /// 2 番目の `traf` の track_id を、`moov` に存在しない値に書き換えた入力
     UnknownTrackIdInSecondTraf,
@@ -1984,7 +2360,7 @@ fn build_invalid_media_segment(
 fn expected_error_reason_prefix(kind: InvalidMediaSegmentKind) -> String {
     match kind {
         InvalidMediaSegmentKind::ConcatenatedPairs => {
-            "media segment contains trailing data after mdat".to_owned()
+            "found moof box after mdat in media segment".to_owned()
         }
         InvalidMediaSegmentKind::UnknownTrackIdInSecondTraf => {
             "unknown track_id in media segment".to_owned()
@@ -2648,6 +3024,201 @@ fn fmp4_file_demuxer_accepts_mdat_size_zero() -> noprop::TestResult {
         );
         Ok(())
     })?;
+    Ok(())
+}
+
+/// `Fmp4FileDemuxer` が、`moof` と `mdat` の間、および `mdat` の後ろにボックスがあるファイルを処理できることを確認する
+///
+/// メディアセグメントを 2 つ以上連結したファイルを使う。
+/// `mdat` の後ろに置いたボックスを読み飛ばして、次の `moof` まで進めることを確かめるためである。
+/// `data_offset` はファイル先頭からの位置なので、各サンプルの `data_offset` は
+/// ファイル上でそのサンプルのデータより前に置いたボックスの合計サイズ分ずれる。
+/// 前のメディアセグメントの `mdat` の後ろに置いたボックスも、次のメディアセグメントのサンプルより前にある
+#[test]
+fn fmp4_file_demuxer_skips_boxes_between_moof_and_mdat() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // `moof` と `mdat` の間にボックスを置いたセグメントを含むケース数。空でない確率は 2/3
+    let with_between_cases = std::cell::Cell::new(0usize);
+    // `mdat` の後ろにボックスを置いたセグメントを含むケース数。空でない確率は 2/3
+    let with_after_cases = std::cell::Cell::new(0usize);
+    // `mdat` の size が 0 で、かつ `moof` と `mdat` の間にボックスを置いたセグメントを含むケース数。
+    // 最後のセグメントが選ばれる確率は 1、size=0 は 1/2、間のボックスが空でない確率は 2/3
+    let mdat_size_zero_with_between_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        // メディアセグメントを 2 つ以上にする
+        let segment_count = noprop::sample_usize_in(ctx, 2..4);
+        // 最後のメディアセグメントの `mdat` の size を 0 にするかどうか。
+        // `mdat` がファイルの末尾まで続くため、この場合は `mdat` の後ろにボックスを置けない
+        let with_mdat_size_zero_in_last_segment = noprop::sample_bool(ctx);
+
+        let mut reference_segments = Vec::new();
+        let mut inserted_segments = Vec::new();
+        // 各セグメントのサンプルの `data_offset` のずれ
+        let mut segment_shifts = Vec::new();
+        // 各セグメントのサンプル数
+        let mut segment_sample_counts = Vec::new();
+        // 前のセグメントまでに置いたボックスの合計サイズ
+        let mut accumulated_shift = 0u64;
+
+        for segment_index in 0..segment_count {
+            let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+            let fmp4_samples: Vec<Sample> = samples
+                .iter()
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
+                .collect();
+            let payloads: Vec<&[u8]> = samples
+                .iter()
+                .map(|sample| sample.data.as_slice())
+                .collect();
+            let mut segment_bytes =
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+
+            // 最後のセグメントの `mdat` の size を 0 にすると、`mdat` がファイルの末尾まで続く。
+            // `mdat` と読み飛ばしの組み合わせで `mdat` の位置の扱いが崩れないことを確認する
+            let mdat_size_zero =
+                segment_index + 1 == segment_count && with_mdat_size_zero_in_last_segment;
+            if mdat_size_zero {
+                segment_bytes = rewrite_media_segment_mdat_size_zero(&segment_bytes);
+            }
+
+            // 間に置くボックスからは `mdat` を外す。`mdat` を置くと、そこが `mdat` として扱われる
+            let between_boxes = sample_vec(ctx, 0..3, |ctx| arb_skippable_box(ctx, &[*b"mdat"]));
+            // 後ろに置くボックスは `mdat` でもよい。`mdat` の後ろの `mdat` も読み飛ばしの対象である
+            let after_boxes = sample_vec(ctx, 0..3, |ctx| arb_skippable_box(ctx, &[]));
+            let mut between_bytes = Vec::new();
+            for (box_bytes, _large_size) in &between_boxes {
+                between_bytes.extend_from_slice(box_bytes);
+            }
+            let mut after_bytes = Vec::new();
+            if !mdat_size_zero {
+                for (box_bytes, _large_size) in &after_boxes {
+                    after_bytes.extend_from_slice(box_bytes);
+                }
+            }
+            if mdat_size_zero && !between_bytes.is_empty() {
+                mdat_size_zero_with_between_cases
+                    .set(mdat_size_zero_with_between_cases.get() + 1);
+            }
+
+            // muxer の出力は `default_base_is_moof = true` なので、すべての `traf` の `data_offset` を増やす
+            let mut inserted_segment =
+                insert_boxes_between_moof_and_mdat(&segment_bytes, &between_bytes, true);
+            inserted_segment.extend_from_slice(&after_bytes);
+
+            segment_shifts.push(accumulated_shift + between_bytes.len() as u64);
+            segment_sample_counts.push(samples.len());
+            reference_segments.push(segment_bytes);
+            inserted_segments.push(inserted_segment);
+            accumulated_shift += between_bytes.len() as u64 + after_bytes.len() as u64;
+
+            if !between_bytes.is_empty() {
+                with_between_cases.set(with_between_cases.get() + 1);
+            }
+            if !after_bytes.is_empty() {
+                with_after_cases.set(with_after_cases.get() + 1);
+            }
+        }
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+        let mut reference_file = init_bytes.clone();
+        let mut inserted_file = init_bytes.clone();
+        for segment_bytes in &reference_segments {
+            reference_file.extend_from_slice(segment_bytes);
+        }
+        for segment_bytes in &inserted_segments {
+            inserted_file.extend_from_slice(segment_bytes);
+        }
+
+        // サンプルごとの `data_offset` のずれ。セグメント内では同じ値になる
+        let mut expected_shift_per_sample = Vec::new();
+        for (segment_index, sample_count) in segment_sample_counts.iter().enumerate() {
+            for _ in 0..*sample_count {
+                expected_shift_per_sample.push(segment_shifts[segment_index]);
+            }
+        }
+
+        let mut reference_demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut reference_demuxer, &reference_file);
+        let reference_samples = collect_comparable_samples(&mut reference_demuxer, &reference_file);
+
+        let mut actual_demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut actual_demuxer, &inserted_file);
+        let actual_samples = collect_comparable_samples(&mut actual_demuxer, &inserted_file);
+
+        assert_eq!(
+            expected_shift_per_sample.len(),
+            reference_samples.len(),
+            "ボックスを置かないファイルのサンプル数が、組み立てたセグメントのサンプル数と一致しない"
+        );
+        assert_eq!(
+            actual_samples.len(),
+            reference_samples.len(),
+            "ボックスを置いてもサンプル数は変わらない"
+        );
+
+        for (index, (actual, expected)) in actual_samples
+            .iter()
+            .zip(reference_samples.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                (
+                    &actual.track,
+                    &actual.sample_entry,
+                    actual.keyframe,
+                    actual.timestamp,
+                    actual.duration,
+                    actual.data_size,
+                    actual.composition_time_offset,
+                ),
+                (
+                    &expected.track,
+                    &expected.sample_entry,
+                    expected.keyframe,
+                    expected.timestamp,
+                    expected.duration,
+                    expected.data_size,
+                    expected.composition_time_offset,
+                ),
+                "{index} 番目のサンプルの data_offset 以外のフィールドは、ボックスを置いても変わらない"
+            );
+            assert_eq!(
+                actual.data_offset,
+                expected.data_offset + expected_shift_per_sample[index],
+                "{index} 番目のサンプルの data_offset は、ファイル上で前に置いたボックスの合計サイズ分だけずれる"
+            );
+
+            // ずれた先に元のサンプルデータがある
+            let actual_start = actual.data_offset as usize;
+            let expected_start = expected.data_offset as usize;
+            assert_eq!(
+                &inserted_file[actual_start..actual_start + actual.data_size],
+                &reference_file[expected_start..expected_start + expected.data_size],
+                "{index} 番目のサンプルのずれた先に元のサンプルデータがない"
+            );
+        }
+        Ok(())
+    })?;
+
+    assert!(
+        with_between_cases.get() > 0,
+        "moof と mdat の間にボックスを置いたセグメントが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_after_cases.get() > 0,
+        "mdat の後ろにボックスを置いたセグメントが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        mdat_size_zero_with_between_cases.get() > 0,
+        "mdat の size を 0 にして、かつ間にボックスを置いたセグメントが 1 つもなかった\n{runner}"
+    );
     Ok(())
 }
 

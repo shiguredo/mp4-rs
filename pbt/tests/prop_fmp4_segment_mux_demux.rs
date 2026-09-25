@@ -10,9 +10,9 @@ use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, FtypBox, MfraBox, MoofBox, MoovBox,
-        OpusBox, SampleEntry, SidxBox, StppBox, VisualSampleEntryFields,
+        OpusBox, SampleEntry, SidxBox, StppBox, TfdtBox, VisualSampleEntryFields,
     },
-    demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input},
+    demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
@@ -430,6 +430,66 @@ fn rewrite_media_segment_default_base_is_moof_false(
     rewritten.extend_from_slice(&moof_bytes);
     rewritten.extend_from_slice(&media_segment[moof_position + moof_box_size..]);
     (rewritten, moof_box.traf_boxes.len())
+}
+
+/// メディアセグメントの先頭にある `moof` を `f` で書き換え、`trun` の `data_offset` を補正したセグメントを返す
+///
+/// muxer は `default_base_is_moof = true` かつ `base_data_offset` なしで出力するため、
+/// 各 `trun` の `data_offset` は `moof` の先頭からの相対値になっている。
+/// 書き換えで `moof` のサイズが変わると、後ろに続く `mdat` の位置も同じだけずれる。
+/// そのため、サイズの差を各 `trun` の `data_offset` に足して、サンプルデータを指す位置を保つ。
+///
+/// `f` の中で書く `data_offset` は、書き換える前の `moof` の先頭を基準にした値にする
+fn rewrite_media_segment_moof(media_segment: &[u8], f: impl FnOnce(&mut MoofBox)) -> Vec<u8> {
+    let (mut moof_box, moof_box_size) =
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
+    f(&mut moof_box);
+
+    // `data_offset` の補正は、書き換えた後のすべての `trun` の基準が `moof` の先頭であることを前提にしている。
+    // `f` が追加した `traf` も補正の対象になるため、書き換えた後に確認する。
+    // 前提が崩れたときに、黙って別の内容を検証するテストにならないようにするためである
+    for traf_box in &moof_box.traf_boxes {
+        assert!(
+            traf_box.tfhd_box.default_base_is_moof,
+            "書き換えた後の traf は default_base_is_moof = true である"
+        );
+        assert_eq!(
+            traf_box.tfhd_box.base_data_offset, None,
+            "書き換えた後の traf は base_data_offset を明示しない"
+        );
+    }
+
+    let rewritten_moof_size = moof_box
+        .encode_to_vec()
+        .expect("media セグメント書き換え中の moof エンコードに失敗した")
+        .len();
+    let size_delta = i32::try_from(rewritten_moof_size as i64 - moof_box_size as i64)
+        .expect("moof のサイズの差は i32 に収まる");
+    for traf_box in &mut moof_box.traf_boxes {
+        for trun_box in &mut traf_box.trun_boxes {
+            let data_offset = trun_box
+                .data_offset
+                .expect("muxer は trun に data_offset を書く");
+            trun_box.data_offset = Some(
+                data_offset
+                    .checked_add(size_delta)
+                    .expect("補正した data_offset は i32 に収まる"),
+            );
+        }
+    }
+
+    let mut rewritten = moof_box
+        .encode_to_vec()
+        .expect("media セグメント書き換え中の moof エンコードに失敗した");
+    // `data_offset` の値を変えるだけなので、補正で moof のサイズは変わらない
+    assert_eq!(
+        rewritten.len(),
+        rewritten_moof_size,
+        "data_offset の補正で moof のサイズが変わった"
+    );
+
+    rewritten.extend_from_slice(&media_segment[moof_box_size..]);
+    rewritten
 }
 
 /// このファイルで共通の PBT ケース数（旧 `with_cases(256)` を維持）
@@ -1746,6 +1806,541 @@ fn rejects_multiple_moof_mdat_pairs_in_one_input() -> noprop::TestResult {
 
         let result = demuxer.handle_media_segment(&concatenated);
         assert!(matches!(result, Err(DemuxError::DecodeError(_))));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// demux したサンプルを比較できる形にしたもの
+///
+/// `demux::Sample` は `PartialEq` を実装しないため、そのすべてのフィールドを比較できる値として持つ。
+/// demuxer の借用を残さないように、参照ではなく所有する値で持つ
+#[derive(Debug, PartialEq)]
+struct ComparableSample {
+    track: TrackInfo,
+    sample_entry: Option<SampleEntry>,
+    keyframe: bool,
+    timestamp: u64,
+    duration: u32,
+    data_offset: u64,
+    data_size: usize,
+    composition_time_offset: Option<i64>,
+}
+
+/// demux したサンプルの列を、比較できる形 [`ComparableSample`] の列に変換する
+fn to_comparable_samples(samples: &[shiguredo_mp4::demux::Sample<'_>]) -> Vec<ComparableSample> {
+    samples
+        .iter()
+        .map(|sample| {
+            // `Sample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、`..` を使わずに分解する
+            let shiguredo_mp4::demux::Sample {
+                track,
+                sample_entry,
+                keyframe,
+                timestamp,
+                duration,
+                data_offset,
+                data_size,
+                composition_time_offset,
+            } = *sample;
+            ComparableSample {
+                track: track.clone(),
+                sample_entry: sample_entry.cloned(),
+                keyframe,
+                timestamp,
+                duration,
+                data_offset,
+                data_size,
+                composition_time_offset,
+            }
+        })
+        .collect()
+}
+
+/// `handle_media_segment()` がエラーを返す入力の種類
+///
+/// いずれも、同じ呼び出しでサンプルを 1 つ以上処理した後でエラーになる
+#[derive(Debug, Clone, Copy)]
+enum InvalidMediaSegmentKind {
+    /// `moof` + `mdat` を 2 組連結した入力（`mdat` の後ろに追加データがあるためエラーになる）
+    ConcatenatedPairs,
+    /// 2 番目の `traf` の track_id を、`moov` に存在しない値に書き換えた入力
+    UnknownTrackIdInSecondTraf,
+    /// 2 番目の `traf` の sample description index を、`stsd` の範囲外の値に書き換えた入力
+    SampleDescriptionIndexOutOfRangeInSecondTraf,
+    /// 最後のサンプルのサイズを 1 増やして、`mdat` の範囲を超えさせた入力
+    LastSampleExceedsMdat,
+    /// 最初の `traf` の `tfdt` を `u64::MAX` にして、最初のサンプルの後でデコード時間を溢れさせた入力
+    DecodeTimeOverflow,
+}
+
+/// [`InvalidMediaSegmentKind`] のすべての種類
+///
+/// 種類を追加したときは、ここにも追加する
+const INVALID_MEDIA_SEGMENT_KINDS: [InvalidMediaSegmentKind; 5] = [
+    InvalidMediaSegmentKind::ConcatenatedPairs,
+    InvalidMediaSegmentKind::UnknownTrackIdInSecondTraf,
+    InvalidMediaSegmentKind::SampleDescriptionIndexOutOfRangeInSecondTraf,
+    InvalidMediaSegmentKind::LastSampleExceedsMdat,
+    InvalidMediaSegmentKind::DecodeTimeOverflow,
+];
+
+/// [`InvalidMediaSegmentKind::SampleDescriptionIndexOutOfRangeInSecondTraf`] で書き込む sample description index
+///
+/// どのトラックの `stsd` にもこの数のサンプルエントリーは入らないため、常に範囲外になる
+const OUT_OF_RANGE_SAMPLE_DESCRIPTION_INDEX: u32 = u32::MAX;
+
+/// 正しいメディアセグメントから、`kind` の種類のエラーになる入力を作る
+///
+/// 次の前提を満たすセグメントを渡すこと:
+/// - `traf` を 2 つ以上含み、各 `traf` がサンプルを 1 つ以上含む
+/// - 最初の `traf` の最初のサンプルの尺が 1 以上である
+///
+/// `unknown_track_id` は `moov` に存在しない track_id とする
+fn build_invalid_media_segment(
+    kind: InvalidMediaSegmentKind,
+    media_segment: &[u8],
+    unknown_track_id: u32,
+) -> Vec<u8> {
+    // 前提が崩れると、最初のサンプルを処理する前にエラーになることがある。
+    // そうなると、状態が変わらないことを確かめても何も検証しないテストになるため、どの種類でも最初に前提を確認する
+    let (moof_box, _) =
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
+    assert!(
+        moof_box.traf_boxes.len() >= 2,
+        "エラーになる入力の元にするセグメントは traf を 2 つ以上含む"
+    );
+    for traf_box in &moof_box.traf_boxes {
+        assert!(
+            traf_box
+                .trun_boxes
+                .iter()
+                .any(|trun_box| !trun_box.samples.is_empty()),
+            "エラーになる入力の元にするセグメントの各 traf はサンプルを 1 つ以上含む"
+        );
+    }
+    let first_sample_duration = moof_box.traf_boxes[0]
+        .trun_boxes
+        .iter()
+        .flat_map(|trun_box| &trun_box.samples)
+        .next()
+        .and_then(|sample| sample.duration)
+        .expect("muxer は trun に各サンプルの尺を書く");
+    assert!(
+        first_sample_duration >= 1,
+        "エラーになる入力の元にするセグメントの最初のサンプルの尺は 1 以上である"
+    );
+
+    match kind {
+        InvalidMediaSegmentKind::ConcatenatedPairs => {
+            let mut concatenated = media_segment.to_vec();
+            concatenated.extend_from_slice(media_segment);
+            concatenated
+        }
+        InvalidMediaSegmentKind::UnknownTrackIdInSecondTraf => {
+            rewrite_media_segment_moof(media_segment, |moof_box| {
+                moof_box.traf_boxes[1].tfhd_box.track_id = unknown_track_id;
+            })
+        }
+        InvalidMediaSegmentKind::SampleDescriptionIndexOutOfRangeInSecondTraf => {
+            rewrite_media_segment_moof(media_segment, |moof_box| {
+                moof_box.traf_boxes[1].tfhd_box.sample_description_index =
+                    Some(OUT_OF_RANGE_SAMPLE_DESCRIPTION_INDEX);
+            })
+        }
+        InvalidMediaSegmentKind::LastSampleExceedsMdat => {
+            // muxer の出力では、トラックの payload が traf と同じ順に隙間なく並ぶ。
+            // そのため、最後の traf の最後のサンプルは mdat の末尾で終わり、サイズを 1 増やすと範囲を超える
+            rewrite_media_segment_moof(media_segment, |moof_box| {
+                let last_sample = moof_box
+                    .traf_boxes
+                    .last_mut()
+                    .and_then(|traf_box| traf_box.trun_boxes.last_mut())
+                    .and_then(|trun_box| trun_box.samples.last_mut())
+                    .expect("最後の traf の最後の trun はサンプルを含む");
+                let size = last_sample
+                    .size
+                    .expect("muxer は trun に各サンプルのサイズを書く");
+                last_sample.size =
+                    Some(size.checked_add(1).expect("サンプルサイズは u32 に収まる"));
+            })
+        }
+        InvalidMediaSegmentKind::DecodeTimeOverflow => {
+            // 最初のサンプルの尺は 1 以上なので、最初のサンプルの後でデコード時間の加算が溢れる
+            rewrite_media_segment_moof(media_segment, |moof_box| {
+                moof_box.traf_boxes[0].tfdt_box = Some(TfdtBox {
+                    version: 1,
+                    base_media_decode_time: u64::MAX,
+                });
+            })
+        }
+    }
+}
+
+/// `kind` の種類の入力を渡したときに、エラーの `reason` が始まる文字列を返す
+///
+/// 書き換えた入力が、狙ったものとは別の理由（サンプルを処理する前の検査など）でエラーになっていないことを確かめるために使う。
+/// 別の理由でエラーになると、状態が変わらないことを確かめても、何も検証していないテストになるためである
+fn expected_error_reason_prefix(kind: InvalidMediaSegmentKind) -> String {
+    match kind {
+        InvalidMediaSegmentKind::ConcatenatedPairs => {
+            "media segment contains trailing data after mdat".to_owned()
+        }
+        InvalidMediaSegmentKind::UnknownTrackIdInSecondTraf => {
+            "unknown track_id in media segment".to_owned()
+        }
+        InvalidMediaSegmentKind::SampleDescriptionIndexOutOfRangeInSecondTraf => {
+            format!(
+                "sample_description_index={OUT_OF_RANGE_SAMPLE_DESCRIPTION_INDEX} is out of range"
+            )
+        }
+        InvalidMediaSegmentKind::LastSampleExceedsMdat => {
+            "sample data range exceeds mdat boundary".to_owned()
+        }
+        InvalidMediaSegmentKind::DecodeTimeOverflow => "trun decode time overflow".to_owned(),
+    }
+}
+
+/// `handle_media_segment()` がエラーを返しても、demuxer の内部状態が変わらないことを確認する
+///
+/// 映像トラックが sample description index 2 を使うセグメントを、エラーになる形に書き換えて渡す。
+/// 渡す前の demuxer は、index 1 のセグメントを処理した後の状態と、初期化した直後の状態の両方を試す。
+/// エラーになる入力の種類は [`InvalidMediaSegmentKind`] のとおりである。
+/// 次の 2 点を確かめる:
+/// - エラーを返した呼び出しの前後で、demuxer の `Debug` 出力（内部状態すべて）が一致する
+/// - その後に正しいセグメントを渡した結果が、エラーになる入力を渡さなかった demuxer の結果と一致する
+///
+/// 処理の途中で内部状態を更新する実装では、エラーの前にサンプルを処理したトラックの index が更新されたまま残る。
+/// その結果、正しいセグメントの各トラックの最初のサンプルや、index が切り替わった最初の映像サンプルで
+/// `sample_entry` が `None` になり、利用者はサンプルエントリーを受け取れなくなる
+#[test]
+fn media_segment_error_does_not_change_state() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // 1 つ目のセグメントを処理してからエラーになる入力を渡したケース数と、初期化直後に渡したケース数。
+    // 各ケースで 1/2 の確率で選ぶので、`CASES`（256）ケースで片方を一度も通らない確率は 2^-256 程度
+    let after_first_segment_cases = std::cell::Cell::new(0usize);
+    let right_after_init_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        // 映像と音声のサンプルをどちらも 1 つ以上にする。
+        // `build_invalid_media_segment` の前提を満たすためである
+        let first_video_samples = sample_vec(ctx, 1..4, |ctx| arb_video_sample(ctx, 0));
+        let first_audio_samples = sample_vec(ctx, 1..4, |ctx| arb_audio_sample(ctx, 1));
+        let second_video_samples = sample_vec(ctx, 1..4, |ctx| arb_video_sample(ctx, 0));
+        let second_audio_samples = sample_vec(ctx, 1..4, |ctx| arb_audio_sample(ctx, 1));
+        // エラーになる入力の前に、1 つ目のセグメント（映像の index が 1）を処理しておくかどうか。
+        // 処理しない場合は、初期化直後の demuxer にエラーになる入力を渡す
+        let handle_first_segment = noprop::sample_bool(ctx);
+
+        let original_sample_entry = create_avc1_sample_entry(width1, 240);
+        let alternative_sample_entry = create_avc1_sample_entry(width2, 240);
+        let audio_sample_entry = create_opus_sample_entry();
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        // 映像、音声の順に traf と payload が並ぶセグメントを組み立てる
+        let mut build_segment = |video_sample_entry: &SampleEntry,
+                                 video_samples: &[TestSample],
+                                 audio_samples: &[TestSample]| {
+            let mut segment_samples = Vec::new();
+            let mut payloads = Vec::new();
+            for sample in video_samples {
+                segment_samples.push(video_segment_sample(video_sample_entry, sample, None));
+                payloads.push(sample.data.as_slice());
+            }
+            for sample in audio_samples {
+                segment_samples.push(audio_segment_sample(&audio_sample_entry, sample));
+                payloads.push(sample.data.as_slice());
+            }
+            build_complete_media_segment(&mut muxer, &segment_samples, &payloads)
+        };
+        let first_segment = build_segment(
+            &original_sample_entry,
+            &first_video_samples,
+            &first_audio_samples,
+        );
+        let second_segment = build_segment(
+            &alternative_sample_entry,
+            &second_video_samples,
+            &second_audio_samples,
+        );
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // エラーになる入力を渡さなかった場合の結果を期待値にする
+        let mut reference_demuxer = Fmp4SegmentDemuxer::new();
+        reference_demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        if handle_first_segment {
+            reference_demuxer
+                .handle_media_segment(&first_segment)
+                .expect("1 つ目の media セグメントの処理に失敗した");
+        }
+        let expected = to_comparable_samples(
+            &reference_demuxer
+                .handle_media_segment(&second_segment)
+                .expect("2 つ目の media セグメントの処理に失敗した"),
+        );
+        // 最初の映像サンプルで、index 2 のサンプルエントリーが返ることを前提にする
+        assert_eq!(
+            expected[0].sample_entry.as_ref(),
+            Some(&alternative_sample_entry),
+            "2 つ目のセグメントの最初の映像サンプルで index 2 のサンプルエントリーが返らない"
+        );
+
+        let unknown_track_id = reference_demuxer
+            .tracks()
+            .expect("init セグメントの処理後はトラック情報を取得できる")
+            .iter()
+            .map(|track| track.track_id)
+            .max()
+            .expect("トラックが存在する")
+            .checked_add(1)
+            .expect("track_id は u32 に収まる");
+
+        for kind in INVALID_MEDIA_SEGMENT_KINDS {
+            let invalid_segment =
+                build_invalid_media_segment(kind, &second_segment, unknown_track_id);
+
+            let mut demuxer = Fmp4SegmentDemuxer::new();
+            demuxer
+                .handle_init_segment(&init_bytes)
+                .expect("init セグメントの処理に失敗した");
+            if handle_first_segment {
+                demuxer
+                    .handle_media_segment(&first_segment)
+                    .expect("1 つ目の media セグメントの処理に失敗した");
+            }
+
+            let state_before_error = format!("{demuxer:?}");
+            // 成功時の戻り値は demuxer を借用し続けるため、サンプル数に変換して借用を終わらせる。
+            // こうしないと、この後で demuxer の `Debug` 出力を取得できない
+            let result = demuxer
+                .handle_media_segment(&invalid_segment)
+                .map(|samples| samples.len());
+            let Err(DemuxError::DecodeError(error)) = &result else {
+                panic!("{kind:?} の入力がデコードエラーにならなかった: {result:?}");
+            };
+            let expected_reason_prefix = expected_error_reason_prefix(kind);
+            assert!(
+                error.reason.starts_with(&expected_reason_prefix),
+                "{kind:?} の入力が狙った理由でエラーにならなかった: {}",
+                error.reason
+            );
+            assert_eq!(
+                format!("{demuxer:?}"),
+                state_before_error,
+                "{kind:?} の入力でエラーを返した後に内部状態が変わった"
+            );
+
+            let actual = to_comparable_samples(
+                &demuxer
+                    .handle_media_segment(&second_segment)
+                    .expect("エラーの後の media セグメントの処理に失敗した"),
+            );
+            assert_eq!(
+                actual, expected,
+                "{kind:?} の入力でエラーを返した後の demux 結果が、エラーを経ない場合と一致しない"
+            );
+        }
+
+        if handle_first_segment {
+            after_first_segment_cases.set(after_first_segment_cases.get() + 1);
+        } else {
+            right_after_init_cases.set(right_after_init_cases.get() + 1);
+        }
+        Ok(())
+    })?;
+
+    assert!(
+        after_first_segment_cases.get() > 0,
+        "1 つ目のセグメントを処理してからエラーになる入力を渡したケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        right_after_init_cases.get() > 0,
+        "初期化直後にエラーになる入力を渡したケースが 1 つもなかった\n{runner}"
+    );
+    Ok(())
+}
+
+/// `moof` にある唯一の `traf` を、同じトラックの 2 つの `traf` に分ける
+///
+/// 先頭から `split_at` 個のサンプルを 1 番目の `traf` に、残りを 2 番目の `traf` に入れる。
+/// それぞれの `tfhd.sample_description_index` は `sample_description_indices` の値にする。
+/// 2 番目の `traf` の `tfdt` と `trun` の `data_offset` は、1 番目の `traf` のサンプルの尺とサイズの合計だけ進める。
+/// `data_offset` は書き換える前の `moof` の先頭を基準にした値のままにする。
+/// `traf` の追加や、32 ビットに収まらない `tfdt` の値による version 1 への変化で `moof` のサイズが変わっても、
+/// その差は [`rewrite_media_segment_moof`] が補正する
+fn split_single_traf(
+    moof_box: &mut MoofBox,
+    split_at: usize,
+    sample_description_indices: [u32; 2],
+) {
+    assert_eq!(
+        moof_box.traf_boxes.len(),
+        1,
+        "分ける前の moof は traf を 1 つだけ含む"
+    );
+    let mut first_traf_box = moof_box.traf_boxes.remove(0);
+    assert_eq!(
+        first_traf_box.trun_boxes.len(),
+        1,
+        "muxer は traf ごとに trun を 1 つ出力する"
+    );
+
+    let second_samples = first_traf_box.trun_boxes[0].samples.split_off(split_at);
+    let first_samples = &first_traf_box.trun_boxes[0].samples;
+    let first_duration: u64 = first_samples
+        .iter()
+        .map(|sample| {
+            u64::from(
+                sample
+                    .duration
+                    .expect("muxer は trun に各サンプルの尺を書く"),
+            )
+        })
+        .sum();
+    let first_size: i64 = first_samples
+        .iter()
+        .map(|sample| {
+            i64::from(
+                sample
+                    .size
+                    .expect("muxer は trun に各サンプルのサイズを書く"),
+            )
+        })
+        .sum();
+
+    let mut second_traf_box = first_traf_box.clone();
+    second_traf_box.trun_boxes[0].samples = second_samples;
+    let first_data_offset = first_traf_box.trun_boxes[0]
+        .data_offset
+        .expect("muxer は trun に data_offset を書く");
+    second_traf_box.trun_boxes[0].data_offset = Some(
+        i32::try_from(i64::from(first_data_offset) + first_size)
+            .expect("2 番目の traf の data_offset は i32 に収まる"),
+    );
+    let second_tfdt_box = second_traf_box
+        .tfdt_box
+        .as_mut()
+        .expect("muxer は traf に tfdt を出力する");
+    second_tfdt_box.base_media_decode_time = second_tfdt_box
+        .base_media_decode_time
+        .checked_add(first_duration)
+        .expect("2 番目の traf のデコード時間は u64 に収まる");
+
+    first_traf_box.tfhd_box.sample_description_index = Some(sample_description_indices[0]);
+    second_traf_box.tfhd_box.sample_description_index = Some(sample_description_indices[1]);
+    moof_box.traf_boxes = vec![first_traf_box, second_traf_box];
+}
+
+/// 同じ `moof` に同じトラックの `traf` が 2 つある場合も、
+/// sample description index が直前の値から変わったサンプルでだけ `sample_entry` が `Some` になることを確認する
+///
+/// ISO/IEC 14496-12:2022 の 8.8.6.1 は、1 つの `moof` に同じトラックの `traf` を複数置くことを認めている。
+/// 2 番目の `traf` は、同じ呼び出しで先に処理した `traf` の sample description index と比べる必要がある。
+/// muxer はトラックごとに `traf` を 1 つしか出力しないため、`moof` を書き換えて `traf` を 2 つに分ける。
+///
+/// 直前のセグメントの有無とその sample description index、2 つの `traf` の sample description index の
+/// すべての組み合わせを試す。期待値は、「直前の値と異なるときだけ通知する」という規則から実装と独立に求める
+#[test]
+fn sample_entry_emission_with_split_trafs_of_same_track() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let width1 = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let width2 = sample_distinct_width(ctx, width1);
+        let samples = sample_vec(ctx, 2..6, |ctx| arb_video_sample(ctx, 0));
+        // 2 つの traf がどちらもサンプルを 1 つ以上含むように分ける
+        let split_at = noprop::sample_usize_in(ctx, 1..samples.len());
+
+        // sample description index 1 と 2 に対応するサンプルエントリー
+        let sample_entries = [
+            create_avc1_sample_entry(width1, 240),
+            create_avc1_sample_entry(width2, 240),
+        ];
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let segment_samples: Vec<Sample> = samples
+            .iter()
+            .map(|sample| video_segment_sample(&sample_entries[0], sample, None))
+            .collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
+        let base_segment = build_complete_media_segment(&mut muxer, &segment_samples, &payloads);
+        // init セグメントの stsd に 2 つ目のサンプルエントリーを登録するためだけに使う
+        let _ = build_complete_media_segment(
+            &mut muxer,
+            &[video_segment_sample(&sample_entries[1], &samples[0], None)],
+            &[samples[0].data.as_slice()],
+        );
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        for previous_index in [None, Some(1u32), Some(2)] {
+            // 直前に処理しておくセグメント。`previous_index` が None のときは何も処理しない
+            let previous_segment = previous_index.map(|index| {
+                rewrite_media_segment_moof(&base_segment, |moof_box| {
+                    moof_box.traf_boxes[0].tfhd_box.sample_description_index = Some(index);
+                })
+            });
+
+            for traf_indices in [[1u32, 1], [1, 2], [2, 1], [2, 2]] {
+                let mut demuxer = Fmp4SegmentDemuxer::new();
+                demuxer
+                    .handle_init_segment(&init_bytes)
+                    .expect("init セグメントの処理に失敗した");
+                if let Some(previous_segment) = &previous_segment {
+                    demuxer
+                        .handle_media_segment(previous_segment)
+                        .expect("直前の media セグメントの処理に失敗した");
+                }
+
+                let split_segment = rewrite_media_segment_moof(&base_segment, |moof_box| {
+                    split_single_traf(moof_box, split_at, traf_indices);
+                });
+                let demuxed = demuxer
+                    .handle_media_segment(&split_segment)
+                    .expect("traf を分けた media セグメントの処理に失敗した");
+                assert_eq!(demuxed.len(), samples.len(), "サンプル数が一致しない");
+                // traf を分けても、各サンプルが元の payload を指していることを確認する
+                for (demuxed_sample, sample) in demuxed.iter().zip(&samples) {
+                    let start = demuxed_sample.data_offset as usize;
+                    assert_eq!(
+                        &split_segment[start..start + demuxed_sample.data_size],
+                        sample.data.as_slice(),
+                        "traf を分けたセグメントのサンプルが元の payload を指していない"
+                    );
+                }
+
+                // sample description index は traf ごとに決まるため、`sample_entry` が `Some` になり得るのは
+                // 各 traf の最初のサンプルだけである。
+                // 直前の index（最初の traf では直前のセグメントの index、2 番目の traf では最初の traf の index）と
+                // 異なるときだけ、その index のサンプルエントリーが返る
+                let mut expected: Vec<Option<&SampleEntry>> = vec![None; samples.len()];
+                let mut current_index = previous_index;
+                for (first_sample_position, index) in
+                    [(0, traf_indices[0]), (split_at, traf_indices[1])]
+                {
+                    if current_index != Some(index) {
+                        expected[first_sample_position] =
+                            Some(&sample_entries[index as usize - 1]);
+                    }
+                    current_index = Some(index);
+                }
+                let actual: Vec<Option<&SampleEntry>> =
+                    demuxed.iter().map(|sample| sample.sample_entry).collect();
+                assert_eq!(
+                    actual, expected,
+                    "直前の index が {previous_index:?}、2 つの traf の index が {traf_indices:?} のときの sample_entry が期待と異なる"
+                );
+            }
+        }
         Ok(())
     })?;
     Ok(())

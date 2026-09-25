@@ -224,6 +224,13 @@ impl Fmp4SegmentDemuxer {
     /// - `tfhd` に `base_data_offset` が明示されている場合: その値を `data` スライス先頭からの相対値として使用する
     /// - `default_base_is_moof = true` かつ `base_data_offset` なし: moof 先頭を基準とする
     /// - `default_base_is_moof = false` かつ `base_data_offset` なし: 最初の `traf` は moof 先頭、2 番目以降は前の `traf` のデータ末尾を基準とする（ISO 14496-12 Section 8.8.8）
+    ///
+    /// # エラー返却時の内部状態
+    ///
+    /// エラーを返した場合も内部状態は変わらない。
+    /// そのため、エラーの後も同じインスタンスを使い続けられる。
+    /// その後に渡したメディアセグメントで `sample_entry` が `Some` になるサンプルは、
+    /// エラーを返した呼び出しがなかった場合と同じになる。
     pub fn handle_media_segment(&mut self, data: &[u8]) -> Result<Vec<Sample<'_>>, DemuxError> {
         if data.is_empty() {
             return Err(DemuxError::DecodeError(Error::invalid_input(
@@ -300,14 +307,27 @@ impl Fmp4SegmentDemuxer {
             )));
         }
 
-        let pending_samples = {
+        let (pending_samples, current_sample_description_indices) = {
             let track_infos = &self.track_infos;
             let track_runtimes = self
                 .track_runtimes
-                .as_mut()
+                .as_ref()
                 .ok_or(DemuxError::InvalidState(
                     "Init segment has not been processed yet",
                 ))?;
+
+            // エラーを返した場合に内部状態を変えないように、各トラックの直前の sample description index を
+            // 作業用に複製し、このメディアセグメントの処理中はこちらだけを読み書きする。
+            // `track_runtimes` へは、すべての検証が通った後にまとめて書き戻す。
+            //
+            // `emit_sample_entry` の判定で `track_runtimes` の値と比べてはいけない。
+            // ISO/IEC 14496-12:2022 の 8.8.6.1 は 1 つの `moof` に同じトラックの `traf` を複数置くことを認めており、
+            // 2 番目以降の `traf` は、同じ呼び出しで先に処理した `traf` の値と比べる必要があるためである。
+            // なお、この扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+            let mut current_sample_description_indices: Vec<Option<u32>> = track_runtimes
+                .iter()
+                .map(|track_runtime| track_runtime.current_sample_description_index)
+                .collect();
 
             let mut pending_samples = Vec::new();
             let mut prev_traf_data_end: Option<usize> = None;
@@ -322,7 +342,7 @@ impl Fmp4SegmentDemuxer {
                             traf.tfhd_box.track_id
                         )))
                     })?;
-                let track_runtime = &mut track_runtimes[track_index];
+                let track_runtime = &track_runtimes[track_index];
 
                 let sample_description_index =
                     resolve_sample_description_index(&traf.tfhd_box, &track_runtime.trex)?;
@@ -331,7 +351,7 @@ impl Fmp4SegmentDemuxer {
                     sample_description_index,
                     track_infos[track_index].track_id,
                 )?;
-                let mut emit_sample_entry = track_runtime.current_sample_description_index
+                let mut emit_sample_entry = current_sample_description_indices[track_index]
                     != Some(sample_description_index);
 
                 let base_media_decode_time = traf
@@ -419,7 +439,7 @@ impl Fmp4SegmentDemuxer {
                             data_size: size,
                             composition_time_offset: trun_sample.composition_time_offset,
                         });
-                        track_runtime.current_sample_description_index =
+                        current_sample_description_indices[track_index] =
                             Some(sample_description_index);
                         emit_sample_entry = false;
 
@@ -439,7 +459,7 @@ impl Fmp4SegmentDemuxer {
                 prev_traf_data_end = Some(traf_data_end);
             }
 
-            pending_samples
+            (pending_samples, current_sample_description_indices)
         };
 
         if mdat_end != data.len() {
@@ -448,10 +468,18 @@ impl Fmp4SegmentDemuxer {
             )));
         }
 
+        // ここより後でエラーを返すことはないので、作業用の sample description index を書き戻す
         let track_runtimes = self
             .track_runtimes
-            .as_ref()
+            .as_mut()
             .expect("bug: track_runtimes must exist after initialization");
+        for (track_runtime, sample_description_index) in track_runtimes
+            .iter_mut()
+            .zip(current_sample_description_indices)
+        {
+            track_runtime.current_sample_description_index = sample_description_index;
+        }
+
         Ok(pending_samples
             .into_iter()
             .map(|pending| {

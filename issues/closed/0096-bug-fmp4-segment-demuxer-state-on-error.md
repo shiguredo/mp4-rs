@@ -1,7 +1,7 @@
 # `Fmp4SegmentDemuxer::handle_media_segment` がエラーを返す前にサンプルエントリーの送出状態を更新してしまう
 
 - Created: 2026-09-24
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-fmp4-segment-demuxer-state-on-error
 - Polished: 2026-09-25
 
@@ -69,16 +69,34 @@ issue 0094 の対応で `moof` より前のボックスを読み飛ばすよう�
 
 ## 解決方法
 
-- `src/demux_fmp4_segment.rs` の `handle_media_segment` で、状態の更新を成功後に移し、doc を更新する
-- テスト（shiguredo-rust の役割分担に従い、PBT で検証する）
-  - `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `rejects_multiple_moof_mdat_pairs_in_one_input` を拡張するか、同じファイルにプロパティを追加する
-  - 次のエラー入力を渡してエラーになった後、正しいメディアセグメントを渡した結果が、新しく作った demuxer に同じセグメントを渡した結果と一致することを確認する（最初のサンプルの `sample_entry` が `Some` になることを含む）
-    - `moof` + `mdat` を 2 組連結した入力（再現手順と同じ）
-    - 2 番目の `traf` の track_id を、`moov` に存在しない値に書き換えた入力
-    - 2 番目以降のサンプルが `mdat` の範囲を超える入力（最初のサンプルは範囲内にする）
-  - 修正前の実装で、これらのプロパティが失敗することを確認する
-  - 成功した呼び出しで `sample_entry` の出方が変わらないことを確認するプロパティを追加する
-    - `Fmp4SegmentMuxer` はトラックごとに `traf` を 1 つしか出力しないため、`moof` を書き換えて同じトラックの `traf` を 2 つに分けた入力を作る
-    - 完了条件の 2 つの場合について、2 つ目の `traf` の最初のサンプルの `sample_entry` を確認する。1 → 1 では `None`、直前のセグメントが 1 で今回が 2 → 1 では `Some`（sample description index 1 のサンプルエントリー）になる
-    - このプロパティは修正前の実装でも通る。判定の誤りを検出できることは、実装中に一時的に判定を `track_runtimes` の値と比べる形に変え、このプロパティが失敗することで確認する
-- `CHANGES.md` に `[FIX]` として記載する
+`src/demux_fmp4_segment.rs` の `Fmp4SegmentDemuxer::handle_media_segment` を次のように直した。
+
+- 呼び出しの最初に、各トラックの `current_sample_description_index` を作業用の配列 `current_sample_description_indices` に複製し、`emit_sample_entry` の判定とサンプルごとの更新はこの配列に対して行うようにした。ループの中では `track_runtimes` を共有参照でしか借用しない
+- `mdat` の後ろの追加データの検査を通った後で、作業用の配列を `track_runtimes` に書き戻すようにした。書き戻しより後にエラーを返す経路はない
+- 判定で `track_runtimes` の値と比べてはいけない理由（ISO/IEC 14496-12:2022 の 8.8.6.1 が 1 つの `moof` に同じトラックの `traf` を複数置くことを認めていること）をコメントに書いた
+- doc に「# エラー返却時の内部状態」節を追加した（`Mp4FileMuxer::append_sample` の書き方にならった）
+
+C API の `fmp4_segment_demuxer_handle_media_segment` の doc と `crates/c-api/include/mp4.h` は、設計方針どおり変えていない（issue 0102 がまだ入っていないため）。
+
+テストは `pbt/tests/prop_fmp4_segment_mux_demux.rs` に PBT を 2 つ追加した。
+
+- `media_segment_error_does_not_change_state`
+  - 映像と音声の 2 トラックで、映像が sample description index 2 を使うセグメントを、次の 5 種類のエラー入力に書き換えて渡す（`InvalidMediaSegmentKind`）
+    - `moof` + `mdat` を 2 組連結した入力
+    - 2 番目の `traf` の track_id を `moov` に存在しない値に書き換えた入力
+    - 2 番目の `traf` の sample description index を範囲外にした入力
+    - 最後のサンプルのサイズを 1 増やして `mdat` の範囲を超えさせた入力
+    - 最初の `traf` の `tfdt` を `u64::MAX` にしてデコード時間を溢れさせた入力
+  - エラーの `reason` が狙った理由であること、エラーの前後で demuxer の `Debug` 出力が一致すること、その後に正しいセグメントを渡した結果がエラーを経ない demuxer の結果と一致することを確認する
+  - 渡す前の demuxer は、index 1 のセグメントを処理した後と初期化直後の両方を試し、それぞれの分岐を通ったことも確認する
+- `sample_entry_emission_with_split_trafs_of_same_track`
+  - `moof` を書き換えて同じトラックの `traf` を 2 つに分けた入力で、直前のセグメントの有無と index、2 つの `traf` の index のすべての組み合わせについて、`sample_entry` が `Some` になるサンプルを、実装と独立に求めた期待値と比べる
+- 補助として、`moof` を書き換えたときに `trun` の `data_offset` を補正する `rewrite_media_segment_moof` などのヘルパーを追加した
+
+確認したこと:
+
+- 修正前の実装では、`media_segment_error_does_not_change_state` が 5 種類のエラー入力のそれぞれ単独で失敗する（`reason` の照合を通ったうえで、内部状態の比較で失敗する）
+- 判定を一時的に `track_runtimes` の値と比べる形に変えると、`sample_entry_emission_with_split_trafs_of_same_track` が 1 → 1 の場合と、直前のセグメントが 1 で今回が 2 → 1 の場合のそれぞれで失敗する
+- `Fmp4FileDemuxer` にファイル全体を渡してエラーにした後、要求された範囲を渡して再試行すると、修正前は `bug: sample entry must be cached before borrowing` で panic し、修正後は panic せずにサンプルを取り出せる
+
+`CHANGES.md` に `[FIX]` として記載し、`skills/shiguredo-mp4/SKILL.md` の `handle_media_segment` の説明にエラー時の保証を追記した。

@@ -592,7 +592,6 @@ impl Fmp4SegmentMuxer {
     }
 
     fn build_ftyp(&self) -> FtypBox {
-        let mut has_avc1 = false;
         let mut has_hev1 = false;
         let mut has_hvc1 = false;
         let mut has_av01 = false;
@@ -600,7 +599,6 @@ impl Fmp4SegmentMuxer {
         for track in &self.tracks {
             for sample_entry in &track.sample_entries {
                 match sample_entry {
-                    SampleEntry::Avc1(_) => has_avc1 = true,
                     SampleEntry::Hev1(_) => has_hev1 = true,
                     SampleEntry::Hvc1(_) => has_hvc1 = true,
                     SampleEntry::Av01(_) => has_av01 = true,
@@ -609,10 +607,20 @@ impl Fmp4SegmentMuxer {
             }
         }
 
-        let mut compatible_brands = vec![Brand::ISOM, Brand::ISO5, Brand::ISO6, Brand::MP41];
-        if has_avc1 {
-            compatible_brands.push(Brand::AVC1);
-        }
+        // build_moof() はすべての tfhd で default_base_is_moof を true にする。
+        // ISO/IEC 14496-12:2022 8.8.7.1 は、このフラグを iso5 より前の brand や
+        // 互換 brand を含むファイルで使ってはならないと定めており、NOTE では
+        // このフラグが以前の brand と互換でないため、以前の brand が ftyp に
+        // 含まれるときは立てられないとしている。
+        // 附属書 E の NOTE も、isom (E.2) と avc1 (E.3) を付けたファイルでは
+        // このフラグを立てられないとしている。
+        // そのため compatible_brands からは、この制約の対象になる isom と avc1 を外す。
+        // iso5 / iso6 は制約の対象外であり、mp41 は ISO/IEC 14496-14 の brand で
+        // 8.8.7.1 と附属書 E の NOTE が扱う ISO/IEC 14496-12 の brand ではないため、
+        // いずれも従来どおり残す。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、
+        // 将来の改訂で変わる可能性がある。
+        let mut compatible_brands = vec![Brand::ISO5, Brand::ISO6, Brand::MP41];
         if has_hev1 {
             compatible_brands.push(Brand::HEV1);
         }

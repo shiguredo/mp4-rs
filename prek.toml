@@ -53,7 +53,7 @@ hooks = [
 # rev は prek auto-update で更新する
 [[repos]]
 repo = "https://github.com/tombi-toml/tombi-pre-commit"
-rev = "v1.2.4"
+rev = "v1.5.5"
 hooks = [
   # Cargo.lock は自動生成ファイルなので tombi の対象外にする
   { id = "tombi-lint", exclude = { glob = "**/Cargo.lock" } },

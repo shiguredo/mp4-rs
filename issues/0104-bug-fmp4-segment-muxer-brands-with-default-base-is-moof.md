@@ -3,7 +3,7 @@
 - Created: 2026-09-25
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-segment-muxer-brands-with-default-base-is-moof
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 
@@ -23,7 +23,7 @@
 ## 設計方針
 
 - `build_ftyp` の `compatible_brands` から `isom` と `avc1` を外す
-- `hev1` / `hvc1` / `av01` / `mp41` は ISO/IEC 14496-12 では定義されておらず、同じ制約を確認できないため変えない
+- `hev1` / `hvc1` / `av01` / `mp41` は ISO/IEC 14496-12 で定義される brand ではない（`hev1` / `hvc1` は ISO/IEC 14496-15、`mp41` は ISO/IEC 14496-14、`av01` は AV1 ISOBMFF 仕様）。この issue では ISO/IEC 14496-12 の brand だけを対象にするため、これらは変えない
 - 関連 issue: issue 0050（pending）は、字幕系の brand を `build_ftyp` に足す。同じ関数を変えるが、目的は別である
 
 ## 完了条件
@@ -36,4 +36,5 @@
 - `src/mux_fmp4_segment.rs` の `build_ftyp` を変更し、brand を選ぶ理由（8.8.7.1 と附属書 E の NOTE）をコードコメントに書く
 - テスト
   - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: 任意のサンプルエントリーの組み合わせで init セグメントを作り、`ftyp` の `compatible_brands` が完了条件どおりになることを確認するプロパティを追加する
+  - `tests/test_mux_fmp4_segment.rs` には単体テストを追加しない（brand の組み合わせは PBT で確認できるため）
 - `CHANGES.md` に `[FIX]` として記載する。init セグメントの `ftyp` のバイト列が変わることも書く

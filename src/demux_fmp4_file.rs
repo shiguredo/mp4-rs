@@ -14,31 +14,48 @@
 //! # Examples
 //!
 //! ```no_run
-//! use shiguredo_mp4::demux::{Fmp4FileDemuxer, Input};
+//! use shiguredo_mp4::demux::{DemuxError, Fmp4FileDemuxer, Input};
 //!
 //! # fn main() -> Result<(), Box<dyn 'static + std::error::Error>> {
 //! let file_data: Vec<u8> = todo!("bytes of the fMP4 file");
 //! let mut demuxer = Fmp4FileDemuxer::new();
 //!
-//! while let Some(required) = demuxer.required_input() {
-//!     let start = required.position as usize;
-//!     let end = start.saturating_add(required.size.unwrap_or(file_data.len() - start));
-//!     demuxer.handle_input(Input {
-//!         position: required.position,
-//!         data: file_data.get(start..end).unwrap_or(&[]),
-//!     });
-//! }
+//! // `required_input()` が要求する範囲をファイルから取り出して渡す
+//! let feed = |demuxer: &mut Fmp4FileDemuxer| {
+//!     while let Some(required) = demuxer.required_input() {
+//!         let start = required.position as usize;
+//!         // 要求範囲がファイル末尾を超える場合は、ファイル末尾までを渡す
+//!         let end = required
+//!             .size
+//!             .map(|size| start.saturating_add(size))
+//!             .unwrap_or(file_data.len())
+//!             .min(file_data.len());
+//!         demuxer.handle_input(Input {
+//!             position: required.position,
+//!             data: file_data.get(start..end).unwrap_or(&[]),
+//!         });
+//!     }
+//! };
 //!
+//! feed(&mut demuxer);
 //! let tracks = demuxer.tracks()?;
 //! println!("Found {} track(s)", tracks.len());
 //!
-//! while let Some(sample) = demuxer.next_sample()? {
-//!     println!(
-//!         "track_id={}, timestamp={}, size={}",
-//!         sample.track.track_id,
-//!         sample.timestamp,
-//!         sample.data_size,
-//!     );
+//! loop {
+//!     match demuxer.next_sample() {
+//!         Ok(Some(sample)) => {
+//!             println!(
+//!                 "track_id={}, timestamp={}, size={}",
+//!                 sample.track.track_id,
+//!                 sample.timestamp,
+//!                 sample.data_size,
+//!             );
+//!         }
+//!         Ok(None) => break,
+//!         // 次のメディアセグメントやファイル末尾を読むための入力が必要になったら、要求された範囲を渡して続ける
+//!         Err(DemuxError::InputRequired(_)) => feed(&mut demuxer),
+//!         Err(e) => return Err(e.into()),
+//!     }
 //! }
 //! # Ok(())
 //! # }

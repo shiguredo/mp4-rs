@@ -22,6 +22,18 @@
   - このため、その後に渡したメディアセグメントで、トラックの最初のサンプルや sample description index が変わったサンプルの `sample_entry` が `None` になることや、sample description index が変わっていないサンプルの `sample_entry` が `Some` になることがあった
   - `Fmp4FileDemuxer` では、このエラーの後に要求された範囲を渡して再試行すると panic することがあった
   - @voluntas
+- [FIX] fMP4 のデマルチプレクサーが `moof` と `mdat` の間のトップレベルボックスを読み飛ばし、`Fmp4SegmentDemuxer` が `mdat` の後ろのトップレベルボックスも読み飛ばすようにする
+  - これまでは `Fmp4SegmentDemuxer` が `moof` の直後のボックスが `mdat` でない場合と `mdat` の後ろにデータがある場合に、`Fmp4FileDemuxer` が `moof` と `mdat` の間にトップレベルボックスがある場合にエラーにしていた
+  - このため、`moof` と `mdat` の間に `free` などを含むメディアセグメントとファイルを処理できなかった
+  - `Fmp4SegmentDemuxer` では、`mdat` の後ろに `moof` がある場合（複数の `moof` + `mdat` ペアを含む入力）は、これまでどおりエラーにする。`Fmp4FileDemuxer` は `mdat` の後ろの `moof` を次のメディアセグメントとして扱う
+  - `moof` の後ろで `mdat` より先に別の `moof` が出た場合は、どちらのデマルチプレクサーでもエラーにする
+  - `moof` と `mdat` の間にサイズが 0 のボックス（32 ビットの size=0、または size=1 + largesize=0）がある場合は、どちらのデマルチプレクサーでもエラーにする
+  - `Fmp4SegmentDemuxer` で `mdat` の後ろの `moof` を拒否したときのエラー理由が `media segment contains trailing data after mdat` から `found moof box after mdat in media segment` に変わる
+  - `Fmp4SegmentDemuxer` で `mdat` の後ろの 8 バイト未満の端数が、`ErrorKind::InvalidData`（C API は `MP4_ERROR_INVALID_DATA`）から `BoxHeader` のデコードエラーである `ErrorKind::InsufficientBuffer`（C API は `MP4_ERROR_OTHER`）に変わる
+  - `Fmp4SegmentDemuxer` では、エラーになる条件は変わらないが、`mdat` の後ろの size=1 + largesize=0 のボックスが `found box with size=0 after mdat in media segment`、`mdat` の後ろの宣言サイズが入力の末尾を超えるボックスが `box after mdat exceeds media segment boundary`、`moof` の後ろの宣言サイズが入力の末尾を超えるボックスが `mdat box not found after moof`、`moof` と `mdat` の間の size=0 のボックスが `found box with size=0 between moof and mdat in media segment` になる
+  - `Fmp4FileDemuxer` では、`moof` と `mdat` の間の size=0 のボックスのエラー理由が `expected mdat box after moof` から `found box with size=0 between moof and mdat in media segment` に変わる。`moof` の後ろの宣言サイズがファイルの末尾を超えるボックスは `expected mdat box after moof` から `mdat box not found after moof` に変わる。また、セグメントの範囲の計算の変更で `segment size overflow` が `segment size exceeds usize::MAX` に、`segment offset overflow` が `mdat offset overflow` に変わる
+  - `mdat` の後ろにある 32 ビットの size=0 のボックスは、入力の末尾まで続くボックスとして受け付ける
+  - @voluntas
 
 ## 2026.5.0
 

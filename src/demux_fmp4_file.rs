@@ -11,6 +11,11 @@
 //! `tfhd` の `base_data_offset` フィールドにファイル先頭からの絶対オフセットが
 //! 記録されている形式には対応していない。
 //!
+//! `moof` と `mdat` の間にあるトップレベルボックス（`free` など）は、種別を問わず中身を解釈せずに読み飛ばす。
+//! `moof` の後ろで `mdat` より先に別の `moof` が出た場合や、
+//! `moof` と `mdat` の間にサイズが 0 のボックス（32 ビットの size=0、または size=1 + largesize=0）がある場合は、
+//! `mdat` が存在しない壊れたファイルとしてエラーになる。
+//!
 //! # Examples
 //!
 //! ```no_run
@@ -109,7 +114,6 @@ enum Phase {
     },
     ReadMdatBoxHeader {
         moof_offset: u64,
-        moof_size: usize,
         mdat_offset: u64,
     },
     ReadMediaSegment {
@@ -427,7 +431,6 @@ impl Fmp4FileDemuxer {
             .ok_or_else(|| DemuxError::DecodeError(Error::invalid_data("mdat offset overflow")))?;
         self.phase = Phase::ReadMdatBoxHeader {
             moof_offset: offset,
-            moof_size,
             mdat_offset,
         };
         Ok(())
@@ -436,7 +439,6 @@ impl Fmp4FileDemuxer {
     fn read_mdat_box_header(&mut self, input: Input) -> Result<(), DemuxError> {
         let Phase::ReadMdatBoxHeader {
             moof_offset,
-            moof_size,
             mdat_offset,
         } = self.phase
         else {
@@ -462,25 +464,53 @@ impl Fmp4FileDemuxer {
 
         let (mdat_header, _) = BoxHeader::decode(data)?;
         if mdat_header.box_type != MdatBox::TYPE {
-            return Err(DemuxError::DecodeError(Error::invalid_data(
-                "expected mdat box after moof",
-            )));
+            // ISO/IEC 14496-12:2022 の 4.2.2 は、認識できない種別のボックスを無視して読み飛ばすことを求めている。
+            // `free` / `skip` (8.1.2) も `moof` と `mdat` の間に置かれ得るため、
+            // `mdat` が出るまでトップレベルボックスを種別を問わず読み飛ばす。
+            // `moof` が出た場合は、`mdat` が存在しない壊れたファイルとしてエラーにする。
+            // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+            if mdat_header.box_type == MoofBox::TYPE {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "expected mdat box after moof",
+                )));
+            }
+            let box_size = usize::try_from(mdat_header.box_size.get()).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
+            })?;
+            // 32 ビットの size=0 はコンテナの最後のボックスなので、その後ろに `mdat` は存在し得ず、
+            // size=1 + largesize=0 は仕様上の意味が定められていない。どちらも読み飛ばし先を決められない。
+            // この検査がないと `mdat_offset` が進まず、`required_input()` が同じ範囲を要求し続ける
+            if box_size == 0 {
+                return Err(DemuxError::DecodeError(Error::invalid_data(
+                    "found box with size=0 between moof and mdat in media segment",
+                )));
+            }
+            let next_offset = mdat_offset.checked_add(box_size as u64).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("box offset overflow"))
+            })?;
+            self.phase = Phase::ReadMdatBoxHeader {
+                moof_offset,
+                mdat_offset: next_offset,
+            };
+            return Ok(());
         }
+
         let (segment_size, next_offset) = if mdat_header.box_size.get() == 0 {
             (None, None)
         } else {
             let mdat_size = usize::try_from(mdat_header.box_size.get()).map_err(|_| {
                 DemuxError::DecodeError(Error::invalid_data("mdat box size exceeds usize::MAX"))
             })?;
-            let segment_size = moof_size.checked_add(mdat_size).ok_or_else(|| {
-                DemuxError::DecodeError(Error::invalid_data("segment size overflow"))
+            let mdat_end = mdat_offset.checked_add(mdat_size as u64).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("mdat offset overflow"))
             })?;
-            let next_offset = moof_offset
-                .checked_add(segment_size as u64)
-                .ok_or_else(|| {
-                    DemuxError::DecodeError(Error::invalid_data("segment offset overflow"))
-                })?;
-            (Some(segment_size), Some(next_offset))
+            // メディアセグメントの範囲は `moof` の先頭から `mdat` の末尾までとする。
+            // `moof` と `mdat` の間に読み飛ばしたボックスがある場合も、その分を範囲に含める。
+            // `mdat_offset` は `moof` の直後から始まり読み飛ばしで増えるだけなので、`moof_offset` 以上になる
+            let segment_size = usize::try_from(mdat_end - moof_offset).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data("segment size exceeds usize::MAX"))
+            })?;
+            (Some(segment_size), Some(mdat_end))
         };
 
         self.phase = Phase::ReadMediaSegment {

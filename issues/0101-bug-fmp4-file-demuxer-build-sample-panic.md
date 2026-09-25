@@ -3,7 +3,7 @@
 - Created: 2026-09-25
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-file-demuxer-build-sample-panic
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 
@@ -27,19 +27,21 @@
 2. メディアセグメントの `moof` の `traf` を複製して 2 つにし、1 つ目の `traf` の `tfdt` を 90000、2 つ目の `traf` の `tfdt` を 0 にする。`trun` の `data_offset` は `moof` の先頭からの相対値なので、`moof` が大きくなった分だけ足し直す
 3. init セグメントとメディアセグメントを連結したファイルを、要求された範囲だけ `Fmp4FileDemuxer` に渡して `next_sample()` を呼ぶと、`build_sample` で `bug: sample entry must be cached before borrowing` の panic が起きる
 
-issue 0096 の経路（内部の demuxer がエラーを返した後、再試行で最初のサンプルの `sample_entry` を `None` で返す）でも同じ panic に至る。0096 はその原因（エラー時の状態の更新）を直すもので、この `build_sample` の問題は残る。
+issue 0096 の経路（内部の demuxer がエラーを返した後、再試行で最初のサンプルの `sample_entry` を `None` で返す）は、issue 0096 で内部状態を変更しないように直された（2026-09-25）。その経路では panic しなくなったため、ここで扱うのはエラーを経ない入力での panic だけである。
 
 ## 設計方針
 
 - `build_sample` は、`sample_entry` を持つサンプルのときだけキャッシュを参照する。`sample_entry` が `None` のサンプルでキャッシュを参照しない
-- `Sample::sample_entry` の「各トラックの最初のサンプル、または sample description index が変わったサンプルでのみ `Some`」という約束を、`Fmp4FileDemuxer` の取り出し順で守る
-  - `build_pending_samples` で、内部の demuxer が返した順（`traf` / `trun` の並び順）にサンプルをたどり、各サンプルが属するサンプルエントリーを求める（`sample_entry` が `None` のサンプルは、同じトラックの直前のサンプルと同じエントリーに属する。そのメディアセグメントで最初のサンプルなら、前のメディアセグメントまでにキャッシュしたエントリーに属する）
-  - 並べ替えた後の取り出し順で、トラックごとにエントリーが最初に現れたサンプルと、エントリーが変わったサンプルにだけ `sample_entry` を付ける
+- `Sample::sample_entry` の約束を、`Fmp4FileDemuxer` の取り出し順で守る
+  - `src/demux_mp4_file.rs` の `Sample::sample_entry` の doc は「前のサンプルから変更がない場合には `None` になる（最初のサンプルは常に `Some` となる）」としている。`src/demux_fmp4_segment.rs` の `Fmp4SegmentDemuxer::handle_media_segment` の doc は同じ約束を「各トラックの最初のサンプル、または sample description index が変わったサンプルでのみ `Some`」としている
+  - ここでの「最初のサンプル」「前のサンプル」は、ファイル全体の取り出し順で同じトラックの最初・直前のサンプルを指し、メディアセグメントをまたいで判定する
+  - `build_pending_samples` で、内部の demuxer が返した順（`traf` / `trun` の並び順）にサンプルをたどり、各サンプルが属するサンプルエントリーを求める（`sample_entry` が `None` のサンプルは、同じトラックの直前のサンプルと同じエントリーに属する。そのメディアセグメントで最初のサンプルなら、前のメディアセグメントまでに取得した最後のエントリーに属する）
+  - 並べ替えた後の取り出し順で、トラックごとに取り出し順で最初のサンプルと、取り出し順で直前のサンプル（前のメディアセグメントの最後のサンプルを含む）からエントリーが変わったサンプルにだけ `sample_entry` を付ける。直前のサンプルとの比較は、`Fmp4FileDemuxer` が保持する `track_runtimes` のキャッシュ済みサンプルエントリーを引き継いで行う
 
 ## 完了条件
 
 - 並べ替えで同じトラックのサンプルの順序が `traf` / `trun` の並び順と入れ替わる入力でも、`next_sample()` が panic しない
-- 取り出し順で、各トラックの最初のサンプルと、サンプルエントリーが変わったサンプルでだけ `sample_entry` が `Some` になる
+- ファイル全体の取り出し順で、各トラックの最初のサンプルと、サンプルエントリーが変わったサンプルでだけ `sample_entry` が `Some` になる（メディアセグメントをまたいで判定する）
 
 ## 解決方法
 

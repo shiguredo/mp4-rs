@@ -1,7 +1,7 @@
 # `Fmp4FileDemuxer::build_sample` が `sample_entry` をキャッシュしていないトラックのサンプルで panic する
 
 - Created: 2026-09-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-fmp4-file-demuxer-build-sample-panic
 - Polished: 2026-09-25
 
@@ -45,7 +45,16 @@ issue 0096 の経路（内部の demuxer がエラーを返した後、再試行
 
 ## 解決方法
 
-- `src/demux_fmp4_file.rs` の `PendingSample`、`build_pending_samples`、`build_sample` を変更する
+- `src/demux_fmp4_file.rs`
+  - `build_sample` を、`sample_entry` を持つサンプルのときだけキャッシュを参照するようにした。`then_some` が引数を先に評価していたため、`sample_entry` が `None` のサンプルでも `expect` が実行されて panic していた
+  - `build_pending_samples` を、内部の demuxer が返した順（`traf` / `trun` の並び順）で各サンプルが属するサンプルエントリーを求め、並べ替えた後の取り出し順で「各トラックの最初のサンプル」と「直前のサンプルからサンプルエントリーが変わったサンプル」にだけ `sample_entry` を付けるようにした。直前のサンプルは、`track_runtimes` にキャッシュした前のメディアセグメントまでの最後のエントリーから引き継ぐ
+  - `Fmp4FileDemuxer` の doc に、取り出し順と `sample_entry` の約束を書いた
 - テスト
-  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: muxer の出力の `moof` を書き換え、同じトラックの `traf` を分けて `tfdt` の順を入れ替えた入力で、`Fmp4FileDemuxer` が panic せず、取り出し順で上記の約束を満たすことを確認するプロパティを追加する
-- `CHANGES.md` に `[FIX]` として記載する
+  - `tests/test_demux_fmp4_file.rs`: `sample_entry_follows_retrieval_order_across_segments` を追加した。stsd に 2 つ目のサンプルエントリーを足し、1 セグメント目を sample description index 1（`tfdt` 90000）と index 2（`tfdt` 0）の 2 つの `traf`、2 セグメント目を index 2 の 1 つの `traf` にした入力で、取り出し順でサンプルエントリーが変わるところにだけ `sample_entry` が付くことを固定リストで確認する。`rewrite_init_segment` と `rewrite_media_segment_moof` も追加した
+  - `pbt/tests/prop_fmp4_segment_mux_demux.rs`: `fmp4_file_demuxer_swapped_traf_order_keeps_sample_entry_contract` を追加した。muxer の出力の `moof` を書き換え、同じトラックの `traf` を複製して 1 つ目の `tfdt` を 90000、2 つ目を 0 にした入力で、`Fmp4FileDemuxer` が panic せず、取り出し順で最初のサンプルにだけ `sample_entry` が付くことを確認する
+- `CHANGES.md` に `[FIX]` として記載した
+
+### 確認したこと
+
+- `src/demux_fmp4_file.rs` の変更を `git stash` で戻した状態では、`fmp4_file_demuxer_swapped_traf_order_keeps_sample_entry_contract` が `bug: sample entry must be cached before borrowing` で失敗する（issue の再現手順どおりの panic）
+- `cargo test --workspace --exclude c-api`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check` が通ることを確認した

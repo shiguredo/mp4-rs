@@ -34,6 +34,13 @@
   - `Fmp4FileDemuxer` では、`moof` と `mdat` の間の size=0 のボックスのエラー理由が `expected mdat box after moof` から `found box with size=0 between moof and mdat in media segment` に変わる。`moof` の後ろの宣言サイズがファイルの末尾を超えるボックスは `expected mdat box after moof` から `mdat box not found after moof` に変わる。また、セグメントの範囲の計算の変更で `segment size overflow` が `segment size exceeds usize::MAX` に、`segment offset overflow` が `mdat offset overflow` に変わる
   - `mdat` の後ろにある 32 ビットの size=0 のボックスは、入力の末尾まで続くボックスとして受け付ける
   - @voluntas
+- [FIX] `Fmp4FileDemuxer::handle_input` に要求された範囲より多いデータ（ファイル全体など）を渡せるようにする
+  - これまでは `required_input()` が要求した範囲を満たさない入力を拒否していたことと、要求された範囲でデータを切り詰めずに `mdat` の後ろのデータまで内部の demuxer に渡していたことの 2 つが原因で、ファイル全体を渡すとエラーになった
+  - 入力が要求された位置を含み、要求された範囲の終端より手前で終わっている場合は、入力の終端をファイルの終端とみなす。入力が要求された位置を含まない場合は、これまでどおり入力を拒否する
+  - メディアセグメントの処理では、要求された範囲（`moof` の先頭から `mdat` の末尾まで）でデータを切り詰める。これまでは `mdat` の後ろのデータまで内部の demuxer に渡っていた
+  - ファイル全体を渡す場合も、`required_input()` が `Some` を返す間は `handle_input` を繰り返し呼び出す必要がある
+  - 位置 0 からファイル全体を渡した場合、要求された範囲が入力の終端を超えるときの扱いが変わる。これまでは要求された位置から入力が始まる場合を除いてその入力を拒否して `ErrorKind::InvalidInput` を返していたが、いまは要求された位置を含む入力を受理して入力の終端をファイルの終端とみなす。これにより、`available_bytes` でデータを取り出す処理では、要求された範囲のデータが足りないときに返るエラー種別が `ErrorKind::InvalidInput` から `ErrorKind::InvalidData` に変わる
+  - @voluntas
 
 ## 2026.5.0
 

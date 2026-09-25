@@ -308,6 +308,54 @@ fn collect_comparable_samples(
     samples
 }
 
+/// 常に位置 0 から、渡せる範囲（切り詰めたファイル全体）を `handle_input` に渡す
+///
+/// 要求された範囲より多いデータを渡してもよいことと、ファイル全体を渡す場合も
+/// `required_input()` が `Some` を返す間は繰り返し呼ぶ必要があることを確認するために使う
+fn feed_fmp4_file_demuxer_with_whole_file(demuxer: &mut Fmp4FileDemuxer, file_data: &[u8]) {
+    let mut count = 0;
+    while demuxer.required_input().is_some() {
+        demuxer.handle_input(Input {
+            position: 0,
+            data: file_data,
+        });
+
+        count += 1;
+        assert!(
+            count <= MAX_FEED_COUNT,
+            "入力の供給が {MAX_FEED_COUNT} 回を超えた。required_input() が同じ範囲を要求し続けている"
+        );
+    }
+}
+
+/// [`Fmp4FileDemuxer`] の最終結果のうち、比較できる形にしたもの
+///
+/// [`DemuxError`] は `PartialEq` を実装しないため、`Debug` 表現の文字列で比較する
+#[derive(Debug, PartialEq)]
+enum ComparableFinalResult {
+    /// これ以上サンプルがない（`next_sample()` が `Ok(None)` を返した）
+    EndOfSamples,
+    /// エラーになった
+    Error(String),
+}
+
+/// `feed` でデータを供給しながら、取り出せるサンプル列と最後の `next_sample()` の結果を返す
+fn collect_demux_result(
+    file_data: &[u8],
+    feed: impl Fn(&mut Fmp4FileDemuxer, &[u8]),
+) -> (Vec<ComparableSample>, ComparableFinalResult) {
+    let mut demuxer = Fmp4FileDemuxer::new();
+    let mut samples = Vec::new();
+    loop {
+        match demuxer.next_sample() {
+            Ok(Some(sample)) => samples.push(to_comparable_sample(&sample)),
+            Ok(None) => return (samples, ComparableFinalResult::EndOfSamples),
+            Err(DemuxError::InputRequired(_)) => feed(&mut demuxer, file_data),
+            Err(error) => return (samples, ComparableFinalResult::Error(format!("{error:?}"))),
+        }
+    }
+}
+
 fn rewrite_init_segment(init_segment: &[u8], f: impl FnOnce(&mut MoovBox)) -> Vec<u8> {
     let (ftyp_box, ftyp_box_size) =
         FtypBox::decode(init_segment).expect("init セグメントからの ftyp デコードに失敗した");
@@ -3218,6 +3266,275 @@ fn fmp4_file_demuxer_skips_boxes_between_moof_and_mdat() -> noprop::TestResult {
     assert!(
         mdat_size_zero_with_between_cases.get() > 0,
         "mdat の size を 0 にして、かつ間にボックスを置いたセグメントが 1 つもなかった\n{runner}"
+    );
+    Ok(())
+}
+
+/// `Fmp4FileDemuxer` に要求された範囲だけを渡した場合と、常に位置 0 からファイル全体を渡した場合で、
+/// 取り出せるサンプル列と最後の `next_sample()` の結果が一致することを確認する
+///
+/// 次のファイルを含める。
+///
+/// - メディアセグメントが 1 つのファイルと 2 つ以上のファイル
+/// - 最後の `mdat` が 32 バイト未満のファイル
+/// - 最後の `mdat` の後ろにボックスがあるファイル
+/// - 最後の `mdat` の size が 0 のファイル（`segment_size` が `None` になり、切り詰めを通らない経路になる）
+/// - `moof` と `mdat` の間にボックスがあるファイル
+///
+/// さらに、ファイルの途中で切れた入力も使う。切る位置は `moof` と `mdat` の範囲に限る。
+/// 読み飛ばすボックスの、サイズを読める位置より後ろで切ると、次の要求位置が入力の終端より後ろになり、
+/// 入力の終端をファイルの終端とみなせない場合に当たるためである
+#[test]
+fn fmp4_file_demuxer_accepts_whole_file_input() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // メディアセグメントが 1 つのケース数と 2 つ以上のケース数。
+    // `segment_count` は 1 が 1/3、2 以上が 2/3 の確率なので、`CASES`（256）ケースで両方を通る
+    let single_segment_cases = std::cell::Cell::new(0usize);
+    let multi_segment_cases = std::cell::Cell::new(0usize);
+    // 最後の `mdat` が 32 バイト未満になるケース数。各ケースで 1/2 の確率で選ぶ
+    let small_last_mdat_cases = std::cell::Cell::new(0usize);
+    // 最後の `mdat` の後ろにボックスを置いたケース数。各ケースで 1/2 の確率で選ぶ
+    let with_trailing_box_cases = std::cell::Cell::new(0usize);
+    // 最後の `mdat` の size を 0 にしたケース数。後ろにボックスを置かない場合の 1/2 の確率で選ぶ
+    let with_mdat_size_zero_cases = std::cell::Cell::new(0usize);
+    // `moof` と `mdat` の間にボックスを置いたケース数。1 つ以上のセグメントで置かれる確率は 3/4 以上
+    let with_between_box_cases = std::cell::Cell::new(0usize);
+    // ファイルの途中で切った入力を使ったケース数と、切らなかったケース数。各ケースで 1/2 の確率で選ぶ
+    let truncated_cases = std::cell::Cell::new(0usize);
+    let whole_file_cases = std::cell::Cell::new(0usize);
+    // `moof` または `mdat` の途中で切ったケース数。セグメントの内側を選ぶ確率は 1/2 以上
+    let inside_segment_truncated_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        let segment_count = noprop::sample_usize_in(ctx, 1..4);
+        let small_last_mdat = noprop::sample_bool(ctx);
+        let with_trailing_box = noprop::sample_bool(ctx);
+        // 最後の `mdat` の size を 0 にすると `mdat` がファイルの末尾まで続くため、
+        // 後ろにボックスを置く場合は使わない（サイズを読めない位置にボックスが入るため）
+        let with_mdat_size_zero = !with_trailing_box && noprop::sample_bool(ctx);
+
+        // init セグメントを除いたファイル本体と、切る位置の候補。
+        // 候補は (セグメントの先頭, セグメントの末尾, 切る範囲の先頭, 切る範囲の末尾)
+        let mut file_body = Vec::new();
+        let mut truncatable_ranges = Vec::new();
+        // 全セグメントのサンプル数の合計
+        let mut total_sample_count = 0usize;
+        // `moof` と `mdat` の間にボックスを置いたかどうか
+        let mut with_between_box = false;
+
+        for segment_index in 0..segment_count {
+            let is_last = segment_index + 1 == segment_count;
+            let samples = if is_last && small_last_mdat {
+                // 最後の `mdat` が 32 バイト未満になるように、payload を短くする
+                sample_vec(ctx, 1..3, |ctx| {
+                    let mut sample = arb_video_sample(ctx, 0);
+                    let data_len = noprop::sample_usize_in(ctx, 1..8);
+                    sample.data = noprop::sample_bytes_vec(ctx, data_len);
+                    sample
+                })
+            } else {
+                sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0))
+            };
+            let fmp4_samples: Vec<Sample> = samples
+                .iter()
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
+                .collect();
+            let payloads: Vec<&[u8]> = samples
+                .iter()
+                .map(|sample| sample.data.as_slice())
+                .collect();
+            let mut segment_bytes =
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+            let (_moof_box, moof_size) = MoofBox::decode(&segment_bytes)
+                .expect("生成したセグメントの moof デコードに失敗した");
+
+            // 最後のセグメントでは、`mdat` の宣言サイズが 32 バイト未満になっていることを確かめる。
+            // フラグだけで数えると、payload の長さを変えたときに検証対象が消えても気づけない
+            if is_last && small_last_mdat {
+                let mdat_size = u32::from_be_bytes(
+                    segment_bytes[moof_size..moof_size + 4]
+                        .try_into()
+                        .expect("mdat のサイズフィールドは 4 バイト"),
+                );
+                assert!(
+                    mdat_size < 32,
+                    "最後の mdat が 32 バイト未満になっていない: {mdat_size}"
+                );
+            }
+
+            // 最後のセグメントの `mdat` の size を 0 にする。
+            // この場合 `segment_size` が `None` になり、`available_bytes` の切り詰めを通らない経路になる
+            if is_last && with_mdat_size_zero {
+                segment_bytes = rewrite_media_segment_mdat_size_zero(&segment_bytes);
+            }
+
+            // メディアセグメントの先頭に、`moof` と `mdat` の間に置くボックスを挿し込む。
+            // セグメントの範囲は読み飛ばしたボックスを含むため、位置 0 からファイル全体を渡した場合に
+            // 切り詰めが読み飛ばし分を切らないことを確認できる
+            let between_boxes = sample_vec(ctx, 0..3, |ctx| arb_skippable_box(ctx, &[*b"mdat"]));
+            let mut between_bytes = Vec::new();
+            for (box_bytes, _large_size) in &between_boxes {
+                between_bytes.extend_from_slice(box_bytes);
+            }
+            with_between_box |= !between_bytes.is_empty();
+            let segment_bytes =
+                insert_boxes_between_moof_and_mdat(&segment_bytes, &between_bytes, true);
+
+            let start = file_body.len();
+            file_body.extend_from_slice(&segment_bytes);
+            let segment_end = file_body.len();
+            // 切る位置は `moof` と `mdat` の範囲に限る。
+            // 間に置いたボックスの内部で切ると、そのボックスの宣言サイズだけ読み飛ばした先が
+            // 入力の終端より後ろになり、入力の終端をファイルの終端とみなせない場合に当たる
+            truncatable_ranges.push((start, segment_end, start, start + moof_size));
+            truncatable_ranges.push((
+                start,
+                segment_end,
+                start + moof_size + between_bytes.len(),
+                segment_end,
+            ));
+            total_sample_count += samples.len();
+
+            // 最後のメディアセグメントの `mdat` の後ろに、読み飛ばされるボックスを置く
+            if is_last && with_trailing_box {
+                let (box_bytes, _large_size) = arb_skippable_box(ctx, &[*b"moof", *b"mdat"]);
+                file_body.extend_from_slice(&box_bytes);
+            }
+        }
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+        let mut file_data = init_bytes.clone();
+        file_data.extend_from_slice(&file_body);
+        // 切る位置の候補を、ファイル先頭からの位置に直す
+        let truncatable_ranges: Vec<(usize, usize, usize, usize)> = truncatable_ranges
+            .into_iter()
+            .map(|(segment_start, segment_end, start, end)| {
+                let offset = init_bytes.len();
+                (
+                    offset + segment_start,
+                    offset + segment_end,
+                    offset + start,
+                    offset + end,
+                )
+            })
+            .collect();
+
+        // ファイルの途中で切るかどうか。
+        // セグメントの境界で切った場合は完全なメディアセグメントまでしか含まないため、
+        // セグメントの内側（`moof` または `mdat` の途中）で切ったかどうかも覚えておく。
+        // セグメントの先頭で切るのはファイルがそのセグメントの直前で終わる場合なので、内側には含めない
+        let truncated = noprop::sample_bool(ctx);
+        let mut truncated_inside_segment = false;
+        let input_data = if truncated {
+            let (segment_start, segment_end, start, end) =
+                noprop::sample_choice(ctx, &truncatable_ranges);
+            let truncated_len = noprop::sample_usize_in(ctx, start..end + 1);
+            truncated_inside_segment = segment_start < truncated_len && truncated_len < segment_end;
+            truncated_cases.set(truncated_cases.get() + 1);
+            file_data[..truncated_len].to_vec()
+        } else {
+            whole_file_cases.set(whole_file_cases.get() + 1);
+            file_data
+        };
+
+        // 要求された範囲だけを渡した場合と、常に位置 0 からファイル全体を渡した場合を比べる
+        let expected = collect_demux_result(&input_data, feed_fmp4_file_demuxer);
+        let actual = collect_demux_result(&input_data, feed_fmp4_file_demuxer_with_whole_file);
+        assert_eq!(
+            actual, expected,
+            "位置 0 からファイル全体を渡した結果が、要求された範囲だけを渡した結果と一致しない"
+        );
+
+        if !truncated {
+            // 切っていないファイルでは、全サンプルが取り出せてファイルの終端に達する。
+            // 比較元と比較先がどちらも誤っていて一致する、という偽の成功を防ぐ
+            assert_eq!(
+                expected.1,
+                ComparableFinalResult::EndOfSamples,
+                "切っていないファイルでファイルの終端に達しなかった"
+            );
+            assert_eq!(
+                expected.0.len(),
+                total_sample_count,
+                "切っていないファイルで全サンプルを取り出せなかった"
+            );
+        } else if truncated_inside_segment {
+            // `moof` または `mdat` の途中で切った場合は、その範囲をデコードできずにエラーになる。
+            // 両方の供給方法が同じ誤りで一致する偽の成功を防ぐ
+            assert!(
+                matches!(expected.1, ComparableFinalResult::Error(_)),
+                "moof または mdat の途中で切った入力でエラーにならなかった: {:?}",
+                expected.1
+            );
+            inside_segment_truncated_cases.set(inside_segment_truncated_cases.get() + 1);
+        }
+
+        // 各ケースは切っていない場合にだけ数える。
+        // 切っていない場合は、そのファイルで全サンプルが取り出せて `Ok(None)` になることを確かめており、
+        // 「そのファイルで正しく終端まで読める」ことの検証と組み合わせるためである
+        if !truncated {
+            if segment_count == 1 {
+                single_segment_cases.set(single_segment_cases.get() + 1);
+            } else {
+                multi_segment_cases.set(multi_segment_cases.get() + 1);
+            }
+            if small_last_mdat {
+                small_last_mdat_cases.set(small_last_mdat_cases.get() + 1);
+            }
+            if with_trailing_box {
+                with_trailing_box_cases.set(with_trailing_box_cases.get() + 1);
+            }
+            if with_mdat_size_zero {
+                with_mdat_size_zero_cases.set(with_mdat_size_zero_cases.get() + 1);
+            }
+            if with_between_box {
+                with_between_box_cases.set(with_between_box_cases.get() + 1);
+            }
+        }
+        Ok(())
+    })?;
+
+    assert!(
+        single_segment_cases.get() > 0,
+        "切っていない、メディアセグメントが 1 つのファイルのケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        multi_segment_cases.get() > 0,
+        "切っていない、メディアセグメントが 2 つ以上のファイルのケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        small_last_mdat_cases.get() > 0,
+        "切っていない、最後の mdat が 32 バイト未満のケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_trailing_box_cases.get() > 0,
+        "切っていない、最後の mdat の後ろにボックスを置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_mdat_size_zero_cases.get() > 0,
+        "切っていない、最後の mdat の size を 0 にしたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        with_between_box_cases.get() > 0,
+        "切っていない、moof と mdat の間にボックスを置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        truncated_cases.get() > 0,
+        "ファイルの途中で切った入力を使ったケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        inside_segment_truncated_cases.get() > 0,
+        "moof または mdat の途中で切ったケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        whole_file_cases.get() > 0,
+        "ファイルを切らなかったケースが 1 つもなかった\n{runner}"
     );
     Ok(())
 }

@@ -197,10 +197,29 @@ impl Fmp4FileDemuxer {
     }
 
     /// ファイルデータを入力として受け取り、デマルチプレックス処理を進める
+    ///
+    /// このメソッドは [`Fmp4FileDemuxer::required_input()`] で要求された位置を含むファイルデータを受け取り、
+    /// デマルチプレックス処理を進める。
+    ///
+    /// [`Fmp4FileDemuxer::required_input()`] が指定した範囲よりも多くのデータを渡す分には問題はない。
+    /// 入力ファイル全体のデータを渡してもよい。
+    /// ただし、[`Mp4FileDemuxer::handle_input()`](crate::demux::Mp4FileDemuxer::handle_input) と異なり、
+    /// ファイル全体を渡す場合も [`Fmp4FileDemuxer::required_input()`] が `Some` を返す間は
+    /// このメソッドを繰り返し呼び出す必要がある。
+    /// [`Fmp4FileDemuxer::next_sample()`] が [`DemuxError::InputRequired`] を返した後も同じである。
+    ///
+    /// 入力が要求された範囲の終端より手前で終わっている場合は、入力の終端をファイルの終端とみなす。
+    /// そのため、ファイルの途中で切れた入力を渡すと、切れた位置までのデータだけが処理される。
+    /// 入力の終端が要求された位置と一致する場合は、そこでファイルの終端に達したものとして処理する。
+    ///
+    /// 入力が要求された位置を含まない場合（要求された位置が入力の終端より後ろにある場合や、
+    /// 入力が要求された位置より後ろから始まる場合）は、入力をエラーとして扱い、エラー状態に遷移する。
+    /// エラー状態に遷移した後は、[`Fmp4FileDemuxer::tracks()`] や [`Fmp4FileDemuxer::next_sample()`] の
+    /// 次の呼び出しがそのエラーを返す
     pub fn handle_input(&mut self, input: Input) {
         if self.handle_input_error.is_none()
             && let Some(required) = self.required_input()
-            && !self.input_is_acceptable(required, input)
+            && !Self::input_is_acceptable(required, input)
         {
             let reason = format!(
                 "handle_input() error: expected input starting at position {}, but got {} bytes starting at position {}",
@@ -565,6 +584,11 @@ impl Fmp4FileDemuxer {
         Ok(())
     }
 
+    /// 入力から `position` 以降のデータを取り出し、`required_size` バイトに切り詰めて返す
+    ///
+    /// 入力が要求された位置を含まない場合は [`DemuxError::InputRequired`] を返す。
+    /// 入力が要求された位置を含むが、要求された範囲の終端より手前で終わっている場合は、
+    /// 入力の終端をファイルの終端とみなして [`DemuxError::DecodeError`] を返す
     fn available_bytes<'a>(
         &self,
         input: Input<'a>,
@@ -578,25 +602,24 @@ impl Fmp4FileDemuxer {
             }));
         };
         if data.len() < required_size {
-            if input.position == position {
-                return Err(DemuxError::DecodeError(Error::invalid_data(
-                    "input ended before the required range was available",
-                )));
-            }
-            return Err(DemuxError::InputRequired(RequiredInput {
-                position,
-                size: Some(required_size),
-            }));
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "input ended before the required range was available",
+            )));
         }
-        Ok(data)
+        // 要求より多いデータが渡された場合に、後続のメディアセグメントまで処理しないように切り詰める
+        Ok(&data[..required_size])
     }
 
-    fn input_is_acceptable(&self, required: RequiredInput, input: Input) -> bool {
-        required.is_satisfied_by(input)
-            || (input.position == required.position
-                && required
-                    .size
-                    .is_some_and(|required_size| input.data.len() < required_size))
+    /// 受け取った入力が、要求された位置を含んでいるかどうかを確認する
+    ///
+    /// 要求された範囲を満たす入力だけでなく、要求された位置を含みながら
+    /// 要求された範囲の終端より手前で終わっている入力も受け付ける。
+    /// 後者は入力の終端をファイルの終端とみなす（`available_bytes` と同じ判定である）。
+    /// 要求された位置が入力の終端より後ろにある場合と、入力が要求された位置より後ろから始まる場合は
+    /// 受け付けない
+    fn input_is_acceptable(required: RequiredInput, input: Input) -> bool {
+        // `available_bytes` と同じく、`Input::slice_range()` が要求された位置を含むかどうかで判定する
+        input.slice_range(required.position, None).is_some()
     }
 
     fn is_initialized(&self) -> bool {

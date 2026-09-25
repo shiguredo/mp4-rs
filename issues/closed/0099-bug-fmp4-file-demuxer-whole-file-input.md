@@ -1,7 +1,7 @@
 # `Fmp4FileDemuxer` に要求より多いデータ（ファイル全体など）を渡すとエラーになる
 
 - Created: 2026-09-24
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-09-25
 - Branch: feature/fix-fmp4-file-demuxer-whole-file-input
 - Polished: 2026-09-25
 
@@ -64,11 +64,37 @@
 
 ## 解決方法
 
-- `src/demux_fmp4_file.rs`: `available_bytes` の切り詰めと終端の判定、`input_is_acceptable`、`handle_input` の doc を更新する
-- `tests/test_boxes_moov_tree.rs` の `subtitle_track_via_fmp4_file_demuxer` の doc コメント（「バッファ全体を渡すのではなく要求に応じて `handle_input()` を繰り返す」）を、ファイル全体を渡せるかどうかと、`handle_input` を繰り返し呼ぶ必要があるかどうかを分けた書き方に直す
-- `pbt/tests/prop_fmp4_segment_mux_demux.rs` に、位置 0 からファイル全体を渡す場合と、要求された範囲だけを渡す場合の結果が一致するプロパティを追加する。完了条件に挙げたファイルを含める
-  - 生成したファイルを、`moof` または `mdat` の範囲内の任意の位置で切った入力も使う。両者の結果（取り出せるサンプル列と、最後の `next_sample()` の結果）が一致することを確認する
-  - 読み飛ばすボックス（末尾の `mfra` など）の、サイズを読める位置より後ろで切ると、次の要求位置が入力の終端より後ろになり、設計方針で対象外とした場合に当たる。このため両者の結果が一致しないので、切る位置は `moof` と `mdat` の範囲に限る
-  - `handle_input` を呼ぶループには回数の上限を設ける。`available_bytes` の終端の判定を揃え忘れたときに、ループが終わらないことを検出するため
-  - issue 0074（partial input / 中断再開の PBT）は、要求より少ない入力を後から補う供給方法や、別の範囲の先出しを扱う。この issue は要求位置を含む入力（ファイル全体など）の扱いを決めるもので、短い入力を後から補う供給方法は扱わないため別にする
-- `CHANGES.md` に `[FIX]` として記載する
+`Fmp4FileDemuxer` を次のように直した。
+
+### 実装
+
+- `src/demux_fmp4_file.rs`
+  - `available_bytes` で、返すデータを要求された `required_size` バイトに切り詰めるようにした。メディアセグメントの処理で `mdat` の後ろのデータが内部の demuxer に渡らなくなる
+  - `available_bytes` の終端の判定を、入力が要求された位置を含む場合は常に「入力の終端をファイルの終端とみなす」に変えた。これまでは入力の開始位置が要求位置と一致する場合だけだった
+  - `input_is_acceptable` を、要求された範囲を満たすかどうかではなく、入力が要求された位置を含むかどうかで判定するように変えた。判定には `available_bytes` と同じ `Input::slice_range` を使う。ファイルの途中で切れた入力で `available_bytes` が `InputRequired` を返し、同じ範囲の要求が繰り返されることを防ぐ
+  - `handle_input` の doc を追加した。要求より多いデータ（ファイル全体）を渡せること、`required_input()` が `Some` を返す間は繰り返し呼ぶ必要があること、入力の終端が要求位置と一致する場合はそこでファイルの終端に達したものとして処理し、要求された範囲の終端より手前で終わっている場合は切れた位置までのデータだけが処理されること、入力が要求位置を含まない場合（要求位置が入力の終端より後ろにある場合と、入力が要求位置より後ろから始まる場合）は入力のエラーになることを書いた
+- `tests/test_boxes_moov_tree.rs`: `subtitle_track_via_fmp4_file_demuxer` の doc を、要求より多いデータを渡せることと、`required_input()` が `Some` を返す間は `handle_input` を繰り返す必要があることを分けた書き方に直した
+- `CHANGES.md`: `[FIX]` を追加した。位置 0 からファイル全体を渡した場合に、要求された範囲が入力の終端を超えるときの扱いが変わること（これまでは要求された位置から入力が始まる場合を除いて拒否して `ErrorKind::InvalidInput` を返していたが、いまは要求された位置を含む入力を受理すること）と、`available_bytes` でデータを取り出す処理ではデータが足りないときのエラー種別が `ErrorKind::InvalidInput` から `ErrorKind::InvalidData` に変わることも書いた
+- `skills/shiguredo-mp4/SKILL.md`: `Fmp4FileDemuxer` の節に、`Mp4FileDemuxer` と同様に要求より多いデータを渡せることと、ファイル全体を渡す場合も `required_input()` が `Some` を返す間は `handle_input()` を繰り返す必要があることを追記した
+
+### テスト
+
+- `pbt/tests/prop_fmp4_segment_mux_demux.rs`
+  - `fmp4_file_demuxer_accepts_whole_file_input` を追加した。要求された範囲だけを渡した場合と、常に位置 0 からファイル全体を渡した場合で、取り出せるサンプル列と最後の `next_sample()` の結果が一致することを確認する。次のファイルを含める
+    - メディアセグメントが 1 つのファイルと 2 つ以上のファイル
+    - 最後の `mdat` の宣言サイズが 32 バイト未満のファイル（payload の長さを短くして作り、`mdat` のサイズフィールドを読んで 32 バイト未満であることを確かめる）
+    - 最後の `mdat` の後ろにボックスがあるファイル
+    - 最後の `mdat` の size が 0 のファイル（`segment_size` が `None` になり、`available_bytes` の切り詰めを通らない経路になる）
+    - `moof` と `mdat` の間にボックスがあるファイル（`segment_size` が読み飛ばし分を含むため、切り詰めが読み飛ばし分を切らないことを確認できる）
+  - `moof` と `mdat` の範囲内の任意の位置で切った入力も使い、その場合も両者が一致することを確認する。切る位置を `moof` と `mdat` の範囲に限る理由（間に置いたボックスの内部で切ると、そのボックスの宣言サイズだけ読み飛ばした先が入力の終端より後ろになる）をコメントに書いた
+  - 切っていないファイルでは、比較元が全サンプルを取り出して `Ok(None)` になることも確かめる。`moof` または `mdat` の途中で切った場合は、比較元がエラーになることも確かめる。どちらも、2 通りの供給方法が同じ誤りを共有する偽の成功を防ぐためである
+  - 供給ループには回数の上限を設け、`available_bytes` の終端の判定が揃っていないときにハングではなく失敗するようにした
+  - 補助として `feed_fmp4_file_demuxer_with_whole_file`、`ComparableFinalResult`、`collect_demux_result` を追加した
+
+- `tests/test_demux_fmp4_file.rs`: 要求された位置が入力の終端より後ろになるときは、位置 0 からファイル全体を渡しても受理されず `InvalidInput` の `DecodeError` になることを確かめるテストを追加した（読み飛ばすボックスの宣言サイズがファイルの末尾を超える入力）
+
+### 確認したこと
+
+- `src/demux_fmp4_file.rs` の変更を `git stash` で戻した状態で、`fmp4_file_demuxer_accepts_whole_file_input` が失敗することを確認した（要求された範囲だけを渡した場合はサンプルが取れるのに、位置 0 からファイル全体を渡した場合は `found moof box after mdat in media segment` などになる）
+- `cargo test --workspace --exclude c-api`、`cargo test -p c-api --lib`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo fmt --all --check`、`RUSTDOCFLAGS=-D warnings cargo doc` が通ることを確認した
+- `MP4_RS_PBT_SEED` を変えて `fmp4_file_demuxer_accepts_whole_file_input` を 30 回実行し、すべて通ることを確認した

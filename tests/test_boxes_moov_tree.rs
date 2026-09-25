@@ -1715,8 +1715,9 @@ mod prop_container_boundary_tests {
 
         /// Fmp4FileDemuxer 経由で対応表 3 組すべての字幕トラックが Subtitle として取り出せる
         ///
-        /// Fmp4FileDemuxer は `required_input()` で段階的にデータを要求するため、
-        /// バッファ全体を渡すのではなく要求に応じて `handle_input()` を繰り返す
+        /// Fmp4FileDemuxer には要求された範囲より多いデータ（ファイル全体）を渡してもよいが、
+        /// `required_input()` が `Some` を返す間は `handle_input()` を繰り返し呼ぶ必要がある。
+        /// ここでは要求された範囲だけを渡す
         #[test]
         fn subtitle_track_via_fmp4_file_demuxer() {
             for (handler_type, sample_entry_box_type) in subtitle_scheme_matrix() {

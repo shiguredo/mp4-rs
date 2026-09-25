@@ -3,7 +3,7 @@
 - Created: 2026-09-25
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-demuxer-trun-without-data-offset
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-09-25
 
 ## 目的
 

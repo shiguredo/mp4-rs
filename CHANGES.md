@@ -46,6 +46,10 @@
   - 未対応のトラックはサンプルを返さないが、`default_base_is_moof = false` かつ `base_data_offset` なしの場合は次の `traf` の基準位置になるため、`default_base_is_moof` の値によらずデータ末尾を計算する。サンプルサイズは対応しているトラックと同じ順（`trun`、`tfhd`、`trex`）で決める
   - その計算で `trex` の既定値（`default_sample_size`）が要るのに `trex` がない場合は、`unknown track_id in media segment` ではなく `trex not found for skipped track_id=...` の `DemuxError::DecodeError` になる。`moov` に存在しない track_id の `traf` はこれまでどおりエラーになる
   - @voluntas
+- [FIX] `Fmp4FileDemuxer::next_sample` が、`traf` / `trun` の並び順と取り出し順が入れ替わる入力で panic するのを直す
+  - 並べ替えの結果、内部の demuxer が `sample_entry` を付けなかったサンプルが同じトラックの先頭に来ると、`bug: sample entry must be cached before borrowing` で panic していた
+  - `build_sample` は `sample_entry` を持つサンプルのときだけキャッシュを参照し、ファイル全体の取り出し順で各トラックの最初のサンプルとサンプルエントリーが変わったサンプルにだけ `sample_entry` を付けるようにした
+  - @voluntas
 
 ## 2026.5.0
 

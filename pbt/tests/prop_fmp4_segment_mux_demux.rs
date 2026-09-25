@@ -3724,6 +3724,103 @@ fn unsupported_track_traf_is_skipped() -> noprop::TestResult {
     Ok(())
 }
 
+/// 同じトラックの `traf` が分かれていて `tfdt` の順が入れ替わった入力でも、
+/// `Fmp4FileDemuxer` が panic せず、取り出し順で `sample_entry` の約束を守ることを確認する
+///
+/// `Fmp4FileDemuxer` はサンプルをタイムスタンプの順に並べ替えるため、`traf` / `trun` の並び順と
+/// 取り出し順が入れ替わることがある。内部の demuxer は `traf` / `trun` の並び順で「最初のサンプル」を
+/// 決めるので、並べ替えの結果、`sample_entry` が `None` のサンプルが同じトラックの先頭に来る。
+/// そのときに panic せず、ファイル全体の取り出し順で最初のサンプルに `sample_entry` が付くことを確かめる
+#[test]
+fn fmp4_file_demuxer_swapped_traf_order_keeps_sample_entry_contract() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // 並べ替えで `tfdt` を 0 にした方の `traf` のサンプルが先に来たケース数
+    let swapped_order_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        let samples = sample_vec(ctx, 2..5, |ctx| arb_video_sample(ctx, 0));
+        let sample_entry = create_avc1_sample_entry(320, 240);
+
+        let mut fmp4_samples = Vec::new();
+        let mut payloads: Vec<&[u8]> = Vec::new();
+        for sample in &samples {
+            fmp4_samples.push(video_segment_sample(&sample_entry, sample, None));
+            payloads.push(&sample.data);
+        }
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+        let init_segment = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // `traf` を複製して 2 つにし、1 つ目の `tfdt` を 90000、複製した 2 つ目を 0 にする。
+        // サンプルの尺は 90000 より十分小さいので、並べ替えると 2 つ目の `traf` のサンプルが先に来る
+        let media_segment = rewrite_media_segment_moof(&media_segment, |moof_box| {
+            let mut duplicated_traf_box = moof_box.traf_boxes[0].clone();
+            moof_box.traf_boxes[0].tfdt_box = Some(TfdtBox {
+                version: 1,
+                base_media_decode_time: 90_000,
+            });
+            duplicated_traf_box.tfdt_box = Some(TfdtBox {
+                version: 0,
+                base_media_decode_time: 0,
+            });
+            moof_box.traf_boxes.push(duplicated_traf_box);
+        });
+
+        let mut file_data = init_segment;
+        file_data.extend_from_slice(&media_segment);
+
+        let mut demuxer = Fmp4FileDemuxer::new();
+        let demuxed = collect_comparable_samples(&mut demuxer, &file_data);
+
+        // 2 つの `traf` が同じサンプルを 1 回ずつ返す
+        assert_eq!(
+            demuxed.len(),
+            2 * samples.len(),
+            "2 つの traf のサンプルがすべて取り出せる"
+        );
+        assert!(
+            demuxed
+                .windows(2)
+                .all(|pair| pair[0].timestamp <= pair[1].timestamp),
+            "取り出し順のタイムスタンプが昇順になっている"
+        );
+        // `tfdt` を 0 にした方の `traf` のサンプル（timestamp が 0）が先頭に来ていれば、
+        // 並べ替えで `traf` の並び順と取り出し順が入れ替わっている
+        if demuxed.first().expect("サンプルがある").timestamp == 0
+            && demuxed.last().expect("サンプルがある").timestamp >= 90_000
+        {
+            swapped_order_cases.set(swapped_order_cases.get() + 1);
+        }
+        assert!(
+            demuxed
+                .first()
+                .expect("サンプルがある")
+                .sample_entry
+                .is_some(),
+            "取り出し順で最初のサンプルには sample_entry が付く"
+        );
+        let with_sample_entry_count = demuxed
+            .iter()
+            .filter(|sample| sample.sample_entry.is_some())
+            .count();
+        assert_eq!(
+            with_sample_entry_count, 1,
+            "サンプルエントリーが変わらないので、sample_entry は最初のサンプルにだけ付く"
+        );
+        Ok(())
+    })?;
+
+    assert!(
+        swapped_order_cases.get() > 0,
+        "並べ替えで traf の並び順と取り出し順が入れ替わったケースが 1 つもなかった\n{runner}"
+    );
+    Ok(())
+}
+
 /// timestamp が複数セグメントにわたって正しく累積されることを確認する
 #[test]
 fn timestamp_accumulation() -> noprop::TestResult {

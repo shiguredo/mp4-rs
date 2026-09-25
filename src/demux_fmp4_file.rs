@@ -77,7 +77,18 @@ use crate::{
 
 #[derive(Debug, Clone)]
 struct TrackRuntime {
+    /// [`next_sample()`](Fmp4FileDemuxer::next_sample) が最後に返した、
+    /// このトラックのサンプルエントリー
+    ///
+    /// 取り出し順でサンプルエントリーが変わったかを判定するときに、直前のサンプルの
+    /// エントリーとして使う
     sample_entry: Option<SampleEntry>,
+
+    /// 内部の demuxer がこのトラックで最後に返したサンプルエントリー
+    ///
+    /// 内部の demuxer の `sample_entry: None` は「同じトラックの直前の `traf` / `trun` の
+    /// サンプルと同じエントリー」を意味するため、`traf` / `trun` の並び順で解決するために使う
+    inner_sample_entry: Option<SampleEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +136,14 @@ enum Phase {
 }
 
 /// 完全な fMP4 ファイルを incremental にデマルチプレックスする構造体
+///
+/// メディアセグメントのサンプルはタイムスタンプの順（同じならトラック、データ位置の順）に
+/// 並べ替えて返すため、取り出し順は `moof` の `traf` / `trun` の並び順と異なることがある。
+/// [`Sample::sample_entry`] は、ファイル全体の取り出し順で各トラックの最初のサンプルと、
+/// 取り出し順で直前のサンプルからサンプルエントリーが変わったサンプルにだけ付く
+/// （メディアセグメントをまたいで判定する）。
+/// この判定には取り出し済みのサンプルの状態を使うため、取り出せるサンプルが残っている間は
+/// [`handle_input()`](Self::handle_input) を呼び出さないこと。
 #[derive(Debug, Clone)]
 pub struct Fmp4FileDemuxer {
     phase: Phase,
@@ -211,6 +230,11 @@ impl Fmp4FileDemuxer {
     /// 入力が要求された範囲の終端より手前で終わっている場合は、入力の終端をファイルの終端とみなす。
     /// そのため、ファイルの途中で切れた入力を渡すと、切れた位置までのデータだけが処理される。
     /// 入力の終端が要求された位置と一致する場合は、そこでファイルの終端に達したものとして処理する。
+    ///
+    /// 取り出せるサンプルが残っている間（[`Fmp4FileDemuxer::next_sample()`] が `Some` を返す間）は
+    /// このメソッドを呼び出さないこと。取り出し順でサンプルエントリーが変わったかの判定には
+    /// 取り出し済みのサンプルの状態を使うため、サンプルを取り出す前に次のメディアセグメントを処理すると
+    /// 判定が崩れる。
     ///
     /// 入力が要求された位置を含まない場合（要求された位置が入力の終端より後ろにある場合や、
     /// 入力が要求された位置より後ろから始まる場合）は、入力をエラーとして扱い、エラー状態に遷移する。
@@ -374,8 +398,10 @@ impl Fmp4FileDemuxer {
                 duration,
                 timescale,
             });
-            self.track_runtimes
-                .push(TrackRuntime { sample_entry: None });
+            self.track_runtimes.push(TrackRuntime {
+                sample_entry: None,
+                inner_sample_entry: None,
+            });
         }
 
         self.inner.handle_init_segment(&data[..box_size])?;
@@ -569,8 +595,9 @@ impl Fmp4FileDemuxer {
         };
         let pending_samples = {
             let track_infos = &self.track_infos;
+            let track_runtimes = &mut self.track_runtimes;
             let raw_samples = self.inner.handle_media_segment(data)?;
-            Self::build_pending_samples(track_infos, moof_offset, raw_samples)?
+            Self::build_pending_samples(track_infos, track_runtimes, moof_offset, raw_samples)?
         };
         self.pending_samples.extend(pending_samples);
 
@@ -633,11 +660,25 @@ impl Fmp4FileDemuxer {
         )
     }
 
+    /// 内部の demuxer が返したサンプルを、ファイル全体の取り出し順に並べ替えて [`PendingSample`] にする
+    ///
+    /// `sample_entry` を付けるサンプルは、並べ替えた後の取り出し順で決める。
+    /// 各トラックの最初のサンプルと、取り出し順で直前のサンプル（前のメディアセグメントで取り出した
+    /// 最後のサンプルを含む）からサンプルエントリーが変わったサンプルにだけ付ける。
+    /// 内部の demuxer が付けた `sample_entry` は `traf` / `trun` の並び順で決まるため、
+    /// 並べ替えで順序が入れ替わるとそのままでは使えない
     fn build_pending_samples(
         track_infos: &[TrackInfo],
+        track_runtimes: &mut [TrackRuntime],
         segment_offset: u64,
         raw_samples: Vec<Sample<'_>>,
     ) -> Result<Vec<PendingSample>, DemuxError> {
+        // 並べ替えた後の取り出し順でサンプルエントリーの変化を判定するために、
+        // 前のメディアセグメントまでに取り出した各トラックの最後のエントリーを複製しておく
+        let mut retrieved_sample_entries: Vec<Option<SampleEntry>> = track_runtimes
+            .iter()
+            .map(|track_runtime| track_runtime.sample_entry.clone())
+            .collect();
         let mut pending_samples = Vec::new();
 
         for raw_sample in raw_samples {
@@ -658,6 +699,15 @@ impl Fmp4FileDemuxer {
                     ))
                 })?;
 
+            // 内部の demuxer が返した順（`traf` / `trun` の並び順）で各サンプルが属する
+            // サンプルエントリーを求める。`sample_entry` が `None` のサンプルは、同じトラックの
+            // 直前の `traf` / `trun` のサンプルと同じエントリーに属する。
+            // そのメディアセグメントで最初のサンプルなら、前のメディアセグメントまでに
+            // 内部の demuxer が返した最後のエントリー（`inner_sample_entry`）に属する
+            if let Some(sample_entry) = &raw_sample.sample_entry {
+                track_runtimes[track_index].inner_sample_entry = Some((*sample_entry).clone());
+            }
+
             pending_samples.push(PendingSample {
                 track_index,
                 timestamp: raw_sample.timestamp,
@@ -666,11 +716,26 @@ impl Fmp4FileDemuxer {
                 data_offset,
                 data_size: raw_sample.data_size,
                 composition_time_offset: raw_sample.composition_time_offset,
-                sample_entry: raw_sample.sample_entry.cloned(),
+                sample_entry: track_runtimes[track_index].inner_sample_entry.clone(),
             });
         }
 
         pending_samples.sort_by(|lhs, rhs| compare_pending_samples(track_infos, lhs, rhs));
+
+        // 並べ替えた後の取り出し順で、直前のサンプルからサンプルエントリーが変わったサンプルにだけ
+        // `sample_entry` を残す。直前のサンプルは、前のメディアセグメントまでに取り出した
+        // 最後のサンプル（`track_runtimes` にキャッシュしたエントリー）から引き継ぐ
+        for pending_sample in &mut pending_samples {
+            let resolved_sample_entry = pending_sample.sample_entry.take();
+            let retrieved_sample_entry = &mut retrieved_sample_entries[pending_sample.track_index];
+            if let Some(resolved_sample_entry) = resolved_sample_entry
+                && retrieved_sample_entry.as_ref() != Some(&resolved_sample_entry)
+            {
+                *retrieved_sample_entry = Some(resolved_sample_entry.clone());
+                pending_sample.sample_entry = Some(resolved_sample_entry);
+            }
+        }
+
         Ok(pending_samples)
     }
 
@@ -686,22 +751,19 @@ impl Fmp4FileDemuxer {
             sample_entry,
         } = pending;
 
-        let has_sample_entry = sample_entry.is_some();
-        if let Some(sample_entry) = sample_entry {
-            self.track_runtimes[track_index].sample_entry = Some(sample_entry);
-        }
-
-        let track_info = &self.track_infos[track_index];
-        let track_runtime = &self.track_runtimes[track_index];
+        // `sample_entry` を持つサンプルのときだけキャッシュを更新して参照する。
+        // 持たないサンプルでは、キャッシュを参照せずに `None` を返す
+        let sample_entry = match sample_entry {
+            Some(sample_entry) => {
+                self.track_runtimes[track_index].sample_entry = Some(sample_entry);
+                self.track_runtimes[track_index].sample_entry.as_ref()
+            }
+            None => None,
+        };
 
         Sample {
-            track: track_info,
-            sample_entry: has_sample_entry.then_some(
-                track_runtime
-                    .sample_entry
-                    .as_ref()
-                    .expect("bug: sample entry must be cached before borrowing"),
-            ),
+            track: &self.track_infos[track_index],
+            sample_entry,
             keyframe,
             timestamp,
             duration,

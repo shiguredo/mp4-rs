@@ -1,6 +1,7 @@
-//! `Fmp4FileDemuxer` の意図的なエラーパスの単体テスト
+//! `Fmp4FileDemuxer` の意図的なエラーパスと、
+//! `Fmp4SegmentMuxer` の出力を書き換えないと作れない入力の単体テスト
 //!
-//! 対象は次の 4 つである。
+//! 意図的なエラーパスの対象は次の 4 つである。
 //!
 //! - `moof` と `mdat` の間にサイズが 0 のボックスがあるファイル。
 //!   32 ビットの size=0 はコンテナの最後のボックスなので、その後ろに `mdat` は存在し得ず、
@@ -15,12 +16,18 @@
 //!
 //! `moof` と `mdat` の間、`mdat` の後ろのボックスを読み飛ばせる正常系は PBT で検証する。
 //! 意図的なエラーパスは固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
+//!
+//! 取り出し順と `traf` の並び順が入れ替わる入力の `sample_entry` の約束のように、
+//! `Fmp4SegmentMuxer` の出力を書き換えないと作れない入力も、
+//! `rewrite_init_segment` / `rewrite_media_segment_moof` で組み立てて単体テストとして置く。
 
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
-    Decode, ErrorKind, TrackKind, Uint,
-    boxes::{Avc1Box, AvccBox, MoofBox, SampleEntry, VisualSampleEntryFields},
+    Decode, Encode, ErrorKind, TrackKind, Uint,
+    boxes::{
+        Avc1Box, AvccBox, FtypBox, MoofBox, MoovBox, SampleEntry, TfdtBox, VisualSampleEntryFields,
+    },
     demux::{DemuxError, Fmp4FileDemuxer, Input},
     mux::{Fmp4SegmentMuxer, Sample},
 };
@@ -345,4 +352,176 @@ fn decode_error_whole_file_input_beyond_file_end() {
         Err(other) => panic!("DecodeError を期待したが {other:?} だった"),
         Ok(sample) => panic!("DecodeError を期待したが Ok({sample:?}) だった"),
     }
+}
+
+/// init セグメントの `moov` を `f` で書き換えたバイト列を返す
+fn rewrite_init_segment(init_segment: &[u8], f: impl FnOnce(&mut MoovBox)) -> Vec<u8> {
+    let (ftyp_box, ftyp_box_size) =
+        FtypBox::decode(init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+    let (mut moov_box, moov_box_size) = MoovBox::decode(&init_segment[ftyp_box_size..])
+        .expect("init セグメントからの moov デコードに失敗した");
+    assert_eq!(
+        ftyp_box_size + moov_box_size,
+        init_segment.len(),
+        "init セグメントは ftyp + moov のみを含む"
+    );
+    f(&mut moov_box);
+
+    let mut rewritten = ftyp_box
+        .encode_to_vec()
+        .expect("ftyp のエンコードに失敗した");
+    rewritten.extend_from_slice(
+        &moov_box
+            .encode_to_vec()
+            .expect("moov のエンコードに失敗した"),
+    );
+    rewritten
+}
+
+/// メディアセグメントの `moof` を `f` で書き換え、`trun` の `data_offset` を `moof` のサイズの変化分だけ補正する
+fn rewrite_media_segment_moof(media_segment: &[u8], f: impl FnOnce(&mut MoofBox)) -> Vec<u8> {
+    let (mut moof_box, moof_box_size) =
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
+    f(&mut moof_box);
+
+    // `data_offset` の補正は、書き換えた後のすべての `trun` の基準が `moof` の先頭であることを前提にしている
+    for traf_box in &moof_box.traf_boxes {
+        assert!(
+            traf_box.tfhd_box.default_base_is_moof,
+            "書き換えた後の traf は default_base_is_moof = true である"
+        );
+        assert_eq!(
+            traf_box.tfhd_box.base_data_offset, None,
+            "書き換えた後の traf は base_data_offset を明示しない"
+        );
+    }
+
+    let rewritten_moof_size = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した")
+        .len();
+    let size_delta = i32::try_from(rewritten_moof_size as i64 - moof_box_size as i64)
+        .expect("moof のサイズの差は i32 に収まる");
+    for traf_box in &mut moof_box.traf_boxes {
+        for trun_box in &mut traf_box.trun_boxes {
+            let data_offset = trun_box.data_offset.expect("muxer は data_offset を書く");
+            trun_box.data_offset = Some(
+                data_offset
+                    .checked_add(size_delta)
+                    .expect("補正した data_offset は i32 に収まる"),
+            );
+        }
+    }
+
+    let mut rewritten = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    rewritten.extend_from_slice(&media_segment[moof_box_size..]);
+    rewritten
+}
+
+/// 取り出し順と `traf` の並び順が入れ替わっても、`sample_entry` がファイル全体の取り出し順で変わること
+///
+/// 同じトラックの `traf` が複数あり sample description index が変わる入力では、内部の demuxer が
+/// 返す `sample_entry` の有無が `traf` の並び順で決まる。取り出し順はタイムスタンプの順なので、
+/// 並べ替えた後の直前のサンプルからサンプルエントリーの変化を判定し直す必要がある
+#[test]
+fn sample_entry_follows_retrieval_order_across_segments() {
+    // 1 セグメント目は sample description index が 1 と 2 の 2 つの `traf`、2 セグメント目は index 2 の 1 つの `traf` にする
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    let (first_entry, second_entry) = {
+        let (_ftyp_box, ftyp_box_size) =
+            FtypBox::decode(&init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+        let (moov_box, _) = MoovBox::decode(&init_segment[ftyp_box_size..])
+            .expect("init セグメントからの moov デコードに失敗した");
+        (
+            moov_box.trak_boxes[0]
+                .mdia_box
+                .minf_box
+                .stbl_box
+                .stsd_box
+                .entries[0]
+                .clone(),
+            create_avc1_sample_entry(640, 480),
+        )
+    };
+    assert_ne!(
+        first_entry, second_entry,
+        "2 つのサンプルエントリーの内容が違う"
+    );
+
+    // stsd に 2 つ目のサンプルエントリーを足す
+    let init_segment = rewrite_init_segment(&init_segment, |moov_box| {
+        moov_box.trak_boxes[0]
+            .mdia_box
+            .minf_box
+            .stbl_box
+            .stsd_box
+            .entries
+            .push(second_entry.clone());
+    });
+
+    // 1 セグメント目: `traf` を複製し、1 つ目を index 1 で tfdt 90000、2 つ目を index 2 で tfdt 0 にする。
+    // 並べ替えると index 2 のサンプルが先に来る
+    let first_segment = rewrite_media_segment_moof(&media_segment, |moof_box| {
+        let mut duplicated_traf_box = moof_box.traf_boxes[0].clone();
+        moof_box.traf_boxes[0].tfhd_box.sample_description_index = Some(1);
+        moof_box.traf_boxes[0].tfdt_box = Some(TfdtBox {
+            version: 1,
+            base_media_decode_time: 90_000,
+        });
+        duplicated_traf_box.tfhd_box.sample_description_index = Some(2);
+        duplicated_traf_box.tfdt_box = Some(TfdtBox {
+            version: 0,
+            base_media_decode_time: 0,
+        });
+        moof_box.traf_boxes.push(duplicated_traf_box);
+    });
+
+    // 2 セグメント目: index 2 の `traf` 1 つだけにする。
+    // 内部の demuxer は直前の `traf` と同じ index なので `sample_entry` を付けないが、
+    // 取り出し順で直前のサンプルは index 1 のサンプルなので、`sample_entry` を付ける必要がある
+    let mut second_muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let mut second_segment = second_muxer
+        .create_media_segment_metadata(&[create_video_sample(16)])
+        .expect("media セグメントの作成に失敗した");
+    second_segment.extend_from_slice(&[0u8; 16]);
+    let second_segment = rewrite_media_segment_moof(&second_segment, |moof_box| {
+        moof_box.traf_boxes[0].tfhd_box.sample_description_index = Some(2);
+        moof_box.traf_boxes[0].tfdt_box = Some(TfdtBox {
+            version: 1,
+            base_media_decode_time: 100_000,
+        });
+    });
+
+    let mut file_data = init_segment;
+    file_data.extend_from_slice(&first_segment);
+    file_data.extend_from_slice(&second_segment);
+
+    let mut demuxer = Fmp4FileDemuxer::new();
+    let mut samples = Vec::new();
+    loop {
+        match demuxer.next_sample() {
+            Ok(Some(sample)) => samples.push((sample.timestamp, sample.sample_entry.cloned())),
+            Ok(None) => break,
+            Err(DemuxError::InputRequired(_)) => feed_required_input(&mut demuxer, &file_data),
+            Err(error) => panic!("next_sample エラー: {error}"),
+        }
+    }
+
+    // 各 `traf` は 1 サンプルなので、1 セグメント目は index 2、index 1 の順になり、
+    // 2 セグメント目は index 2 の 1 サンプルになる。
+    // 直前のサンプルからエントリーが変わるところにだけ `sample_entry` が付く。
+    // 2 セグメント目のサンプルは、内部の demuxer の直前の `traf` と同じ index だが、
+    // 取り出し順で直前のサンプルは index 1 なので `sample_entry` が付く
+    let expected = vec![
+        (0, Some(second_entry.clone())),
+        (90_000, Some(first_entry.clone())),
+        (100_000, Some(second_entry.clone())),
+    ];
+    assert_eq!(
+        samples, expected,
+        "取り出し順でサンプルエントリーが変わるところにだけ sample_entry が付く"
+    );
 }

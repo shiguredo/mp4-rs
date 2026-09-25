@@ -132,6 +132,11 @@ let samples = demuxer.handle_media_segment(&media_segment)?;
 1 つのファイル内に並んだ複数セグメントを順番に処理する。`Mp4FileDemuxer` と同様に
 `required_input()` / `handle_input()` の Sans I/O ループで使う。
 
+`Mp4FileDemuxer` と同様に、要求された範囲より多いデータ (ファイル全体など) を渡してもよい。
+ただし `Mp4FileDemuxer` と異なり、ファイル全体を渡す場合も `required_input()` が `Some` を返す間は
+`handle_input()` を繰り返し呼ぶ必要がある。
+入力が要求された範囲の終端より手前で終わっている場合は、入力の終端をファイルの終端とみなす。
+
 | メソッド | 説明 |
 |---------|------|
 | `new()` | インスタンス生成 |

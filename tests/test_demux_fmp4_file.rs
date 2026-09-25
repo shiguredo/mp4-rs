@@ -300,3 +300,49 @@ fn decode_error_box_after_moof_exceeds_file() {
         Ok(sample) => panic!("DecodeError を期待したが Ok({sample:?}) だった"),
     }
 }
+
+/// 要求された位置が入力の終端より後ろになるときは、位置 0 からファイル全体を渡しても受理されないこと
+///
+/// 読み飛ばすボックスの宣言サイズがファイルの末尾を超えると、読み飛ばした先の位置が入力の終端より後ろになる。
+/// この場合は入力の終端をファイルの終端とみなせないため、入力を拒否して `InvalidInput` の `DecodeError` になる
+#[test]
+fn decode_error_whole_file_input_beyond_file_end() {
+    let (init_segment, media_segment) = build_init_and_media_segments();
+    let (_moof_box, moof_size) =
+        MoofBox::decode(&media_segment).expect("media セグメントからの moof デコードに失敗した");
+
+    // `moof` の後ろに、size=100 を宣言した `free` ボックスのヘッダーと 8 バイトだけ置く（合計 16 バイト）
+    let mut file_data = init_segment;
+    file_data.extend_from_slice(&media_segment[..moof_size]);
+    file_data.extend_from_slice(&100u32.to_be_bytes());
+    file_data.extend_from_slice(b"free");
+    file_data.extend_from_slice(&[0u8; 8]);
+
+    // 要求された位置にかかわらず、常に位置 0 からファイル全体を渡す
+    let mut demuxer = Fmp4FileDemuxer::new();
+    let mut count = 0;
+    while demuxer.required_input().is_some() {
+        demuxer.handle_input(Input {
+            position: 0,
+            data: &file_data,
+        });
+
+        count += 1;
+        assert!(
+            count <= MAX_FEED_COUNT,
+            "入力の供給が {MAX_FEED_COUNT} 回を超えた。required_input() が同じ範囲を要求し続けている"
+        );
+    }
+
+    match demuxer.next_sample() {
+        Err(DemuxError::DecodeError(error)) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "要求された位置が入力の終端より後ろにある入力では InvalidInput を期待した"
+            );
+        }
+        Err(other) => panic!("DecodeError を期待したが {other:?} だった"),
+        Ok(sample) => panic!("DecodeError を期待したが Ok({sample:?}) だった"),
+    }
+}

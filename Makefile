@@ -35,8 +35,8 @@ fuzzing-list:
 #
 # UB（align 契約違反 / uninit read / UAF 等）の検出網として使う。
 # nightly と miri component が必要（`rustup toolchain install nightly --component miri`）。
-# `cargo +nightly` は `rust-toolchain.toml`（stable）を rustup override で上書きするため、
-# リポジトリ規定の stable と併存できる。
+# `cargo +nightly` は `rust-toolchain.toml` の MSRV 1.93 を rustup override で上書きするため、
+# リポジトリ規定の 1.93 と併存できる。
 #
 # miri 特有の失敗が出た場合の対処方針:
 # - 実 UB（不正なポインタ操作・契約違反等）: コードを直す（skip しない）

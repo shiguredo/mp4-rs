@@ -66,6 +66,12 @@
   - このため init セグメントの `ftyp` のバイト列が変わる
   - @voluntas
 
+### misc
+
+- [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.93 に固定する
+  - CI は `rustup show` で MSRV のツールチェーンを導入し、rust-cache にも同じバージョンを指定する
+  - @voluntas
+
 ## 2026.5.0
 
 - [ADD] `SampleEntry` から RFC 6381 および各コーデック binding の `codecs` パラメーター文字列を生成する API (`codec_string::from_sample_entry`) を追加する

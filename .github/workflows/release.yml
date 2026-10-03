@@ -66,8 +66,8 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
-      - run: rustup default stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
 
       - name: Build
         run: cargo build --release --package c-api
@@ -121,8 +121,8 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
-      - run: rustup default stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
 
       - name: Install wasm-opt

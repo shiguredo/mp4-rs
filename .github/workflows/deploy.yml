@@ -14,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo build --release --target wasm32-unknown-unknown -p dump_wasm -p transcode_wasm
       - name: Prepare static files

@@ -28,11 +28,12 @@ jobs:
         if: contains(matrix.os, 'windows')
         run: rustup set default-host x86_64-pc-windows-gnu
 
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ${{ matrix.os }}
-          toolchain: stable
+          toolchain: "1.93"
 
       - run: cargo fmt --all --check
       # fuzz は root の [workspace] で exclude されており `cargo *` の対象外なので個別に検査する
@@ -72,12 +73,13 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ubuntu-24.04
-          toolchain: stable
+          toolchain: "1.93"
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -120,11 +122,12 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ${{ matrix.os }}
-          toolchain: stable
+          toolchain: "1.93"
 
       - name: Build C API
         run: cargo build --release --package c-api
@@ -160,12 +163,13 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: rustup update stable
+      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
+      - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ubuntu-24.04
-          toolchain: stable
+          toolchain: "1.93"
 
       - name: Install wasm-opt
         run: |

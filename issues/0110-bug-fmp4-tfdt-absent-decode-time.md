@@ -3,7 +3,7 @@
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-tfdt-absent-decode-time
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 
@@ -24,12 +24,13 @@ ISO/IEC 14496-12:2022 の 8.8.12.1 では、`tfdt` は必須ではない。ボ�
 - トラックごとに、これまでに見たサンプルの duration の和を demuxer が持つ
 - `tfdt` があるフラグメントは、その `base_media_decode_time` を先頭 DTS にし、処理後の累積を「その値 + このフラグメントの duration の和」で更新する
 - `tfdt` が無いフラグメントは、保持している累積を先頭 DTS にする
+- 累積は呼び出し内の作業用コピーとして持ち、`traf` を 1 つ処理するごとに更新する。同じ `moof` に同じトラックの `traf` が複数ある場合（ISO/IEC 14496-12:2022 の 8.8.6.1 で許容される）、2 番目以降の `tfdt` の無い `traf` の先頭 DTS は、同じ呼び出しで先に処理した `traf` の分を含む
 - エラーで戻る呼び出しでは、この累積を更新しない（`handle_media_segment` がエラーのとき他の内部状態を変えない既存の契約に合わせる）
 - 既に返したサンプルの `duration` は書き戻さない。8.8.12.1 は、後続の `tfdt` が先行サンプルの duration の和を超えるとき、直前サンプルの尺を、和がその `tfdt` と一致するまで延ばす。この延長は、この issue の対象外とする
 
 ## 完了条件
 
-- 同一トラックで、1 個目のフラグメントに `tfdt` があり、2 個目に `tfdt` が無いとき、2 個目の先頭 `timestamp` が 1 個目の duration の和と一致する
+- 同一トラックで、1 個目のフラグメントに `tfdt` があり、2 個目に `tfdt` が無いとき、2 個目の先頭 `timestamp` が、1 個目の `base_media_decode_time` に 1 個目の duration の和を足した値と一致する
 - 両方に `tfdt` があるときの `timestamp` は今と変わらない
 - 先行サンプルが無いトラックの、`tfdt` の無い最初のフラグメントの先頭 `timestamp` は 0 のままである
 - エラーを返した呼び出しのあと、同じ入力を再試行したときの `timestamp` が、エラーが無かった場合と一致する

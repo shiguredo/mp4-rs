@@ -3,7 +3,7 @@
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-sidx-sap-delta-time
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-05
 
 ## 目的
 
@@ -13,7 +13,7 @@
 
 8.16.3.3 の `starts_with_SAP` は、参照されるサブセグメントが SAP で始まるかを示す。`SAP_delta_time` は、デコード順で最初の SAP の TSAP を示す。TSAP は Annex I の用語であり、そのアクセスユニットの presentation time（TPTF）とは限らない。SAP があるときは、サブセグメントの earliest presentation time と TSAP の差である。サブセグメントが SAP で始まるとき、この差は 0 になり得る。SAP が無いときは 0 で予約である。
 
-Table 6 では、メディア参照（`reference_type = 0`）について次のように分かれる。
+Table 6 では、メディア参照（`reference_type = 0`）について、本 issue が書く組合せに関係する行は次のとおりである。
 
 - `starts_with_SAP = 1` かつ `SAP_type` が 1 以上: そのタイプの SAP でサブセグメントが始まる
 - `starts_with_SAP = 0` かつ `SAP_type` が 1 以上: SAP を含むが、それで始まらないことがある。最初のそのタイプの SAP が `SAP_delta_time` に対応する
@@ -40,6 +40,15 @@ issue 0059 は、`starts_with_sap` を `samples[0]` ではなく EPT を採っ�
 ## 完了条件
 
 - デコード順で先頭が非同期、2 個目が同期で、2 個目の PTS が EPT のとき、`starts_with_sap` が false、`sap_type` が 1、`sap_delta_time` が 0 になる
+- デコード順で先頭が非同期で、最初の同期サンプルの PTS が EPT より後ろのとき、`sap_delta_time` がその PTS から EPT を引いた値になる（0 でない例）
+- `sap_delta_time` の値が 28 ビットに収まらないときエラーになる
 - デコード順の先頭が同期で、EPT が後続サンプルのより前の PTS のとき、`starts_with_sap` が true、`sap_type` が 1、`sap_delta_time` が 0 になる。先頭 PTS と EPT の差は書かない
 - 同期サンプルが無いとき、`starts_with_sap` が false、`sap_type` が 0、`sap_delta_time` が 0 になる
 - `sap_type` に 2 以上を書く経路は足さない
+- 既存のテスト・PBT を新セマンティクスに整合させる:
+  - `sidx_starts_with_sap_false_when_ept_sample_is_b_frame` の期待値は `starts_with_sap` が true、`sap_type` が 1、`sap_delta_time` が 0 になる（テスト名とコメントも新セマンティクスに合わせる）
+  - `sidx_starts_with_sap_ignores_non_reference_track_keyframes` の期待値も true / 1 / 0 になる（参照トラックのデコード順先頭がキーフレームのため。非参照トラックの keyframe が混入しないことの確認は残す）
+  - PBT `sidx_starts_with_sap_matches_first_sample_keyframe` を新セマンティクス（デコード順で最初のキーフレーム基準で `sap_type` / `sap_delta_time` を求める）に書き直す
+  - `sidx_starts_with_sap_ties_prefer_first_occurrence` は値は変わらないが、EPT サンプルの keyframe 追跡が `starts_with_sap` を決めなくなるため、回帰防止としての役割を終える（削除または書き直しを検討する）
+  - 合わせて `compute_earliest_presentation_time` の第 2 戻り値（EPT サンプルの keyframe）と PTS 同値時の keyframe 追跡の要否を整理する
+  - `tests/test_mux_fmp4_segment.rs` 冒頭のモジュール doc が EPT サンプル基準の説明になっているため、新セマンティクスに合わせる

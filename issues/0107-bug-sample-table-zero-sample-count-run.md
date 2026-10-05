@@ -3,7 +3,7 @@
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-sample-table-zero-sample-count-run
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-05
 
 ## 目的
 
@@ -30,11 +30,12 @@
 - `sample_count == 0` のエントリは run の表に push しない。累計尺には `sample_delta * 0` を足す今の式のまま（増分は 0）で、次のエントリへ進む
 - 検索は今の `binary_search_by_key` のままにする。0 件の run を載せなければ、1 つのキーが 2 つの run を指さない
 - `ctts` も同じにする
+- 現行の stable の `binary_search_by_key` は最右の同値要素を返すため、この修正で公開 API から見える値は変わらない。目的は、同値キーのどれが返るかが未規定であることへの依存をなくすことである（`SampleAccessor::chunk` が `partition_point` で最右を明示的に選んでいるのと同じ考え方）
 
 ## 完了条件
 
-- 0 件のエントリを run の表に push しない
-- 上の先頭が 0 件の例では、最初のサンプルの `duration` が 10、`composition_time_offset` が 7 である。この結果が、同値キーの探索順に依存しない
-- `(1, 10)`、`(0, 999)`、`(1, 20)` の `stts` と、`(1, 3)`、`(0, 999)`、`(1, 4)` の `ctts` では、2 個目のサンプルの `duration` が 20、`composition_time_offset` が 4 である。0 件 run の 999 にはならない
-- `sample_count == 0` だけの表は、サンプル数 0 のまま `new` が成功する
+- 0 件のエントリを run の表に push しない。`sample_durations` / `sample_composition_offsets` が非 0 件エントリだけから作られることを確認する（private フィールドなので `src/auxiliary.rs` の `#[cfg(test)]` の単体テストで確認する）
+- 上の先頭が 0 件の例では、最初のサンプルの `duration` が 10、`composition_time_offset` が 7 である
+- `(1, 10)`、`(0, 999)`、`(1, 20)` の `stts` と、`(1, 3)`、`(0, 999)`、`(1, 4)` の `ctts` では、2 個目のサンプルの `duration` が 20、`composition_time_offset` が 4 である。0 件 run の 999 にはならない。この 2 つの値は修正の前後で変わらない（現行 stable は最右の同値要素を返すため）
+- `stts` が `(sample_count: 0, sample_delta: 1)` の 1 エントリ、`stsz` が `StszBox::Variable` で `entry_sizes` が空、`stsc` と `stco` が空の `StblBox` では、`new` が成功して `sample_count()` が 0 になる
 - 0 件の run が無い入力の尺とオフセットは今と変わらない

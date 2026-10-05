@@ -5,6 +5,11 @@ on:
     tags:
       - "*"
 
+# 同じタグに対してワークフローが重複実行された場合は先行の実行をキャンセルする
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   github-release:
     name: "Create GitHub Release"
@@ -25,17 +30,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if ${{ contains(steps.get_version.outputs.VERSION, 'canary') }}; then
-            release_output=$(gh release create ${{ steps.get_version.outputs.VERSION }} \
-              --prerelease \
-              --title "${{ steps.get_version.outputs.VERSION }}" \
-              --notes "Release ${{ steps.get_version.outputs.VERSION }}")
+          # 重複実行や再実行で既にリリースが存在する場合はそれを使う
+          if gh release view ${{ steps.get_version.outputs.VERSION }} > /dev/null 2>&1; then
+            release_id=$(gh release view ${{ steps.get_version.outputs.VERSION }} --json databaseId --jq '.databaseId')
           else
-            release_output=$(gh release create ${{ steps.get_version.outputs.VERSION }} \
-              --title "${{ steps.get_version.outputs.VERSION }}" \
-              --notes "Release ${{ steps.get_version.outputs.VERSION }}")
+            if ${{ contains(steps.get_version.outputs.VERSION, 'canary') }}; then
+              release_output=$(gh release create ${{ steps.get_version.outputs.VERSION }} \
+                --prerelease \
+                --title "${{ steps.get_version.outputs.VERSION }}" \
+                --notes "Release ${{ steps.get_version.outputs.VERSION }}")
+            else
+              release_output=$(gh release create ${{ steps.get_version.outputs.VERSION }} \
+                --title "${{ steps.get_version.outputs.VERSION }}" \
+                --notes "Release ${{ steps.get_version.outputs.VERSION }}")
+            fi
+            release_id=$(echo "$release_output" | grep -o 'releases/[0-9]*' | cut -d'/' -f2)
           fi
-          release_id=$(echo "$release_output" | grep -o 'releases/[0-9]*' | cut -d'/' -f2)
           echo "release-id=$release_id" >> $GITHUB_OUTPUT
 
   upload-assets:
@@ -102,7 +112,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload ${{ needs.github-release.outputs.version }} \
-            mp4-${{ needs.github-release.outputs.version }}_${{ matrix.platform.name }}.tar.gz
+            mp4-${{ needs.github-release.outputs.version }}_${{ matrix.platform.name }}.tar.gz \
+            --clobber
 
       - name: Upload Release Asset (Windows)
         if: runner.os == 'Windows'
@@ -110,7 +121,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ needs.github-release.outputs.version }} mp4-${{ needs.github-release.outputs.version }}_${{ matrix.platform.name }}.zip
+          gh release upload ${{ needs.github-release.outputs.version }} mp4-${{ needs.github-release.outputs.version }}_${{ matrix.platform.name }}.zip --clobber
 
   upload-wasm-assets:
     name: "Upload WebAssembly assets"
@@ -152,7 +163,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload ${{ needs.github-release.outputs.version }} \
-            mp4-${{ needs.github-release.outputs.version }}_wasm.tar.gz
+            mp4-${{ needs.github-release.outputs.version }}_wasm.tar.gz \
+            --clobber
 
   publish:
     needs: [github-release, upload-assets, upload-wasm-assets]
@@ -180,5 +192,5 @@ jobs:
         with:
           status: ${{ job.status }}
           slack_webhook: ${{ secrets.SLACK_WEBHOOK }}
-          slack_channel: hisui
+          slack_channel: rust-oss
           notify_mode: failure_and_fixed

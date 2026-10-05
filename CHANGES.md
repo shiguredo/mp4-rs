@@ -71,6 +71,11 @@
 - [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.93 に固定する
   - CI は `rustup show` で MSRV のツールチェーンを導入し、rust-cache にも同じバージョンを指定する
   - @voluntas
+- [FIX] Release ワークフローが同一タグの重複実行で失敗するのを防ぐ
+  - `concurrency` で重複実行をキャンセルし、リリース作成を冪等化する
+  - アセットの `gh release upload` に `--clobber` を追加する
+  - Slack 通知先のチャンネルを誤っていた `hisui` から `rust-oss` に直す
+  - @voluntas
 
 ## 2026.5.0
 

@@ -3,7 +3,7 @@
 - Created: 2026-08-19
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-mp4-file-demuxer-nav-pbt
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 
@@ -31,15 +31,18 @@ noprop の命令型クロージャで operation sequence を生成する。
 
 ### 参照実装
 
-- 各テストケースの冒頭で demuxer から全 sample を一括取得し、`Vec<Sample>` を model として保持する
-- model は「track_id ごとの current cursor (Option<usize>)」を持ち、Next / Prev / Seek の各操作で cursor を進める純関数として実装
-- モックではなく、テストごとに独立してビルドし直す (`Vec<Sample>` は真の期待値集合として使う)
+- 各テストケースの冒頭で demuxer から全 sample を一括取得し、各フィールドを所有値に変換したコレクション (`track_id` / `timestamp` / `duration` / `data_offset` / `data_size` / `keyframe` / `sample_entry` の有無 / `composition_time_offset`) を model として保持する
+  - `Sample<'a>` は `track` と `sample_entry` にデマルチプレクサーへの借用を含むため、`Vec<Sample>` のまま保持すると操作列の適用 (`next_sample()` などの可変借用) と衝突する。所有値への変換が必要
+- model は「track_id ごとの current cursor (Option<usize>)」を持ち、Next / Prev / Seek の各操作で cursor を進める純関数として実装する
+- モックではなく、テストごとに独立して構築する (所有値のコレクションは真の期待値集合として使う)
 
 ### 対象ファイル
 
-- `pbt/tests/testdata/beep-aac-audio.mp4` (音声 1 track)
-- `pbt/tests/testdata/black-h264-video.mp4` (映像 1 track)
+- `tests/testdata/beep-aac-audio.mp4` (音声 1 track、44 サンプル)
+- `tests/testdata/black-h265-video.mp4` (映像 1 track、25 サンプル、キーフレーム 1 個と非キーフレーム 24 個)
 - 将来 multi-track のテストファイルが用意されたら追加する
+
+`tests/testdata/black-h264-video.mp4` は 1 フレームのみのため、Seek 直後の Prev や両端への到達といった Nav 相互作用を検証できない。本 PBT では複数サンプルを持つ `black-h265-video.mp4` を使う。
 
 ### coverage gate
 
@@ -55,8 +58,7 @@ noprop の命令型クロージャで operation sequence を生成する。
 
 - Seek 直後の Prev で cursor が seek 前の位置に戻ってしまう / 戻らないの一貫性
 - 境界 (最初 / 最後の sample) での cursor 消失や overshoot
-- キーフレーム跨ぎでの sync_sample rewind の一貫性
-- 複数 sample_entry を跨ぐ Nav でのメタデータ復元
+- Nav 操作を経由して得た `Sample` の全フィールド (`keyframe` や `sample_entry` の有無を含む) が、単純な `next` 走査で得た値と一致するかの一貫性
 
 ## 対象外
 
@@ -67,6 +69,7 @@ noprop の命令型クロージャで operation sequence を生成する。
 ## 完了条件
 
 - `pbt/tests/prop_demux.rs` にランダム Nav 操作列テストが追加されている
+- 生成した操作列を model と実 demuxer の両方に適用し、各操作の結果 (`Sample` の全フィールド) が一致することが検証されている
 - 上記の coverage gate 3 分岐が exercised されていることが `Cell<usize>` の事後 assert で確認されている
 - `cargo test -p pbt --test prop_demux` が通る
 - `MP4_RS_PBT_SEED` 環境変数で失敗ケースを再現できる

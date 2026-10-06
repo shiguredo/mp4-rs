@@ -3,7 +3,7 @@
 - Created: 2026-08-19
 - Completed: {YYYY-MM-DD}
 - Branch: feature/other-position-timing-boxes-inventory
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 
@@ -40,12 +40,12 @@ fMP4 系のボックス (`prft` など) の対応は当面低優先度扱いと�
 
 | 項目 | 実用重要度 | 対応方針の目安 |
 |---|---|---|
-| `edts` / `elst` の demux 反映 | 中 (B-frame ありのファイルで PTS が typically 1〜2 サンプル分ズレる。A/V 同期をシビアに測る用途や外部字幕マッチングでは実害あり) | 設計選択肢を別 issue `issues/0070-add-edit-list-demux-support.md` に残す。実害の実例が確認できた時点で採用選択肢を確定し、実装用の別 issue を切る |
-| `edts` / `elst` の mux 生成 | 中〜低 (B-frame を含む映像を muxer で出力するときに書かないと再生互換性が落ちる。ただし `shiguredo_mp4` の現在の主用途では該当ケースが少ない可能性) | 要求が出た時点で個別 issue 化。demux 側 (`issues/0070-add-edit-list-demux-support.md`) の設計選択肢と歩調を合わせる |
+| `edts` / `elst` の demux 反映 | 中 (B-frame ありのファイルで PTS が typically 1〜2 サンプル分ズレる。A/V 同期をシビアに測る用途や外部字幕マッチングでは実害あり) | 設計選択肢を別 issue `issues/pending/0070-add-edit-list-demux-support.md` に残す。実害の実例が確認できた時点で採用選択肢を確定し、実装用の別 issue を切る |
+| `edts` / `elst` の mux 生成 | 中〜低 (B-frame を含む映像を muxer で出力するときに書かないと再生互換性が落ちる。ただし `shiguredo_mp4` の現在の主用途では該当ケースが少ない可能性) | 要求が出た時点で個別 issue 化。demux 側 (`issues/pending/0070-add-edit-list-demux-support.md`) の設計選択肢と歩調を合わせる |
 | `cslg` の mux 生成 | 中〜低 (負値の `composition_time_offset` を書く場合の仕様上の推奨。mux 側で `edts` を書くようになるタイミングで併せて検討) | mux 側 `edts` 対応時に併せて判断 |
 | `prft` (Producer Reference Time) の parse/encode | 低 (fMP4 特化。CMAF ライブ配信で NTP / UTC 絶対時刻をメディア時刻に対応付ける用途) | 要求が出るまで見送り。fMP4 系は当面低優先度扱い |
 | `saio` / `saiz` (Sample Auxiliary Information Offset/Size) の parse/encode | 低 (実運用ではほぼ CENC 用途。`shiguredo_mp4` は暗号化 / DRM をスコープに入れていない) | 暗号化対応の議論が発生した時点で再検討 |
-| `sbgp` / `sgpd` (Sample Group) の parse/encode | 中 (Opus の `roll` grouping = pre-roll サンプル数指示は仕様上の SHOULD。AAC / HEVC の open GOP ランダムアクセス精度にも効く) | Opus / AAC トラックのシーク精度改善要求が具体化した時点で個別 issue 化 |
+| `sbgp` / `sgpd` (Sample Group) の parse/encode | 中 (Opus の pre-roll サンプル数指示は `roll` sample group によることになっており、Opus ISOBMFF 仕様 (opus_in_isobmff) の 4.3.6.2 では必須 (shall)。AAC / HEVC の open GOP ランダムアクセス精度にも効く) | Opus / AAC トラックのシーク精度改善要求が具体化した時点で個別 issue 化 |
 | `stps` (Partial Sync Sample) の parse/encode | 低 (open GOP のランダムアクセス点指示。近年は `sap` sample group での代替が主流化。プレイヤー側もあまり参照しない) | 要求が出るまで見送り |
 | `stsh` (Shadow Sync Sample) の parse/encode | 極低 (事実上デッド機能。生成する encoder も読む decoder もほぼない) | 対応する予定なし。情報として本 umbrella に記載のみ |
 | `stdp` (Degradation Priority) の parse/encode | 極低 (帯域絞り時のサンプル破棄優先度ヒント。実装している encoder / decoder をほぼ見ない) | 対応する予定なし。情報として本 umbrella に記載のみ |
@@ -60,7 +60,7 @@ fMP4 系のボックス (`prft` など) の対応は当面低優先度扱いと�
 
 ## 完了条件
 
-収録した全ボックスについて、以下のいずれかが成立した状態を目指す。両方が満たされた時点で本 umbrella を close する。
+収録した全ボックスのそれぞれについて、以下の 2 つのいずれかが成立した状態を目指す。すべてのボックスでいずれかが成立した時点で本 umbrella を closed にする。
 
 - 対応が確定 (実装完了、または「対応する予定なし」で確定) している
 - 対応する個別 issue が起票されており、追跡がそちら側に移っている
@@ -69,5 +69,5 @@ fMP4 系のボックス (`prft` など) の対応は当面低優先度扱いと�
 
 ## 関連 issue
 
-- `issues/0070-add-edit-list-demux-support.md` (`edts` / `elst` の demux 反映方式の設計選択肢)
+- `issues/pending/0070-add-edit-list-demux-support.md` (`edts` / `elst` の demux 反映方式の設計選択肢)
 - `issues/pending/0049-add-multiple-tracks-per-kind.md` (同一 `TrackKind` の複数トラック対応。`tref` と関連)

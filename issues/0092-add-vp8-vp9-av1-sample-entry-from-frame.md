@@ -3,7 +3,7 @@
 - Created: 2026-08-28
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-vp8-vp9-av1-sample-entry-from-frame
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-07
 
 ## 目的
 
@@ -25,20 +25,21 @@
 
 候補:
 
-- `bitstream::vp8::build_vp08_box_from_frame(data, color_config) -> Result<Vp08Box>`
-- `bitstream::vp9::build_vp09_box_from_frame(data, color_and_level_config) -> Result<Vp09Box>`
-- `bitstream::av1::build_av01_box_from_frame(data, config) -> Result<Av01Box>`
+- `bitstream::vp8::build_vp08_box_from_frame(data, config: &Vp8SampleEntryConfig) -> Result<Vp08Box>`
+- `bitstream::vp9::build_vp09_box_from_frame(data, config: &Vp9SampleEntryConfig) -> Result<Vp09Box>`
+- `bitstream::av1::build_av01_box_from_frame(data, config: &Av1SampleEntryConfig) -> Result<Av01Box>`
 
 方針の詳細:
 
 - ビットストリーム解析は既存の `parse_*` / `build_*` を再利用する。自前パーサーを増やさない
 - sample entry を組めないフレームは `ErrorKind::InvalidInput` とする
   - VP8: キーフレーム以外
-  - VP9: `build_vp09_box` が受理しない header（key / `intra_only` 以外）、または `frame_size` が `Resolved` でない場合
+  - VP9: `build_vp09_box` が受理しない header（key / `intra_only` 以外）、または `frame_size` が `Resolved` でない場合、または `Resolved` の width / height が 65536（Visual Sample Entry の `u16` に収まらない）の場合
   - AV1: Sequence Header が無い、または `parse_frame_header_prefix` の結果が RAP でない（Key かつ `show_frame = 1` でない）場合
 - visual 寸法は当該フレーム由来とする（VP8 は keyframe の width / height、VP9 は `Vp9FrameSize::Resolved`、AV1 は Sequence Header の max frame size）。トラック全体の最大寸法を渡す既存経路（`build_vp08_box` / `build_vp09_box` + Config）は残す
-- 色特性・level・`initial_presentation_delay_minus_one` などストリームから一意に決まらない値は、既存 Config 型で受け取る
-- AV1 の `av1C.configOBUs` には Sequence Header OBU だけを入れる。Sample 文脈から取った OBU を ConfigObus 規則へ載せる必要がある場合は、正規化ヘルパー（別 issue）があればそれを使う
+- 色特性・level・`initial_presentation_delay_minus_one` などストリームから一意に決まらない値は、既存 Config 型で受け取る。既存 Config 型の `width` / `height`（トラック全体の上限を表すフィールド）は `_from_frame` では使わず、寸法は当該フレーム由来の値で決める
+- VP9 の `Resolved` 寸法を `u16` に落とす変換は、issue 0093 で追加するヘルパーと同じ規則（1..=65535 のみ受理、他は `ErrorKind::InvalidInput`）で行う。ヘルパーが実装済みならそれを利用する
+- AV1 の `av1C.configOBUs` には Sequence Header OBU だけを入れる。Sample 文脈から取った Sequence Header OBU を ConfigObus 規則のバイト列へ正規化するには、issue 0091 で追加予定の `normalize_obu_to_config_obus` を使う。本 issue は 0091 に依存するため、0091 の実装後に着手する
 - 戻り値は既存の `build_*_box` と同様に box 型とし、`SampleEntry` への包装は呼び出し側に任せる
 
 ## 完了条件

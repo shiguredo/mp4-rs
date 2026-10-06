@@ -3,7 +3,7 @@
 - Created: 2026-08-28
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-visual-dims-from-frame-helpers
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-07
 
 ## 目的
 
@@ -20,17 +20,36 @@ VP8 / VP9 で「このフレームの解像度を Visual Sample Entry の width 
 
 ## 設計方針
 
-- VP9 向けに、`Vp9FrameSize`（または `Vp9FrameHeader`）から Visual Sample Entry 用 `(u16, u16)` を返すヘルパーを追加する
-  - `Resolved` かつ 1..=65535 なら `Ok`
-  - `NotPresent` / `UsesRefFrames`、または 65536 は `ErrorKind::InvalidInput`
-- VP8 向けは、キーフレーム header から `(u16, u16)` を返す薄いヘルパーを追加するか、上記 VP9 ヘルパーと対になる形で「フレームから visual 寸法を取る」手順を rustdoc で明示する（キーフレーム以外は Err）
+`bitstream::vp9` と `bitstream::vp8` に、フレーム由来の寸法を Visual Sample Entry 用の `(u16, u16)` へ落とす公開ヘルパーを追加する。変換と拒否の判定を 1 箇所に集約し、呼び出し側が毎回書くボイラープレートをなくす。
+
+VP9 (`src/bitstream/vp9.rs`):
+
+```rust
+pub fn visual_dimensions_from_frame_size(frame_size: Vp9FrameSize) -> Result<(u16, u16)>
+```
+
+- `Resolved` かつ width / height が 1..=65535 なら `Ok` で返す
+- `NotPresent` / `UsesRefFrames`、または width / height が 0 / 65536 のときは `ErrorKind::InvalidInput` を返す
+  (0 は `Vp9FrameSize` が pub なので手組みで作られ得る。parse 経由の `Resolved` は 1..=65536 になる)
+
+VP8 (`src/bitstream/vp8.rs`):
+
+```rust
+pub fn visual_dimensions_from_frame_header(frame: &Vp8FrameHeader) -> Result<(u16, u16)>
+```
+
+- `keyframe` が `Some` なら `Ok` で返す。`Vp8KeyFrameInfo::horizontal_scale` / `vertical_scale` は適用しない (既存 API と同じく keyframe の width / height をそのまま使う)
+- `keyframe` が `None` (interframe) のときは `ErrorKind::InvalidInput` を返す
+
 - 既存の `build_vp08_box` / `build_vp09_box` のシグネチャと「トラック全体の上限は config」という契約は変えない
 - 単一フレームから box まで一気に組む高レベル API は別 issue とし、本 issue は寸法変換に限定する
 
 ## 完了条件
 
-- VP9 の `Resolved` 寸法を `u16` に落とす（または拒否する）公開ヘルパーがある
-- VP8 についても、キーフレーム寸法を取る経路がヘルパーまたは rustdoc で対称に示されている
-- 65536 や非 Resolved がエラーになることをユニットテストで確認している
+- `bitstream::vp9` に `visual_dimensions_from_frame_size` が公開されている
+- `bitstream::vp8` に `visual_dimensions_from_frame_header` が公開されている
+- `Resolved` の 1..=65535 が `Ok` になり、0 / 65536 / `NotPresent` / `UsesRefFrames` がエラーになる
+- キーフレームの VP8 header が `Ok`、interframe がエラーになる
+- `tests/test_bitstream_vp9.rs` / `tests/test_bitstream_vp8.rs` のユニットテストで上記を確認している
 - 既存の `build_vp08_box` / `build_vp09_box` の挙動は変わっていない
 - `cargo test` が pass する

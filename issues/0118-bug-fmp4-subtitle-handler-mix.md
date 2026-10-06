@@ -3,7 +3,7 @@
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-subtitle-handler-mix
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 
@@ -33,5 +33,6 @@
 ## 完了条件
 
 - 字幕トラックに `stpp` を入れたあと、別セグメントで `wvtt` を足すと `MixedSampleEntries` になり、init セグメントの `stsd` には `stpp` だけが残る
-- `stpp` だけの字幕トラック、または同じ組のサンプルエントリを複数入れる場合は成功する
+- `stpp` だけの字幕トラック、または別セグメントで同じ組のサンプルエントリを複数入れる場合は成功する
+- 同一セグメント内でサンプルエントリが変わる場合は、従来どおり `MixedSampleEntries` になる
 - `Mp4FileMuxer` が同じ組み合わせを拒否する挙動は変わらない

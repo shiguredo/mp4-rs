@@ -1,7 +1,7 @@
 # `Fmp4FileDemuxer` の partial input / 中断再開シーケンス PBT を追加する
 
 - Created: 2026-08-19
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-06
 - Branch: feature/add-fmp4-file-demuxer-partial-input-pbt
 - Polished: {YYYY-MM-DD}
 
@@ -66,3 +66,39 @@
 - coverage gate が exercised されていることが `Cell<usize>` の事後 assert で確認されている
 - `cargo test -p pbt` が通る
 - `MP4_RS_PBT_SEED` 環境変数で失敗ケースを再現できる
+
+## 解決方法
+
+本 issue は対応不要として closed にする。理由は、本 issue 自身が「実装着手前に一次調査で API 契約を確認する」と明記していた調査の結果、前提である「partial input / 中断再開をバッファリングできる」が現行の `Fmp4FileDemuxer` の API 契約に存在しないことが確定したためである。
+
+### API 契約の調査結果
+
+- `src/demux_fmp4_file.rs` の `Fmp4FileDemuxer` には入力データのバッファリング機構が無い。struct のフィールドは `phase` / `inner` / `track_infos` / `track_runtimes` / `pending_samples` / `handle_input_error` のみで、`pending_samples` はデマルチプレックス結果のサンプルであり入力の蓄積ではない
+- `handle_input` は、`required_input()` が要求する位置を含む入力を受け取り、その 1 回の呼び出しで処理を進める
+- `available_bytes` は、入力が要求サイズに満たない場合にバッファリングせず、入力の終端をファイルの終端とみなして `InvalidData` の `DecodeError`（"input ended before the required range was available"）を返す。部分供給を後から補うための状態は何も残らない
+- `input_is_acceptable` は、入力が要求位置を含まない場合（要求されていない range の先出しなど）に `InvalidInput` の `DecodeError` を返す
+
+### 実測結果（2026-10-06、develop の現行実装で確認）
+
+`Fmp4FileDemuxer::new()` 直後（`required_input()` が position=0, size=32 を要求する状態）で、要求範囲を分割して渡す実験をした。
+
+- 要求サイズ 32 バイトのうち 8 バイトだけ渡す `handle_input` は `InvalidData` の `DecodeError` になった
+- エラー後に残りの 24 バイトを position=8 から渡す `handle_input` は `InvalidInput` の `DecodeError` になった。最初の 8 バイトは保持されておらず、部分供給の続きを渡す方法は無い
+- 同じ要求範囲の全量（0..32）を渡し直せば処理は進むが、これは「要求ごとの全量供給」であり、保留・中断再開ではない
+
+### 既知の記録
+
+`issues/closed/0099-bug-fmp4-file-demuxer-whole-file-input.md`（2026-09-25）の「関連 issue」に次のとおり既に記録されていた。
+
+> issue 0074 は、要求より少ない入力を渡す PBT を扱う。今の実装は要求位置から始まる短い入力をファイルの終端とみなしており、この issue はその扱いを広げる。0074 の前提（短い入力を後から補える）とは今も食い違っており、0074 側で API 契約を確認する必要がある
+
+今回の調査で、API 契約は「短い入力 = ファイル終端の合図」であり「後から補えない」ことが確定した。
+
+### 既存のカバレッジと本 issue の操作列
+
+- `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `fmp4_file_demuxer_roundtrip` と `fmp4_file_demuxer_accepts_whole_file_input` が、本 issue の目的のうち実現可能な範囲を既に検証している。後者は、要求どおりの供給と位置 0 からファイル全体の供給で結果が一致すること、途中で切れた入力のエラー一致、`mdat` size=0、`moof` と `mdat` の間に読み飛ばすボックスがあるファイルを含む
+- 本 issue の操作列（`SupplyPartial` / `SupplyExtraRange` / `SupplyExact`）のうち、`SupplyExact` は既存の `feed_fmp4_file_demuxer` と同じ操作であり、`SupplyPartial` と `SupplyExtraRange` は現行 API では常にエラーになる操作で検証対象にならない
+
+### その後の方針
+
+部分入力のバッファリングを `Fmp4FileDemuxer` に追加する場合は、API 変更を伴う新規の機能 issue として切り出す必要がある。`Fmp4FileDemuxer` は「完全な fMP4 ファイルを段階的に読む」設計で、部分入力の意味論はファイル終端の合図として定義されているため、機能追加の妥当性の判断を含めて別途検討する。

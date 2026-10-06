@@ -3,7 +3,7 @@
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-tfra-variable-uint-truncation
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 

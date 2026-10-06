@@ -3,7 +3,7 @@
 - Created: 2026-08-28
 - Completed: {YYYY-MM-DD}
 - Branch: feature/add-av1-sample-obu-to-config-obus-helper
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 
@@ -20,9 +20,17 @@ MP4 サンプルから取り出した Sequence Header OBU を、そのまま `av
 
 ## 設計方針
 
-- Sequence Header の payload（または `Av1Obu`）から、ConfigObus 規則を満たす 1 OBU 分のバイト列を返すヘルパーを `bitstream::av1` に追加する
-- 生成結果は `obu_has_size_field = 1` とし、`build_av01_box` / `build_av01_box_from_config_obus` にそのまま渡せることを保証する
-- 必要なら `encode_leb128` も公開し、ヘルパー実装と利用側の双方で使えるようにする（公開する場合は `decode_leb128` と対になる契約を rustdoc に書く）
+`bitstream::av1` に次の公開 API を追加する。
+
+```rust
+pub fn normalize_obu_to_config_obus(obu: Av1Obu<'_>) -> Result<Vec<u8>>
+```
+
+- 入力は [`parse_obus`] が返す [`Av1Obu`] とする。[`Av1ObuParseContext::Sample`] で得たものを想定するが、OBU 単体の正規化なので文脈は問わない。主な用途は MP4 サンプル内の Sequence Header OBU であり、Sequence Header 以外の種別も同じ規則で正規化できる
+- 出力は OBU header（`obu_has_size_field` ビットを 1 に更新する。extension header があればそのまま保持する）+ payload 長の最短表現 LEB128 + payload を連結した `Vec<u8>` とし、ConfigObus 規則を満たす
+- 入力がすでに `obu_has_size_field = 1` でも、常に上記の再構成を行う（非最短表現の LEB128 は最短へ正規化される）
+- エラー条件は payload が `u32::MAX` を超える場合のみとする（AV1 spec §4.10.5 の `obu_size` は u32 幅）
+- 再構成に必要な LEB128 符号化は `bitstream::av1` の内部実装として追加し、公開 API にはしない。利用側が LEB128 付き OBU を手組みする必要をなくすのが本 issue の目的であり、公開 API をそれ以上増やさない
 - 既存の `parse_obus` / `build_av01_box*` の受理条件は狭めない
 
 ## 完了条件

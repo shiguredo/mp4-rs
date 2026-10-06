@@ -3,7 +3,7 @@
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-sidx-error-advances-state
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-06
 
 ## 目的
 
@@ -32,7 +32,7 @@ duration が `u32::MAX` のサンプルを 2 つ渡すと、バイト列は返�
 
 ## 完了条件
 
-- `subsegment_duration` が `u32` に収まらない入力でエラーを返したあと、同じ muxer の `sequence_number` と各トラックのデコード時刻が、呼び出し前と一致する
-- 同じ入力でもう一度呼んでも、エラーであり、時刻はさらに進まない
+- `subsegment_duration` が `u32` に収まらない入力でエラーを返したあと、同じ muxer の `sequence_number` と各トラックのデコード時刻が、呼び出し前と一致する。同じ入力でもう一度呼んでも、エラーであり、時刻はさらに進まない
+- `referenced_size` が `u32` に収まらない入力（メディアセグメント長が `u32::MAX` を超える。`data_size` が `u32::MAX` のサンプル 1 つで再現できる）でエラーを返したあとでも、同じ muxer の `sequence_number` と各トラックのデコード時刻が、呼び出し前と一致する。同じ入力でもう一度呼んでも、エラーであり、時刻はさらに進まない
 - PTS が負の入力でエラーを返したときの状態は、今どおり呼び出し前と一致する
 - 成功した呼び出しのバイト列と、その後のデコード時刻は今と変わらない

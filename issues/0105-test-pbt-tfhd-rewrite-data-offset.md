@@ -3,7 +3,7 @@
 - Created: 2026-09-25
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-pbt-tfhd-rewrite-data-offset
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-10-07
 
 ## 目的
 
@@ -28,7 +28,7 @@ PBT に渡す入力を、サンプルが元の payload を正しく指すメデ�
 
 - 8 バイトのサンプル 2 つからなるセグメントで、`None` を `Some(1)` に書き換えると、`moof` は 108 バイトから 112 バイトになる
 - 書き換える前は、各サンプルが元の payload を指す
-- 書き換えた後は、1 つ目のサンプルが `mdat` のヘッダーの `mdat`（`6d 64 61 74`）から始まる 8 バイトを、2 つ目のサンプルが 1 つ目の payload を指す
+- 書き換えた後は、1 つ目のサンプルが `mdat` のヘッダーの型名（`6d 64 61 74`）から始まる 8 バイトを指し、2 つ目のサンプルが 1 つ目の payload の後半 4 バイトと 2 つ目の payload の前半 4 バイトを指す
 
 ## 設計方針
 

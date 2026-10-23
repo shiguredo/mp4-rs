@@ -1,4 +1,4 @@
-# `Fmp4SegmentMuxer` の `sidx` が、サブセグメントの先頭 SAP と `SAP_delta_time` を書いていない
+# `Fmp4SegmentMuxer` の `sidx` の SAP 判定と報告方針を仕様と照合する
 
 - Created: 2026-09-29
 - Completed: {YYYY-MM-DD}
@@ -7,48 +7,93 @@
 
 ## 目的
 
-`sidx` の `starts_with_SAP` と `SAP_delta_time` を、ISO/IEC 14496-12:2022 の 8.16.3.3 と Table 6 に合わせる。EPT を採ったサンプルがキーフレームかどうかではなく、デコード順で最初の同期サンプルがサブセグメントの先頭かどうかで書く。
+`sidx` の `starts_with_SAP`、`SAP_type`、`SAP_delta_time` の判定を ISO/IEC 14496-12:2022 の定義と照合し、有効な入力に対する bug 修正が必要なのか、SAP 情報の提供を増やす変更なのかを確定する。種別と TSAP の根拠を確認せずに出力値だけを変えない。
+
+## 着手条件
+
+現実装が有効な入力に対して誤った SAP 情報を宣言することは、まだ立証できていない。SAP 情報を提供しないこと自体と、規格に反する情報を宣言することを区別する必要がある。下記の誤った修正案は採用せず、有効入力による実証を続けるか、情報提供を増やす別カテゴリの変更として扱うか、closed にするかを判断するまで、実装には着手しない。
+
+`Polished:` の既存日付は、この必要性判断や報告方針が確定したことを示さない。判断後に必要な方針を確定し、再度磨き上げる。
 
 ## 現状
 
-8.16.3.3 の `starts_with_SAP` は、参照されるサブセグメントが SAP で始まるかを示す。`SAP_delta_time` は、デコード順で最初の SAP の TSAP を示す。TSAP は Annex I の用語であり、そのアクセスユニットの presentation time（TPTF）とは限らない。SAP があるときは、サブセグメントの earliest presentation time と TSAP の差である。サブセグメントが SAP で始まるとき、この差は 0 になり得る。SAP が無いときは 0 で予約である。
+### 仕様上の根拠
+
+出典は `ISO_IEC_14496-12_2022(en).pdf` の本文である。節番号は ISO/IEC 14496-12:2022 に対応し、将来の改訂時には再確認する。
+
+- 3.1.40（紙面 6、PDF の 18 ページ）は、同期サンプルを SAP type 1 または 2 の ISAU で始まるサンプルと定義する。8.16.3.1（紙面 111、PDF の 123 ページ）も、同期サンプルまたは `sample_is_non_sync_sample = 0` が type 1 または 2 を示すとする。単なる I フレームを同期サンプルと同一視して、type 3 も 1 に近似してよいとはしていない
+- 8.6.2.1 の NOTE（紙面 41、PDF の 53 ページ）は、すべての同期サンプルをマーキングする義務までは課していない。マークしたサンプルが実際に同期サンプルである必要がある。8.8.3.1（紙面 59、PDF の 71 ページ）では、フラグは同期サンプル表と同じ情報を提供する
+- 8.16.3.1（紙面 110、PDF の 122 ページ）は、SAP で始まる条件を位置関係で定める。最初の SAP の ISAU が、その ISAP より後にある最初のアクセスユニットの位置であり、ISAP 自体もサブセグメントに含まれる必要がある。EPT を採ったサンプルの `keyframe` だけを条件にはしていない
+- 8.16.3.3（紙面 112、PDF の 124 ページ）の `SAP_delta_time` は、デコード順で最初の SAP の TSAP から、サブセグメント全体の EPT を引いた値である。SAP が無いときは 0 で予約である
+
+Annex I.2.1 と I.3（紙面 240〜242、PDF の 252〜254 ページ）は、次の時刻を区別する。
+
+- TPTF: ISAU からデコード順で最初のアクセスユニットの表示時刻
+- TEPT: ISAU 以降のアクセスユニットの最早表示時刻。SAP より前のサンプルも含むサブセグメント全体の EPT とは限らない
+- TSAP: ISAP 以降のデータだけを使って、それ以降の表示時刻のアクセスユニットをすべて正しく復号できる最早表示時刻
+- type 1: `TEPT = TDEC = TSAP = TPTF`
+- type 2: `TEPT = TDEC = TSAP < TPTF`
+
+したがって type 2 を 1 と書くことも、同期サンプル自身の PTS（TPTF）を常に TSAP として使うことも正しくない。
 
 Table 6 では、メディア参照（`reference_type = 0`）について、本 issue が書く組合せに関係する行は次のとおりである。
 
-- `starts_with_SAP = 1` かつ `SAP_type` が 1 以上: そのタイプの SAP でサブセグメントが始まる
-- `starts_with_SAP = 0` かつ `SAP_type` が 1 以上: SAP を含むが、それで始まらないことがある。最初のそのタイプの SAP が `SAP_delta_time` に対応する
+- `starts_with_SAP = 1` かつ `SAP_type` が 1〜6: そのタイプの SAP でサブセグメントが始まる
+- `starts_with_SAP = 0` かつ `SAP_type` が 1〜6: SAP を含むが、それで始まらないことがある。最初のそのタイプの SAP が `SAP_delta_time` に対応する
+- `starts_with_SAP = 1` かつ `SAP_type = 0`: 種別不明の SAP でサブセグメントが始まる
 - `starts_with_SAP = 0` かつ `SAP_type = 0`: SAP の情報は無い
 
-`src/mux_fmp4_segment.rs` の `create_media_segment_metadata_with_sidx` は、EPT を採ったサンプルの `keyframe` を `starts_with_sap` にし、`sap_type` をその 0 か 1 にし、`sap_delta_time` を常に 0 にする。doc は、SAP type 1 から 6 の区別（open GOP の I フレームは type 3 に相当する、など）はしない、と書いている。
+`SAP_type = 7` は予約値であり、上の 1〜6 に含めない。また「SAP 情報なし」は「SAP が存在しない」という断定ではない。
 
-デコード順の 2 個目がキーフレームで、その PTS が最小のとき、実装は `starts_with_SAP = 1` かつ `SAP_delta_time = 0` を書く。これは「先頭が SAP で、その TSAP が EPT と一致する」という主張になる。先頭サンプルが非同期なら、Table 6 の「SAP で始まる」には当たらない。
+### 現実装と再現の確認状況
 
-逆に、デコード順の先頭が同期サンプルで、EPT が後続サンプルの PTS のとき、実装は `starts_with_SAP = 0` かつ `SAP_type = 0` になり、先頭の同期サンプルを「情報無し」にする。
+`src/mux_fmp4_segment.rs` の `create_media_segment_metadata_with_sidx` は、EPT を採ったサンプルの `keyframe` を `starts_with_sap` にし、`sap_type` をその 0 か 1 にし、`sap_delta_time` を常に 0 にする。doc は type 1〜6 の区別をしない近似と説明しているが、それだけでは規格に適合する出力である根拠にならない。
 
-issue 0059 は、`starts_with_sap` を `samples[0]` ではなく EPT を採ったサンプルの `keyframe` にする修正で closed になっている。`sap_delta_time` は 0 のままである。`tests/test_mux_fmp4_segment.rs` の `sidx_starts_with_sap_false_when_ept_sample_is_b_frame` は、デコード順の先頭が同期サンプル（PTS 50）で EPT が後続の B フレーム（PTS 20）のとき、`starts_with_sap` が false、`sap_type` が 0、`sap_delta_time` が 0 であることを固定している。今の実装はこの値を返す。Table 6 では、デコード順の先頭が SAP なら `starts_with_SAP = 1` である。
+`src/mux_mp4_file.rs` の `Sample::keyframe` は同期サンプルかどうかを表す。`build_moof` と `build_sample_flags` は `true` を `sample_is_non_sync_sample = false` に写す。muxer はサンプルのビットストリームを解析せず、渡されたメタデータを使う。
 
-このテストの時刻は、先頭サンプルの PTS が 50（TPTF）、EPT が 20（TEPT）である。type 1 は `TEPT = TDEC = TSAP = TPTF`、type 2 は `TEPT = TDEC = TSAP < TPTF` である。後続サンプルが先頭の同期サンプルからデコードできるなら type 2 であり、サブセグメントがその SAP で始まるときの TSAP は EPT と一致するので、`SAP_delta_time` は 0 になる。デコード順先頭の PTS は TPTF であり、EPT より後ろでも TSAP ではない。PTS 50 と EPT 20 の差 30 は書かない。後続がデコードできない type 3（`TEPT < TDEC = TSAP`）は、type 2 を `sap_type = 2` と書く作業とともに、この issue に含めない。`sap_type` は同期サンプルを 1、それ以外の情報無しを 0 のままにする。直したあとのこのテストの期待値は、`starts_with_sap` が true、`sap_type` が 1、`sap_delta_time` が 0 である。
+デコード順の 2 個目の `keyframe` が `true` で、その PTS が最小のメタデータを渡すと、現実装は `starts_with_SAP = 1` とする。ただし、これを有効入力での不具合の実証とするには、そのサンプルが本当に 3.1.40 の同期サンプルであり、Annex I の条件を満たすかを確認する必要がある。先行するアクセスユニットも TSAP 以上の PTS を持つのに、ISAU 以降のデータでは復号できない場合、この同期サンプルの仮定と両立しない。メタデータ上の組合せだけでは、規格に適合する再現入力とは認定できない。
+
+デコード順の先頭が同期サンプルで、EPT が後続サンプルの PTS のとき、現実装は `starts_with_SAP = 0`、`SAP_type = 0`、`SAP_delta_time = 0` にする。先頭の type 2 の SAP について TSAP が当該 EPT と一致する場合、この出力は Table 6 の「SAP 情報なし」とデルタ 0 に整合する。情報省略の事実だけでは、規格違反の bug と断定しない。
+
+issue 0059 は EPT サンプル基準への変更で closed になっており、`CHANGES.md` にもその変更が記録されている。過去の判断は今回の仕様根拠の代わりにはしない。`tests/test_mux_fmp4_segment.rs` の `sidx_starts_with_sap_false_when_ept_sample_is_b_frame` は PTS が `[50, 60, 20]`、`keyframe` が `[true, false, false]` のメタデータに対して false / 0 / 0 を固定する。
+
+これらのテストと `pbt/tests/prop_fmp4_segment_mux_demux.rs` は、実際のビットストリームの復号可否を検証しない。以下の例は、同期サンプルの契約と対象となる後続範囲が満たされると仮定した時刻モデルであり、実メディアで規格違反を再現した結果ではない。
+
+### 旧修正案が成立しない例
+
+先頭 SAP の例として PTS `[50, 60, 20]` を使い、先頭から後続をすべて正しく復号でき、さらに後ろに PTS 20 未満のアクセスユニットが無いとする。この場合は `TPTF = 50`、`TEPT = TDEC = TSAP = 20` なので type 2 である。SAP 情報を正しい型で明示するなら true / 2 / 0 であり、旧案の true / 1 / 0 にはならない。先頭 PTS と EPT の差 30 も書かない。
+
+非先頭 SAP の例は次のとおり。
+
+| デコード順 | duration | DTS | CTO | PTS | keyframe |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 100 | 0 | 0 | 0 | false |
+| 1 | 100 | 100 | +100 | 200 | true |
+| 2 | 100 | 200 | -100 | 100 | false |
+
+同期サンプル以降をすべて正しく復号でき、さらに後ろに PTS 100 未満のアクセスユニットが無いとする。サブセグメント全体の EPT は 0 だが、SAP 以降の `TEPT = TDEC = TSAP = 100`、`TPTF = 200` なので type 2 である。SAP 情報を正しい型で明示するなら false / 2 / 100 となる。旧案の false / 1 / 200 は型とデルタの両方が誤っている。先行サンプルの PTS は TSAP より小さく、この例は先行サンプルを SAP から復号できるという仮定を要しない。
 
 ## 設計方針
 
-- 参照トラックをデコード順に見て、最初の `keyframe == true` のサンプルを最初の SAP とする。この muxer が書く同期サンプルは type 1 の近似のままにする。type 2 も 1 と書く
-- そのサンプルがデコード順の先頭なら `starts_with_sap = true`、`sap_type = 1`、`sap_delta_time = 0` とする。サブセグメントが SAP で始まるときの type 1 と type 2 は TSAP が EPT と一致するため、先頭サンプルの PTS から EPT を引いた値は書かない
-- 先頭でなく、後ろに同期サンプルがあるなら `starts_with_sap = false`、`sap_type = 1` とする。`sap_delta_time` は、type 1 の近似としてその同期サンプルの PTS からこのサブセグメントの EPT を引いた値とする。0 も許す。差が 28 ビットに収まらないときはエラーにする
-- 同期サンプルが 1 つも無いなら `starts_with_sap = false`、`sap_type = 0`、`sap_delta_time = 0` とする
-- doc の「EPT サンプルが SAP かどうか」という説明を、Table 6 の「始まる」と「含む」の区別に直す。type 1 から 6 を区別しないことは残す
+- まず、有効入力に対する規格違反の実証と、提供する SAP 情報を増やす要望を分けて必要性を判断する。SAP 情報の省略を、それだけで規格違反としない
+- type 2 を 1 と書く方針、および同期サンプルの PTS を無条件に TSAP とする方針は採用しない
+- SAP 情報を明示する場合は、`starts_with_sap` を位置関係、`sap_type` を Annex I の型、`sap_delta_time` を `TSAP - サブセグメント全体の EPT` に基づいて決める。型不明の SAP と SAP 情報の省略は Table 6 で別の表現である
+- `Sample::keyframe` の同期サンプルとしての契約を前提にし、単なる I フレームかどうかを代用しない。同期マークが無いことと、実際の SAP が無いことも区別する
+- 差を出力する場合は、正しい TSAP に基づく差が負または 28 ビットの上限 `0x0FFF_FFFF` を超えるときの扱いを決める。上限は 8.16.3.2 の構文に由来する
+
+### 必要性を判断した後に決めること
+
+- 型と TSAP を呼び出し側から受け取るか、サポートする入力・ストリーム条件で保証するかを決める。現在渡されたサンプル群より後ろの表示時刻を確認する必要がある場合、その情報をどう取得するかも決める
+- 情報が不足する場合に、型不明の SAP として報告できる条件、SAP 情報を提供しない条件、入力を拒否する条件を決める。Table 6 の表現を根拠なく自動選択しない
+- 検出・申告した SAP だけを報告するのか、すべての SAP が入力メタデータに現れることを API の契約にするのかを決める。`keyframe == true` が無いだけで SAP 不在を断定する方針にはしない
+- 既存メソッドと C API への影響、テストに与える保証、エラー時の状態維持を決める。失敗時の状態維持は issue 0115 と整合させる
 
 ## 完了条件
 
-- デコード順で先頭が非同期、2 個目が同期で、2 個目の PTS が EPT のとき、`starts_with_sap` が false、`sap_type` が 1、`sap_delta_time` が 0 になる
-- デコード順で先頭が非同期で、最初の同期サンプルの PTS が EPT より後ろのとき、`sap_delta_time` がその PTS から EPT を引いた値になる（0 でない例）
-- `sap_delta_time` の値が 28 ビットに収まらないときエラーになる
-- デコード順の先頭が同期で、EPT が後続サンプルのより前の PTS のとき、`starts_with_sap` が true、`sap_type` が 1、`sap_delta_time` が 0 になる。先頭 PTS と EPT の差は書かない
-- 同期サンプルが無いとき、`starts_with_sap` が false、`sap_type` が 0、`sap_delta_time` が 0 になる
-- `sap_type` に 2 以上を書く経路は足さない
-- 既存のテスト・PBT を新セマンティクスに整合させる:
-  - `sidx_starts_with_sap_false_when_ept_sample_is_b_frame` の期待値は `starts_with_sap` が true、`sap_type` が 1、`sap_delta_time` が 0 になる（テスト名とコメントも新セマンティクスに合わせる）
-  - `sidx_starts_with_sap_ignores_non_reference_track_keyframes` の期待値も true / 1 / 0 になる（参照トラックのデコード順先頭がキーフレームのため。非参照トラックの keyframe が混入しないことの確認は残す）
-  - PBT `sidx_starts_with_sap_matches_first_sample_keyframe` を新セマンティクス（デコード順で最初のキーフレーム基準で `sap_type` / `sap_delta_time` を求める）に書き直す
-  - `sidx_starts_with_sap_ties_prefer_first_occurrence` は値は変わらないが、EPT サンプルの keyframe 追跡が `starts_with_sap` を決めなくなるため、回帰防止としての役割を終える（削除または書き直しを検討する）
-  - 合わせて `compute_earliest_presentation_time` の第 2 戻り値（EPT サンプルの keyframe）と PTS 同値時の keyframe 追跡の要否を整理する
-  - `tests/test_mux_fmp4_segment.rs` 冒頭のモジュール doc が EPT サンプル基準の説明になっているため、新セマンティクスに合わせる
+- 有効なメディアと同期サンプルの契約に基づいて bug を実証するか、情報提供の追加・変更として扱うか、closed にするかが決まっている
+- 実装を続ける場合は、型・TSAP の取得方法、対象範囲の保証、情報不足時の挙動、既存 API への影響が決まっている
+- SAP 情報を明示する場合に、先頭の type 2 の例を true / 1 / 0 にせず、非先頭の type 2 の例を false / 1 / 200 にしない。型と時刻が保証された場合の値は、それぞれ true / 2 / 0、false / 2 / 100 である
+- 型不明や SAP 情報省略を選ぶ場合は、採択した条件と Table 6 の意味に一致する。SAP 不在が確認できる場合のデルタは仕様どおり 0 にする
+- デルタを出力する場合、正しい TSAP に基づく差と 28 ビットの範囲を検証する
+- `sidx_starts_with_sap_false_when_ept_sample_is_b_frame`、`sidx_starts_with_sap_ignores_non_reference_track_keyframes`、`sidx_starts_with_sap_ties_prefer_first_occurrence`、PBT `sidx_starts_with_sap_matches_first_sample_keyframe` の期待値は、採択した報告方針と入力の保証に従って決める。非参照トラックが混入しない確認は残す
+- `compute_earliest_presentation_time` の第 2 戻り値と PTS 同値時の `keyframe` 追跡の要否、および `tests/test_mux_fmp4_segment.rs` のモジュール doc を、採択した方針に整合させる

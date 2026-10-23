@@ -1,7 +1,7 @@
 # `Fmp4SegmentMuxer` の `sidx` の SAP 判定と報告方針を仕様と照合する
 
 - Created: 2026-09-29
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-10-23
 - Branch: feature/fix-sidx-sap-delta-time
 - Polished: 2026-10-05
 
@@ -97,3 +97,13 @@ issue 0059 は EPT サンプル基準への変更で closed になっており�
 - デルタを出力する場合、正しい TSAP に基づく差と 28 ビットの範囲を検証する
 - `sidx_starts_with_sap_false_when_ept_sample_is_b_frame`、`sidx_starts_with_sap_ignores_non_reference_track_keyframes`、`sidx_starts_with_sap_ties_prefer_first_occurrence`、PBT `sidx_starts_with_sap_matches_first_sample_keyframe` の期待値は、採択した報告方針と入力の保証に従って決める。非参照トラックが混入しない確認は残す
 - `compute_earliest_presentation_time` の第 2 戻り値と PTS 同値時の `keyframe` 追跡の要否、および `tests/test_mux_fmp4_segment.rs` のモジュール doc を、採択した方針に整合させる
+
+## 解決方法
+
+元の bug 修正要求を取り下げ、closed にする。上記の着手条件・設計方針・完了条件は、この判断に至るまでの調査記録として残す。
+
+ISO/IEC 14496-12:2022 の Table 6 は、`starts_with_SAP = 0` かつ `SAP_type = 0` を「SAP 情報なし」としている。調査した先頭 type 2 の例では、現実装の false / 0 / 0 はこの表現と整合し、情報の省略だけでは bug の根拠にならない。有効なメディアと同期サンプルの契約を満たす入力で、誤った SAP 情報を宣言する再現も得られていない。
+
+旧案の type 2 を 1 と書く方針と、同期サンプル自身の PTS を無条件に TSAP とする方針は、Annex I の定義に合わないため採用しない。SAP 種別・TSAP・非ゼロのデルタを詳しく報告する機能についても、今回の不要な issue を整理する方針に基づき、追加要求として採択しない。
+
+本判断は元の修正要求の取り下げであり、実装修正の完了や、すべての有効入力に対する SAP 判定の正しさを示すものではない。公開 `SidxBox::encode` の値の範囲検証を完了したという意味でもない。今後、有効な実メディアで既存の契約に反する出力を再現した場合、または詳細な SAP 情報を必要とする具体的な利用要求が生じた場合は、その根拠と完了条件を付けて別途起票する。

@@ -11,6 +11,19 @@
 
 ## develop
 
+- [CHANGE] `crates/wasm` を wasm-bindgen ベースの API に変更する
+  - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
+  - `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` / `mp4_mux_sample_from_json` / `mp4_mux_sample_free` / `mp4_demux_sample_to_json` / `mp4_demux_track_info_to_json` / `mp4_library_version` を削除する
+  - `crates/wasm` が `c-api` クレートに依存しなくなり、`shiguredo_mp4` を直接使うようになる
+  - ファイル位置とサイズは JavaScript の数値で受け渡す。`u64` を BigInt で扱う必要がなくなる
+  - メソッド名は JavaScript の慣習に合わせて camelCase になる
+  - `.d.ts` は wasm-bindgen が生成する
+  - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
+  - @voluntas
+- [FIX] wasm のマルチプレックスで、デマルチプレックス側が出力する `composition_time_offset: null` を受理できずに失敗していたのを修正する
+  - これまでは `null` を整数として解釈しようとして JSON のパースに失敗していた
+  - キーの省略と `null` のどちらも「コンポジション時間オフセットなし」として扱うようになる
+  - @voluntas
 - [FIX] `Fmp4SegmentDemuxer::handle_media_segment` が `moof` より前の `styp` などのトップレベルボックスを読み飛ばすようにする
   - これまでは先頭の `sidx` を 1 個だけ読み飛ばしていたため、`styp` + `moof` + `mdat` や `sidx` + `sidx` + `moof` + `mdat` など ISO/IEC 14496-12 で有効なメディアセグメントをエラーにしていた
   - 読み飛ばすボックスの中身は種別を問わず解釈しない。`data_offset` はこれまでどおり渡したデータの先頭を基準にする
@@ -75,6 +88,12 @@
   - `concurrency` で重複実行をキャンセルし、リリース作成を冪等化する
   - アセットの `gh release upload` に `--clobber` を追加する
   - Slack 通知先のチャンネルを誤っていた `hisui` から `rust-oss` に直す
+  - @voluntas
+- [UPDATE] wasm のビルド手順に wasm-bindgen によるバインディング生成を追加する
+  - `ci.yml` と `release.yml` に wasm-bindgen の導入と Node.js 向け・ブラウザ向けバインディングの生成を追加する
+  - wasm-opt はバインディング生成後の `.wasm` に対して適用する
+  - GitHub Release の wasm アーカイブに `node/` と `web/` のバインディングを含める
+  - wasm のサンプル `demux.js` / `mux.js` を新しい API に合わせて書き直す
   - @voluntas
 
 ## 2026.5.0

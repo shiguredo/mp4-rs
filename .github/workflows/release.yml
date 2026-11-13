@@ -136,6 +136,14 @@ jobs:
       - run: rustup show
       - run: rustup target add wasm32-unknown-unknown
 
+      # wasm-bindgen の CLI は Cargo.lock に固定したクレートとバージョンを完全に一致させる必要がある
+      - name: Install wasm-bindgen
+        run: |
+          curl -L -o wasm-bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz
+          echo "9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  wasm-bindgen.tar.gz" | sha256sum -c -
+          tar xzf wasm-bindgen.tar.gz
+          sudo mv wasm-bindgen-0.2.130-x86_64-unknown-linux-musl/wasm-bindgen /usr/local/bin/
+
       - name: Install wasm-opt
         run: |
           curl -L -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_125/binaryen-version_125-x86_64-linux.tar.gz
@@ -146,15 +154,31 @@ jobs:
       - name: Build WebAssembly
         run: cargo build --profile release-wasm --package wasm --target wasm32-unknown-unknown
 
+      - name: Generate bindings
+        run: |
+          wasm-bindgen --target nodejs \
+            --out-dir crates/wasm/pkg/node \
+            target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+          wasm-bindgen --target web \
+            --out-dir crates/wasm/pkg/web \
+            target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      # wasm-opt は wasm-bindgen の生成物に対して適用する。
+      # cargo のプロファイルで strip すると wasm-bindgen が機能を検出できないため、
+      # デバッグ情報の削除はここで行う
       - name: Optimize with wasm-opt
         run: |
-          wasm-opt -Oz --enable-bulk-memory -o target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
-          mv target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+          for target in node web; do
+            wasm-opt -Oz --strip-debug --enable-bulk-memory \
+              -o "crates/wasm/pkg/${target}/mp4_wasm_bg.wasm" \
+              "crates/wasm/pkg/${target}/mp4_wasm_bg.wasm"
+          done
 
       - name: Package
         run: |
           mkdir -p mp4-${{ needs.github-release.outputs.version }}_wasm
-          cp target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm mp4-${{ needs.github-release.outputs.version }}_wasm/
+          cp -r crates/wasm/pkg/node crates/wasm/pkg/web \
+            mp4-${{ needs.github-release.outputs.version }}_wasm/
           tar -czf mp4-${{ needs.github-release.outputs.version }}_wasm.tar.gz \
             mp4-${{ needs.github-release.outputs.version }}_wasm
 

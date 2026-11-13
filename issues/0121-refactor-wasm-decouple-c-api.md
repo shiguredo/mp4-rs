@@ -1,7 +1,7 @@
 # crates/wasm を c-api 依存から切り離して wasm-bindgen ベースにする
 
 - Created: 2026-11-13
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-13
 - Branch: feature/refactor-wasm-bindgen
 - Polished: {YYYY-MM-DD}
 
@@ -55,4 +55,36 @@
 
 ## 解決方法
 
-{実装後に記載する}
+- `crates/wasm/Cargo.toml` から `c_api` 依存を削除し、`shiguredo_mp4` と `wasm-bindgen` を依存に追加する
+- `crates/wasm/src/lib.rs` から `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` を削除し、`version()` だけを残す
+  - バージョンは `crates/wasm/build.rs` がルートの `Cargo.toml` から読み取って埋め込む
+- 生ポインタを扱う関数を全廃し、wasm-bindgen のクラスとして公開する
+  - `Mp4FileDemuxer`: `requiredInput` / `handleInput` / `tracks` / `nextSample` / `prevSample` / `seek`
+  - `Mp4FileMuxer`: `initialBoxes` / `appendSample` / `advancePosition` / `finalize` / `nextOutput` / `isFaststartEnabled` / `moovBoxSize`
+  - `Fmp4SegmentMuxer`: `createMediaSegmentMetadata` / `createMediaSegmentMetadataWithSidx` / `initSegment` / `mfra`
+  - `Fmp4SegmentDemuxer`: `handleInitSegment` / `tracks` / `handleMediaSegment`
+  - `Mp4FileKindDetector`: `requiredInput` / `handleInput` / `fileKind`
+- ファイル位置とサイズは `f64` で受け渡す。`u64` をそのまま公開すると `BigInt` が必要になるため
+- コーデック別の JSON 変換 (`crates/wasm/src/boxes_*.rs`) を、C ABI の構造体ではなく `shiguredo_mp4::boxes` の型を直接扱う形に書き直す
+  - JSON のキー名と構造は変えない
+  - 生ポインタの確保・解放、`NaluList` のような橋渡し用の型、`allocate_and_copy_*` / `free_*` を削除する
+- `crates/wasm/src/fmp4_segment_mux.rs` の `OwnedMp4SampleEntry` を削除する。コアの `Sample` が sample entry を所有するため不要になる
+- `crates/wasm/src/track.rs` に `optional_i64_member` を追加し、`composition_time_offset` の `null` と省略をどちらも `None` として扱う
+- `crates/wasm/src/demux.rs` の `next_sample` / `prev_sample` が返す JSON は、コアの `Sample` から直接組み立てる
+- ルートの `Cargo.toml` の `release-wasm` プロファイルから `strip = true` を外し、`wasm-opt --strip-debug` でデバッグ情報を削除する方針に変更する
+  - ビルド手順は cargo → wasm-bindgen → wasm-opt の順になる
+- `crates/wasm/examples/demux.js` / `mux.js` を新しい API に合わせて書き直す
+  - これまで `Mp4DemuxTrackInfo` を 20 バイト刻みで読んでいたため、2 トラック以上で誤った値を出していた問題も解消する
+- `.github/workflows/ci.yml` と `release.yml` に wasm-bindgen の導入と Node.js 向け・ブラウザ向けバインディング生成を追加する
+- `.gitignore` に `crates/wasm/pkg/` を追加する
+
+検証結果:
+
+- `cargo test -p wasm` が 57 件すべて成功する
+- `cargo test --workspace --exclude c-api` が成功する
+- `cargo clippy -p wasm --all-targets -- -D warnings` が警告なしで通る
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude c-api --no-deps` が通る
+- 2 トラックの MP4 をデマルチプレックスでき、`track_id` / `kind` / `duration` / `timescale` が正しく取得できる
+- デマルチプレックスしたサンプルの JSON を `composition_time_offset: null` のままマルチプレックス側に渡せる
+- fMP4 のメディアセグメントを生成して読み戻せる
+- `wasm-opt -Oz --strip-debug` 後で `.wasm` が 526,481 バイト、gzip 後で 191,523 バイトになる

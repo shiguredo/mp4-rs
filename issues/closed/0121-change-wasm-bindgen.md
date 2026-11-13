@@ -2,7 +2,7 @@
 
 - Created: 2026-11-13
 - Completed: 2026-11-13
-- Branch: feature/refactor-wasm-bindgen
+- Branch: feature/change-wasm-bindgen
 - Polished: {YYYY-MM-DD}
 
 ## 目的

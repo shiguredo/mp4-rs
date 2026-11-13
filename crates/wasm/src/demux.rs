@@ -1,114 +1,118 @@
-//! C API の demux.rs に対応するモジュール
-use c_api::basic_types::Mp4TrackKind;
-use c_api::demux::{Mp4DemuxSample, Mp4DemuxTrackInfo};
+//! MP4 ファイルのデマルチプレックスを行う JavaScript 向けクラス
+use wasm_bindgen::prelude::*;
 
-use crate::boxes::fmt_json_mp4_sample_entry;
+use shiguredo_mp4::demux::{Input, Mp4FileDemuxer as Inner};
 
-/// トラック情報を JSON 文字列に変換する
-//
-/// # 引数
+use crate::track::{fmt_required_input, fmt_sample, fmt_track_info};
+
+/// MP4 ファイルを段階的に読み込んでメディアサンプルを取り出す
 ///
-/// - `track_info`: 変換対象の Mp4DemuxTrackInfo へのポインタ
-///
-/// # 戻り値
-///
-/// JSON 文字列を含む `Vec<u8>` へのポインタ。エラー時は NULL
-///
-/// 呼び出しもとは不要になったら `mp4_vec_free` 関数を使ってこの `Vec` を解放する必要がある
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_demux_track_info_to_json(
-    track_info: *const Mp4DemuxTrackInfo,
-) -> *mut Vec<u8> {
-    if track_info.is_null() {
-        return std::ptr::null_mut();
+/// Sans I/O のため、ファイルの読み込みは呼び出し側が行う。
+/// `requiredInput()` が返す位置とサイズに従ってデータを読み、`handleInput()` に渡す。
+#[wasm_bindgen]
+pub struct Mp4FileDemuxer {
+    inner: Inner,
+}
+
+#[wasm_bindgen]
+impl Mp4FileDemuxer {
+    /// デマルチプレクサを作成する
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: Inner::new(),
+        }
     }
 
-    let track_info = unsafe { &*track_info };
-    let json = nojson::json(|f| fmt_json_mp4_demux_track_info(f, track_info)).to_string();
-    Box::into_raw(Box::new(json.into_bytes()))
-}
-
-/// サンプルを JSON 文字列に変換する
-///
-/// # 引数
-///
-/// - `sample`: 変換対象の `Mp4DemuxSample` へのポインタ
-///
-/// # 戻り値
-///
-/// JSON 文字列を含む `Vec<u8>` へのポインタ。エラー時は NULL
-///
-/// 呼び出しもとは不要になったら `mp4_vec_free` 関数を使ってこの `Vec` を解放する必要がある
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mp4_demux_sample_to_json(sample: *const Mp4DemuxSample) -> *mut Vec<u8> {
-    if sample.is_null() {
-        return std::ptr::null_mut();
+    /// 次に必要な入力データを JSON で返す
+    ///
+    /// これ以上入力が不要になった場合は `undefined` を返す。
+    /// 返り値の形式は `{"position": 0, "size": 32}` であり、
+    /// `size` が `null` の場合はファイル末尾までのデータが必要であることを表す。
+    #[wasm_bindgen(js_name = requiredInput)]
+    pub fn required_input(&self) -> Option<String> {
+        self.inner
+            .required_input()
+            .map(|required| nojson::json(|f| fmt_required_input(f, required)).to_string())
     }
 
-    let sample = unsafe { &*sample };
-    let json = nojson::json(|f| fmt_json_mp4_demux_sample(f, sample)).to_string();
-    Box::into_raw(Box::new(json.into_bytes()))
+    /// 入力データを供給する
+    ///
+    /// `position` はファイル先頭からのバイト位置である。
+    /// JavaScript の数値は 2 の 53 乗まで正確に表現できるため、
+    /// 実用上はファイルサイズの上限に達しない。
+    #[wasm_bindgen(js_name = handleInput)]
+    pub fn handle_input(&mut self, position: f64, data: &[u8]) {
+        self.inner.handle_input(Input {
+            position: position as u64,
+            data,
+        });
+    }
+
+    /// トラック情報を JSON の配列で返す
+    #[wasm_bindgen(js_name = tracks)]
+    pub fn tracks(&mut self) -> Result<String, JsError> {
+        let tracks = self
+            .inner
+            .tracks()
+            .map_err(|error| JsError::new(&format!("failed to get tracks: {error}")))?;
+        Ok(nojson::json(|f| {
+            f.array(|f| {
+                for track in tracks {
+                    f.element(nojson::json(|f| fmt_track_info(f, track)))?;
+                }
+                Ok(())
+            })
+        })
+        .to_string())
+    }
+
+    /// 時系列順に次のサンプルを JSON で返す
+    ///
+    /// すべてのサンプルを取得し終えた場合は `undefined` を返す。
+    #[wasm_bindgen(js_name = nextSample)]
+    pub fn next_sample(&mut self) -> Result<Option<String>, JsError> {
+        match self.inner.next_sample() {
+            Ok(Some(sample)) => Ok(Some(nojson::json(|f| fmt_sample(f, &sample)).to_string())),
+            Ok(None) => Ok(None),
+            Err(error) => Err(JsError::new(&format!("failed to get next sample: {error}"))),
+        }
+    }
+
+    /// 時系列順に前のサンプルを JSON で返す
+    ///
+    /// ファイルの先頭に達した場合は `undefined` を返す。
+    #[wasm_bindgen(js_name = prevSample)]
+    pub fn prev_sample(&mut self) -> Result<Option<String>, JsError> {
+        match self.inner.prev_sample() {
+            Ok(Some(sample)) => Ok(Some(nojson::json(|f| fmt_sample(f, &sample)).to_string())),
+            Ok(None) => Ok(None),
+            Err(error) => Err(JsError::new(&format!(
+                "failed to get previous sample: {error}"
+            ))),
+        }
+    }
+
+    /// 指定した時刻へシークする
+    ///
+    /// `timestamp / timescale` 秒の位置を探し、その位置を含むサンプルから
+    /// 次の `nextSample()` が開始されるようにする。
+    #[wasm_bindgen(js_name = seek)]
+    pub fn seek(&mut self, timestamp: f64, timescale: f64) -> Result<(), JsError> {
+        if timescale <= 0.0 {
+            return Err(JsError::new("timescale must be greater than 0"));
+        }
+        let position = std::time::Duration::from_secs(timestamp as u64)
+            .checked_div(timescale as u32)
+            .ok_or_else(|| JsError::new("timescale must be greater than 0"))?;
+        self.inner
+            .seek(position)
+            .map_err(|error| JsError::new(&format!("failed to seek: {error}")))
+    }
 }
 
-fn fmt_json_mp4_demux_sample(
-    f: &mut nojson::JsonFormatter<'_, '_>,
-    sample: &Mp4DemuxSample,
-) -> std::fmt::Result {
-    f.object(|f| {
-        // トラック情報
-        if !sample.track.is_null() {
-            let track = unsafe { &*sample.track };
-
-            // トラック情報全体を毎回 JSON に変換するのは無駄なので、
-            // wasm 版ではサンプルには ID だけを持たせるようにする
-            // （ID と実際の情報とのマッピングを行うのは利用側の責務）
-            f.member("track_id", track.track_id)?;
-        }
-
-        // サンプルエントリー
-        if !sample.sample_entry.is_null() {
-            let sample_entry = unsafe { &*sample.sample_entry };
-            f.member(
-                "sample_entry",
-                nojson::json(|f| fmt_json_mp4_sample_entry(f, sample_entry)),
-            )?;
-        }
-
-        // キーフレームフラグ
-        f.member("keyframe", sample.keyframe)?;
-
-        // タイムスタンプと尺
-        f.member("timestamp", sample.timestamp)?;
-        f.member("duration", sample.duration)?;
-        let cto: Option<i64> = if sample.has_composition_time_offset {
-            Some(sample.composition_time_offset)
-        } else {
-            None
-        };
-        f.member("composition_time_offset", cto)?;
-
-        // データの位置とサイズ
-        f.member("data_offset", sample.data_offset)?;
-        f.member("data_size", sample.data_size)?;
-
-        Ok(())
-    })
-}
-
-fn fmt_json_mp4_demux_track_info(
-    f: &mut nojson::JsonFormatter<'_, '_>,
-    track_info: &Mp4DemuxTrackInfo,
-) -> std::fmt::Result {
-    let kind = match track_info.kind {
-        Mp4TrackKind::MP4_TRACK_KIND_AUDIO => "audio",
-        Mp4TrackKind::MP4_TRACK_KIND_VIDEO => "video",
-        Mp4TrackKind::MP4_TRACK_KIND_SUBTITLE => "subtitle",
-    };
-
-    f.object(|f| {
-        f.member("track_id", track_info.track_id)?;
-        f.member("kind", kind)?;
-        f.member("duration", track_info.duration)?;
-        f.member("timescale", track_info.timescale)
-    })
+impl Default for Mp4FileDemuxer {
+    fn default() -> Self {
+        Self::new()
+    }
 }

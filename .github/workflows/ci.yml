@@ -89,6 +89,12 @@ jobs:
       # wasm-bindgen の CLI は Cargo.lock に固定したクレートとバージョンを完全に一致させる必要がある
       - name: Install wasm-bindgen
         run: |
+          locked_version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = \"\(.*\)\"$/\1/p;}' Cargo.lock)
+          if [ "$locked_version" != "0.2.130" ]; then
+            echo "Cargo.lock has wasm-bindgen ${locked_version}, but this workflow installs 0.2.130" >&2
+            echo "Update ci.yml, release.yml and crates/wasm/README.md together" >&2
+            exit 1
+          fi
           curl -L -o wasm-bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz
           echo "9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  wasm-bindgen.tar.gz" | sha256sum -c -
           tar xzf wasm-bindgen.tar.gz
@@ -115,6 +121,9 @@ jobs:
       - name: Run demux.js test
         run: |
           node crates/wasm/examples/demux.js /tmp/test_output.mp4
+
+      - name: Run API tests
+        run: node --test crates/wasm/tests/
           echo "demux.js completed successfully"
 
   build-c-api:
@@ -188,6 +197,12 @@ jobs:
       # wasm-bindgen の CLI は Cargo.lock に固定したクレートとバージョンを完全に一致させる必要がある
       - name: Install wasm-bindgen
         run: |
+          locked_version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = \"\(.*\)\"$/\1/p;}' Cargo.lock)
+          if [ "$locked_version" != "0.2.130" ]; then
+            echo "Cargo.lock has wasm-bindgen ${locked_version}, but this workflow installs 0.2.130" >&2
+            echo "Update ci.yml, release.yml and crates/wasm/README.md together" >&2
+            exit 1
+          fi
           curl -L -o wasm-bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz
           echo "9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  wasm-bindgen.tar.gz" | sha256sum -c -
           tar xzf wasm-bindgen.tar.gz

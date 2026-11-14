@@ -1,7 +1,7 @@
 # crates/c-api を削除する
 
 - Created: 2026-11-13
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-14
 - Branch: feature/remove-c-api
 - Polished: 2026-11-14
 
@@ -53,4 +53,10 @@ C API は Python バインディングを想定して作られたが、Python �
 
 ## 解決方法
 
-{実装後に記載する}
+- `crates/c-api` 配下を削除する
+- ルート `Cargo.toml` の workspace メンバーから `crates/c-api` を外し、`Cargo.lock` を再生成する
+- `Makefile` の `--exclude c-api` と `c-api` の lib test を削除する
+- `ci.yml` の `build-c-api` ジョブ、Windows の MSVC 検証、MinGW への切り替えを削除する
+- `release.yml` の C API 向け `upload-assets` ジョブを削除する
+- `README.md` / `README.en.md` / `skills/shiguredo-mp4/SKILL.md` から C API の記述を削除する
+- `CHANGES.md` に `[CHANGE]` を追記する

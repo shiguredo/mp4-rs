@@ -19,17 +19,11 @@
 //! `data_size` の合計は `sample_data` の長さと一致している必要がある。
 //! サンプルデータはサンプルの出現順に連結されていてよい。
 //! 実際の `mdat` ペイロードの配置は、このモジュールが muxer の要求に合わせて並べ替える。
-use std::num::NonZeroU32;
-
-use shiguredo_mp4::{
-    TrackKind,
-    boxes::SampleEntry,
-    mux::{Fmp4SegmentMuxer as Inner, Sample, SegmentMuxerOptions},
-};
+use shiguredo_mp4::mux::{Fmp4SegmentMuxer as Inner, Sample, SegmentMuxerOptions};
 use wasm_bindgen::prelude::*;
 
-use crate::boxes::parse_json as parse_json_sample_entry;
-use crate::track::optional_i64_member;
+use crate::convert::{js_error, to_u64};
+use crate::mux_sample;
 
 /// fMP4 の初期化セグメントとメディアセグメントを生成する
 #[wasm_bindgen]
@@ -43,9 +37,13 @@ impl Fmp4SegmentMuxer {
     ///
     /// `creationTimestampSecs` は生成するセグメントの作成時刻（UNIX エポックからの秒数）である。
     #[wasm_bindgen(constructor)]
-    pub fn new(creation_timestamp_secs: f64) -> Result<Fmp4SegmentMuxer, JsError> {
+    pub fn new(
+        #[wasm_bindgen(js_name = creationTimestampSecs)] creation_timestamp_secs: f64,
+    ) -> Result<Fmp4SegmentMuxer, JsError> {
+        let creation_timestamp_secs =
+            to_u64(creation_timestamp_secs, "creationTimestampSecs").map_err(js_error)?;
         let options = SegmentMuxerOptions {
-            creation_timestamp: std::time::Duration::from_secs(creation_timestamp_secs as u64),
+            creation_timestamp: std::time::Duration::from_secs(creation_timestamp_secs),
             ..Default::default()
         };
         let inner = Inner::with_options(options)
@@ -53,16 +51,16 @@ impl Fmp4SegmentMuxer {
         Ok(Self { inner })
     }
 
-    /// メディアセグメントの先頭メタデータ（`moof` と `mdat` ヘッダー）を返す
+    /// メディアセグメント全体 (`styp` を含む場合はそれを先頭に、`moof` と `mdat`) を返す
     ///
-    /// 返り値に `mdat` のペイロードは含まれないが、`sampleData` に渡した
-    /// ペイロードを muxer の要求順に並べ替えたものを後ろに連結して返す。
-    /// したがって返り値をそのまま書き込めば完全なメディアセグメントになる。
-    #[wasm_bindgen(js_name = createMediaSegmentMetadata)]
-    pub fn create_media_segment_metadata(
+    /// `samplesJson` の出現順に並んだペイロードを muxer の要求順に並べ替え、
+    /// メタデータの後ろに連結したものを返す。したがって返り値をそのまま書き込めば
+    /// 完全なメディアセグメントになる。
+    #[wasm_bindgen(js_name = createMediaSegment)]
+    pub fn create_media_segment(
         &mut self,
-        samples_json: &str,
-        sample_data: &[u8],
+        #[wasm_bindgen(js_name = samplesJson)] samples_json: &str,
+        #[wasm_bindgen(js_name = sampleData)] sample_data: &[u8],
     ) -> Result<Vec<u8>, JsError> {
         let samples_with_ranges = parse_json_samples(samples_json)
             .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
@@ -75,14 +73,14 @@ impl Fmp4SegmentMuxer {
         Ok(concat(metadata, payload))
     }
 
-    /// `sidx` 付きのメディアセグメント先頭メタデータを返す
+    /// `sidx` 付きのメディアセグメント全体を返す
     ///
-    /// ペイロードの扱いは [`Self::create_media_segment_metadata`] と同じである。
-    #[wasm_bindgen(js_name = createMediaSegmentMetadataWithSidx)]
-    pub fn create_media_segment_metadata_with_sidx(
+    /// ペイロードの扱いは [`Self::create_media_segment`] と同じである。
+    #[wasm_bindgen(js_name = createMediaSegmentWithSidx)]
+    pub fn create_media_segment_with_sidx(
         &mut self,
-        samples_json: &str,
-        sample_data: &[u8],
+        #[wasm_bindgen(js_name = samplesJson)] samples_json: &str,
+        #[wasm_bindgen(js_name = sampleData)] sample_data: &[u8],
     ) -> Result<Vec<u8>, JsError> {
         let samples_with_ranges = parse_json_samples(samples_json)
             .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
@@ -103,7 +101,7 @@ impl Fmp4SegmentMuxer {
     ///
     /// メディアセグメントを 1 つ以上生成した後に呼び出す必要がある。
     #[wasm_bindgen(js_name = initSegment)]
-    pub fn init_segment(&mut self) -> Result<Vec<u8>, JsError> {
+    pub fn init_segment(&self) -> Result<Vec<u8>, JsError> {
         self.inner
             .init_segment_bytes()
             .map_err(|error| JsError::new(&format!("failed to create init segment: {error}")))
@@ -111,7 +109,7 @@ impl Fmp4SegmentMuxer {
 
     /// ランダムアクセス用の `mfra` ボックスを返す
     #[wasm_bindgen(js_name = mfra)]
-    pub fn mfra(&mut self) -> Result<Vec<u8>, JsError> {
+    pub fn mfra(&self) -> Result<Vec<u8>, JsError> {
         self.inner
             .mfra_bytes()
             .map_err(|error| JsError::new(&format!("failed to create mfra box: {error}")))
@@ -126,12 +124,7 @@ fn concat(mut metadata: Vec<u8>, payload: Vec<u8>) -> Vec<u8> {
 
 /// JSON から読み取ったサンプル 1 件分の情報
 struct SampleWithSize {
-    track_kind: TrackKind,
-    timescale: NonZeroU32,
-    sample_entry: Option<SampleEntry>,
-    duration: u32,
-    keyframe: bool,
-    composition_time_offset: Option<i64>,
+    metadata: mux_sample::MuxSampleMetadata,
     data_size: usize,
 }
 
@@ -142,51 +135,9 @@ fn parse_json_samples(text: &str) -> Result<Vec<SampleWithSize>, nojson::JsonPar
         .value()
         .to_array()?
         .map(|item| {
-            let track_kind_value = item.to_member("track_kind")?.required()?;
-            let track_kind = match track_kind_value.to_unquoted_string_str()?.as_ref() {
-                "audio" => TrackKind::Audio,
-                "video" => TrackKind::Video,
-                "subtitle" => TrackKind::Subtitle,
-                _ => {
-                    return Err(
-                        track_kind_value.invalid("must be \"audio\", \"video\", or \"subtitle\"")
-                    );
-                }
-            };
-            let timescale_member = item.to_member("timescale")?.required()?;
-            let timescale_value: u32 = timescale_member.try_into()?;
-            let timescale = NonZeroU32::new(timescale_value)
-                .ok_or_else(|| timescale_member.invalid("must be greater than 0"))?;
-            let duration: u32 = item.to_member("duration")?.required()?.try_into()?;
-            let keyframe: bool = item.to_member("keyframe")?.required()?.try_into()?;
-            let composition_time_offset = optional_i64_member(item, "composition_time_offset")?;
-            let data_size: u64 = item.to_member("data_size")?.required()?.try_into()?;
-            let data_size = usize::try_from(data_size).map_err(|_| {
-                item.to_member("data_size")
-                    .and_then(|member| member.required())
-                    .map(|value| value.invalid("data_size exceeds usize::MAX"))
-                    .unwrap_or_else(|error| error)
-            })?;
-            // sample_entry の確保は他のフィールドの解決がすべて成功した後に行う。
-            // 途中で失敗した場合に確保済みの領域を残さないためである
-            let sample_entry =
-                if let Some(sample_entry_value) = item.to_member("sample_entry")?.optional() {
-                    if sample_entry_value.kind() == nojson::JsonValueKind::Null {
-                        None
-                    } else {
-                        Some(parse_json_sample_entry(sample_entry_value)?)
-                    }
-                } else {
-                    None
-                };
             Ok(SampleWithSize {
-                track_kind,
-                timescale,
-                sample_entry,
-                duration,
-                keyframe,
-                composition_time_offset,
-                data_size,
+                metadata: mux_sample::parse_metadata(item)?,
+                data_size: mux_sample::required_usize_member(item, "data_size")?,
             })
         })
         .collect()
@@ -215,11 +166,18 @@ fn arrange_payload(
         ranges.push(&sample_data[offset..end]);
         offset = end;
     }
+    // 余剰バイトを取りこぼすと、呼び出し側の data_size の誤りに気付けない
+    if offset != sample_data.len() {
+        return Err(format!(
+            "sample data size mismatch: required {offset} bytes, but got {} bytes",
+            sample_data.len()
+        ));
+    }
 
     let mut ordered_kinds = Vec::new();
     for sample in &samples {
-        if !ordered_kinds.contains(&sample.track_kind) {
-            ordered_kinds.push(sample.track_kind);
+        if !ordered_kinds.contains(&sample.metadata.track_kind) {
+            ordered_kinds.push(sample.metadata.track_kind);
         }
     }
 
@@ -228,16 +186,16 @@ fn arrange_payload(
     let mut mux_samples = Vec::new();
     for track_kind in ordered_kinds {
         for (sample, payload) in samples.iter().zip(ranges.iter()) {
-            if sample.track_kind != track_kind {
+            if sample.metadata.track_kind != track_kind {
                 continue;
             }
             mux_samples.push(Sample {
-                track_kind: sample.track_kind,
-                sample_entry: sample.sample_entry.clone(),
-                keyframe: sample.keyframe,
-                timescale: sample.timescale,
-                duration: sample.duration,
-                composition_time_offset: sample.composition_time_offset,
+                track_kind: sample.metadata.track_kind,
+                sample_entry: sample.metadata.sample_entry.clone(),
+                keyframe: sample.metadata.keyframe,
+                timescale: sample.metadata.timescale,
+                duration: sample.metadata.duration,
+                composition_time_offset: sample.metadata.composition_time_offset,
                 data_offset: next_offset,
                 data_size: payload.len(),
             });
@@ -249,4 +207,67 @@ fn arrange_payload(
     }
 
     Ok((mux_samples, arranged_payload))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shiguredo_mp4::TrackKind;
+
+    /// テスト用のサンプルメタデータを構築する
+    fn build_sample(track_kind: TrackKind, data_size: usize) -> SampleWithSize {
+        SampleWithSize {
+            metadata: mux_sample::MuxSampleMetadata {
+                track_kind,
+                timescale: std::num::NonZeroU32::new(90000).expect("0 ではない"),
+                sample_entry: None,
+                duration: 3000,
+                keyframe: true,
+                composition_time_offset: None,
+            },
+            data_size,
+        }
+    }
+
+    #[test]
+    fn test_arrange_payload_reorders_by_track() {
+        // 映像と音声を交互に並べる
+        let samples = vec![
+            build_sample(TrackKind::Video, 2),
+            build_sample(TrackKind::Audio, 3),
+            build_sample(TrackKind::Video, 4),
+        ];
+        let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+        let (mux_samples, payload) = arrange_payload(samples, &data).expect("並べ替えられること");
+
+        // 映像 2 件が先、音声 1 件が後になる
+        assert_eq!(mux_samples.len(), 3);
+        assert!(matches!(mux_samples[0].track_kind, TrackKind::Video));
+        assert_eq!(mux_samples[0].data_offset, 0);
+        assert_eq!(mux_samples[0].data_size, 2);
+        assert!(matches!(mux_samples[1].track_kind, TrackKind::Video));
+        assert_eq!(mux_samples[1].data_offset, 2);
+        assert_eq!(mux_samples[1].data_size, 4);
+        assert!(matches!(mux_samples[2].track_kind, TrackKind::Audio));
+        assert_eq!(mux_samples[2].data_offset, 6);
+        assert_eq!(mux_samples[2].data_size, 3);
+
+        // ペイロードも同じ順に並べ替えられる
+        assert_eq!(payload, vec![1, 2, 6, 7, 8, 9, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_arrange_payload_rejects_short_data() {
+        let samples = vec![build_sample(TrackKind::Video, 4)];
+        let error = arrange_payload(samples, &[1, 2, 3]).expect_err("データ不足は拒否されること");
+        assert!(error.contains("too short"), "{error}");
+    }
+
+    #[test]
+    fn test_arrange_payload_rejects_excess_data() {
+        let samples = vec![build_sample(TrackKind::Video, 2)];
+        let error = arrange_payload(samples, &[1, 2, 3]).expect_err("余剰データは拒否されること");
+        assert!(error.contains("mismatch"), "{error}");
+    }
 }

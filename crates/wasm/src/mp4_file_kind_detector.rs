@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use shiguredo_mp4::demux::{Input, Mp4FileKind, Mp4FileKindDetector as Inner};
 
+use crate::convert::{js_error, to_u64};
 use crate::track::fmt_required_input;
 
 /// ファイル先頭部分から MP4 の種類を判定する
@@ -32,12 +33,14 @@ impl Mp4FileKindDetector {
     }
 
     /// 入力データを供給する
+    ///
+    /// `position` は `data` の先頭がファイル内の何バイト目かを表す。
+    /// 整数でない値や負の値を渡すと例外を投げる。
     #[wasm_bindgen(js_name = handleInput)]
-    pub fn handle_input(&mut self, position: f64, data: &[u8]) {
-        self.inner.handle_input(Input {
-            position: position as u64,
-            data,
-        });
+    pub fn handle_input(&mut self, position: f64, data: &[u8]) -> Result<(), JsError> {
+        let position = to_u64(position, "position").map_err(js_error)?;
+        self.inner.handle_input(Input { position, data });
+        Ok(())
     }
 
     /// 判定結果を返す

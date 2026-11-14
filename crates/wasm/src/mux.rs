@@ -1,18 +1,14 @@
 //! MP4 ファイルのマルチプレックスを行う JavaScript 向けクラス
-use std::num::NonZeroU32;
-
-use shiguredo_mp4::{
-    TrackKind,
-    mux::{Mp4FileMuxer as Inner, Mp4FileMuxerOptions, Sample},
-};
+use shiguredo_mp4::mux::{Mp4FileMuxer as Inner, Mp4FileMuxerOptions, Sample};
 use wasm_bindgen::prelude::*;
 
-use crate::boxes::parse_json as parse_json_sample_entry;
-use crate::track::optional_i64_member;
+use crate::convert::{js_error, to_u64, to_usize};
+use crate::mux_sample;
 
 /// マルチプレクサが出力するボックスの 1 片
 ///
 /// `offset` は書き込み先のファイル内バイト位置を表す。
+/// データは `takeData()` で取り出す。`free()` を忘れると wasm のメモリが解放されない。
 #[wasm_bindgen]
 pub struct Mp4FileMuxerOutput {
     offset: f64,
@@ -27,10 +23,13 @@ impl Mp4FileMuxerOutput {
         self.offset
     }
 
-    /// 書き込むデータを返す
-    #[wasm_bindgen(getter)]
-    pub fn data(&self) -> Vec<u8> {
-        self.data.clone()
+    /// 書き込むデータを取り出す
+    ///
+    /// 大きなデータをコピーせずに受け渡すため、getter ではなくメソッドにしている。
+    /// 取り出した後に再度呼ぶと空の配列が返る。
+    #[wasm_bindgen(js_name = takeData)]
+    pub fn take_data(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.data)
     }
 }
 
@@ -55,11 +54,16 @@ impl Mp4FileMuxer {
     /// マルチプレクサを作成する
     ///
     /// `reservedMoovBoxSize` は faststart 形式のためにファイル先頭へ確保する
-    /// moov ボックスのサイズである。0 を指定すると faststart は無効になる。
+    /// moov ボックスのサイズである。0 を指定すると faststart は通常無効になる。
+    /// 実際に faststart が有効になったかは `isFaststartEnabled()` で確認する。
     #[wasm_bindgen(constructor)]
-    pub fn new(reserved_moov_box_size: f64) -> Result<Mp4FileMuxer, JsError> {
+    pub fn new(
+        #[wasm_bindgen(js_name = reservedMoovBoxSize)] reserved_moov_box_size: f64,
+    ) -> Result<Mp4FileMuxer, JsError> {
+        let reserved_moov_box_size =
+            to_usize(reserved_moov_box_size, "reservedMoovBoxSize").map_err(js_error)?;
         let options = Mp4FileMuxerOptions {
-            reserved_moov_box_size: reserved_moov_box_size as usize,
+            reserved_moov_box_size,
             ..Default::default()
         };
         let inner = Inner::with_options(options)
@@ -99,7 +103,10 @@ impl Mp4FileMuxer {
     ///
     /// サンプルデータをファイルへ書き込んだ後に呼び出す。
     #[wasm_bindgen(js_name = appendSample)]
-    pub fn append_sample(&mut self, sample_json: &str) -> Result<(), JsError> {
+    pub fn append_sample(
+        &mut self,
+        #[wasm_bindgen(js_name = sampleJson)] sample_json: &str,
+    ) -> Result<(), JsError> {
         let sample = parse_json_mux_sample(sample_json)
             .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
         self.inner
@@ -112,8 +119,9 @@ impl Mp4FileMuxer {
     /// サンプルデータ以外のバイト列を書き込んだ場合に、そのサイズを伝える。
     #[wasm_bindgen(js_name = advancePosition)]
     pub fn advance_position(&mut self, size: f64) -> Result<(), JsError> {
+        let size = to_u64(size, "size").map_err(js_error)?;
         self.inner
-            .advance_position(size as u64)
+            .advance_position(size)
             .map_err(|error| JsError::new(&format!("failed to advance position: {error}")))
     }
 
@@ -141,11 +149,12 @@ impl Mp4FileMuxer {
     /// すべて取得し終えた場合は `undefined` を返す。
     #[wasm_bindgen(js_name = nextOutput)]
     pub fn next_output(&mut self) -> Option<Mp4FileMuxerOutput> {
-        let output = self.outputs.get(self.next_output_index)?;
+        let output = self.outputs.get_mut(self.next_output_index)?;
         self.next_output_index += 1;
         Some(Mp4FileMuxerOutput {
             offset: output.0 as f64,
-            data: output.1.clone(),
+            // 同じ出力を二度返さないため、所有権をそのまま渡す
+            data: std::mem::take(&mut output.1),
         })
     }
 }
@@ -155,45 +164,67 @@ fn parse_json_mux_sample(text: &str) -> Result<Sample, nojson::JsonParseError> {
     let raw_json = nojson::RawJson::parse(text)?;
     let value = raw_json.value();
 
-    let track_kind_value = value.to_member("track_kind")?.required()?;
-    let track_kind = match track_kind_value.to_unquoted_string_str()?.as_ref() {
-        "audio" => TrackKind::Audio,
-        "video" => TrackKind::Video,
-        "subtitle" => TrackKind::Subtitle,
-        _ => {
-            return Err(track_kind_value.invalid("must be \"audio\", \"video\", or \"subtitle\""));
-        }
-    };
-
-    let keyframe: bool = value.to_member("keyframe")?.required()?.try_into()?;
-    let timescale_member = value.to_member("timescale")?.required()?;
-    let timescale_value: u32 = timescale_member.try_into()?;
-    let timescale = NonZeroU32::new(timescale_value)
-        .ok_or_else(|| timescale_member.invalid("must be greater than 0"))?;
-    let duration: u32 = value.to_member("duration")?.required()?.try_into()?;
-    let composition_time_offset = optional_i64_member(value, "composition_time_offset")?;
+    let metadata = mux_sample::parse_metadata(value)?;
     let data_offset: u64 = value.to_member("data_offset")?.required()?.try_into()?;
-    let data_size: u32 = value.to_member("data_size")?.required()?.try_into()?;
-
-    let sample_entry = if let Some(sample_entry_value) = value.to_member("sample_entry")?.optional()
-    {
-        if sample_entry_value.kind() == nojson::JsonValueKind::Null {
-            None
-        } else {
-            Some(parse_json_sample_entry(sample_entry_value)?)
-        }
-    } else {
-        None
-    };
+    let data_size = mux_sample::required_usize_member(value, "data_size")?;
 
     Ok(Sample {
-        track_kind,
-        sample_entry,
-        keyframe,
-        timescale,
-        duration,
-        composition_time_offset,
+        track_kind: metadata.track_kind,
+        sample_entry: metadata.sample_entry,
+        keyframe: metadata.keyframe,
+        timescale: metadata.timescale,
+        duration: metadata.duration,
+        composition_time_offset: metadata.composition_time_offset,
         data_offset,
-        data_size: data_size as usize,
+        data_size,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// マルチプレックス用のサンプル JSON を組み立てる
+    fn build_sample_json(extra: &str) -> String {
+        format!(
+            r#"{{
+                "track_kind": "audio",
+                "timescale": 48000,
+                "duration": 960,
+                "keyframe": true,
+                "data_offset": 116,
+                "data_size": 3
+                {extra}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn test_parse_json_mux_sample() {
+        let sample = parse_json_mux_sample(&build_sample_json(""))
+            .expect("最小のサンプルをパースできること");
+        assert_eq!(sample.data_offset, 116);
+        assert_eq!(sample.data_size, 3);
+        assert_eq!(sample.duration, 960);
+    }
+
+    #[test]
+    fn test_parse_json_mux_sample_rejects_missing_data_offset() {
+        let json = r#"{
+            "track_kind": "audio",
+            "timescale": 48000,
+            "duration": 960,
+            "keyframe": true,
+            "data_size": 3
+        }"#;
+        assert!(parse_json_mux_sample(json).is_err());
+    }
+
+    #[test]
+    fn test_parse_json_mux_sample_accepts_null_composition_time_offset() {
+        let sample =
+            parse_json_mux_sample(&build_sample_json(r#", "composition_time_offset": null"#))
+                .expect("null を受理すること");
+        assert_eq!(sample.composition_time_offset, None);
+    }
 }

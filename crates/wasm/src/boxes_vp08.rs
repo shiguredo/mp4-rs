@@ -11,9 +11,12 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp08Box) ->
         f.member("height", data.visual.height)?;
         f.member("bitDepth", data.vpcc_box.bit_depth.get())?;
         f.member("chromaSubsampling", data.vpcc_box.chroma_subsampling.get())?;
+        // 旧実装は 0 / 1 の数値を出力していたが、入力側は boolean しか受け付けず
+        // demux した JSON をそのまま mux に渡せなかった。出力は boolean に統一し、
+        // 入力は `crate::boxes::bool_or_int_member` で 0 / 1 も受理する
         f.member(
             "videoFullRangeFlag",
-            u8::from(data.vpcc_box.video_full_range_flag.as_bool()),
+            data.vpcc_box.video_full_range_flag.as_bool(),
         )?;
         f.member("colourPrimaries", data.vpcc_box.colour_primaries)?;
         f.member(
@@ -35,10 +38,7 @@ pub(crate) fn parse_json(
         .to_member("chromaSubsampling")?
         .required()?
         .try_into()?;
-    let video_full_range_flag: bool = value
-        .to_member("videoFullRangeFlag")?
-        .required()?
-        .try_into()?;
+    let video_full_range_flag = crate::boxes::bool_or_int_member(value, "videoFullRangeFlag")?;
     let colour_primaries: u8 = value.to_member("colourPrimaries")?.required()?.try_into()?;
     let transfer_characteristics: u8 = value
         .to_member("transferCharacteristics")?
@@ -116,8 +116,8 @@ mod tests {
             "chromaSubsampling が 1 であること: {json}"
         );
         assert!(
-            json.contains(r#""videoFullRangeFlag":0"#),
-            "videoFullRangeFlag が数値の 0 であること: {json}"
+            json.contains(r#""videoFullRangeFlag":false"#),
+            "videoFullRangeFlag が false であること: {json}"
         );
         assert!(
             json.contains(r#""colourPrimaries":1"#),

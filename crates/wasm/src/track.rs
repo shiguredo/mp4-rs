@@ -1,6 +1,7 @@
-//! トラック情報・サンプル情報・入力要求の JSON 変換
+//! デマルチプレックス結果（トラック情報・サンプル情報・入力要求）の JSON 変換
 //!
 //! JavaScript 側に返す小さな構造体を JSON 文字列へ変換する。
+//! マルチプレクサへ渡すサンプル JSON の解釈は `crate::mux_sample` が担当する。
 //! スキーマは `crates/wasm/README.md` に記載している。
 use shiguredo_mp4::{
     TrackKind,
@@ -9,21 +10,6 @@ use shiguredo_mp4::{
 
 use crate::boxes::fmt_json as fmt_json_sample_entry;
 
-/// 省略可能な整数メンバーを読み取る
-///
-/// キーが存在しない場合と値が `null` の場合のどちらも `None` として扱う。
-/// デマルチプレックス側は `null` を出力するため、往復させるにはこの解釈が必要になる。
-pub(crate) fn optional_i64_member(
-    value: nojson::RawJsonValue<'_, '_>,
-    name: &str,
-) -> Result<Option<i64>, nojson::JsonParseError> {
-    match value.to_member(name)?.optional() {
-        None => Ok(None),
-        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(None),
-        Some(member) => Ok(Some(member.try_into()?)),
-    }
-}
-
 /// トラック種別を JavaScript 向けの文字列に変換する
 pub(crate) fn track_kind_str(kind: TrackKind) -> &'static str {
     match kind {
@@ -31,6 +17,19 @@ pub(crate) fn track_kind_str(kind: TrackKind) -> &'static str {
         TrackKind::Video => "video",
         TrackKind::Subtitle => "subtitle",
     }
+}
+
+/// トラック情報の一覧を JSON の配列に変換する
+pub(crate) fn fmt_track_info_array(tracks: &[TrackInfo]) -> String {
+    nojson::json(|f| {
+        f.array(|f| {
+            for track in tracks {
+                f.element(nojson::json(|f| fmt_track_info(f, track)))?;
+            }
+            Ok(())
+        })
+    })
+    .to_string()
 }
 
 /// トラック情報を JSON に変換する

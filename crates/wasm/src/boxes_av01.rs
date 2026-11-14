@@ -61,9 +61,8 @@ pub(crate) fn parse_json(
         .required()?
         .try_into()?;
     // キーがない省略可能なフィールドは None になる
-    let initial_presentation_delay_minus_one: Option<u8> = value
-        .to_member("initialPresentationDelayMinusOne")?
-        .try_into()?;
+    let initial_presentation_delay_minus_one =
+        crate::boxes::optional_u8_member(value, "initialPresentationDelayMinusOne")?;
     let config_obus: Vec<u8> = value.to_member("configObus")?.required()?.try_into()?;
 
     let av1c_box = Av1cBox {

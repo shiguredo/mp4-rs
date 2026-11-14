@@ -12,30 +12,35 @@
 
 use wasm_bindgen::prelude::*;
 
-pub mod boxes;
-pub mod boxes_av01;
-pub mod boxes_avc1;
-pub mod boxes_flac;
-pub mod boxes_hev1;
-pub mod boxes_hvc1;
-pub mod boxes_mp4a;
-pub mod boxes_opus;
-pub mod boxes_stpp;
-pub mod boxes_tx3g;
-pub mod boxes_vp08;
-pub mod boxes_vp09;
-pub mod boxes_wvtt;
-pub mod demux;
-pub mod fmp4_segment_demux;
-pub mod fmp4_segment_mux;
-pub mod mp4_file_kind_detector;
-pub mod mux;
-pub mod track;
+mod boxes;
+mod boxes_av01;
+mod boxes_avc1;
+mod boxes_flac;
+mod boxes_hev1;
+mod boxes_hevc;
+mod boxes_hvc1;
+mod boxes_mp4a;
+mod boxes_opus;
+mod boxes_stpp;
+mod boxes_tx3g;
+mod boxes_vp08;
+mod boxes_vp09;
+mod boxes_wvtt;
+mod convert;
+mod demux;
+mod fmp4_segment_demux;
+mod fmp4_segment_mux;
+mod mp4_file_kind_detector;
+mod mux;
+mod mux_sample;
+mod track;
 
 /// ライブラリのバージョンを返す
 ///
 /// 返り値はルートの `Cargo.toml` の `version` と同じ値になる。
 /// npm パッケージのバージョンと一致しているかを利用側で検証できる。
+///
+/// wasm-bindgen は借用文字列を返せないため `String` を返す。
 #[wasm_bindgen]
 pub fn version() -> String {
     env!("SHIGUREDO_MP4_VERSION").to_string()

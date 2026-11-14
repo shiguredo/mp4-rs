@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use shiguredo_mp4::demux::Fmp4SegmentDemuxer as Inner;
 
-use crate::track::{fmt_sample, fmt_track_info};
+use crate::track::{fmt_sample, fmt_track_info_array};
 
 /// fMP4 の初期化セグメントとメディアセグメントを読み取る
 #[wasm_bindgen]
@@ -36,15 +36,7 @@ impl Fmp4SegmentDemuxer {
             .inner
             .tracks()
             .map_err(|error| JsError::new(&format!("failed to get tracks: {error}")))?;
-        Ok(nojson::json(|f| {
-            f.array(|f| {
-                for track in tracks {
-                    f.element(nojson::json(|f| fmt_track_info(f, track)))?;
-                }
-                Ok(())
-            })
-        })
-        .to_string())
+        Ok(fmt_track_info_array(tracks))
     }
 
     /// メディアセグメントを読み込み、サンプル情報を JSON の配列で返す

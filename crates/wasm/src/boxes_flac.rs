@@ -1,6 +1,5 @@
 //! FLAC サンプルエントリー（`fLaC`）の JSON 変換を提供する wasm 専用モジュール
 
-use shiguredo_mp4::FixedPointNumber;
 use shiguredo_mp4::Uint;
 use shiguredo_mp4::boxes::{AudioSampleEntryFields, DflaBox, FlacBox, FlacMetadataBlock};
 
@@ -12,7 +11,10 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &FlacBox) ->
     f.object(|f| {
         f.member("kind", "flac")?;
         f.member("channelCount", data.audio.channelcount)?;
-        f.member("sampleRate", sample_rate_to_json(data.audio.samplerate))?;
+        f.member(
+            "sampleRate",
+            crate::boxes::sample_rate_to_json(data.audio.samplerate),
+        )?;
         f.member("sampleSize", data.audio.samplesize)?;
         // 既存の JSON 表現に合わせて STREAMINFO のブロックデータだけを公開する。
         // FLAC の仕様上 `dfLa` の先頭ブロックは必ず STREAMINFO になる
@@ -34,7 +36,7 @@ pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<FlacBox, nojson::JsonParseError> {
     let channel_count: u16 = value.to_member("channelCount")?.required()?.try_into()?;
-    let sample_rate = sample_rate_from_json(value)?;
+    let sample_rate = crate::boxes::sample_rate_from_json(value)?;
     let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
     let streaminfo_data: Vec<u8> = value.to_member("streaminfoData")?.required()?.try_into()?;
 
@@ -57,38 +59,10 @@ pub(crate) fn parse_json(
     })
 }
 
-/// 音声共通フィールドのサンプリングレートを JSON の数値に変換する
-///
-/// [`AudioSampleEntryFields::samplerate`] は 16.16 固定小数点数なので、
-/// 整数部と小数部を合わせて 1 つの実数として返す。
-fn sample_rate_to_json(sample_rate: FixedPointNumber<u16, u16>) -> f64 {
-    f64::from(sample_rate.integer) + f64::from(sample_rate.fraction) / 65536.0
-}
-
-/// JSON の `sampleRate` を音声共通フィールドのサンプリングレートに変換する
-///
-/// JSON では 16.16 固定小数点数を 1 つの実数として表現しているため、
-/// 上位 16 ビットを整数部、下位 16 ビットを小数部として分解する。
-fn sample_rate_from_json(
-    value: nojson::RawJsonValue<'_, '_>,
-) -> Result<FixedPointNumber<u16, u16>, nojson::JsonParseError> {
-    let sample_rate_value = value.to_member("sampleRate")?.required()?;
-    let sample_rate: f64 = sample_rate_value.try_into()?;
-    if !(0.0..65536.0).contains(&sample_rate) {
-        return Err(sample_rate_value.invalid("sampleRate must be in the range [0, 65536)"));
-    }
-
-    // 実数を 16.16 固定小数点のビット列に直してから、整数部と小数部を取り出す
-    let fixed_point = (sample_rate * 65536.0).round() as u32;
-    Ok(FixedPointNumber::new(
-        (fixed_point >> 16) as u16,
-        (fixed_point & 0xFFFF) as u16,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shiguredo_mp4::FixedPointNumber;
 
     /// テスト用の FLAC サンプルエントリーを構築する
     fn build_flac_box(streaminfo_data: Vec<u8>) -> FlacBox {

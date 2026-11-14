@@ -1,8 +1,14 @@
 //! サンプルエントリーの JSON 変換を束ねるモジュール
 //!
 //! コーデックごとの変換は `boxes_<codec>` モジュールが担当する。
-//! このモジュールは `SampleEntry` のバリアントから対応するモジュールを選ぶだけの役割を持つ。
-use shiguredo_mp4::boxes::{SampleEntry, VisualSampleEntryFields};
+//! このモジュールは次の 2 つの役割を持つ。
+//!
+//! - `SampleEntry` のバリアントから対応するモジュールを選ぶ
+//! - 複数のコーデックで共通する JSON 変換のヘルパを提供する
+use shiguredo_mp4::{
+    FixedPointNumber,
+    boxes::{SampleEntry, VisualSampleEntryFields},
+};
 
 /// 映像系サンプルエントリーの共通フィールドを既定値で構築する
 ///
@@ -17,6 +23,71 @@ pub(crate) fn build_visual_sample_entry_fields(width: u16, height: u16) -> Visua
         frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
         compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
         depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+    }
+}
+
+/// 音声系サンプルエントリーのサンプリングレートを JSON の数値に変換する
+///
+/// [`FixedPointNumber`] は 16.16 固定小数点数なので、整数部と小数部を合わせて
+/// 1 つの実数として返す。
+pub(crate) fn sample_rate_to_json(sample_rate: FixedPointNumber<u16, u16>) -> f64 {
+    f64::from(sample_rate.integer) + f64::from(sample_rate.fraction) / 65536.0
+}
+
+/// JSON の `sampleRate` を音声系サンプルエントリーのサンプリングレートに変換する
+///
+/// JSON では 16.16 固定小数点数を 1 つの実数として表現しているため、
+/// 実数を固定小数点のビット列に直してから整数部と小数部に分解する。
+pub(crate) fn sample_rate_from_json(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<FixedPointNumber<u16, u16>, nojson::JsonParseError> {
+    let sample_rate_value = value.to_member("sampleRate")?.required()?;
+    let sample_rate: f64 = sample_rate_value.try_into()?;
+    if !(0.0..65536.0).contains(&sample_rate) {
+        return Err(sample_rate_value.invalid("sampleRate must be in the range [0, 65536)"));
+    }
+
+    let fixed_point = (sample_rate * 65536.0).round() as u32;
+    Ok(FixedPointNumber::new(
+        (fixed_point >> 16) as u16,
+        (fixed_point & 0xFFFF) as u16,
+    ))
+}
+
+/// JSON の真偽値を読み取る
+///
+/// JSON の boolean に加えて、旧実装が出力していた `0` / `1` の数値も受理する。
+/// デマルチプレックス側の出力とマルチプレックス側の入力を往復させるために必要である。
+pub(crate) fn bool_or_int_member(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<bool, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    match member.kind() {
+        nojson::JsonValueKind::Boolean => member.try_into(),
+        nojson::JsonValueKind::Integer => {
+            let number: u8 = member.try_into()?;
+            match number {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(member.invalid("must be a boolean or 0/1")),
+            }
+        }
+        _ => Err(member.invalid("must be a boolean or 0/1")),
+    }
+}
+
+/// 省略可能な u8 のメンバーを読み取る
+///
+/// キーが存在しない場合と値が `null` の場合のどちらも `None` として扱う。
+pub(crate) fn optional_u8_member(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Option<u8>, nojson::JsonParseError> {
+    match value.to_member(name)?.optional() {
+        None => Ok(None),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(None),
+        Some(member) => Ok(Some(member.try_into()?)),
     }
 }
 
@@ -49,6 +120,9 @@ pub(crate) fn fmt_json(
 }
 
 /// JSON からサンプルエントリーに変換する
+///
+/// `kind` の文字列でコーデックを判別する。
+/// 未知のサンプルエントリーの出力 (`"kind": "unknown"`) は受理しない。
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<SampleEntry, nojson::JsonParseError> {
@@ -69,5 +143,60 @@ pub(crate) fn parse_json(
         "wvtt" => Ok(SampleEntry::Wvtt(crate::boxes_wvtt::parse_json(value)?)),
         "tx3g" => Ok(SampleEntry::Tx3g(crate::boxes_tx3g::parse_json(value)?)),
         _ => Err(kind_value.invalid("unknown sample entry kind")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 全コーデックのサンプルエントリーを表現する JSON の一覧
+    ///
+    /// ディスパッチの配線漏れを検出するため、`kind` ごとに 1 件ずつ用意する。
+    fn sample_entry_json_list() -> Vec<&'static str> {
+        vec![
+            r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":66,"profileCompatibility":0,"avcLevelIndication":30,"lengthSizeMinusOne":3,"sps":[[103,66,0,30]],"pps":[[104,206,60]]}"#,
+            r#"{"kind":"hev1","width":640,"height":480,"generalProfileSpace":0,"generalTierFlag":0,"generalProfileIdc":2,"generalProfileCompatibilityFlags":1610612736,"generalConstraintIndicatorFlags":193514046488576,"generalLevelIdc":120,"chromaFormatIdc":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"minSpatialSegmentationIdc":0,"parallelismType":0,"avgFrameRate":0,"constantFrameRate":0,"numTemporalLayers":1,"temporalIdNested":1,"lengthSizeMinusOne":3,"naluArrays":[{"naluType":32,"units":[[64,1,12,1]]}]}"#,
+            r#"{"kind":"hvc1","width":640,"height":480,"generalProfileSpace":0,"generalTierFlag":0,"generalProfileIdc":2,"generalProfileCompatibilityFlags":1610612736,"generalConstraintIndicatorFlags":193514046488576,"generalLevelIdc":120,"chromaFormatIdc":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"minSpatialSegmentationIdc":0,"parallelismType":0,"avgFrameRate":0,"constantFrameRate":0,"numTemporalLayers":1,"temporalIdNested":1,"lengthSizeMinusOne":3,"naluArrays":[{"naluType":32,"units":[[64,1,12,1]]}]}"#,
+            r#"{"kind":"vp08","width":640,"height":480,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#,
+            r#"{"kind":"vp09","width":640,"height":480,"profile":0,"level":31,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#,
+            r#"{"kind":"av01","width":640,"height":480,"seqProfile":0,"seqLevelIdx0":13,"seqTier0":0,"highBitdepth":0,"twelveBit":0,"monochrome":0,"chromaSubsamplingX":1,"chromaSubsamplingY":1,"chromaSamplePosition":0,"configObus":[10,11]}"#,
+            r#"{"kind":"opus","channelCount":2,"sampleRate":48000,"sampleSize":16,"preSkip":0,"inputSampleRate":48000,"outputGain":0}"#,
+            r#"{"kind":"mp4a","channelCount":2,"sampleRate":44100,"sampleSize":16,"bufferSizeDb":0,"maxBitrate":128000,"avgBitrate":128000,"decSpecificInfo":[1,2]}"#,
+            r#"{"kind":"flac","channelCount":2,"sampleRate":44100,"sampleSize":16,"streaminfoData":[0,16,0,16]}"#,
+            r#"{"kind":"stpp","namespace":"http://www.w3.org/ns/ttml","schemaLocation":"","auxiliaryMimeTypes":""}"#,
+            r#"{"kind":"wvtt","config":"WEBVTT\n\n"}"#,
+            r#"{"kind":"tx3g","display_flags":0,"horizontal_justification":0,"vertical_justification":0,"background_color_rgba":[0,0,0,255],"default_text_box":[0,0,240,320],"default_style":{"start_char":0,"end_char":0,"font_id":1,"face_style_flags":0,"font_size":12,"text_color_rgba":[255,255,255,255]},"ftab":[{"font_id":1,"font_name":[65]}]}"#,
+        ]
+    }
+
+    #[test]
+    fn test_all_kinds_roundtrip_through_dispatch() {
+        // 12 コーデックすべてが fmt_json と parse_json の両方に配線されていること
+        for json_str in sample_entry_json_list() {
+            let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+            let sample_entry = parse_json(json.value()).expect("パースできること");
+
+            let output = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+            let output_json = nojson::RawJson::parse(&output).expect("出力が JSON であること");
+            let roundtripped = parse_json(output_json.value()).expect("出力を再パースできること");
+
+            let output2 = nojson::json(|f| fmt_json(f, &roundtripped)).to_string();
+            assert_eq!(
+                output, output2,
+                "往復して JSON が変化しないこと: {json_str}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_kind_is_rejected() {
+        let json_str = r#"{"kind":"unknown","boxType":"zzzz"}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let error = parse_json(json.value()).expect_err("unknown は受理されないこと");
+        assert!(
+            error.to_string().contains("unknown sample entry kind"),
+            "{error}"
+        );
     }
 }

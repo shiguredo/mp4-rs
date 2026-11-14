@@ -59,10 +59,9 @@ pub(crate) fn parse_json(
         .required()?
         .try_into()?;
     // キーが無いオプションフィールドは `None` になる
-    let chroma_format: Option<u8> = value.to_member("chromaFormat")?.try_into()?;
-    let bit_depth_luma_minus8: Option<u8> = value.to_member("bitDepthLumaMinus8")?.try_into()?;
-    let bit_depth_chroma_minus8: Option<u8> =
-        value.to_member("bitDepthChromaMinus8")?.try_into()?;
+    let chroma_format = crate::boxes::optional_u8_member(value, "chromaFormat")?;
+    let bit_depth_luma_minus8 = crate::boxes::optional_u8_member(value, "bitDepthLumaMinus8")?;
+    let bit_depth_chroma_minus8 = crate::boxes::optional_u8_member(value, "bitDepthChromaMinus8")?;
 
     Ok(Avc1Box {
         visual: crate::boxes::build_visual_sample_entry_fields(width, height),

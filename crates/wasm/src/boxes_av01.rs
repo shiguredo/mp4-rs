@@ -7,8 +7,7 @@ use shiguredo_mp4::boxes::{Av01Box, Av1cBox};
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Av01Box) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "av01")?;
-        f.member("width", data.visual.width)?;
-        f.member("height", data.visual.height)?;
+        crate::boxes::fmt_visual_sample_entry_fields(f, &data.visual)?;
         f.member("seqProfile", data.av1c_box.seq_profile.get())?;
         f.member("seqLevelIdx0", data.av1c_box.seq_level_idx_0.get())?;
         f.member("seqTier0", data.av1c_box.seq_tier_0.get())?;
@@ -32,7 +31,8 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Av01Box) ->
             f.member("initialPresentationDelayMinusOne", delay.get())?;
         }
         // configOBUs はバイト列をそのまま数値配列として出力する
-        f.member("configObus", data.av1c_box.config_obus.as_slice())
+        f.member("configObus", data.av1c_box.config_obus.as_slice())?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -40,8 +40,7 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Av01Box) ->
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Av01Box, nojson::JsonParseError> {
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
     let seq_profile: Uint<u8, 3, 5> = crate::boxes::uint_u8_member(value, "seqProfile")?;
     // 3..=7 は予約値
     if seq_profile.get() > 2 {
@@ -90,9 +89,9 @@ pub(crate) fn parse_json(
     };
 
     Ok(Av01Box {
-        visual: crate::boxes::build_visual_sample_entry_fields(width, height),
+        visual,
         av1c_box,
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

@@ -6,18 +6,18 @@ use shiguredo_mp4::boxes::Hev1Box;
 
 /// HEV1 サンプルエントリーを JSON オブジェクトとしてフォーマットする
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Hev1Box) -> std::fmt::Result {
-    crate::boxes_hevc::fmt_json(f, "hev1", &data.visual, &data.hvcc_box)
+    crate::boxes_hevc::fmt_json(f, "hev1", &data.visual, &data.hvcc_box, &data.unknown_boxes)
 }
 
 /// JSON オブジェクトから HEV1 サンプルエントリーを構築する
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Hev1Box, nojson::JsonParseError> {
-    let (width, height, hvcc_box) = crate::boxes_hevc::parse_json(value, "hev1")?;
+    let (visual, hvcc_box) = crate::boxes_hevc::parse_json(value, "hev1")?;
     Ok(Hev1Box {
-        visual: crate::boxes::build_visual_sample_entry_fields(width, height),
+        visual,
         hvcc_box,
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

@@ -7,8 +7,7 @@ use shiguredo_mp4::boxes::{Vp08Box, VpccBox};
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp08Box) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "vp08")?;
-        f.member("width", data.visual.width)?;
-        f.member("height", data.visual.height)?;
+        crate::boxes::fmt_visual_sample_entry_fields(f, &data.visual)?;
         f.member("bitDepth", data.vpcc_box.bit_depth.get())?;
         f.member("chromaSubsampling", data.vpcc_box.chroma_subsampling.get())?;
         // 旧実装は 0 / 1 の数値を出力していたが、入力側は boolean しか受け付けず
@@ -23,7 +22,8 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp08Box) ->
             "transferCharacteristics",
             data.vpcc_box.transfer_characteristics,
         )?;
-        f.member("matrixCoefficients", data.vpcc_box.matrix_coefficients)
+        f.member("matrixCoefficients", data.vpcc_box.matrix_coefficients)?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -31,8 +31,7 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp08Box) ->
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Vp08Box, nojson::JsonParseError> {
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
     let bit_depth: Uint<u8, 4, 4> = crate::boxes::uint_u8_member(value, "bitDepth")?;
     // VP8 は 8 ビットのみ
     if bit_depth.get() != 8 {
@@ -71,9 +70,9 @@ pub(crate) fn parse_json(
     };
 
     Ok(Vp08Box {
-        visual: crate::boxes::build_visual_sample_entry_fields(width, height),
+        visual,
         vpcc_box,
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

@@ -5,14 +5,13 @@
 //!
 //! - `SampleEntry` のバリアントから対応するモジュールを選ぶ
 //! - 複数のコーデックで共通する JSON 変換のヘルパを提供する
-use shiguredo_mp4::{
-    FixedPointNumber, Uint,
-    boxes::{SampleEntry, VisualSampleEntryFields},
+use shiguredo_mp4::boxes::{
+    AudioSampleEntryFields, SampleEntry, UnknownBox, VisualSampleEntryFields,
 };
+use shiguredo_mp4::{BoxSize, BoxType, FixedPointNumber, Uint};
 
-/// 映像系サンプルエントリーの共通フィールドを既定値で構築する
-///
-/// JSON には幅と高さだけが含まれるため、それ以外のフィールドは規格上の既定値で埋める。
+/// テスト用に映像系サンプルエントリーの共通フィールドを既定値で構築する
+#[cfg(test)]
 pub(crate) fn build_visual_sample_entry_fields(width: u16, height: u16) -> VisualSampleEntryFields {
     VisualSampleEntryFields {
         data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -24,6 +23,259 @@ pub(crate) fn build_visual_sample_entry_fields(width: u16, height: u16) -> Visua
         compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
         depth: VisualSampleEntryFields::DEFAULT_DEPTH,
     }
+}
+
+/// 映像系サンプルエントリーの共通フィールドを JSON に出力する
+pub(crate) fn fmt_visual_sample_entry_fields(
+    f: &mut nojson::JsonObjectFormatter<'_, '_, '_>,
+    visual: &VisualSampleEntryFields,
+) -> std::fmt::Result {
+    f.member("dataReferenceIndex", visual.data_reference_index.get())?;
+    f.member("width", visual.width)?;
+    f.member("height", visual.height)?;
+    f.member(
+        "horizresolution",
+        fixed_point_to_f64(visual.horizresolution),
+    )?;
+    f.member("vertresolution", fixed_point_to_f64(visual.vertresolution))?;
+    f.member("frameCount", visual.frame_count)?;
+    match compressorname_to_str(&visual.compressorname) {
+        Some(name) => f.member("compressorname", name)?,
+        None => f.member("compressorname", visual.compressorname.as_slice())?,
+    }
+    f.member("depth", visual.depth)
+}
+
+/// 映像系サンプルエントリーの共通フィールドを JSON から読み取る
+pub(crate) fn parse_visual_sample_entry_fields(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<VisualSampleEntryFields, nojson::JsonParseError> {
+    let width: u16 = value.to_member("width")?.required()?.try_into()?;
+    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let data_reference_index = match value.to_member("dataReferenceIndex")?.optional() {
+        None => VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX
+        }
+        Some(member) => {
+            let index: u16 = member.try_into()?;
+            std::num::NonZeroU16::new(index).ok_or_else(|| {
+                member.invalid("dataReferenceIndex must be greater than or equal to 1")
+            })?
+        }
+    };
+    let horizresolution = parse_fixed_point(value, "horizresolution")?
+        .unwrap_or(VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION);
+    let vertresolution = parse_fixed_point(value, "vertresolution")?
+        .unwrap_or(VisualSampleEntryFields::DEFAULT_VERTRESOLUTION);
+    let frame_count: u16 = match value.to_member("frameCount")?.optional() {
+        None => VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            VisualSampleEntryFields::DEFAULT_FRAME_COUNT
+        }
+        Some(member) => member.try_into()?,
+    };
+    let depth: u16 = match value.to_member("depth")?.optional() {
+        None => VisualSampleEntryFields::DEFAULT_DEPTH,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            VisualSampleEntryFields::DEFAULT_DEPTH
+        }
+        Some(member) => member.try_into()?,
+    };
+    let compressorname = parse_compressorname(value)?;
+    Ok(VisualSampleEntryFields {
+        data_reference_index,
+        width,
+        height,
+        horizresolution,
+        vertresolution,
+        frame_count,
+        compressorname,
+        depth,
+    })
+}
+
+/// 省略可能な非ゼロの u16 を JSON から読み取る
+pub(crate) fn parse_non_zero_u16_member(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+    default: std::num::NonZeroU16,
+) -> Result<std::num::NonZeroU16, nojson::JsonParseError> {
+    match value.to_member(name)?.optional() {
+        None => Ok(default),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(default),
+        Some(member) => {
+            let index: u16 = member.try_into()?;
+            std::num::NonZeroU16::new(index)
+                .ok_or_else(|| member.invalid(format!("{name} must be greater than or equal to 1")))
+        }
+    }
+}
+
+/// 音声系サンプルエントリーのデータ参照インデックスを JSON から読み取る
+pub(crate) fn parse_audio_data_reference_index(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<std::num::NonZeroU16, nojson::JsonParseError> {
+    parse_non_zero_u16_member(
+        value,
+        "dataReferenceIndex",
+        AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+    )
+}
+
+/// 固定小数点数を JSON の数値に変換する
+fn fixed_point_to_f64(value: FixedPointNumber<u16, u16>) -> f64 {
+    f64::from(value.integer) + f64::from(value.fraction) / 65536.0
+}
+
+/// JSON の数値を固定小数点数として読み取る
+///
+/// キーが無い場合は `None` を返す。
+fn parse_fixed_point(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Option<FixedPointNumber<u16, u16>>, nojson::JsonParseError> {
+    let Some(member) = value.to_member(name)?.optional() else {
+        return Ok(None);
+    };
+    if member.kind() == nojson::JsonValueKind::Null {
+        return Ok(None);
+    }
+    let number: f64 = member.try_into()?;
+    if !(0.0..=65535.0 + 65535.0 / 65536.0).contains(&number) {
+        return Err(member.invalid("value is out of range"));
+    }
+    let fixed_point = (number * 65536.0).round();
+    if fixed_point > f64::from(u32::MAX) {
+        return Err(member.invalid("value is out of range"));
+    }
+    let fixed_point = fixed_point as u32;
+    Ok(Some(FixedPointNumber::new(
+        (fixed_point >> 16) as u16,
+        (fixed_point & 0xFFFF) as u16,
+    )))
+}
+
+/// コンプレッサー名を文字列として返す
+///
+/// 先頭 1 バイトが長さで、続くバイト列が名前という Pascal 文字列形式である。
+/// 名前が UTF-8 として解釈できない場合は `None` を返し、生の 32 バイトを出力する。
+fn compressorname_to_str(raw: &[u8; 32]) -> Option<String> {
+    let length = usize::from(raw[0]).min(31);
+    core::str::from_utf8(&raw[1..1 + length])
+        .ok()
+        .map(str::to_string)
+}
+
+/// コンプレッサー名を JSON から読み取る
+fn parse_compressorname(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<[u8; 32], nojson::JsonParseError> {
+    let Some(member) = value.to_member("compressorname")?.optional() else {
+        return Ok(VisualSampleEntryFields::NULL_COMPRESSORNAME);
+    };
+    if member.kind() == nojson::JsonValueKind::Null {
+        return Ok(VisualSampleEntryFields::NULL_COMPRESSORNAME);
+    }
+    if member.kind() == nojson::JsonValueKind::String {
+        let name: String = member.try_into()?;
+        let bytes = name.as_bytes();
+        if bytes.len() > 31 {
+            return Err(member.invalid("compressorname must be at most 31 bytes"));
+        }
+        let mut raw = [0u8; 32];
+        raw[0] = bytes.len() as u8;
+        raw[1..1 + bytes.len()].copy_from_slice(bytes);
+        return Ok(raw);
+    }
+    let raw: [u8; 32] = member.try_into()?;
+    Ok(raw)
+}
+
+/// 型付き実装を持たない子ボックスを JSON に出力する
+pub(crate) fn fmt_unknown_boxes(
+    f: &mut nojson::JsonObjectFormatter<'_, '_, '_>,
+    unknown_boxes: &[UnknownBox],
+) -> std::fmt::Result {
+    f.member(
+        "unknownBoxes",
+        nojson::array(|f| {
+            for unknown_box in unknown_boxes {
+                f.element(nojson::object(|f| {
+                    match unknown_box.box_type {
+                        BoxType::Normal(ty) => match core::str::from_utf8(&ty) {
+                            Ok(name) => f.member("type", name)?,
+                            Err(_) => f.member("type", ty.as_slice())?,
+                        },
+                        BoxType::Uuid(_) => f.member("type", unknown_box.box_type.as_bytes())?,
+                    }
+                    f.member("data", unknown_box.payload.as_slice())
+                }))?;
+            }
+            Ok(())
+        }),
+    )
+}
+
+/// 型付き実装を持たない子ボックスを JSON から読み取る
+pub(crate) fn parse_unknown_boxes(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<Vec<UnknownBox>, nojson::JsonParseError> {
+    let Some(member) = value.to_member("unknownBoxes")?.optional() else {
+        return Ok(Vec::new());
+    };
+    if member.kind() == nojson::JsonValueKind::Null {
+        return Ok(Vec::new());
+    }
+
+    let mut unknown_boxes = Vec::new();
+    for entry in member.to_array()? {
+        let type_value = entry.to_member("type")?.required()?;
+        let box_type = if type_value.kind() == nojson::JsonValueKind::String {
+            let name: String = type_value.try_into()?;
+            let bytes = name.as_bytes();
+            if bytes.len() != 4 {
+                return Err(type_value.invalid("type must be 4 bytes"));
+            }
+            let mut ty = [0u8; 4];
+            ty.copy_from_slice(bytes);
+            BoxType::Normal(ty)
+        } else {
+            let bytes: Vec<u8> = type_value.try_into()?;
+            match bytes.len() {
+                4 => {
+                    let mut ty = [0u8; 4];
+                    ty.copy_from_slice(&bytes);
+                    BoxType::Normal(ty)
+                }
+                16 => {
+                    let mut ty = [0u8; 16];
+                    ty.copy_from_slice(&bytes);
+                    BoxType::Uuid(ty)
+                }
+                _ => return Err(type_value.invalid("type must be 4 or 16 bytes")),
+            }
+        };
+        let payload: Vec<u8> = entry.to_member("data")?.required()?.try_into()?;
+        // ヘッダは size (4) + type (4、UUID なら +16) で構成される
+        let header_size = 8 + if matches!(box_type, BoxType::Uuid(_)) {
+            16
+        } else {
+            0
+        };
+        let total = header_size + payload.len();
+        let box_size = if total <= u32::MAX as usize {
+            BoxSize::U32(total as u32)
+        } else {
+            BoxSize::U64((total + 8) as u64)
+        };
+        unknown_boxes.push(UnknownBox {
+            box_type,
+            box_size,
+            payload,
+        });
+    }
+    Ok(unknown_boxes)
 }
 
 /// 音声系サンプルエントリーのサンプリングレートを JSON の数値に変換する

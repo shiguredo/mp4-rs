@@ -7,8 +7,7 @@ use shiguredo_mp4::boxes::{Avc1Box, AvccBox};
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Avc1Box) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "avc1")?;
-        f.member("width", data.visual.width)?;
-        f.member("height", data.visual.height)?;
+        crate::boxes::fmt_visual_sample_entry_fields(f, &data.visual)?;
         f.member("avcProfileIndication", data.avcc_box.avc_profile_indication)?;
         f.member("profileCompatibility", data.avcc_box.profile_compatibility)?;
         f.member("avcLevelIndication", data.avcc_box.avc_level_indication)?;
@@ -30,7 +29,9 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Avc1Box) ->
         // `sps_list` / `pps_list` はどちらも `Vec<Vec<u8>>` なので、
         // 数値の配列の配列としてそのまま出力できる
         f.member("sps", data.avcc_box.sps_list.as_slice())?;
-        f.member("pps", data.avcc_box.pps_list.as_slice())
+        f.member("pps", data.avcc_box.pps_list.as_slice())?;
+        f.member("spsExt", data.avcc_box.sps_ext_list.as_slice())?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -38,8 +39,15 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Avc1Box) ->
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Avc1Box, nojson::JsonParseError> {
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
     let sps_list: Vec<Vec<u8>> = value.to_member("sps")?.required()?.try_into()?;
     let pps_list: Vec<Vec<u8>> = value.to_member("pps")?.required()?.try_into()?;
+    // `sps_ext_list` は省略可能
+    let sps_ext_list: Vec<Vec<u8>> = match value.to_member("spsExt")?.optional() {
+        None => Vec::new(),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Vec::new(),
+        Some(member) => member.try_into()?,
+    };
     // avcC の個数は SPS が 5 ビット、PPS が 8 ビットで表現される
     if sps_list.len() > 31 {
         return Err(crate::boxes::invalid_member(
@@ -74,8 +82,6 @@ pub(crate) fn parse_json(
             ));
         }
     }
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
     let avc_profile_indication: u8 = value
         .to_member("avcProfileIndication")?
         .required()?
@@ -131,7 +137,7 @@ pub(crate) fn parse_json(
     }
 
     Ok(Avc1Box {
-        visual: crate::boxes::build_visual_sample_entry_fields(width, height),
+        visual,
         avcc_box: AvccBox {
             avc_profile_indication,
             profile_compatibility,
@@ -142,10 +148,9 @@ pub(crate) fn parse_json(
             chroma_format,
             bit_depth_luma_minus8,
             bit_depth_chroma_minus8,
-            // JSON では SPS 拡張を扱わないため空にする
-            sps_ext_list: Vec::new(),
+            sps_ext_list,
         },
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 
@@ -360,6 +365,29 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let result = parse_json(json.value());
         assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
+
+    /// 未知の子ボックスとコンプレッサー名が往復すること
+    #[test]
+    fn test_avc1_json_roundtrip_preserves_metadata() {
+        let mut sample_entry = test_avc1_box();
+        let mut compressorname = [0u8; 32];
+        compressorname[0] = 9;
+        compressorname[1..10].copy_from_slice(b"test/avc1");
+        sample_entry.visual.compressorname = compressorname;
+        sample_entry.visual.frame_count = 1;
+        sample_entry
+            .unknown_boxes
+            .push(shiguredo_mp4::boxes::UnknownBox {
+                box_type: shiguredo_mp4::BoxType::Normal(*b"pasp"),
+                box_size: shiguredo_mp4::BoxSize::U32(16),
+                payload: vec![0, 0, 0, 1, 0, 0, 0, 1],
+            });
+
+        let json = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        let raw = nojson::RawJson::parse(&json).expect("有効な JSON");
+        let parsed = parse_json(raw.value()).expect("有効な avc1 JSON");
+        assert_eq!(parsed, sample_entry);
     }
 
     /// 66 / 77 / 88 以外のプロファイルでは avcC の拡張フィールドを必須にすること

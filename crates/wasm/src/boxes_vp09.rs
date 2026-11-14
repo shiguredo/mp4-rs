@@ -7,8 +7,7 @@ use shiguredo_mp4::boxes::{Vp09Box, VpccBox};
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp09Box) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "vp09")?;
-        f.member("width", data.visual.width)?;
-        f.member("height", data.visual.height)?;
+        crate::boxes::fmt_visual_sample_entry_fields(f, &data.visual)?;
         f.member("profile", data.vpcc_box.profile)?;
         f.member("level", data.vpcc_box.level)?;
         f.member("bitDepth", data.vpcc_box.bit_depth.get())?;
@@ -25,7 +24,8 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp09Box) ->
             "transferCharacteristics",
             data.vpcc_box.transfer_characteristics,
         )?;
-        f.member("matrixCoefficients", data.vpcc_box.matrix_coefficients)
+        f.member("matrixCoefficients", data.vpcc_box.matrix_coefficients)?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -33,8 +33,7 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp09Box) ->
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Vp09Box, nojson::JsonParseError> {
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
     let profile: u8 = value.to_member("profile")?.required()?.try_into()?;
     let level: u8 = value.to_member("level")?.required()?.try_into()?;
     let bit_depth: Uint<u8, 4, 4> = crate::boxes::uint_u8_member(value, "bitDepth")?;
@@ -73,9 +72,9 @@ pub(crate) fn parse_json(
     };
 
     Ok(Vp09Box {
-        visual: crate::boxes::build_visual_sample_entry_fields(width, height),
+        visual,
         vpcc_box,
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

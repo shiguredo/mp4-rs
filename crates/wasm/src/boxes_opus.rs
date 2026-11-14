@@ -9,6 +9,7 @@ use shiguredo_mp4::boxes::{AudioSampleEntryFields, DopsBox, OpusBox};
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &OpusBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "opus")?;
+        f.member("dataReferenceIndex", data.audio.data_reference_index.get())?;
         f.member("channelCount", data.audio.channelcount)?;
         f.member(
             "sampleRate",
@@ -17,7 +18,8 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &OpusBox) ->
         f.member("sampleSize", data.audio.samplesize)?;
         f.member("preSkip", data.dops_box.pre_skip)?;
         f.member("inputSampleRate", data.dops_box.input_sample_rate)?;
-        f.member("outputGain", data.dops_box.output_gain)
+        f.member("outputGain", data.dops_box.output_gain)?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -41,7 +43,7 @@ pub(crate) fn parse_json(
 
     Ok(OpusBox {
         audio: AudioSampleEntryFields {
-            data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            data_reference_index: crate::boxes::parse_audio_data_reference_index(value)?,
             channelcount: channel_count,
             samplesize: sample_size,
             samplerate: sample_rate,
@@ -52,7 +54,7 @@ pub(crate) fn parse_json(
             input_sample_rate,
             output_gain,
         },
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

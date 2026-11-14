@@ -3,7 +3,7 @@
 //! `hev1` と `hvc1` はボックスの型が違うだけで、`hvcC` の中身と JSON 表現は同じである。
 //! 片方だけを修正して片方を忘れる事故を防ぐため、変換の実装はこのモジュールに集約する。
 use shiguredo_mp4::Uint;
-use shiguredo_mp4::boxes::{HvccBox, HvccNalUintArray, VisualSampleEntryFields};
+use shiguredo_mp4::boxes::{HvccBox, HvccNalUintArray, UnknownBox, VisualSampleEntryFields};
 
 /// HEVC サンプルエントリーを JSON オブジェクトとしてフォーマットする
 ///
@@ -13,11 +13,11 @@ pub(crate) fn fmt_json(
     kind: &str,
     visual: &VisualSampleEntryFields,
     hvcc: &HvccBox,
+    unknown_boxes: &[UnknownBox],
 ) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", kind)?;
-        f.member("width", visual.width)?;
-        f.member("height", visual.height)?;
+        crate::boxes::fmt_visual_sample_entry_fields(f, visual)?;
         f.member("generalProfileSpace", hvcc.general_profile_space.get())?;
         f.member("generalTierFlag", hvcc.general_tier_flag.get())?;
         f.member("generalProfileIdc", hvcc.general_profile_idc.get())?;
@@ -46,7 +46,8 @@ pub(crate) fn fmt_json(
         f.member(
             "naluArrays",
             nojson::json(|f| fmt_nalu_arrays(f, &hvcc.nalu_arrays)),
-        )
+        )?;
+        crate::boxes::fmt_unknown_boxes(f, unknown_boxes)
     })
 }
 
@@ -89,7 +90,7 @@ fn default_array_completeness(kind: &str, nal_unit_type: u8) -> u8 {
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
     kind: &str,
-) -> Result<(u16, u16, HvccBox), nojson::JsonParseError> {
+) -> Result<(VisualSampleEntryFields, HvccBox), nojson::JsonParseError> {
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
     let mut nalu_arrays = Vec::new();
     // hvcC の numOfArrays は 8 ビット
@@ -148,8 +149,7 @@ pub(crate) fn parse_json(
         });
     }
 
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
     let general_profile_space: Uint<u8, 2, 6> =
         crate::boxes::uint_u8_member(value, "generalProfileSpace")?;
     let general_tier_flag: Uint<u8, 1, 5> = crate::boxes::uint_u8_member(value, "generalTierFlag")?;
@@ -216,7 +216,7 @@ pub(crate) fn parse_json(
         nalu_arrays,
     };
 
-    Ok((width, height, hvcc_box))
+    Ok((visual, hvcc_box))
 }
 
 #[cfg(test)]
@@ -309,7 +309,7 @@ mod tests {
     fn test_hevc_to_json() {
         let (visual, hvcc_box) = test_hvcc_box();
 
-        let json = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box)).to_string();
+        let json = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box, &[])).to_string();
         assert!(
             json.contains(r#""kind":"hev1""#),
             "kind が出力されること: {json}"
@@ -337,11 +337,11 @@ mod tests {
         );
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (width, height, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な HEVC JSON");
+        let (visual, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な HEVC JSON");
 
         // 18 個のスカラーフィールドが欠落・取り違えなく取り込まれることを検証する
-        assert_eq!(width, 1920);
-        assert_eq!(height, 1080);
+        assert_eq!(visual.width, 1920);
+        assert_eq!(visual.height, 1080);
         assert_eq!(hvcc_box.general_profile_space.get(), 0);
         assert_eq!(hvcc_box.general_tier_flag.get(), 0);
         assert_eq!(hvcc_box.general_profile_idc.get(), 2);
@@ -411,19 +411,10 @@ mod tests {
         let json_str = build_test_json("hev1", r#"[{"naluType": 32, "units": [[]]}]"#, None);
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (width, height, hvcc_box) =
-            parse_json(json.value(), "hev1").expect("空 NALU 要素の JSON");
+        let (visual, hvcc_box) = parse_json(json.value(), "hev1").expect("空 NALU 要素の JSON");
         assert_eq!(hvcc_box.nalu_arrays[0].nalus, vec![Vec::new()]);
 
-        let out = nojson::json(|f| {
-            fmt_json(
-                f,
-                "hev1",
-                &crate::boxes::build_visual_sample_entry_fields(width, height),
-                &hvcc_box,
-            )
-        })
-        .to_string();
+        let out = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box, &[])).to_string();
         assert!(
             out.contains(r#""units":[[]]"#),
             "空 NALU 要素が units:[[]] として再出力されること: {out}"
@@ -439,7 +430,7 @@ mod tests {
         );
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (_, _, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な JSON");
+        let (_, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な JSON");
         assert_eq!(hvcc_box.nalu_arrays[0].nalus, vec![vec![1, 2], vec![3, 4]]);
     }
 
@@ -448,18 +439,10 @@ mod tests {
         let json_str = build_test_json("hev1", "[]", None);
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (width, height, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な JSON");
+        let (visual, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な JSON");
         assert!(hvcc_box.nalu_arrays.is_empty());
 
-        let out = nojson::json(|f| {
-            fmt_json(
-                f,
-                "hev1",
-                &crate::boxes::build_visual_sample_entry_fields(width, height),
-                &hvcc_box,
-            )
-        })
-        .to_string();
+        let out = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box, &[])).to_string();
         assert!(
             out.contains(r#""naluArrays":[]"#),
             "空の naluArrays が [] として再出力されること: {out}"
@@ -482,7 +465,7 @@ mod tests {
         );
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (_, _, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
+        let (_, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
 
         assert_eq!(hvcc_box.nalu_arrays[0].array_completeness.get(), 1);
         assert_eq!(hvcc_box.nalu_arrays[1].array_completeness.get(), 1);
@@ -500,7 +483,7 @@ mod tests {
             None,
         );
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (_, _, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
+        let (_, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
         assert_eq!(hvcc_box.nalu_arrays[0].array_completeness.get(), 1);
 
         // hvc1 のパラメータセットに 0 は指定できない
@@ -531,7 +514,7 @@ mod tests {
                 None,
             );
             let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-            let (_, _, hvcc_box) =
+            let (_, hvcc_box) =
                 parse_json(json.value(), "hev1").expect("hev1 では 0 / 1 を受理すること");
             assert_eq!(
                 hvcc_box.nalu_arrays[0].array_completeness.get(),
@@ -554,15 +537,12 @@ mod tests {
     fn test_hevc_json_roundtrip() {
         let (visual, hvcc_box) = test_hvcc_box();
 
-        let json = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box)).to_string();
+        let json = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box, &[])).to_string();
         let raw = nojson::RawJson::parse(&json).expect("有効な JSON");
-        let (width, height, parsed_hvcc_box) =
+        let (parsed_visual, parsed_hvcc_box) =
             parse_json(raw.value(), "hev1").expect("有効な JSON");
 
-        assert_eq!(
-            crate::boxes::build_visual_sample_entry_fields(width, height),
-            visual
-        );
+        assert_eq!(parsed_visual, visual);
         assert_eq!(parsed_hvcc_box, hvcc_box);
     }
 

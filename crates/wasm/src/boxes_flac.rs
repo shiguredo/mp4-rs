@@ -10,6 +10,7 @@ use shiguredo_mp4::boxes::{AudioSampleEntryFields, DflaBox, FlacBox, FlacMetadat
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &FlacBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "flac")?;
+        f.member("dataReferenceIndex", data.audio.data_reference_index.get())?;
         f.member("channelCount", data.audio.channelcount)?;
         f.member(
             "sampleRate",
@@ -23,7 +24,22 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &FlacBox) ->
             .metadata_blocks
             .first()
             .map_or(&[][..], |block| block.block_data.as_slice());
-        f.member("streaminfoData", streaminfo_data)
+        f.member("streaminfoData", streaminfo_data)?;
+        // STREAMINFO 以外のメタデータブロックも往復できるようにすべて出力する
+        f.member(
+            "metadataBlocks",
+            nojson::array(|f| {
+                for block in &data.dfla_box.metadata_blocks {
+                    f.element(nojson::object(|f| {
+                        f.member("type", block.block_type.get())?;
+                        f.member("last", block.last_metadata_block_flag.get() == 1)?;
+                        f.member("data", block.block_data.as_slice())
+                    }))?;
+                }
+                Ok(())
+            }),
+        )?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -38,24 +54,51 @@ pub(crate) fn parse_json(
     let channel_count: u16 = value.to_member("channelCount")?.required()?.try_into()?;
     let sample_rate = crate::boxes::sample_rate_from_json(value)?;
     let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
-    let streaminfo_data: Vec<u8> = value.to_member("streaminfoData")?.required()?.try_into()?;
+    // `metadataBlocks` があればそれを優先し、無ければ従来の `streaminfoData` から
+    // STREAMINFO 1 個だけのブロック列を組み立てる
+    let metadata_blocks = match value.to_member("metadataBlocks")?.optional() {
+        None => Vec::new(),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Vec::new(),
+        Some(member) => {
+            let mut blocks = Vec::new();
+            for block in member.to_array()? {
+                let block_type_value = block.to_member("type")?.required()?;
+                let block_type: u8 = block_type_value.try_into()?;
+                if block_type > 127 {
+                    return Err(block_type_value.invalid("type must fit in 7 bits"));
+                }
+                let last: bool = block.to_member("last")?.required()?.try_into()?;
+                let block_data: Vec<u8> = block.to_member("data")?.required()?.try_into()?;
+                blocks.push(FlacMetadataBlock {
+                    last_metadata_block_flag: Uint::new(u8::from(last)),
+                    block_type: Uint::new(block_type),
+                    block_data,
+                });
+            }
+            blocks
+        }
+    };
+    let metadata_blocks = if metadata_blocks.is_empty() {
+        let streaminfo_data: Vec<u8> = value.to_member("streaminfoData")?.required()?.try_into()?;
+        vec![FlacMetadataBlock {
+            // 唯一のメタデータブロックなので、最後のブロックとして扱う
+            last_metadata_block_flag: Uint::from(true),
+            block_type: FlacMetadataBlock::BLOCK_TYPE_STREAMINFO,
+            block_data: streaminfo_data,
+        }]
+    } else {
+        metadata_blocks
+    };
 
     Ok(FlacBox {
         audio: AudioSampleEntryFields {
-            data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            data_reference_index: crate::boxes::parse_audio_data_reference_index(value)?,
             channelcount: channel_count,
             samplesize: sample_size,
             samplerate: sample_rate,
         },
-        dfla_box: DflaBox {
-            metadata_blocks: vec![FlacMetadataBlock {
-                // 唯一のメタデータブロックなので、最後のブロックとして扱う
-                last_metadata_block_flag: Uint::from(true),
-                block_type: FlacMetadataBlock::BLOCK_TYPE_STREAMINFO,
-                block_data: streaminfo_data,
-            }],
-        },
-        unknown_boxes: Vec::new(),
+        dfla_box: DflaBox { metadata_blocks },
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

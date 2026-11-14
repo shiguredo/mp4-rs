@@ -13,6 +13,7 @@ use shiguredo_mp4::descriptors::{
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Mp4aBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "mp4a")?;
+        f.member("dataReferenceIndex", data.audio.data_reference_index.get())?;
         f.member("channelCount", data.audio.channelcount)?;
         f.member(
             "sampleRate",
@@ -34,7 +35,32 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Mp4aBox) ->
             .dec_specific_info
             .as_ref()
             .map_or(&[][..], |info| info.payload.as_slice());
-        f.member("decSpecificInfo", dec_specific_info)
+        f.member("decSpecificInfo", dec_specific_info)?;
+        // ES 記述子のうち、コーデックによって変わり得る値を往復させる
+        f.member("esId", data.esds_box.es.es_id)?;
+        f.member("streamPriority", data.esds_box.es.stream_priority.get())?;
+        if let Some(depends_on_es_id) = data.esds_box.es.depends_on_es_id {
+            f.member("dependsOnEsId", depends_on_es_id)?;
+        }
+        if let Some(url_string) = &data.esds_box.es.url_string {
+            f.member("urlString", url_string)?;
+        }
+        if let Some(ocr_es_id) = data.esds_box.es.ocr_es_id {
+            f.member("ocrEsId", ocr_es_id)?;
+        }
+        f.member(
+            "objectTypeIndication",
+            data.esds_box.es.dec_config_descr.object_type_indication,
+        )?;
+        f.member(
+            "streamType",
+            data.esds_box.es.dec_config_descr.stream_type.get(),
+        )?;
+        f.member(
+            "upStream",
+            data.esds_box.es.dec_config_descr.up_stream.as_bool(),
+        )?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -61,18 +87,87 @@ pub(crate) fn parse_json(
     let avg_bitrate: u32 = value.to_member("avgBitrate")?.required()?.try_into()?;
     let dec_specific_info: Vec<u8> = value.to_member("decSpecificInfo")?.required()?.try_into()?;
 
+    let es_id: u16 = match value.to_member("esId")?.optional() {
+        None => EsDescriptor::MIN_ES_ID,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => EsDescriptor::MIN_ES_ID,
+        Some(member) => member.try_into()?,
+    };
+    let stream_priority: Uint<u8, 5> = match value.to_member("streamPriority")?.optional() {
+        None => EsDescriptor::LOWEST_STREAM_PRIORITY,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            EsDescriptor::LOWEST_STREAM_PRIORITY
+        }
+        Some(member) => {
+            let priority: u8 = member.try_into()?;
+            if priority > 31 {
+                return Err(member.invalid("streamPriority must fit in 5 bits"));
+            }
+            Uint::new(priority)
+        }
+    };
+    let depends_on_es_id: Option<u16> = match value.to_member("dependsOnEsId")?.optional() {
+        None => None,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => None,
+        Some(member) => Some(member.try_into()?),
+    };
+    let url_string: Option<String> = match value.to_member("urlString")?.optional() {
+        None => None,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => None,
+        Some(member) => {
+            let url: String = member.try_into()?;
+            if url.len() > 255 {
+                return Err(member.invalid("urlString must be at most 255 bytes"));
+            }
+            Some(url)
+        }
+    };
+    let ocr_es_id: Option<u16> = match value.to_member("ocrEsId")?.optional() {
+        None => None,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => None,
+        Some(member) => Some(member.try_into()?),
+    };
+    let object_type_indication: u8 = match value.to_member("objectTypeIndication")?.optional() {
+        None => DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3
+        }
+        Some(member) => member.try_into()?,
+    };
+    let stream_type: Uint<u8, 6, 2> = match value.to_member("streamType")?.optional() {
+        None => DecoderConfigDescriptor::STREAM_TYPE_AUDIO,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            DecoderConfigDescriptor::STREAM_TYPE_AUDIO
+        }
+        Some(member) => {
+            let stream_type: u8 = member.try_into()?;
+            if stream_type > 63 {
+                return Err(member.invalid("streamType must fit in 6 bits"));
+            }
+            Uint::new(stream_type)
+        }
+    };
+    let up_stream = match value.to_member("upStream")?.optional() {
+        None => DecoderConfigDescriptor::UP_STREAM_FALSE,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            DecoderConfigDescriptor::UP_STREAM_FALSE
+        }
+        Some(member) => {
+            let up_stream: bool = member.try_into()?;
+            Uint::new(u8::from(up_stream))
+        }
+    };
+
     let esds_box = EsdsBox {
         es: EsDescriptor {
-            es_id: EsDescriptor::MIN_ES_ID,
-            stream_priority: EsDescriptor::LOWEST_STREAM_PRIORITY,
-            depends_on_es_id: None,
-            url_string: None,
-            ocr_es_id: None,
+            es_id,
+            stream_priority,
+            depends_on_es_id,
+            url_string,
+            ocr_es_id,
             dec_config_descr: DecoderConfigDescriptor {
-                object_type_indication:
-                    DecoderConfigDescriptor::OBJECT_TYPE_INDICATION_AUDIO_ISO_IEC_14496_3,
-                stream_type: DecoderConfigDescriptor::STREAM_TYPE_AUDIO,
-                up_stream: DecoderConfigDescriptor::UP_STREAM_FALSE,
+                object_type_indication,
+                stream_type,
+                up_stream,
                 buffer_size_db: Uint::new(buffer_size_db),
                 max_bitrate,
                 avg_bitrate,
@@ -88,13 +183,13 @@ pub(crate) fn parse_json(
 
     Ok(Mp4aBox {
         audio: AudioSampleEntryFields {
-            data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            data_reference_index: crate::boxes::parse_audio_data_reference_index(value)?,
             channelcount: channel_count,
             samplesize: sample_size,
             samplerate: sample_rate,
         },
         esds_box,
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

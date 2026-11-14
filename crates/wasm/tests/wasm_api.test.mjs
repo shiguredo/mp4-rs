@@ -311,6 +311,16 @@ test('demux したサンプルエントリーを mux に戻すと内容が保た
             const entry = samples[0].sample_entry;
             assert.equal(entry.kind, expectedKind, `${fileName} の種別`);
 
+            // 型付き実装を持たない子ボックスと、映像共通フィールドが
+            // JSON に含まれていること（再 mux で失われないための前提）
+            if (fileName === 'black-h264-video.mp4') {
+                const types = entry.unknownBoxes.map((box) => box.type);
+                assert.ok(types.includes('pasp'), `pasp が含まれること: ${types}`);
+                assert.ok(types.includes('btrt'), `btrt が含まれること: ${types}`);
+                assert.equal(typeof entry.compressorname, 'string');
+                assert.ok(entry.compressorname.length > 0, 'compressorname が入っていること');
+            }
+
             const muxed = muxToBytes([
                 {
                     metadata: {

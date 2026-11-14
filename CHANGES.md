@@ -26,7 +26,7 @@
   - `Mp4FileDemuxer` の `seek()` は `timestamp / timescale` 秒を受け付け、1 秒未満の指定も扱える
   - JSON の各数値はフィールドのビット幅と整合するかを検証し、範囲外は例外にする
   - JSON のネストの深さと長さに上限を設け、上限を超える入力は wasm を停止させずに例外にする
-  - `arrayCompleteness` は `hev1` では 0、`hvc1` では VPS / SPS / PPS のみ 1 を既定値とし、JSON で明示する場合もその組み合わせだけを受理する
+  - `arrayCompleteness` は `hev1` では 0、`hvc1` では VPS / SPS / PPS のみ 1 を既定値とする。`hvc1` で明示する場合はこの組み合わせだけを受理し、`hev1` は 0 / 1 のどちらも受理する
   - `Mp4FileKindDetector` は入力が不正な場合に `handleInput` で例外を投げる
   - `.d.ts` は wasm-bindgen が生成する
   - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため

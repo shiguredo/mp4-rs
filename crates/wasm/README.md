@@ -70,8 +70,16 @@ done
 ```js
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { Mp4FileDemuxer } = require('./pkg/node/mp4_wasm.js');
+const {
+  Mp4FileDemuxer,
+  Mp4FileMuxer,
+  Fmp4SegmentMuxer,
+  Fmp4SegmentDemuxer,
+  Mp4FileKindDetector,
+} = require('./pkg/node/mp4_wasm.js');
 ```
+
+以降の例は、この import が済んでいる前提で書いています。
 
 ### ブラウザ
 
@@ -133,6 +141,8 @@ try {
   let offset = initial.length;
 
   // 2. サンプルデータを書き込み、その位置とサイズを伝える
+  // sampleDataList と sampleEntry は、デマルチプレックス結果などから用意する
+  // （完全な例は examples/mux.js を参照）
   for (const sampleData of sampleDataList) {
     write(file, offset, sampleData);
     muxer.appendSample(JSON.stringify({
@@ -193,7 +203,7 @@ MP4 ファイルを構築します。
 | `isFaststartEnabled(): boolean` | 確定したファイルで faststart が有効かどうかを返す |
 | `moovBoxSize(): number` | 確定した moov ボックスのサイズを返す |
 
-`Mp4FileMuxerOutput` は `offset: number` と `takeData(): Uint8Array` を持ちます。`takeData()` は所有権を移すため、大きなデータをコピーせずに受け取れます。
+`Mp4FileMuxerOutput` は `offset: number` と `takeData(): Uint8Array` を持ちます。`takeData()` は Rust 側の余分なコピーを避けてデータを渡します。wasm の境界を越えるときのコピーは 1 回発生します。
 
 ### `Fmp4SegmentMuxer`
 
@@ -210,6 +220,8 @@ fMP4 の初期化セグメントとメディアセグメントを生成します
 `sampleData` はサンプルの出現順に連結したペイロードです。muxer が要求する並び順への並べ替えはこの関数が行うため、返り値をそのまま書き込めば完全なメディアセグメントになります。
 
 `initSegment()` は「メディアセグメントを 1 つ以上生成した後」に呼ぶ必要があります。先に呼ぶと `No tracks have been observed yet` で失敗します。
+
+サンプル JSON に時刻は含まれないため、muxer はデコード時刻を 0 から積み上げます。途中のセグメントだけを新しい `Fmp4SegmentMuxer` に渡すと `tfdt` は 0 起点になります。途中セグメントの時刻を保つには、1 個目から順に同じ muxer に渡してください。
 
 ```js
 const muxer = new Fmp4SegmentMuxer(0);
@@ -237,8 +249,10 @@ fMP4 の初期化セグメントとメディアセグメントを読み取りま
 |---|---|
 | `constructor()` | 判定器を作成する |
 | `requiredInput(): string \| undefined` | 次に必要な入力データを JSON で返す |
-| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する。`position` が負値や小数の場合は例外 |
-| `fileKind(): string \| undefined` | `"mp4"` か `"fragmented-mp4"` を返す |
+| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する。`position` が負値や小数の場合と、入力が不正な場合は例外 |
+| `fileKind(): string \| undefined` | `"mp4"` か `"fragmented-mp4"` を返す。まだ判定できない場合は `undefined` |
+
+入力が不正で判定器がエラー状態になると、その判定器は再利用できません。新しいインスタンスを作成してください。
 
 ### `version()`
 
@@ -250,9 +264,11 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
 
 ### TypeScript の設定
 
-生成される `.d.ts` は `Symbol.dispose` を含むため、TypeScript の `lib` に `ESNext.Disposable` が含まれていないとコンパイルエラーになります。`lib` に追加するか、`skipLibCheck` を有効にしてください。
+生成される `.d.ts` は `Symbol.dispose` を含むため、TypeScript の `lib` に `ESNext.Disposable` を追加してください。
 
 ## JSON スキーマ
+
+JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上限を超える入力は wasm を停止させずに例外にします。
 
 ### 入力要求
 
@@ -291,7 +307,8 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
 }
 ```
 
-- `sample_entry` は、前のサンプルから内容が変化しない場合には省略されます。省略された場合は直前のサンプルの値が引き継がれます
+- `sample_entry` は、**同じトラックの**直前のサンプルから内容が変化しない場合には省略されます。省略された場合は同じトラックの直前の値が引き継がれます
+- `seek()` の直後と、2 個目以降のメディアセグメントの先頭では、同じトラックの直前のサンプルを返していないため `sample_entry` が省略されます。その位置から mux を開始する場合は、それまでに受け取った `sample_entry` を保持して渡してください
 - `composition_time_offset` は `null` か整数です。`null` は `ctts` / `trun` にコンポジション時間オフセットが存在しないことを意味します
 - `data_offset` は file demuxer ではファイル先頭からの絶対位置、segment demuxer では渡したメディアセグメント先頭からの相対位置です
 
@@ -385,14 +402,14 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
   "temporalIdNested": 1,
   "lengthSizeMinusOne": 3,
   "naluArrays": [
-    { "naluType": 32, "units": [[64, 1, 12, 1]] },
-    { "naluType": 33, "units": [[66, 1, 1, 1]] },
-    { "naluType": 34, "units": [[68, 1, 0]] }
+    { "naluType": 32, "arrayCompleteness": 1, "units": [[64, 1, 12, 1]] },
+    { "naluType": 33, "arrayCompleteness": 1, "units": [[66, 1, 1, 1]] },
+    { "naluType": 34, "arrayCompleteness": 1, "units": [[68, 1, 0]] }
   ]
 }
 ```
 
-`kind` が `hev1` か `hvc1` かだけが異なり、他のフィールドは共通です。
+`kind` が `hev1` か `hvc1` かだけが異なり、他のフィールドは共通です。`arrayCompleteness` を省略した場合、`hvc1` の VPS / SPS / PPS は 1、それ以外は 0 になります。
 
 #### VP8
 

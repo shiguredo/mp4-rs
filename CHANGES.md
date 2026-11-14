@@ -21,8 +21,13 @@
   - ファイル位置とサイズは JavaScript の数値で受け渡す。`u64` を BigInt で扱う必要がなくなる
     - 負値・小数・`NaN` を渡した場合は例外になる
   - メソッド名は JavaScript の慣習に合わせて camelCase になる
-  - `Fmp4SegmentMuxer` のメソッド名を `createMediaSegment` / `createMediaSegmentWithSidx` に変更する。返り値は `moof` と `mdat` だけでなくペイロードを含むメディアセグメント全体である
-  - `Mp4FileMuxerOutput` の `data` プロパティを `takeData()` メソッドに変更する。所有権を移すため、大きなデータをコピーせずに受け取れる
+  - `Fmp4SegmentMuxer` は `createMediaSegment` / `createMediaSegmentWithSidx` で、ペイロードを含むメディアセグメント全体を返す
+  - `Mp4FileMuxerOutput` は `offset` と `takeData()` を持ち、データの所有権を移して受け渡す
+  - `Mp4FileDemuxer` の `seek()` は `timestamp / timescale` 秒を受け付け、1 秒未満の指定も扱える
+  - JSON の各数値はフィールドのビット幅と整合するかを検証し、範囲外は例外にする
+  - JSON のネストの深さと長さに上限を設け、上限を超える入力は wasm を停止させずに例外にする
+  - `hvc1` の `arrayCompleteness` は 1、`hev1` は 0 を既定値とし、JSON の `arrayCompleteness` で明示できる
+  - `Mp4FileKindDetector` は入力が不正な場合に `handleInput` で例外を投げる
   - `.d.ts` は wasm-bindgen が生成する
   - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
   - GitHub Release の wasm アーカイブはルートの `mp4_wasm.wasm` を廃止し、`node/` と `web/` のディレクトリ構成に変更する。CI の artifact も `pkg/` 配下になる
@@ -34,10 +39,6 @@
 - [FIX] wasm の VP8 / VP9 で `videoFullRangeFlag` の出力と入力の型が食い違い、デマルチプレックスした JSON をそのままマルチプレックス側へ渡せなかったのを修正する
   - これまでは出力が `0` / `1` の数値、入力が boolean のみであった
   - 出力を boolean に統一し、入力は boolean と `0` / `1` の両方を受理する
-  - @voluntas
-- [FIX] wasm の `Mp4FileDemuxer.seek()` が `timestamp` の小数部を切り捨てていたのを修正する
-  - これまでは `timestamp` を整数に丸めてから `timescale` で割っていたため、`seek(0.5, 1)` が先頭へシークしていた
-  - `timestamp / timescale` 秒をそのまま扱うようにする
   - @voluntas
 - [FIX] wasm の `Fmp4SegmentMuxer` が `data_size` の合計より長い `sampleData` を黙って捨てていたのを修正する
   - `data_size` の合計と `sampleData` の長さが一致しない場合は例外を返すようにする

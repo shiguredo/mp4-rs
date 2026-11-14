@@ -27,10 +27,11 @@ function createMP4WithOpus(outputPath) {
     const FRAME_DURATION = 960;
 
     const file = fs.openSync(outputPath, 'w');
-    // 0 を指定して faststart を無効にする。faststart にする場合は、
-    // 出力する moov のサイズ以上を予約して先頭に空き領域を確保する
-    const muxer = new wasm.Mp4FileMuxer(0);
+    let muxer;
     try {
+        // 0 を指定して faststart を無効にする。faststart にする場合は、
+        // 出力する moov のサイズ以上を予約して先頭に空き領域を確保する
+        muxer = new wasm.Mp4FileMuxer(0);
         const initial = muxer.initialBoxes();
         fs.writeSync(file, initial, 0, initial.length, 0);
         let currentOffset = initial.length;
@@ -45,7 +46,7 @@ function createMP4WithOpus(outputPath) {
             outputGain: 0,
         };
 
-        console.log(`Adding ${NUM_FRAMES} Opus frames (${(NUM_FRAMES * 20) / 1000} seconds)...`);
+        console.log(`Adding ${NUM_FRAMES} Opus frames (${(NUM_FRAMES * FRAME_DURATION) / 48000} seconds)...`);
         for (let index = 0; index < NUM_FRAMES; index += 1) {
             fs.writeSync(file, OPUS_SILENCE_FRAME, 0, OPUS_SILENCE_FRAME.length, currentOffset);
             muxer.appendSample(
@@ -81,7 +82,9 @@ function createMP4WithOpus(outputPath) {
         }
         console.log(`\nSuccessfully created '${outputPath}'`);
     } finally {
-        muxer.free();
+        if (muxer !== undefined) {
+            muxer.free();
+        }
         fs.closeSync(file);
     }
 }

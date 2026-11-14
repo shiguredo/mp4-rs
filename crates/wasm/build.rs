@@ -12,19 +12,20 @@ fn main() {
     println!("cargo::rustc-env=SHIGUREDO_MP4_VERSION={version}");
 }
 
-/// ルートの `Cargo.toml` の `[package]` セクションからバージョンを読み取る
+/// ルートの `Cargo.toml` からパッケージのバージョンを読み取る
+///
+/// `version.workspace = true` のような継承指定や行末コメントは扱わない。
 fn read_root_version(path: &Path) -> String {
     let text = std::fs::read_to_string(path).expect("failed to read root Cargo.toml");
     text.lines()
         .find_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("version") {
-                trimmed
-                    .split_once('=')
-                    .map(|(_, value)| value.trim().trim_matches('"').to_string())
-            } else {
-                None
-            }
+            let rest = line.trim().strip_prefix("version")?;
+            let value = rest.trim_start().strip_prefix('=')?;
+            let value = value.split('#').next()?.trim();
+            value
+                .strip_prefix('"')?
+                .strip_suffix('"')
+                .map(str::to_string)
         })
         .expect("version not found in root Cargo.toml")
 }

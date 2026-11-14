@@ -1,7 +1,7 @@
 # demux した edts / elst を mux で保持する
 
 - Created: 2026-11-14
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-14
 - Branch: feature/add-edit-list-preservation
 - Polished: 2026-11-14
 
@@ -177,7 +177,13 @@ size=28 "elst" v0 count=1 segment_duration=1000 media_time=1024 media_rate=1.0
 
 ## 解決方法
 
-{実装後に記載する}
+- `TrackInfo` に `movie_timescale` と `edit_list` を追加し、`Mp4FileDemuxer` / `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` で populate する
+- `EditList` 型を追加して `TrackMetadata.edit_list` で受け取り、`Mp4FileMuxer::build_trak_box` と `Fmp4SegmentMuxer::build_init_trak` で `edts` を書き出す
+- `edit_duration` は `convert_edit_duration` で出力 movie timescale へ四捨五入で換算する
+- 編集リスト付きトラックの `tkhd` の duration は `EditList::total_duration` から導出し、`mvhd.duration` は全トラックの `tkhd.duration` の最大値から導出する。movie timescale は presentation 秒で最長トラックを選ぶ
+- wasm の `tracks()` に `movie_timescale` / `edit_list` を追加し、`Mp4FileMuxer.withOptions()` / `Fmp4SegmentMuxer.withOptions()` を追加する
+- PBT の `arb_track_metadata` / `assert_track_metadata` を media timescale と出力 movie timescale に対応させ、demux 後の `TrackInfo` も検証する
+- `tests/test_mux_mp4_file.rs` に換算・empty edit・version 再計算・桁溢れ・複数トラックのテスト、`wasm_api.test.mjs` に往復と JSON 上限のテストを追加する
 
 ## 関連 issue
 

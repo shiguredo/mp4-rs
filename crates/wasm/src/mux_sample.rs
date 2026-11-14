@@ -33,15 +33,16 @@ pub(crate) fn parse_metadata(
     let duration: u32 = value.to_member("duration")?.required()?.try_into()?;
     let keyframe: bool = value.to_member("keyframe")?.required()?.try_into()?;
     let composition_time_offset = optional_i64_member(value, "composition_time_offset")?;
-    // ctts の version 0 は u32、version 1 は i32 の範囲しか表現できない
+    // ctts は負値が混ざると version 1 (i32) になるため、i32 の範囲に制限する。
+    // ここで制限しないと、値の組み合わせによって finalize で初めて失敗する
     if let Some(offset) = composition_time_offset
-        && !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&offset)
+        && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&offset)
     {
         return Err(value
             .to_member("composition_time_offset")
             .and_then(|member| member.required())
             .map(|member| {
-                member.invalid("composition_time_offset must be between i32::MIN and u32::MAX")
+                member.invalid("composition_time_offset must be between i32::MIN and i32::MAX")
             })
             .unwrap_or_else(|error| error));
     }
@@ -150,6 +151,24 @@ mod tests {
         assert!(metadata.keyframe);
         assert!(metadata.sample_entry.is_none());
         assert!(metadata.composition_time_offset.is_none());
+    }
+
+    #[test]
+    fn test_parse_rejects_out_of_range_composition_time_offset() {
+        for offset in [i64::from(i32::MAX) + 1, i64::from(i32::MIN) - 1] {
+            let json_str = format!(
+                r#"{{"track_kind":"video","keyframe":true,"timescale":48000,"duration":960,"composition_time_offset":{offset}}}"#
+            );
+            assert!(parse(&json_str).is_err(), "{offset} は拒否されること");
+        }
+
+        // i32 の両端は受理する
+        for offset in [i64::from(i32::MIN), i64::from(i32::MAX)] {
+            let json_str = format!(
+                r#"{{"track_kind":"video","keyframe":true,"timescale":48000,"duration":960,"composition_time_offset":{offset}}}"#
+            );
+            assert!(parse(&json_str).is_ok(), "{offset} は受理されること");
+        }
     }
 
     #[test]

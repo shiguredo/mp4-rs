@@ -83,7 +83,12 @@ pub(crate) fn parse_json(
         .to_array()?
         .map(|entry| {
             let font_id: u16 = entry.to_member("font_id")?.required()?.try_into()?;
-            let font_name: Vec<u8> = entry.to_member("font_name")?.required()?.try_into()?;
+            let font_name_value = entry.to_member("font_name")?.required()?;
+            let font_name: Vec<u8> = font_name_value.try_into()?;
+            // FontRecord の font_name_length は 8 ビット
+            if font_name.len() > usize::from(u8::MAX) {
+                return Err(font_name_value.invalid("font_name must be at most 255 bytes"));
+            }
             Ok(FontRecord { font_id, font_name })
         })
         .collect::<Result<Vec<_>, nojson::JsonParseError>>()?;
@@ -386,16 +391,32 @@ mod tests {
     }
 
     /// ftab の個数上限を parse 時に検査すること
+    ///
+    /// 65536 要素の JSON を構築するため Miri では実行しない。
     #[test]
+    #[cfg(not(miri))]
     fn test_json_to_tx3g_rejects_too_many_ftab_entries() {
         let entries = (0..65536)
-            .map(|_| r#"{"font_id":0,"font_name":[0]}"#)
+            .map(|_| r#"{"font_id":1,"font_name":[65]}"#)
             .collect::<Vec<_>>()
             .join(",");
         let json_str = format!(
-            r#"{{"kind":"tx3g","data_reference_index":1,"default_style":{{}},"ftab":[{entries}]}}"#
+            r#"{{"kind":"tx3g","display_flags":0,"horizontal_justification":0,"vertical_justification":0,"background_color_rgba":[0,0,0,255],"default_text_box":[0,0,240,320],"default_style":{{"start_char":0,"end_char":0,"font_id":1,"face_style_flags":0,"font_size":12,"text_color_rgba":[255,255,255,255]}},"ftab":[{entries}]}}"#
         );
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        assert!(parse_json(json.value()).is_err());
+        let error = parse_json(json.value()).expect_err("上限超過は拒否されること");
+        assert!(error.to_string().contains("at most 65535"), "{error}");
+    }
+
+    /// font_name の長さ上限を parse 時に検査すること
+    #[test]
+    fn test_json_to_tx3g_rejects_too_long_font_name() {
+        let font_name = (0..256).map(|_| "65").collect::<Vec<_>>().join(",");
+        let json_str = format!(
+            r#"{{"kind":"tx3g","display_flags":0,"horizontal_justification":0,"vertical_justification":0,"background_color_rgba":[0,0,0,255],"default_text_box":[0,0,240,320],"default_style":{{"start_char":0,"end_char":0,"font_id":1,"face_style_flags":0,"font_size":12,"text_color_rgba":[255,255,255,255]}},"ftab":[{{"font_id":1,"font_name":[{font_name}]}}]}}"#
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let error = parse_json(json.value()).expect_err("上限超過は拒否されること");
+        assert!(error.to_string().contains("at most 255"), "{error}");
     }
 }

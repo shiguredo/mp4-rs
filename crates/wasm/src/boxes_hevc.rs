@@ -102,15 +102,12 @@ pub(crate) fn parse_json(
     }
     for nalu_array in nalu_arrays_value.to_array()? {
         let nal_unit_type: Uint<u8, 6> = crate::boxes::uint_u8_member(nalu_array, "naluType")?;
-        let nalus: Vec<Vec<u8>> = nalu_array.to_member("units")?.required()?.try_into()?;
-        // hvcC の numNalus は 16 ビット
-        if nalus.len() > usize::from(u16::MAX) {
-            return Err(nalu_array
-                .to_member("units")
-                .and_then(|member| member.required())
-                .map(|value| value.invalid("units must contain at most 65535 NALUs"))
-                .unwrap_or_else(|error| error));
+        // hvcC の numNalus は 16 ビット。変換で大きな Vec を確保する前に検査する
+        let units_value = nalu_array.to_member("units")?.required()?;
+        if units_value.to_array()?.count() > usize::from(u16::MAX) {
+            return Err(units_value.invalid("units must contain at most 65535 NALUs"));
         }
+        let nalus: Vec<Vec<u8>> = units_value.try_into()?;
         // hvcC の NALU 長は 16 ビットであり、それ以上の要素はエンコードできない
         if nalus.iter().any(|nalu| nalu.len() > usize::from(u16::MAX)) {
             return Err(nalu_array
@@ -607,10 +604,9 @@ mod tests {
         assert!(parse_json(json.value(), "hev1").is_err());
     }
 
-    /// NALU 配列数と配列内 NALU 数の上限を parse 時に検査すること
+    /// NALU 配列数の上限を parse 時に検査すること
     #[test]
-    fn test_json_to_hevc_rejects_too_many_nalus() {
-        // 配列数は 255 まで
+    fn test_json_to_hevc_rejects_too_many_nalu_arrays() {
         let arrays = (0..256)
             .map(|_| r#"{"naluType":32,"arrayCompleteness":0,"units":[[1]]}"#)
             .collect::<Vec<_>>()
@@ -618,8 +614,14 @@ mod tests {
         let json_str = build_test_json("hev1", &format!("[{arrays}]"), None);
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         assert!(parse_json(json.value(), "hev1").is_err());
+    }
 
-        // 1 配列あたりの NALU 数は 65535 まで
+    /// 1 配列あたりの NALU 数の上限を parse 時に検査すること
+    ///
+    /// 65536 要素の JSON を構築するため Miri では実行しない。
+    #[test]
+    #[cfg(not(miri))]
+    fn test_json_to_hevc_rejects_too_many_units() {
         let units = (0..65536).map(|_| "[0]").collect::<Vec<_>>().join(",");
         let json_str = build_test_json(
             "hev1",
@@ -627,6 +629,7 @@ mod tests {
             None,
         );
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        assert!(parse_json(json.value(), "hev1").is_err());
+        let error = parse_json(json.value(), "hev1").expect_err("上限超過は拒否されること");
+        assert!(error.to_string().contains("at most 65535"), "{error}");
     }
 }

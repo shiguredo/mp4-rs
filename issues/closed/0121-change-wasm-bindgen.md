@@ -93,4 +93,4 @@
 - デマルチプレックスしたサンプルの `sample_entry` と `composition_time_offset: null` をそのままマルチプレックス側に渡せる。8 コーデックで往復を確認する
 - fMP4 のメディアセグメントを生成して読み戻せる
 - `node --test crates/wasm/tests/wasm_api.test.mjs` が全件成功する
-- `wasm-opt -Oz --strip-debug` 後で `.wasm` が約 514 KB、gzip 後で約 193 KB になる（binaryen 125 / 133 で計測）
+- `wasm-opt -Oz --strip-debug` 後で `.wasm` が約 508 KiB、gzip 後で約 192 KiB になる（binaryen 133 で計測）

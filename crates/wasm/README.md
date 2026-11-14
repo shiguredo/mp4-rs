@@ -61,7 +61,7 @@ done
 
 ### サイズ
 
-`wasm-opt -Oz --strip-debug` 適用後の `.wasm` は約 502 KiB、gzip 後は約 188 KiB です（binaryen 125 / 133 で計測）。これに加えて Node.js 向けの `.js` が約 25 KB、`.d.ts` が約 8 KB になります。
+`wasm-opt -Oz --strip-debug` 適用後の `.wasm` は約 508 KiB、gzip 後は約 192 KiB です（binaryen 133 で計測）。これに加えて Node.js 向けの `.js` が約 25 KB、`.d.ts` が約 8 KB になります。
 
 ## 使い方
 

@@ -41,8 +41,44 @@ pub(crate) fn fmt_track_info(
         f.member("track_id", track.track_id)?;
         f.member("kind", track_kind_str(track.kind))?;
         f.member("duration", track.duration)?;
-        f.member("timescale", track.timescale.get())
+        f.member("timescale", track.timescale.get())?;
+        f.member("movie_timescale", track.movie_timescale.get())?;
+        if let Some(edit_list) = &track.edit_list {
+            f.member(
+                "edit_list",
+                nojson::json(|f| {
+                    f.object(|f| {
+                        f.member("movie_timescale", track.movie_timescale.get())?;
+                        f.member("media_timescale", track.timescale.get())?;
+                        f.member(
+                            "entries",
+                            nojson::array(|f| {
+                                for entry in &edit_list.entries {
+                                    f.element(nojson::json(|f| {
+                                        f.object(|f| {
+                                            f.member("segment_duration", entry.edit_duration)?;
+                                            f.member("media_time", entry.media_time)?;
+                                            f.member(
+                                                "media_rate",
+                                                media_rate_to_f64(entry.media_rate),
+                                            )
+                                        })
+                                    }))?;
+                                }
+                                Ok(())
+                            }),
+                        )
+                    })
+                }),
+            )?;
+        }
+        Ok(())
     })
+}
+
+/// 固定小数点数（i16.16）を JSON の数値に変換する
+fn media_rate_to_f64(value: shiguredo_mp4::FixedPointNumber<i16, i16>) -> f64 {
+    f64::from(value.integer) + f64::from(value.fraction as u16) / 65536.0
 }
 
 /// デマルチプレックスしたサンプルを JSON に変換する

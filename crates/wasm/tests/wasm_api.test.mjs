@@ -81,40 +81,44 @@ function demuxFile(bytes) {
  * 書き込み先の位置は `initialBoxes()` の長さから始め、サンプルデータを
  * 追加するたびに進める。`finalize()` の出力は最後に重ね書きする。
  */
+function muxWithMuxer(muxer, samples) {
+    const chunks = [];
+    const initial = muxer.initialBoxes();
+    chunks.push({ offset: 0, data: initial });
+    let position = initial.length;
+
+    for (const sample of samples) {
+        chunks.push({ offset: position, data: sample.data });
+        muxer.appendSample(
+            JSON.stringify({
+                ...sample.metadata,
+                data_offset: position,
+                data_size: sample.data.length,
+            }),
+        );
+        position += sample.data.length;
+    }
+
+    muxer.finalize();
+    const faststartEnabled = muxer.isFaststartEnabled();
+    const moovBoxSize = muxer.moovBoxSize();
+
+    for (;;) {
+        const output = muxer.nextOutput();
+        if (output === undefined) {
+            break;
+        }
+        chunks.push({ offset: output.offset, data: output.takeData() });
+        output.free();
+    }
+
+    return { chunks, faststartEnabled, moovBoxSize };
+}
+
 function muxFile(samples, reservedMoovBoxSize) {
     const muxer = new wasm.Mp4FileMuxer(reservedMoovBoxSize);
-    const chunks = [];
     try {
-        const initial = muxer.initialBoxes();
-        chunks.push({ offset: 0, data: initial });
-        let position = initial.length;
-
-        for (const sample of samples) {
-            chunks.push({ offset: position, data: sample.data });
-            muxer.appendSample(
-                JSON.stringify({
-                    ...sample.metadata,
-                    data_offset: position,
-                    data_size: sample.data.length,
-                }),
-            );
-            position += sample.data.length;
-        }
-
-        muxer.finalize();
-        const faststartEnabled = muxer.isFaststartEnabled();
-        const moovBoxSize = muxer.moovBoxSize();
-
-        for (;;) {
-            const output = muxer.nextOutput();
-            if (output === undefined) {
-                break;
-            }
-            chunks.push({ offset: output.offset, data: output.takeData() });
-            output.free();
-        }
-
-        return { chunks, faststartEnabled, moovBoxSize };
+        return muxWithMuxer(muxer, samples);
     } finally {
         muxer.free();
     }
@@ -169,6 +173,16 @@ function demuxFmp4File(bytes) {
 function muxToBytes(samples, reservedMoovBoxSize = 0) {
     const { chunks } = muxFile(samples, reservedMoovBoxSize);
     return assembleChunks(chunks);
+}
+
+/** オプション JSON を指定して mux し、1 つの MP4 ファイルにする */
+function muxToBytesWithOptions(samples, optionsJson) {
+    const muxer = wasm.Mp4FileMuxer.withOptions(optionsJson);
+    try {
+        return assembleChunks(muxWithMuxer(muxer, samples).chunks);
+    } finally {
+        muxer.free();
+    }
 }
 
 /** テスト用の AVC1 サンプルエントリー */
@@ -1135,4 +1149,261 @@ test('初期化セグメントを読む前の tracks は例外になる', () => 
     } finally {
         demuxer.free();
     }
+});
+
+test('編集リスト（edts / elst）が demux → mux で保持される', () => {
+    // 入力 movie timescale は 1000、出力は最長トラックの timescale になる。
+    // segment_duration は出力側の movie timescale に換算される
+    const cases = [
+        ['beep-aac-audio.mp4', 'audio'],
+        ['beep-flac-audio.mp4', 'audio'],
+        ['beep-opus-audio.mp4', 'audio'],
+        ['black-av1-video.mp4', 'video'],
+        ['black-h264-video.mp4', 'video'],
+        ['black-h265-hvc1-video.mp4', 'video'],
+        ['black-h265-video.mp4', 'video'],
+        ['black-vp9-video.mp4', 'video'],
+    ];
+    for (const [fileName, kind] of cases) {
+        const input = readTestData(fileName);
+        const { demuxer, tracks, samples } = demuxFile(input);
+        try {
+            assert.equal(tracks.length, 1, `${fileName} のトラック数`);
+            assert.equal(tracks[0].kind, kind, `${fileName} の種別`);
+            assert.equal(tracks[0].movie_timescale, 1000, `${fileName} の movie_timescale`);
+            const editList = tracks[0].edit_list;
+            assert.ok(editList, `${fileName} に edit_list があること`);
+            assert.equal(editList.movie_timescale, 1000, `${fileName} の edit_list.movie_timescale`);
+            assert.equal(
+                editList.media_timescale,
+                tracks[0].timescale,
+                `${fileName} の edit_list.media_timescale`,
+            );
+            assert.ok(editList.entries.length > 0, `${fileName} のエントリー数`);
+
+            // sample_entry は変更がない場合に省略されるため、直前の値を引き継ぐ
+            const lastEntries = new Map();
+            const muxSamples = samples.map((sample) => {
+                const track = tracks.find((item) => item.track_id === sample.track_id);
+                if (sample.sample_entry !== undefined) {
+                    lastEntries.set(sample.track_id, sample.sample_entry);
+                }
+                return {
+                    metadata: {
+                        track_kind: track.kind,
+                        keyframe: sample.keyframe,
+                        timescale: track.timescale,
+                        duration: sample.duration,
+                        composition_time_offset: sample.composition_time_offset,
+                        sample_entry: lastEntries.get(sample.track_id),
+                    },
+                    data: new Uint8Array(
+                        input.subarray(sample.data_offset, sample.data_offset + sample.data_size),
+                    ),
+                };
+            });
+
+            const optionsJson = JSON.stringify({ [kind]: { edit_list: editList } });
+            const output = muxToBytesWithOptions(muxSamples, optionsJson);
+
+            const roundtrip = demuxFile(output);
+            try {
+                const actual = roundtrip.tracks[0];
+                assert.equal(
+                    actual.movie_timescale,
+                    tracks[0].timescale,
+                    `${fileName} の出力 movie_timescale`,
+                );
+                assert.ok(actual.edit_list, `${fileName} の出力 edit_list`);
+                assert.equal(
+                    actual.edit_list.entries.length,
+                    editList.entries.length,
+                    `${fileName} の出力エントリー数`,
+                );
+                for (let i = 0; i < editList.entries.length; i++) {
+                    const expectedEntry = editList.entries[i];
+                    const actualEntry = actual.edit_list.entries[i];
+                    assert.equal(
+                        actualEntry.media_time,
+                        expectedEntry.media_time,
+                        `${fileName} の media_time`,
+                    );
+                    assert.equal(
+                        actualEntry.media_rate,
+                        expectedEntry.media_rate,
+                        `${fileName} の media_rate`,
+                    );
+                    // 出力 movie timescale への換算（四捨五入）
+                    const expectedDuration = Math.round(
+                        (expectedEntry.segment_duration * actual.movie_timescale) /
+                            editList.movie_timescale,
+                    );
+                    assert.equal(
+                        actualEntry.segment_duration,
+                        expectedDuration,
+                        `${fileName} の segment_duration`,
+                    );
+                }
+            } finally {
+                roundtrip.demuxer.free();
+            }
+        } finally {
+            demuxer.free();
+        }
+    }
+});
+
+test('withOptions は複数エントリーと media_rate を保持する', () => {
+    // 入力 movie timescale は 1000、出力は音声トラックの 44100 になる
+    const editList = {
+        movie_timescale: 1000,
+        media_timescale: 44100,
+        entries: [
+            { segment_duration: 500, media_time: -1, media_rate: 1 },
+            { segment_duration: 1000, media_time: 0, media_rate: 2.5 },
+            { segment_duration: 200, media_time: 1024, media_rate: -0.5 },
+        ],
+    };
+    const output = muxToBytesWithOptions(
+        [
+            {
+                metadata: {
+                    track_kind: 'audio',
+                    keyframe: true,
+                    timescale: 44100,
+                    duration: 1024,
+                    composition_time_offset: null,
+                    sample_entry: OPUS_ENTRY,
+                },
+                data: new Uint8Array(4),
+            },
+        ],
+        JSON.stringify({ audio: { edit_list: editList } }),
+    );
+
+    const roundtrip = demuxFile(output);
+    try {
+        assert.deepEqual(roundtrip.tracks[0].edit_list, {
+            movie_timescale: 44100,
+            media_timescale: 44100,
+            entries: [
+                { segment_duration: 22050, media_time: -1, media_rate: 1 },
+                { segment_duration: 44100, media_time: 0, media_rate: 2.5 },
+                { segment_duration: 8820, media_time: 1024, media_rate: -0.5 },
+            ],
+        });
+    } finally {
+        roundtrip.demuxer.free();
+    }
+});
+
+test('Fmp4SegmentMuxer withOptions で初期化セグメントに編集リストが入る', () => {
+    const editList = {
+        movie_timescale: 1000,
+        media_timescale: 90000,
+        entries: [{ segment_duration: 1000, media_time: 1024, media_rate: 1 }],
+    };
+    const metadata = [
+        {
+            track_kind: 'video',
+            timescale: 90000,
+            duration: 3000,
+            keyframe: true,
+            composition_time_offset: null,
+            data_size: 4,
+            sample_entry: AVC1_ENTRY,
+        },
+    ];
+    const muxer = wasm.Fmp4SegmentMuxer.withOptions(
+        JSON.stringify({ video: { edit_list: editList } }),
+    );
+    let segment;
+    let initSegment;
+    try {
+        segment = muxer.createMediaSegment(
+            JSON.stringify(metadata),
+            new Uint8Array([1, 2, 3, 4]),
+        );
+        initSegment = muxer.initSegment();
+    } finally {
+        muxer.free();
+    }
+
+    // init セグメント単体を demux して編集リストを確認する
+    const segmentDemuxer = new wasm.Fmp4SegmentDemuxer();
+    try {
+        segmentDemuxer.handleInitSegment(initSegment);
+        const tracks = JSON.parse(segmentDemuxer.tracks());
+        assert.equal(tracks[0].movie_timescale, 1000);
+        assert.deepEqual(tracks[0].edit_list, editList);
+    } finally {
+        segmentDemuxer.free();
+    }
+
+    // init セグメントとメディアセグメントを連結したファイルも demux できること
+    const file = new Uint8Array(initSegment.length + segment.length);
+    file.set(initSegment, 0);
+    file.set(segment, initSegment.length);
+    const result = demuxFmp4File(file);
+    try {
+        assert.equal(result.tracks[0].movie_timescale, 1000);
+        assert.deepEqual(result.tracks[0].edit_list, editList);
+    } finally {
+        result.demuxer.free();
+    }
+});
+
+test('withOptions は不正なオプションを拒否する', () => {
+    // movie_timescale は 1 以上
+    assert.throws(
+        () =>
+            wasm.Mp4FileMuxer.withOptions(
+                JSON.stringify({
+                    audio: {
+                        edit_list: { movie_timescale: 0, media_timescale: 44100, entries: [] },
+                    },
+                }),
+            ),
+        /movie_timescale must be greater than 0/,
+    );
+    // 予約サイズは 512 MiB 以下
+    assert.throws(
+        () =>
+            wasm.Mp4FileMuxer.withOptions(
+                JSON.stringify({ reservedMoovBoxSize: 513 * 1024 * 1024 }),
+            ),
+        /at most 512 MiB/,
+    );
+    // JSON の長さは 8 MiB 以下
+    assert.throws(
+        () => wasm.Mp4FileMuxer.withOptions(' '.repeat(8 * 1024 * 1024 + 1)),
+        /at most 8388608 bytes/,
+    );
+    // media_rate は i16.16 の範囲内
+    assert.throws(
+        () =>
+            wasm.Mp4FileMuxer.withOptions(
+                JSON.stringify({
+                    audio: {
+                        edit_list: {
+                            movie_timescale: 1000,
+                            media_timescale: 44100,
+                            entries: [
+                                {
+                                    segment_duration: 1,
+                                    media_time: 0,
+                                    media_rate: 1e300,
+                                },
+                            ],
+                        },
+                    },
+                }),
+            ),
+        /media_rate is out of range/,
+    );
+    // JSON の深さは 128 以下
+    const deep = '['.repeat(130) + ']'.repeat(130);
+    assert.throws(() => wasm.Mp4FileMuxer.withOptions(deep), /nesting depth/);
+    // trap せず、同じインスタンス上で引き続き操作できること
+    assert.equal(typeof wasm.version(), 'string');
 });

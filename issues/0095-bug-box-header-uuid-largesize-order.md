@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-box-header-uuid-largesize-order
 - Polished: 2026-09-25
+- Refreshed: 2026-11-14
 
 ## 目的
 
@@ -34,11 +35,11 @@
 2. `BoxHeader::decode` に渡すと、usertype の後半 8 バイトを largesize として読み、`Too small box size: actual=5, expected=32 or more` になる
 3. `BoxType::Uuid` と `BoxSize::U64` を持つ `BoxHeader` をエンコードすると、size、type、usertype、largesize の順のバイト列になる
 
-issue 0094 で追加した `arb_leading_box`（`pbt/tests/prop_fmp4_segment_mux_demux.rs`）は、`uuid` を `moof` より前に置くボックスの候補から外している。
+issue 0094 で追加した `arb_leading_box`（`pbt/tests/prop_fmp4_segment_mux_demux.rs`）は、現在は `arb_skippable_box(ctx, &[])` に委譲している。共通生成器の `arb_skippable_box` は、`moof` より前、`moof` と `mdat` の間、`mdat` の後ろに置くボックスを生成し、`uuid` を候補から外している。
 
-- 除外の理由は doc コメントに 2 つ書かれている。largesize 形式の `uuid` はこの不具合のため、32 ビット size の `uuid` は形式を分けて生成する複雑さに見合わないためである
-- `uuid` は `LEADING_BOX_TYPES` に含まれておらず、任意の 4CC を引く枝の棄却条件で外している
-- 生成器は size（と largesize）、種別、ペイロードだけを書き、usertype を書かない
+- 除外の理由は `arb_skippable_box` の doc コメントに 2 つ書かれている。largesize 形式の `uuid` はこの不具合のため、32 ビット size の `uuid` は形式を分けて生成する複雑さに見合わないためである
+- `uuid` は `SKIPPABLE_BOX_TYPES` に含まれておらず、`arb_skippable_box` の任意の 4CC を引く枝の棄却条件で外している
+- `arb_skippable_box` は size（と largesize）、種別、ペイロードだけを書き、usertype を書かない
 
 ## 設計方針
 
@@ -63,7 +64,7 @@ issue 0094 で追加した `arb_leading_box`（`pbt/tests/prop_fmp4_segment_mux_
   - `BoxSize` の doc の仕様の引用を、4.2.2 の `BoxHeader` の構文に合わせる
 - テスト（shiguredo-rust の役割分担に従い、正常系は PBT で検証する）
   - `pbt/tests/prop_basic_types.rs`: `BoxType::Uuid` と `BoxSize::U64` のラウンドトリップの PBT を新しく追加する。サンプルした usertype と largesize から 4.2.2 の順序で手で組み立てたバイト列が、エンコード結果と一致することを検証する。そのバイト列をデコードすると、元のヘッダーに戻ることも検証する
-  - `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `arb_leading_box`
+  - `pbt/tests/prop_fmp4_segment_mux_demux.rs` の `arb_skippable_box`（`arb_leading_box` の委譲先）
     - `uuid` を明示的に選ぶ枝を追加し、16 バイトの usertype を生成する
     - ヘッダーは 32 ビット size なら size=`24 + ペイロード長`、`uuid`、usertype の順、largesize 形式なら size=1、`uuid`、largesize=`32 + ペイロード長`、usertype の順に組み立てる
     - 任意の 4CC を引く枝は usertype を書かないため、`uuid` の棄却は残す

@@ -12,7 +12,7 @@
 ## develop
 
 - [CHANGE] `crates/wasm` を wasm-bindgen ベースの API に変更する
-  - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Mp4FileMuxerOutput` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
+  - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Mp4FileMuxerOutput` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
   - wasm が公開していた C ABI 関数 56 個（`c-api` 由来の 42 個と wasm 固有の 14 個）をすべて削除する
     - 代表的なものは `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` / `mp4_mux_sample_from_json` / `mp4_mux_sample_free` / `mp4_demux_sample_to_json` / `mp4_demux_track_info_to_json` / `mp4_library_version` / `mp4_estimate_maximum_moov_box_size`
     - `mp4_estimate_maximum_moov_box_size` の代替は用意しない。faststart 用の予約サイズは利用側で決める
@@ -35,6 +35,10 @@
   - `.d.ts` は wasm-bindgen が生成する
   - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
   - GitHub Release の wasm アーカイブはルートの `mp4_wasm.wasm` を廃止し、`node/` と `web/` のディレクトリ構成に変更する。CI の artifact も `pkg/` 配下になる
+  - @voluntas
+- [FIX] `Fmp4FileDemuxer` が `tfhd` の `base_data_offset` にファイル先頭からの絶対値を持つファイルを読めなかったのを修正する
+  - これまでは絶対値の `base_data_offset` をエラーにしていた
+  - メディアセグメントの先頭位置を基準に相対値へ変換して扱うようにする
   - @voluntas
 - [FIX] wasm のマルチプレックスで、デマルチプレックス側が出力する `composition_time_offset: null` を受理できずに失敗していたのを修正する
   - これまでは `null` を整数として解釈しようとして JSON のパースに失敗していた

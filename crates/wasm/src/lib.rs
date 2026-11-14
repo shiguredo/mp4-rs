@@ -30,6 +30,7 @@ mod boxes_vp09;
 mod boxes_wvtt;
 mod convert;
 mod demux;
+mod fmp4_file_demux;
 mod fmp4_segment_demux;
 mod fmp4_segment_mux;
 mod json_limit;

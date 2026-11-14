@@ -134,6 +134,38 @@ function assembleChunks(chunks) {
 }
 
 /** mux して 1 つの MP4 ファイルにする */
+function demuxFmp4File(bytes) {
+    const demuxer = new wasm.Fmp4FileDemuxer();
+    let tracks;
+    const samples = [];
+    try {
+        for (;;) {
+            const requiredJson = demuxer.requiredInput();
+            if (requiredJson !== undefined) {
+                const required = JSON.parse(requiredJson);
+                const size = required.size ?? bytes.length - required.position;
+                demuxer.handleInput(
+                    required.position,
+                    bytes.subarray(required.position, required.position + size),
+                );
+                continue;
+            }
+            if (tracks === undefined) {
+                tracks = JSON.parse(demuxer.tracks());
+            }
+            const sampleJson = demuxer.nextSample();
+            if (sampleJson === undefined) {
+                break;
+            }
+            samples.push(JSON.parse(sampleJson));
+        }
+        return { demuxer, tracks, samples };
+    } catch (error) {
+        demuxer.free();
+        throw error;
+    }
+}
+
 function muxToBytes(samples, reservedMoovBoxSize = 0) {
     const { chunks } = muxFile(samples, reservedMoovBoxSize);
     return assembleChunks(chunks);
@@ -944,5 +976,53 @@ test('サンプルを追加せずに finalize すると例外になる', () => {
         assert.throws(() => muxer.finalize(), /no samples have been appended/);
     } finally {
         muxer.free();
+    }
+});
+
+test('fMP4 ファイルを Fmp4FileDemuxer で読める', () => {
+    const { demuxer, tracks, samples } = demuxFmp4File(readTestData('black-h264-fmp4.mp4'));
+    try {
+        assert.equal(tracks.length, 1);
+        assert.equal(samples.length, 1);
+        assert.equal(samples[0].timestamp, 0);
+        assert.equal(samples[0].track_id, tracks[0].track_id);
+    } finally {
+        demuxer.free();
+    }
+});
+
+test('生成した fMP4 ファイルを Fmp4FileDemuxer で読める', () => {
+    const muxer = new wasm.Fmp4SegmentMuxer(0);
+    let initSegment;
+    let first;
+    let second;
+    try {
+        const metadata = (duration) => ({
+            track_kind: 'video',
+            timescale: 90000,
+            duration,
+            keyframe: true,
+            composition_time_offset: null,
+            data_size: VIDEO_FRAME.length,
+            sample_entry: AVC1_ENTRY,
+        });
+        first = muxer.createMediaSegment(JSON.stringify([metadata(3000)]), VIDEO_FRAME);
+        second = muxer.createMediaSegment(JSON.stringify([metadata(3000)]), VIDEO_FRAME);
+        initSegment = muxer.initSegment();
+    } finally {
+        muxer.free();
+    }
+
+    const file = new Uint8Array([...initSegment, ...first, ...second]);
+    const { demuxer, tracks, samples } = demuxFmp4File(file);
+    try {
+        assert.equal(tracks.length, 1);
+        assert.equal(samples.length, 2);
+        assert.deepEqual(
+            samples.map((sample) => sample.timestamp),
+            [0, 3000],
+        );
+    } finally {
+        demuxer.free();
     }
 });

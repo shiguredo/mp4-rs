@@ -168,6 +168,15 @@ impl Fmp4FileDemuxer {
         }
     }
 
+    /// 入力データの処理で発生したエラーを返す
+    ///
+    /// [`Self::handle_input`] はエラーを返さず内部に保持するため、
+    /// 呼び出し側が早期に検出したい場合に使う。
+    /// エラーは [`Self::tracks`] などの呼び出しで消費される。
+    pub fn last_error(&self) -> Option<&DemuxError> {
+        self.handle_input_error.as_ref()
+    }
+
     /// 次の処理を進めるために必要な入力範囲を返す
     pub fn required_input(&self) -> Option<RequiredInput> {
         if self.handle_input_error.is_some() || !self.pending_samples.is_empty() {
@@ -462,14 +471,7 @@ impl Fmp4FileDemuxer {
         };
 
         let data = self.available_bytes(input, offset, box_size)?;
-        let (moof_box, moof_size) = MoofBox::decode(&data[..box_size])?;
-        for traf in &moof_box.traf_boxes {
-            if traf.tfhd_box.base_data_offset.is_some() {
-                return Err(DemuxError::DecodeError(Error::invalid_data(
-                    "tfhd with absolute base_data_offset is not supported in Fmp4FileDemuxer",
-                )));
-            }
-        }
+        let (_, moof_size) = MoofBox::decode(&data[..box_size])?;
 
         let mdat_offset = offset
             .checked_add(moof_size as u64)
@@ -596,7 +598,9 @@ impl Fmp4FileDemuxer {
         let pending_samples = {
             let track_infos = &self.track_infos;
             let track_runtimes = &mut self.track_runtimes;
-            let raw_samples = self.inner.handle_media_segment(data)?;
+            let raw_samples = self
+                .inner
+                .handle_media_segment_with_file_offset(data, moof_offset)?;
             Self::build_pending_samples(track_infos, track_runtimes, moof_offset, raw_samples)?
         };
         self.pending_samples.extend(pending_samples);

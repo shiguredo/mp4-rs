@@ -277,7 +277,8 @@ impl Fmp4SegmentDemuxer {
     ///
     /// # サポートする `base_data_offset` モード
     ///
-    /// - `tfhd` に `base_data_offset` が明示されている場合: その値を `data` スライス先頭からの相対値として使用する
+    /// - `tfhd` に `base_data_offset` が明示されている場合: その値を `data` スライス先頭からの相対値として使用する。
+    ///   `handle_media_segment_with_file_offset` ではファイル先頭からの絶対値をスライス先頭からの相対値に変換する
     /// - `default_base_is_moof = true` かつ `base_data_offset` なし: moof 先頭を基準とする
     /// - `default_base_is_moof = false` かつ `base_data_offset` なし: 最初の `traf` は moof 先頭、2 番目以降は前の `traf` のデータ末尾を基準とする（ISO 14496-12 Section 8.8.8）
     ///
@@ -288,6 +289,27 @@ impl Fmp4SegmentDemuxer {
     /// その後に渡したメディアセグメントで `sample_entry` が `Some` になるサンプルは、
     /// エラーを返した呼び出しがなかった場合と同じになる。
     pub fn handle_media_segment(&mut self, data: &[u8]) -> Result<Vec<Sample<'_>>, DemuxError> {
+        self.handle_media_segment_inner(data, None)
+    }
+
+    /// ファイル全体を読み込むデマルチプレクサ向けにメディアセグメントを処理する
+    ///
+    /// `file_offset` は `data` の先頭がファイル先頭から何バイト目かを表す。
+    /// `tfhd` の `base_data_offset` がファイル先頭からの絶対値である場合に、
+    /// スライス先頭からの相対値へ変換するために使う。
+    pub fn handle_media_segment_with_file_offset(
+        &mut self,
+        data: &[u8],
+        file_offset: u64,
+    ) -> Result<Vec<Sample<'_>>, DemuxError> {
+        self.handle_media_segment_inner(data, Some(file_offset))
+    }
+
+    fn handle_media_segment_inner(
+        &mut self,
+        data: &[u8],
+        file_offset: Option<u64>,
+    ) -> Result<Vec<Sample<'_>>, DemuxError> {
         if data.is_empty() {
             return Err(DemuxError::DecodeError(Error::invalid_input(
                 "empty media segment",
@@ -438,6 +460,7 @@ impl Fmp4SegmentDemuxer {
                         skipped_track,
                         moof_offset,
                         prev_traf_data_end,
+                        file_offset,
                     )?);
                     continue;
                 };
@@ -461,7 +484,7 @@ impl Fmp4SegmentDemuxer {
                     .unwrap_or(0);
 
                 let base_data_offset =
-                    traf_base_data_offset(traf, moof_offset, prev_traf_data_end)?;
+                    traf_base_data_offset(traf, moof_offset, prev_traf_data_end, file_offset)?;
 
                 let mut trun_decode_time = base_media_decode_time;
                 let mut traf_data_end = base_data_offset;
@@ -643,8 +666,10 @@ fn skipped_traf_data_end(
     skipped_track: &SkippedTrack,
     moof_offset: usize,
     prev_traf_data_end: Option<usize>,
+    file_offset: Option<u64>,
 ) -> Result<usize, DemuxError> {
-    let base_data_offset = traf_base_data_offset(traf, moof_offset, prev_traf_data_end)?;
+    let base_data_offset =
+        traf_base_data_offset(traf, moof_offset, prev_traf_data_end, file_offset)?;
 
     let mut traf_data_end = base_data_offset;
     let mut prev_trun_data_end: Option<usize> = None;
@@ -705,8 +730,18 @@ fn traf_base_data_offset(
     traf: &TrafBox,
     moof_offset: usize,
     prev_traf_data_end: Option<usize>,
+    file_offset: Option<u64>,
 ) -> Result<usize, DemuxError> {
     if let Some(explicit_offset) = traf.tfhd_box.base_data_offset {
+        // ファイル全体を読む場合は、絶対値の base_data_offset をスライス先頭からの相対値に直す
+        let explicit_offset = match file_offset {
+            Some(file_offset) => explicit_offset.checked_sub(file_offset).ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data(
+                    "base_data_offset is before the media segment",
+                ))
+            })?,
+            None => explicit_offset,
+        };
         return usize::try_from(explicit_offset).map_err(|_| {
             DemuxError::DecodeError(Error::invalid_data("base_data_offset exceeds usize::MAX"))
         });

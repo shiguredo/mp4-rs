@@ -75,6 +75,7 @@ const {
   Mp4FileMuxer,
   Fmp4SegmentMuxer,
   Fmp4SegmentDemuxer,
+  Fmp4FileDemuxer,
   Mp4FileKindDetector,
   version,
 } = require('./pkg/node/mp4_wasm.js');
@@ -247,6 +248,22 @@ fMP4 の初期化セグメントとメディアセグメントを読み取りま
 | `handleInitSegment(data: Uint8Array \| number[])` | 初期化セグメントを読み込む |
 | `tracks(): string` | トラック情報を JSON の配列で返す |
 | `handleMediaSegment(data: Uint8Array \| number[]): string` | メディアセグメントを読み込み、サンプル情報を JSON の配列で返す |
+
+### `Fmp4FileDemuxer`
+
+fMP4 ファイル全体（`styp` / `moof` / `mdat` が並んだファイル）を読み取ります。`Mp4FileDemuxer` は通常の MP4 用であり、fMP4 ファイルにはこのクラスを使ってください。
+
+| メソッド | 説明 |
+|---|---|
+| `constructor()` | デマルチプレクサを作成する |
+| `requiredInput(): string \| undefined` | 次に必要な入力データを JSON で返す |
+| `handleInput(position: number, data: Uint8Array \| number[])` | 入力データを供給する。`position` が負値や小数の場合と、入力が不正な場合は例外 |
+| `tracks(): string` | トラック情報を JSON の配列で返す |
+| `nextSample(): string \| undefined` | 次のサンプルを JSON で返す。終端では `undefined` |
+
+`requiredInput()` が `undefined` を返す間は `nextSample()` でサンプルを取り出せます。`nextSample()` が `undefined` を返し、かつ `requiredInput()` も `undefined` なら終端です。入力が必要な間は `requiredInput()` が `{"position": .., "size": ..}` を返すので、その範囲を `handleInput()` に渡してください。
+
+入力が不正な場合は `handleInput()` が例外になります。エラーになったインスタンスは再利用できないため、新しいインスタンスを作成してください。
 
 ### `Mp4FileKindDetector`
 

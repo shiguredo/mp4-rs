@@ -40,6 +40,21 @@ pub(crate) fn parse_json(
 ) -> Result<Avc1Box, nojson::JsonParseError> {
     let sps_list: Vec<Vec<u8>> = value.to_member("sps")?.required()?.try_into()?;
     let pps_list: Vec<Vec<u8>> = value.to_member("pps")?.required()?.try_into()?;
+    // avcC の個数は SPS が 5 ビット、PPS が 8 ビットで表現される
+    if sps_list.len() > 31 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "sps",
+            "sps must contain at most 31 entries",
+        ));
+    }
+    if pps_list.len() > 255 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "pps",
+            "pps must contain at most 255 entries",
+        ));
+    }
     // avcC の NALU 長は 16 ビットであり、それ以上の要素はエンコードできない
     for nalu in sps_list.iter().chain(pps_list.iter()) {
         if nalu.len() > usize::from(u16::MAX) {
@@ -371,5 +386,26 @@ mod tests {
             let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
             assert!(parse_json(json.value()).is_err(), "{to} は拒否されること");
         }
+    }
+
+    /// SPS / PPS の個数上限を parse 時に検査すること
+    #[test]
+    fn test_json_to_avc1_rejects_too_many_parameter_sets() {
+        let prefix = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":66,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3"#;
+        let sps = (0..32).map(|_| "[1]").collect::<Vec<_>>().join(",");
+        let json_str = format!(r#"{prefix},"sps":[{sps}],"pps":[[2]]}}"#);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(
+            parse_json(json.value()).is_err(),
+            "SPS 32 個は拒否されること"
+        );
+
+        let pps = (0..256).map(|_| "[2]").collect::<Vec<_>>().join(",");
+        let json_str = format!(r#"{prefix},"sps":[[1]],"pps":[{pps}]}}"#);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(
+            parse_json(json.value()).is_err(),
+            "PPS 256 個は拒否されること"
+        );
     }
 }

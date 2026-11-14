@@ -712,6 +712,44 @@ test('finalize まで待たずに拒否すべき入力は appendSample で例外
                 ],
             },
         },
+        // SPS の個数上限は 31
+        {
+            track_kind: 'video',
+            sample_entry: {
+                ...AVC1_ENTRY,
+                sps: Array.from({ length: 32 }, () => [1]),
+            },
+        },
+        // NALU 配列の個数上限は 255
+        {
+            track_kind: 'video',
+            sample_entry: {
+                kind: 'hev1',
+                width: 640,
+                height: 480,
+                generalProfileSpace: 0,
+                generalTierFlag: 0,
+                generalProfileIdc: 2,
+                generalProfileCompatibilityFlags: 1610612736,
+                generalConstraintIndicatorFlags: 193514046488576,
+                generalLevelIdc: 120,
+                chromaFormatIdc: 1,
+                bitDepthLumaMinus8: 0,
+                bitDepthChromaMinus8: 0,
+                minSpatialSegmentationIdc: 0,
+                parallelismType: 0,
+                avgFrameRate: 0,
+                constantFrameRate: 0,
+                numTemporalLayers: 1,
+                temporalIdNested: 0,
+                lengthSizeMinusOne: 3,
+                naluArrays: Array.from({ length: 256 }, () => ({
+                    naluType: 32,
+                    arrayCompleteness: 0,
+                    units: [[0]],
+                })),
+            },
+        },
     ];
 
     for (const entry of cases) {

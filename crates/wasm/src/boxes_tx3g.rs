@@ -69,6 +69,14 @@ pub(crate) fn parse_json(
 
     // ftab は `font_id` と `font_name` を持つオブジェクトの配列のため、
     // 要素ごとに FontRecord へ変換する
+    // ftab の entry_count は 16 ビット
+    if value.to_member("ftab")?.required()?.to_array()?.count() > usize::from(u16::MAX) {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "ftab",
+            "ftab must contain at most 65535 entries",
+        ));
+    }
     let ftab_entries = value
         .to_member("ftab")?
         .required()?
@@ -375,5 +383,19 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let result = parse_json(json.value());
         assert!(result.is_err(), "display_flags 欠落時はパース失敗すること");
+    }
+
+    /// ftab の個数上限を parse 時に検査すること
+    #[test]
+    fn test_json_to_tx3g_rejects_too_many_ftab_entries() {
+        let entries = (0..65536)
+            .map(|_| r#"{"font_id":0,"font_name":[0]}"#)
+            .collect::<Vec<_>>()
+            .join(",");
+        let json_str = format!(
+            r#"{{"kind":"tx3g","data_reference_index":1,"default_style":{{}},"ftab":[{entries}]}}"#
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
     }
 }

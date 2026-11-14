@@ -92,9 +92,25 @@ pub(crate) fn parse_json(
 ) -> Result<(u16, u16, HvccBox), nojson::JsonParseError> {
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
     let mut nalu_arrays = Vec::new();
+    // hvcC の numOfArrays は 8 ビット
+    if nalu_arrays_value.to_array()?.count() > 255 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "naluArrays",
+            "naluArrays must contain at most 255 arrays",
+        ));
+    }
     for nalu_array in nalu_arrays_value.to_array()? {
         let nal_unit_type: Uint<u8, 6> = crate::boxes::uint_u8_member(nalu_array, "naluType")?;
         let nalus: Vec<Vec<u8>> = nalu_array.to_member("units")?.required()?.try_into()?;
+        // hvcC の numNalus は 16 ビット
+        if nalus.len() > usize::from(u16::MAX) {
+            return Err(nalu_array
+                .to_member("units")
+                .and_then(|member| member.required())
+                .map(|value| value.invalid("units must contain at most 65535 NALUs"))
+                .unwrap_or_else(|error| error));
+        }
         // hvcC の NALU 長は 16 ビットであり、それ以上の要素はエンコードできない
         if nalus.iter().any(|nalu| nalu.len() > usize::from(u16::MAX)) {
             return Err(nalu_array
@@ -587,6 +603,29 @@ mod tests {
 
         // naluType は 6 ビット
         let json_str = build_test_json("hev1", r#"[{"naluType":64,"units":[[1]]}]"#, None);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value(), "hev1").is_err());
+    }
+
+    /// NALU 配列数と配列内 NALU 数の上限を parse 時に検査すること
+    #[test]
+    fn test_json_to_hevc_rejects_too_many_nalus() {
+        // 配列数は 255 まで
+        let arrays = (0..256)
+            .map(|_| r#"{"naluType":32,"arrayCompleteness":0,"units":[[1]]}"#)
+            .collect::<Vec<_>>()
+            .join(",");
+        let json_str = build_test_json("hev1", &format!("[{arrays}]"), None);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value(), "hev1").is_err());
+
+        // 1 配列あたりの NALU 数は 65535 まで
+        let units = (0..65536).map(|_| "[0]").collect::<Vec<_>>().join(",");
+        let json_str = build_test_json(
+            "hev1",
+            &format!(r#"[{{"naluType":32,"arrayCompleteness":0,"units":[{units}]}}]"#),
+            None,
+        );
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         assert!(parse_json(json.value(), "hev1").is_err());
     }

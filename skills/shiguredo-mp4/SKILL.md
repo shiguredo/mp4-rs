@@ -14,7 +14,7 @@ Sans I/O 設計に基づく MP4 (ISO Base Media File Format) の mux/demux ラ�
 - **Sans I/O**: I/O を完全に分離した設計。ファイル読み書きは利用側の責務
 - **高レベル API**: `Mp4FileMuxer` / `Mp4FileDemuxer` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` による mux/demux
 - **ボックス単位の API**: 全ボックスが `Encode` / `Decode` を実装し、直接エンコード/デコード可能
-- **C API / WebAssembly API**: `crates/c-api` / `crates/wasm` で提供
+- **WebAssembly API**: `crates/wasm` で提供
 
 ## バージョン情報
 

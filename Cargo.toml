@@ -12,7 +12,6 @@ categories = ["no-std"]
 
 [workspace]
 members = [
-  "crates/c-api",
   "crates/wasm",
   "examples/dump_wasm",
   "examples/transcode_wasm",

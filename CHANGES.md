@@ -11,6 +11,12 @@
 
 ## develop
 
+- [CHANGE] `crates/c-api` を削除する
+  - C ABI の維持コストが、C 言語から利用したい利用者に対して見合わないため削除する
+  - Python は PyO3 + Maturin で直接 Rust を呼び、iOS / Android は Rust をそのまま組み込む方針にする
+  - C ABI 関数 42 個と `#[repr(C)]` 型 23 個、`include/mp4.h`、C サンプルを削除する
+  - CI の `build-c-api` ジョブと Windows の MSVC 検証、Release の 8 プラットフォーム向け C API ビルドを削除する
+  - @voluntas
 - [CHANGE] `crates/wasm` を wasm-bindgen ベースの API に変更する
   - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Mp4FileMuxerOutput` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
   - wasm が公開していた C ABI 関数 56 個（`c-api` 由来の 42 個と wasm 固有の 14 個）をすべて削除する

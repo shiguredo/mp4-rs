@@ -1,16 +1,12 @@
 .PHONY: test cover pbt pbt-with-cover fuzzing fuzzing-list miri check clippy fmt clean
 
 # 全テストを実行する
-#
-# c-api の integration test は libmp4.a の事前ビルドと C コンパイラが必要なため
-# workspace レベルでは除外し、lib test のみを追加で実行する
 test:
-	cargo test --workspace --exclude c-api
-	cargo test -p c-api --lib
+	cargo test --workspace
 
 # 全テストカバレッジ付きで実行する
 cover:
-	cargo llvm-cov --tests --workspace --ignore-filename-regex 'crates/c-api/'
+	cargo llvm-cov --tests --workspace
 
 # PBT を実行する
 pbt:

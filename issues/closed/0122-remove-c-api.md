@@ -1,9 +1,9 @@
 # crates/c-api を削除する
 
 - Created: 2026-11-13
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-14
 - Branch: feature/remove-c-api
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-14
 
 ## 目的
 
@@ -37,6 +37,8 @@ C API は Python バインディングを想定して作られたが、Python �
   - `release.yml` の 8 プラットフォームビルドジョブ
   - `README.md` / `README.en.md` の C API に関する記述
   - `skills/shiguredo-mp4/SKILL.md` の C API に関する記述
+  - `Cargo.lock` の `c-api` エントリー（workspace からの削除に伴い再生成する）
+  - `CHANGES.md` の `[CHANGE]` への削除の追記
 - iOS / Android 向けには、必要になった時点で利用側が薄いファサードクレートを作るか、UniFFI で Swift / Kotlin のバインディングを生成する。本リポジトリでは C ABI の構造体を公開しない
 
 ## 完了条件
@@ -46,7 +48,15 @@ C API は Python バインディングを想定して作られたが、Python �
 - `ci.yml` と `release.yml` から C API 関連のジョブと手順が消えている
 - `README.md` / `README.en.md` / `skills/shiguredo-mp4/SKILL.md` に C API の記述が残っていない
 - `prek` のフックがすべて通る
+- `Cargo.lock` から `c-api` のエントリーが消えている
+- `CHANGES.md` に削除の `[CHANGE]` が追記されている
 
 ## 解決方法
 
-{実装後に記載する}
+- `crates/c-api` 配下を削除する
+- ルート `Cargo.toml` の workspace メンバーから `crates/c-api` を外し、`Cargo.lock` を再生成する
+- `Makefile` の `--exclude c-api` と `c-api` の lib test を削除する
+- `ci.yml` の `build-c-api` ジョブ、Windows の MSVC 検証、MinGW への切り替えを削除する
+- `release.yml` の C API 向け `upload-assets` ジョブを削除する
+- `README.md` / `README.en.md` / `skills/shiguredo-mp4/SKILL.md` から C API の記述を削除する
+- `CHANGES.md` に `[CHANGE]` を追記する

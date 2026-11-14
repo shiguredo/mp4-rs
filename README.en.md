@@ -25,7 +25,6 @@ A zero-dependency, Sans I/O MP4 file mux/demux library implemented in Rust. It c
 - MP4 file mux/demux
 - Fragmented MP4 (fMP4) mux/demux
 - Provides high-level APIs
-- Provides C APIs
 - Provides WebAssembly APIs
 - Supports Windows / macOS / Linux
 

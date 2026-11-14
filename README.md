@@ -30,7 +30,6 @@ Rust で実装された依存 0 かつ Sans I/O な MP4 ファイルの mux/demu
 - MP4 ファイルの mux/demux
 - Fragmented MP4 (fMP4) の mux/demux
 - 高レベル API の提供
-- C API の提供
 - WebAssembly API の提供
 - Windows / macOS / Linux 対応
 

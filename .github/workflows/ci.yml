@@ -24,10 +24,6 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Windows の場合には MSVC 系ではなく MinGW 系を使うようにする
-        if: contains(matrix.os, 'windows')
-        run: rustup set default-host x86_64-pc-windows-gnu
-
       # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
       - run: rustup show
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
@@ -40,8 +36,8 @@ jobs:
       - run: cargo fmt --check
         working-directory: fuzz
       - run: cargo check --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
-      # libfuzzer-sys の Windows 用 C++ 部は MinGW GCC でビルドできないため
       # fuzz の check / clippy は Windows 以外で回す
+      # (Windows 向けの fuzz ビルドはこの CI では未対応)
       - if: runner.os != 'Windows'
         run: cargo check --all-targets
         working-directory: fuzz
@@ -54,16 +50,6 @@ jobs:
       - run: cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz
         env:
           RUSTDOCFLAGS: "-D warnings"
-
-      - name: Windows の場合には MSVC 系でもビルドだけは試す
-        if: contains(matrix.os, 'windows')
-        run: |
-          rustup target add x86_64-pc-windows-msvc
-          cargo build --package c-api --target x86_64-pc-windows-msvc
-
-      - name: MSVC ビルド成果物の確認
-        if: contains(matrix.os, 'windows')
-        run: ls target/x86_64-pc-windows-msvc/debug/mp4.lib
 
   test-wasm:
     name: Test WebAssembly
@@ -145,58 +131,6 @@ jobs:
 
       - name: Run web API tests
         run: node --test crates/wasm/tests/wasm_web.test.mjs
-
-  build-c-api:
-    name: Build C API Library
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            artifact-name: ubuntu-24.04_x86_64
-          - os: ubuntu-24.04-arm
-            artifact-name: ubuntu-24.04_arm64
-          - os: windows-2025
-            artifact-name: windows-2025_x86_64
-          - os: macos-26
-            artifact-name: macos-26_arm64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - name: Checkout sources
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # rust-toolchain.toml に固定した MSRV のツールチェーンを導入する
-      - run: rustup show
-      - uses: shiguredo/github-actions/.github/actions/rust-cache@main
-        with:
-          os: ${{ matrix.os }}
-          toolchain: "1.93"
-
-      - name: Build C API
-        run: cargo build --release --package c-api
-
-      - name: Prepare artifacts (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          mkdir -p artifacts/lib artifacts/include
-          cp $(ls target/release/libmp4.* | grep -E '\.(a|so|dylib)$') artifacts/lib/
-          cp crates/c-api/include/mp4.h artifacts/include/
-
-      - name: Prepare artifacts (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Path "artifacts/lib" -Force
-          New-Item -ItemType Directory -Path "artifacts/include" -Force
-          Copy-Item -Path "target/release/mp4.dll" -Destination "artifacts/lib/"
-          Copy-Item -Path "target/release/mp4.lib" -Destination "artifacts/lib/"
-          Copy-Item -Path "crates/c-api/include/mp4.h" -Destination "artifacts/include/"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: c-api-${{ matrix.artifact-name }}
-          path: artifacts/
 
   build-wasm:
     name: Build WebAssembly
@@ -286,7 +220,7 @@ jobs:
       - run: make miri
 
   slack_notify:
-    needs: [ci, test-wasm, build-c-api, build-wasm, miri]
+    needs: [ci, test-wasm, build-wasm, miri]
     runs-on: ubuntu-slim
     if: ${{ always() }}
     permissions:

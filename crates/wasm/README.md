@@ -68,7 +68,7 @@ node --test crates/wasm/tests/wasm_api.test.mjs
 node --test crates/wasm/tests/wasm_web.test.mjs
 ```
 
-`wasm-opt` は [binaryen](https://github.com/WebAssembly/binaryen) の `version_125` を CI と Release で使用しています。手元のバージョンが異なると出力サイズも変わるため、リリース物を再現する場合は同じバージョンを使用してください。
+CI ではリリース物と同じく `wasm-opt` を適用した後にテストしています。`wasm-opt` は [binaryen](https://github.com/WebAssembly/binaryen) の `version_125` を CI と Release で使用しています。手元のバージョンが異なると出力サイズも変わるため、リリース物を再現する場合は同じバージョンを使用してください。
 
 ### release-wasm プロファイル
 

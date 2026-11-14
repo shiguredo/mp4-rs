@@ -100,6 +100,13 @@ jobs:
           tar xzf wasm-bindgen.tar.gz
           sudo mv wasm-bindgen-0.2.130-x86_64-unknown-linux-musl/wasm-bindgen /usr/local/bin/
 
+      - name: Install wasm-opt
+        run: |
+          curl -L -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_125/binaryen-version_125-x86_64-linux.tar.gz
+          echo "7c3bc16599c8274a04d34a504fe4be2047884f900e0e2da2f6fb9cd667183be4  binaryen.tar.gz" | sha256sum -c -
+          tar xzf binaryen.tar.gz
+          sudo mv binaryen-version_125/bin/wasm-opt /usr/local/bin/
+
       - name: Build WebAssembly
         run: cargo build -p wasm --target wasm32-unknown-unknown --profile release-wasm
 
@@ -108,6 +115,10 @@ jobs:
           wasm-bindgen --target nodejs \
             --out-dir crates/wasm/pkg/node \
             target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      # リリース物と同じ最適化を適用した成果物をテストする
+      - name: Optimize node bindings
+        run: wasm-opt -Oz --strip-debug --enable-bulk-memory -o crates/wasm/pkg/node/mp4_wasm_bg.wasm crates/wasm/pkg/node/mp4_wasm_bg.wasm
 
       - name: Run mux.js test
         run: |
@@ -128,6 +139,9 @@ jobs:
 
       - name: Generate web bindings
         run: wasm-bindgen --target web --out-dir crates/wasm/pkg/web target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      - name: Optimize web bindings
+        run: wasm-opt -Oz --strip-debug --enable-bulk-memory -o crates/wasm/pkg/web/mp4_wasm_bg.wasm crates/wasm/pkg/web/mp4_wasm_bg.wasm
 
       - name: Run web API tests
         run: node --test crates/wasm/tests/wasm_web.test.mjs

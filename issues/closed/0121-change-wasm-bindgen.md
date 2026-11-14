@@ -85,12 +85,12 @@
 
 検証結果:
 
-- `cargo test -p wasm` が 79 件すべて成功する
+- `cargo test -p wasm` が全件成功する
 - `cargo test --workspace --exclude c-api` が成功する
 - `cargo clippy -p wasm --all-targets -- -D warnings` が警告なしで通る
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude c-api --no-deps` が通る
 - 2 トラックの MP4 をデマルチプレックスでき、`track_id` / `kind` / `duration` / `timescale` が正しく取得できる
 - デマルチプレックスしたサンプルの `sample_entry` と `composition_time_offset: null` をそのままマルチプレックス側に渡せる。8 コーデックで往復を確認する
 - fMP4 のメディアセグメントを生成して読み戻せる
-- `node --test crates/wasm/tests/wasm_api.test.mjs` が 11 件すべて成功する
+- `node --test crates/wasm/tests/wasm_api.test.mjs` が全件成功する
 - `wasm-opt -Oz --strip-debug` 後で `.wasm` が 516,210 バイト、gzip 後で 192,795 バイトになる

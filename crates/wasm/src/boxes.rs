@@ -84,16 +84,31 @@ pub(crate) fn bool_or_int_member(
 fn check_uint_bits(
     number: u64,
     bits: u32,
+    name: &str,
     member: nojson::RawJsonValue<'_, '_>,
 ) -> Result<(), nojson::JsonParseError> {
     if bits < 64 {
         let limit = 1u64 << bits;
         if number >= limit {
-            let message = format!("must be less than {limit}");
+            let message = format!("{name} must be less than {limit}");
             return Err(member.invalid(message.as_str()));
         }
     }
     Ok(())
+}
+
+/// メンバーを取り直してエラーを作る
+///
+/// 値の検証をした後に、そのフィールド名を含むエラーを返すために使う。
+pub(crate) fn invalid_member(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+    message: &str,
+) -> nojson::JsonParseError {
+    match value.to_member(name).and_then(|member| member.required()) {
+        Ok(member) => member.invalid(message),
+        Err(error) => error,
+    }
 }
 
 /// JSON の数値を、指定したビット幅の `Uint<u8, BITS, OFFSET>` として読み取る
@@ -103,7 +118,7 @@ pub(crate) fn uint_u8_member<const BITS: u32, const OFFSET: u32>(
 ) -> Result<Uint<u8, BITS, OFFSET>, nojson::JsonParseError> {
     let member = value.to_member(name)?.required()?;
     let number: u8 = member.try_into()?;
-    check_uint_bits(u64::from(number), BITS, member)?;
+    check_uint_bits(u64::from(number), BITS, name, member)?;
     Ok(Uint::new(number))
 }
 
@@ -114,7 +129,7 @@ pub(crate) fn uint_u16_member<const BITS: u32, const OFFSET: u32>(
 ) -> Result<Uint<u16, BITS, OFFSET>, nojson::JsonParseError> {
     let member = value.to_member(name)?.required()?;
     let number: u16 = member.try_into()?;
-    check_uint_bits(u64::from(number), BITS, member)?;
+    check_uint_bits(u64::from(number), BITS, name, member)?;
     Ok(Uint::new(number))
 }
 
@@ -125,7 +140,7 @@ pub(crate) fn uint_u64_member<const BITS: u32, const OFFSET: u32>(
 ) -> Result<Uint<u64, BITS, OFFSET>, nojson::JsonParseError> {
     let member = value.to_member(name)?.required()?;
     let number: u64 = member.try_into()?;
-    check_uint_bits(number, BITS, member)?;
+    check_uint_bits(number, BITS, name, member)?;
     Ok(Uint::new(number))
 }
 
@@ -141,7 +156,7 @@ pub(crate) fn optional_uint_u8_member<const BITS: u32, const OFFSET: u32>(
         Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(None),
         Some(member) => {
             let number: u8 = member.try_into()?;
-            check_uint_bits(u64::from(number), BITS, member)?;
+            check_uint_bits(u64::from(number), BITS, name, member)?;
             Ok(Some(Uint::new(number)))
         }
     }

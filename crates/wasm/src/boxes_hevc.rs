@@ -53,7 +53,7 @@ pub(crate) fn fmt_json(
 /// `naluArrays` を JSON 配列に変換する
 ///
 /// コアの [`HvccNalUintArray`] は `DisplayJson` を実装していないため、
-/// JSON のキー (`naluType` / `units`) に対応する変換をここで行う。
+/// JSON のキー (`naluType` / `arrayCompleteness` / `units`) に対応する変換をここで行う。
 fn fmt_nalu_arrays(
     f: &mut nojson::JsonFormatter<'_, '_>,
     nalu_arrays: &[HvccNalUintArray],
@@ -103,7 +103,19 @@ pub(crate) fn parse_json(
             Some(member) => {
                 let completeness: u8 = member.try_into()?;
                 if completeness > 1 {
-                    return Err(member.invalid("must be 0 or 1"));
+                    return Err(member.invalid("arrayCompleteness must be 0 or 1"));
+                }
+                // hvc1 はパラメータセット（VPS / SPS / PPS）だけ 1 が必須で、
+                // それ以外の配列は 0 が必須である。hev1 は既定値 0 で 1 も許される
+                if kind == "hvc1" {
+                    let expected = default_array_completeness(kind, nal_unit_type.get());
+                    if completeness != expected {
+                        return Err(member.invalid(if expected == 0 {
+                            "arrayCompleteness must be 0 for hvc1 non-parameter-set arrays"
+                        } else {
+                            "arrayCompleteness must be 1 for hvc1 parameter set arrays"
+                        }));
+                    }
                 }
                 completeness
             }
@@ -146,6 +158,22 @@ pub(crate) fn parse_json(
         crate::boxes::uint_u8_member(value, "temporalIdNested")?;
     let length_size_minus_one: Uint<u8, 2, 0> =
         crate::boxes::uint_u8_member(value, "lengthSizeMinusOne")?;
+    // 2 は予約値であり、NAL ユニット長として解釈できない
+    if length_size_minus_one.get() == 2 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "lengthSizeMinusOne",
+            "lengthSizeMinusOne must be 0, 1, or 3",
+        ));
+    }
+    // 3 は予約値
+    if constant_frame_rate.get() == 3 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "constantFrameRate",
+            "constantFrameRate must be 0, 1, or 2",
+        ));
+    }
 
     let hvcc_box = HvccBox {
         general_profile_space,
@@ -443,32 +471,54 @@ mod tests {
     }
 
     #[test]
-    fn test_array_completeness_is_preserved() {
-        // 明示された値は kind に関係なくそのまま使う
+    fn test_array_completeness_must_match_the_kind() {
+        // hvc1 のパラメータセットは 1 が必須。明示された 1 はそのまま使う
+        let json_str = build_test_json(
+            "hvc1",
+            r#"[{"naluType": 32, "arrayCompleteness": 1, "units": [[64, 1, 12, 1]]}]"#,
+            None,
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let (_, _, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
+        assert_eq!(hvcc_box.nalu_arrays[0].array_completeness.get(), 1);
+
+        // hvc1 のパラメータセットに 0 は指定できない
         let json_str = build_test_json(
             "hvc1",
             r#"[{"naluType": 32, "arrayCompleteness": 0, "units": [[64, 1, 12, 1]]}]"#,
             None,
         );
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (_, _, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
-        assert_eq!(hvcc_box.nalu_arrays[0].array_completeness.get(), 0);
+        assert!(parse_json(json.value(), "hvc1").is_err());
 
-        let out = nojson::json(|f| {
-            fmt_json(
-                f,
-                "hvc1",
-                &crate::boxes::build_visual_sample_entry_fields(1920, 1080),
-                &hvcc_box,
-            )
-        })
-        .to_string();
-        assert!(
-            out.contains(r#""arrayCompleteness":0"#),
-            "明示した値が出力されること: {out}"
+        // hvc1 の非パラメータセットに 1 は指定できない
+        let json_str = build_test_json(
+            "hvc1",
+            r#"[{"naluType": 39, "arrayCompleteness": 1, "units": [[5, 1]]}]"#,
+            None,
         );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value(), "hvc1").is_err());
 
-        // 2 は拒否する
+        // hev1 は 0 / 1 のどちらも受理する
+        for completeness in [0, 1] {
+            let json_str = build_test_json(
+                "hev1",
+                &format!(
+                    r#"[{{"naluType": 32, "arrayCompleteness": {completeness}, "units": [[64, 1, 12, 1]]}}]"#
+                ),
+                None,
+            );
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            let (_, _, hvcc_box) =
+                parse_json(json.value(), "hev1").expect("hev1 では 0 / 1 を受理すること");
+            assert_eq!(
+                hvcc_box.nalu_arrays[0].array_completeness.get(),
+                completeness
+            );
+        }
+
+        // 2 はどちらでも拒否する
         let json_str = build_test_json(
             "hvc1",
             r#"[{"naluType": 32, "arrayCompleteness": 2, "units": [[64, 1, 12, 1]]}]"#,
@@ -515,6 +565,8 @@ mod tests {
             ),
             (r#""numTemporalLayers": 1"#, r#""numTemporalLayers": 8"#),
             (r#""lengthSizeMinusOne": 3"#, r#""lengthSizeMinusOne": 4"#),
+            (r#""lengthSizeMinusOne": 3"#, r#""lengthSizeMinusOne": 2"#),
+            (r#""constantFrameRate": 0"#, r#""constantFrameRate": 3"#),
         ];
         for (from, to) in cases {
             let json_str = base.replace(from, to);

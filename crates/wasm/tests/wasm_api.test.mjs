@@ -587,7 +587,7 @@ test('ビット幅を超えるサンプルエントリーは例外になる', ()
                         sample_entry: { ...AVC1_ENTRY, lengthSizeMinusOne: 4 },
                     }),
                 ),
-            /must be less than/,
+            /lengthSizeMinusOne must be less than/,
         );
     } finally {
         muxer.free();

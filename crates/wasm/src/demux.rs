@@ -88,7 +88,8 @@ impl Mp4FileDemuxer {
     ///
     /// `timestamp / timescale` 秒の位置を探し、その位置を含むサンプルから
     /// 次の `nextSample()` が開始されるようにする。
-    /// `timestamp` は小数でもよい。
+    /// `timestamp` は小数でもよい。ナノ秒未満は切り上げるため、
+    /// 境界のごくわずか手前（1 ns 未満）を指定すると次のサンプルに進む。
     #[wasm_bindgen(js_name = seek)]
     pub fn seek(&mut self, timestamp: f64, timescale: f64) -> Result<(), JsError> {
         let position = duration_from_timestamp(timestamp, timescale).map_err(js_error)?;
@@ -106,7 +107,7 @@ impl Default for Mp4FileDemuxer {
 
 /// `timestamp / timescale` 秒を [`std::time::Duration`] に変換する
 ///
-/// 整数に丸めずにそのまま変換することで、1 秒未満のシークも指定どおりに扱える。
+/// 1 秒未満のシークも指定どおりに扱えるよう、ナノ秒に変換してから切り上げる。
 fn duration_from_timestamp(timestamp: f64, timescale: f64) -> Result<std::time::Duration, String> {
     /// u64 で表現できるナノ秒の上限（2 の 64 乗）
     const NANOS_LIMIT: f64 = 18_446_744_073_709_551_616.0;

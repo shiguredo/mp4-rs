@@ -34,6 +34,14 @@ pub(crate) fn parse_json(
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
     let bit_depth: Uint<u8, 4, 4> = crate::boxes::uint_u8_member(value, "bitDepth")?;
+    // VP8 は 8 ビットのみ
+    if bit_depth.get() != 8 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "bitDepth",
+            "bitDepth must be 8 for VP8",
+        ));
+    }
     let chroma_subsampling: Uint<u8, 3, 1> =
         crate::boxes::uint_u8_member(value, "chromaSubsampling")?;
     let video_full_range_flag = crate::boxes::bool_or_int_member(value, "videoFullRangeFlag")?;
@@ -203,6 +211,7 @@ mod tests {
         const BASE: &str = r#"{"kind":"vp08","width":640,"height":480,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#;
         let cases = [
             (r#""bitDepth":8"#, r#""bitDepth":16"#),
+            (r#""bitDepth":8"#, r#""bitDepth":9"#),
             (r#""chromaSubsampling":1"#, r#""chromaSubsampling":8"#),
         ];
         for (from, to) in cases {

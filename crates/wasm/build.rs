@@ -14,7 +14,7 @@ fn main() {
 
 /// ルートの `Cargo.toml` からパッケージのバージョンを読み取る
 ///
-/// `version.workspace = true` のような継承指定や行末コメントは扱わない。
+/// `version.workspace = true` のような継承指定は扱わない。
 fn read_root_version(path: &Path) -> String {
     let text = std::fs::read_to_string(path).expect("failed to read root Cargo.toml");
     text.lines()

@@ -52,7 +52,7 @@ pub(crate) fn fmt_sample(
 ) -> std::fmt::Result {
     f.object(|f| {
         f.member("track_id", sample.track.track_id)?;
-        // サンプルエントリーは前のサンプルから変化がない場合に省略されるため、
+        // サンプルエントリーは同じトラックの直前のサンプルから変化がない場合に省略されるため、
         // その場合はキー自体を出力しない（利用側は直前の値を引き継ぐ）
         if let Some(sample_entry) = sample.sample_entry {
             f.member(

@@ -76,6 +76,7 @@ const {
   Fmp4SegmentMuxer,
   Fmp4SegmentDemuxer,
   Mp4FileKindDetector,
+  version,
 } = require('./pkg/node/mp4_wasm.js');
 ```
 
@@ -402,14 +403,14 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
   "temporalIdNested": 1,
   "lengthSizeMinusOne": 3,
   "naluArrays": [
-    { "naluType": 32, "arrayCompleteness": 1, "units": [[64, 1, 12, 1]] },
-    { "naluType": 33, "arrayCompleteness": 1, "units": [[66, 1, 1, 1]] },
-    { "naluType": 34, "arrayCompleteness": 1, "units": [[68, 1, 0]] }
+    { "naluType": 32, "arrayCompleteness": 0, "units": [[64, 1, 12, 1]] },
+    { "naluType": 33, "arrayCompleteness": 0, "units": [[66, 1, 1, 1]] },
+    { "naluType": 34, "arrayCompleteness": 0, "units": [[68, 1, 0]] }
   ]
 }
 ```
 
-`kind` が `hev1` か `hvc1` かだけが異なり、他のフィールドは共通です。`arrayCompleteness` を省略した場合、`hvc1` の VPS / SPS / PPS は 1、それ以外は 0 になります。
+`kind` が `hev1` か `hvc1` かだけが異なり、他のフィールドは共通です。`arrayCompleteness` を省略した場合、`hev1` はすべて 0、`hvc1` は VPS / SPS / PPS が 1、それ以外が 0 になります。明示する場合もこの組み合わせに合わない値は拒否されます。
 
 #### VP8
 

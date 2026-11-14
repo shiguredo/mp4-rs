@@ -43,6 +43,14 @@ pub(crate) fn parse_json(
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
     let seq_profile: Uint<u8, 3, 5> = crate::boxes::uint_u8_member(value, "seqProfile")?;
+    // 3..=7 は予約値
+    if seq_profile.get() > 2 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "seqProfile",
+            "seqProfile must be 0, 1, or 2",
+        ));
+    }
     let seq_level_idx_0: Uint<u8, 5, 0> = crate::boxes::uint_u8_member(value, "seqLevelIdx0")?;
     let seq_tier_0: Uint<u8, 1, 7> = crate::boxes::uint_u8_member(value, "seqTier0")?;
     let high_bitdepth: Uint<u8, 1, 6> = crate::boxes::uint_u8_member(value, "highBitdepth")?;
@@ -54,6 +62,14 @@ pub(crate) fn parse_json(
         crate::boxes::uint_u8_member(value, "chromaSubsamplingY")?;
     let chroma_sample_position: Uint<u8, 2, 0> =
         crate::boxes::uint_u8_member(value, "chromaSamplePosition")?;
+    // 3 は予約値
+    if chroma_sample_position.get() == 3 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "chromaSamplePosition",
+            "chromaSamplePosition must be 0, 1, or 2",
+        ));
+    }
     // キーがない省略可能なフィールドは None になる
     let initial_presentation_delay_minus_one: Option<Uint<u8, 4, 0>> =
         crate::boxes::optional_uint_u8_member(value, "initialPresentationDelayMinusOne")?;
@@ -297,10 +313,12 @@ mod tests {
         const BASE: &str = r#"{"kind":"av01","width":640,"height":480,"seqProfile":0,"seqLevelIdx0":13,"seqTier0":0,"highBitdepth":0,"twelveBit":0,"monochrome":0,"chromaSubsamplingX":1,"chromaSubsamplingY":1,"chromaSamplePosition":0,"configObus":[1]}"#;
         let cases = [
             (r#""seqProfile":0"#, r#""seqProfile":8"#),
+            (r#""seqProfile":0"#, r#""seqProfile":3"#),
             (r#""seqLevelIdx0":13"#, r#""seqLevelIdx0":32"#),
             (r#""seqTier0":0"#, r#""seqTier0":2"#),
             (r#""highBitdepth":0"#, r#""highBitdepth":2"#),
             (r#""chromaSamplePosition":0"#, r#""chromaSamplePosition":4"#),
+            (r#""chromaSamplePosition":0"#, r#""chromaSamplePosition":3"#),
         ];
         for (from, to) in cases {
             let json_str = BASE.replace(from, to);

@@ -25,7 +25,8 @@ impl Mp4FileMuxerOutput {
 
     /// 書き込むデータを取り出す
     ///
-    /// 大きなデータをコピーせずに受け渡すため、getter ではなくメソッドにしている。
+    /// Rust 側の余分なコピーを避けるため、getter ではなくメソッドにしている。
+    /// wasm の境界を越えるときのコピーは 1 回発生する。
     /// 取り出した後に再度呼ぶと空の配列が返る。
     #[wasm_bindgen(js_name = takeData)]
     pub fn take_data(&mut self) -> Vec<u8> {

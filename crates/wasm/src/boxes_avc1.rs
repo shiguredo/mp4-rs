@@ -56,6 +56,14 @@ pub(crate) fn parse_json(
         .try_into()?;
     let length_size_minus_one: Uint<u8, 2> =
         crate::boxes::uint_u8_member(value, "lengthSizeMinusOne")?;
+    // 2 は予約値であり、NAL ユニット長として解釈できない
+    if length_size_minus_one.get() == 2 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "lengthSizeMinusOne",
+            "lengthSizeMinusOne must be 0, 1, or 3",
+        ));
+    }
     // キーが無いオプションフィールドは `None` になる
     let chroma_format: Option<Uint<u8, 2>> =
         crate::boxes::optional_uint_u8_member(value, "chromaFormat")?;
@@ -302,6 +310,7 @@ mod tests {
         const BASE: &str = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":100,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"chromaFormat":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"sps":[[1]],"pps":[[2]]}"#;
         let cases = [
             (r#""lengthSizeMinusOne":3"#, r#""lengthSizeMinusOne":4"#),
+            (r#""lengthSizeMinusOne":3"#, r#""lengthSizeMinusOne":2"#),
             (r#""chromaFormat":1"#, r#""chromaFormat":4"#),
             (r#""bitDepthLumaMinus8":0"#, r#""bitDepthLumaMinus8":8"#),
             (r#""bitDepthChromaMinus8":0"#, r#""bitDepthChromaMinus8":8"#),

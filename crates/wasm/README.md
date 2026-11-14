@@ -185,13 +185,13 @@ MP4 ファイルを段階的に読み込んでメディアサンプルを取り�
 |---|---|
 | `constructor()` | デマルチプレクサを作成する |
 | `requiredInput(): string \| undefined` | 次に必要な入力データを JSON で返す。不要になったら `undefined` |
-| `handleInput(position: number, data: Uint8Array \| number[])` | 入力データを供給する。`position` が負値や小数の場合は例外 |
+| `handleInput(position: number, data: Uint8Array \| number[])` | 入力データを供給する。`position` が負値や小数の場合と、入力が不正な場合は例外 |
 | `tracks(): string` | トラック情報を JSON の配列で返す |
 | `nextSample(): string \| undefined` | 時系列順に次のサンプルを JSON で返す |
 | `prevSample(): string \| undefined` | 時系列順に前のサンプルを JSON で返す |
 | `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする。`timestamp` は小数でもよい。ナノ秒未満は切り上げる |
 
-入力が不正な場合、`requiredInput()` は `undefined` を返し、次の `tracks()` / `nextSample()` / `prevSample()` / `seek()` で例外になります。現在のコア実装ではその例外は一度だけ返り、正しいデータを再投入すると回復します。
+入力が不正な場合は `handleInput()` が例外になります。
 
 ### `Mp4FileMuxer`
 
@@ -199,7 +199,7 @@ MP4 ファイルを構築します。
 
 | メソッド | 説明 |
 |---|---|
-| `constructor(reservedMoovBoxSize: number)` | マルチプレクサを作成する。0 を指定すると faststart は通常無効 |
+| `constructor(reservedMoovBoxSize: number)` | マルチプレクサを作成する。0 を指定すると faststart は通常無効。512 MiB を超える値は例外 |
 | `initialBoxes(): Uint8Array` | ファイル先頭に書き込むべきバイト列を返す |
 | `appendSample(sampleJson: string)` | サンプルデータを書き込んだ位置とサイズを伝える |
 | `advancePosition(size: number)` | サンプル以外のデータを書き込んだ分だけ位置を進める |
@@ -216,7 +216,7 @@ fMP4 の初期化セグメントとメディアセグメントを生成します
 
 | メソッド | 説明 |
 |---|---|
-| `constructor(creationTimestampSecs: number)` | マルチプレクサを作成する |
+| `constructor(creationTimestampSecs: number)` | マルチプレクサを作成する。u64 の範囲を超える値は例外 |
 | `createMediaSegment(samplesJson: string, sampleData: Uint8Array \| number[]): Uint8Array` | メディアセグメント全体を返す |
 | `createMediaSegmentWithSidx(samplesJson: string, sampleData: Uint8Array \| number[]): Uint8Array` | `sidx` 付きのメディアセグメント全体を返す |
 | `initSegment(): Uint8Array` | 初期化セグメントを返す。メディアセグメントを 1 つ以上生成した後に呼ぶ |

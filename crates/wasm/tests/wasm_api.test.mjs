@@ -910,3 +910,30 @@ test('appendSample が失敗した場合は ctts の状態を汚さない', () =
         muxer.free();
     }
 });
+
+test('不正な入力は handleInput で例外になる', () => {
+    const bytes = readTestData('black-h264-video.mp4');
+    const demuxer = new wasm.Mp4FileDemuxer();
+    try {
+        // 必要な位置と違うデータを渡す
+        assert.throws(
+            () => demuxer.handleInput(100, bytes.subarray(100, 140)),
+            /failed to handle input/,
+        );
+    } finally {
+        demuxer.free();
+    }
+});
+
+test('メモリを枯渇させる引数は例外になる', () => {
+    // faststart の予約サイズは 512 MiB まで
+    assert.throws(
+        () => new wasm.Mp4FileMuxer(513 * 1024 * 1024),
+        /reservedMoovBoxSize must be at most 512 MiB/,
+    );
+    // 作成時刻は u64 に収まる範囲まで
+    assert.throws(
+        () => new wasm.Fmp4SegmentMuxer(2 ** 64 - 4096),
+        /creationTimestampSecs is too large/,
+    );
+});

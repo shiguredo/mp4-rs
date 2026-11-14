@@ -45,6 +45,10 @@ impl Mp4FileDemuxer {
     pub fn handle_input(&mut self, position: f64, data: &[u8]) -> Result<(), JsError> {
         let position = to_u64(position, "position").map_err(js_error)?;
         self.inner.handle_input(Input { position, data });
+        // コアは入力を内部に保持するだけなので、その場でエラーを確認して返す
+        if let Some(error) = self.inner.last_error() {
+            return Err(JsError::new(&format!("failed to handle input: {error}")));
+        }
         Ok(())
     }
 

@@ -355,6 +355,15 @@ impl Mp4FileDemuxer {
         }
     }
 
+    /// 入力データの処理で発生したエラーを返す
+    ///
+    /// [`Self::handle_input`] はエラーを返さず内部に保持するため、
+    /// 呼び出し側が早期に検出したい場合に使う。
+    /// エラーは [`Self::tracks`] などの呼び出しで消費される。
+    pub fn last_error(&self) -> Option<&DemuxError> {
+        self.handle_input_error.as_ref()
+    }
+
     /// 次の処理を進めるために必要な I/O の位置とサイズを返す
     ///
     /// デマルチプレックス処理が初期化済みの場合は `None` を返す。

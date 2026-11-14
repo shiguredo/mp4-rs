@@ -74,6 +74,12 @@ impl Mp4FileMuxer {
     ) -> Result<Mp4FileMuxer, JsError> {
         let reserved_moov_box_size =
             to_usize(reserved_moov_box_size, "reservedMoovBoxSize").map_err(js_error)?;
+        // 予約サイズはそのままメモリ確保に使われる。wasm のメモリを枯渇させて
+        // trap する前に、現実的な上限で拒否する
+        const MAX_RESERVED_MOOV_BOX_SIZE: usize = 512 * 1024 * 1024;
+        if reserved_moov_box_size > MAX_RESERVED_MOOV_BOX_SIZE {
+            return Err(JsError::new("reservedMoovBoxSize must be at most 512 MiB"));
+        }
         let options = Mp4FileMuxerOptions {
             reserved_moov_box_size,
             ..Default::default()

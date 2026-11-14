@@ -191,7 +191,7 @@ MP4 ファイルを段階的に読み込んでメディアサンプルを取り�
 | `prevSample(): string \| undefined` | 時系列順に前のサンプルを JSON で返す |
 | `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする。`timestamp` は小数でもよい。ナノ秒未満は切り上げる |
 
-入力が不正な場合は `handleInput()` が例外になります。
+入力が不正な場合は `handleInput()` が例外になります。エラーになったインスタンスは再利用できないため、新しいインスタンスを作成してください。
 
 ### `Mp4FileMuxer`
 

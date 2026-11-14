@@ -1026,3 +1026,113 @@ test('生成した fMP4 ファイルを Fmp4FileDemuxer で読める', () => {
         demuxer.free();
     }
 });
+
+test('prevSample は逆順にサンプルを返す', () => {
+    // サンプルを読み進めるため、入力だけを供給してから使う
+    const demuxer = new wasm.Mp4FileDemuxer();
+    feedAllInput(demuxer, readTestData('beep-opus-audio.mp4'));
+    try {
+        const forward = [];
+        for (let i = 0; i < 3; i++) {
+            forward.push(JSON.parse(demuxer.nextSample()).timestamp);
+        }
+        const backward = [];
+        for (let i = 0; i < 3; i++) {
+            backward.push(JSON.parse(demuxer.prevSample()).timestamp);
+        }
+        assert.deepEqual(backward, [...forward].reverse());
+        assert.equal(demuxer.prevSample(), undefined);
+    } finally {
+        demuxer.free();
+    }
+});
+
+test('サンプル以外のデータを挟んでも mux できる', () => {
+    const muxer = new wasm.Mp4FileMuxer(0);
+    const chunks = [];
+    let file;
+    try {
+        const initial = muxer.initialBoxes();
+        chunks.push({ offset: 0, data: initial });
+        const metadata = (offset, size) => ({
+            track_kind: 'video',
+            timescale: 90000,
+            duration: 3000,
+            keyframe: true,
+            composition_time_offset: null,
+            data_offset: offset,
+            data_size: size,
+            sample_entry: AVC1_ENTRY,
+        });
+        const first = new Uint8Array([1, 2, 3, 4]);
+        chunks.push({ offset: initial.length, data: first });
+        muxer.appendSample(JSON.stringify(metadata(initial.length, first.length)));
+
+        // サンプル以外の 16 バイトを挟む
+        muxer.advancePosition(16);
+        const secondOffset = initial.length + first.length + 16;
+        const second = new Uint8Array([5, 6, 7, 8]);
+        chunks.push({ offset: secondOffset, data: second });
+        muxer.appendSample(JSON.stringify(metadata(secondOffset, second.length)));
+
+        muxer.finalize();
+        for (;;) {
+            const output = muxer.nextOutput();
+            if (output === undefined) {
+                break;
+            }
+            chunks.push({ offset: output.offset, data: output.takeData() });
+            output.free();
+        }
+        file = assembleChunks(chunks);
+    } finally {
+        muxer.free();
+    }
+
+    const { demuxer, samples } = demuxFile(file);
+    try {
+        assert.equal(samples.length, 2);
+        assert.deepEqual(
+            samples.map((sample) => sample.data_size),
+            [4, 4],
+        );
+    } finally {
+        demuxer.free();
+    }
+});
+
+test('fMP4 の mfra を出力できる', () => {
+    const muxer = new wasm.Fmp4SegmentMuxer(0);
+    let mfra;
+    try {
+        muxer.createMediaSegment(
+            JSON.stringify([
+                {
+                    track_kind: 'video',
+                    timescale: 90000,
+                    duration: 3000,
+                    keyframe: true,
+                    composition_time_offset: null,
+                    data_size: VIDEO_FRAME.length,
+                    sample_entry: AVC1_ENTRY,
+                },
+            ]),
+            VIDEO_FRAME,
+        );
+        mfra = muxer.mfra();
+    } finally {
+        muxer.free();
+    }
+    assert.ok(mfra.length > 0);
+    assert.ok(Buffer.from(mfra).includes(Buffer.from('mfra')));
+    assert.ok(Buffer.from(mfra).includes(Buffer.from('tfra')));
+});
+
+test('初期化セグメントを読む前の tracks は例外になる', () => {
+    const demuxer = new wasm.Fmp4SegmentDemuxer();
+    try {
+        assert.throws(() => demuxer.tracks(), /failed to get tracks/);
+    } finally {
+        demuxer.free();
+    }
+});

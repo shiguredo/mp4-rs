@@ -46,6 +46,16 @@ for target in node web; do
 done
 ```
 
+生成したバインディングは次のコマンドでテストできます。
+
+```bash
+# Node.js 向け（node ターゲットの生成後）
+node --test crates/wasm/tests/wasm_api.test.mjs
+
+# ブラウザ向け（web ターゲットの生成後。Node.js 上で initSync() して確認する）
+node --test crates/wasm/tests/wasm_web.test.mjs
+```
+
 `wasm-opt` は [binaryen](https://github.com/WebAssembly/binaryen) の `version_125` を CI と Release で使用しています。手元のバージョンが異なると出力サイズも変わるため、リリース物を再現する場合は同じバージョンを使用してください。
 
 ### release-wasm プロファイル

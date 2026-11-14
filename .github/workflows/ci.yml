@@ -126,6 +126,12 @@ jobs:
       - name: Run API tests
         run: node --test crates/wasm/tests/wasm_api.test.mjs
 
+      - name: Generate web bindings
+        run: wasm-bindgen --target web --out-dir crates/wasm/pkg/web target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      - name: Run web API tests
+        run: node --test crates/wasm/tests/wasm_web.test.mjs
+
   build-c-api:
     name: Build C API Library
     strategy:

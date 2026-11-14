@@ -55,7 +55,7 @@ pub struct Mp4FileMuxer {
 }
 
 /// トラックごとの `ctts` の値域の状態
-#[derive(Default)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct CttsState {
     has_negative: bool,
     has_large: bool,
@@ -124,11 +124,17 @@ impl Mp4FileMuxer {
             .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
         let sample = parse_json_mux_sample(sample_json)
             .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
-        check_ctts_range(&mut self.ctts_states, &sample)
+        // コアの append が失敗した場合は状態を変えないため、
+        // 付加状態も成功した後でだけ確定する
+        let ctts_state = check_ctts_range(&self.ctts_states, &sample)
             .map_err(|error| JsError::new(&format!("failed to append sample: {error}")))?;
         self.inner
             .append_sample(&sample)
-            .map_err(|error| JsError::new(&format!("failed to append sample: {error}")))
+            .map_err(|error| JsError::new(&format!("failed to append sample: {error}")))?;
+        if let Some(state) = ctts_state {
+            self.ctts_states.insert(sample.track_kind, state);
+        }
+        Ok(())
     }
 
     /// ファイル内の書き込み位置を進める
@@ -203,66 +209,81 @@ fn parse_json_mux_sample(text: &str) -> Result<Sample, nojson::JsonParseError> {
 /// 同じトラックに i32::MAX を超える正値と負値が混在すると finalize で失敗する。
 /// ここで先に拒否し、ファイルを書き終えた後の失敗を防ぐ。
 fn check_ctts_range(
-    states: &mut HashMap<TrackKind, CttsState>,
+    states: &HashMap<TrackKind, CttsState>,
     sample: &Sample,
-) -> Result<(), String> {
+) -> Result<Option<CttsState>, String> {
     let Some(offset) = sample.composition_time_offset else {
-        return Ok(());
+        return Ok(None);
     };
-    let state = states.entry(sample.track_kind).or_default();
+    let state = states.get(&sample.track_kind).copied().unwrap_or_default();
+    let mut updated = state;
     if offset < 0 {
-        state.has_negative = true;
+        updated.has_negative = true;
     }
     if offset > i64::from(i32::MAX) {
-        state.has_large = true;
+        updated.has_large = true;
     }
-    if state.has_negative && state.has_large {
+    if updated.has_negative && updated.has_large {
         return Err(
             "composition_time_offset cannot mix negative values with values above i32::MAX in the same track"
                 .to_string(),
         );
     }
-    Ok(())
+    if updated == state {
+        Ok(None)
+    } else {
+        Ok(Some(updated))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `ctts` の混在を検出すること
+    /// `ctts` の混在を検出し、成功した場合だけ状態を進めること
     #[test]
     fn test_check_ctts_range() {
-        fn sample(offset: i64) -> Sample {
+        fn sample(offset: Option<i64>) -> Sample {
             Sample {
                 track_kind: TrackKind::Video,
                 sample_entry: None,
                 keyframe: true,
                 timescale: std::num::NonZeroU32::new(90000).expect("0 ではない"),
                 duration: 3000,
-                composition_time_offset: Some(offset),
+                composition_time_offset: offset,
                 data_offset: 0,
                 data_size: 0,
             }
         }
 
+        /// append が成功したときだけ状態を確定する
+        fn apply(
+            states: &mut HashMap<TrackKind, CttsState>,
+            sample: &Sample,
+        ) -> Result<(), String> {
+            if let Some(state) = check_ctts_range(states, sample)? {
+                states.insert(sample.track_kind, state);
+            }
+            Ok(())
+        }
+
         let mut states = HashMap::new();
         // version 0 の範囲だけなら混在しない
-        assert!(check_ctts_range(&mut states, &sample(0)).is_ok());
-        assert!(check_ctts_range(&mut states, &sample(i64::from(u32::MAX))).is_ok());
+        assert!(apply(&mut states, &sample(Some(0))).is_ok());
+        assert!(apply(&mut states, &sample(Some(i64::from(u32::MAX)))).is_ok());
 
         // 負値が入ると version 1 になり、i32 を超える値と混在できない
-        assert!(check_ctts_range(&mut states, &sample(-1)).is_err());
+        assert!(apply(&mut states, &sample(Some(-1))).is_err());
 
         // 逆順でも検出する
         let mut states = HashMap::new();
-        assert!(check_ctts_range(&mut states, &sample(-1)).is_ok());
-        assert!(check_ctts_range(&mut states, &sample(i64::from(i32::MAX) + 1)).is_err());
+        assert!(apply(&mut states, &sample(Some(-1))).is_ok());
+        assert!(apply(&mut states, &sample(Some(i64::from(i32::MAX) + 1))).is_err());
 
         // ctts を持たないサンプルは状態を変えない
         let mut states = HashMap::new();
-        let mut without = sample(0);
-        without.composition_time_offset = None;
-        assert!(check_ctts_range(&mut states, &without).is_ok());
+        assert!(apply(&mut states, &sample(None)).is_ok());
+        assert!(states.is_empty());
     }
 
     /// マルチプレックス用のサンプル JSON を組み立てる

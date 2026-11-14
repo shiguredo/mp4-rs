@@ -847,12 +847,33 @@ test('ctts の負値と i32 を超える値の混在は例外になる', () => {
             data_size: 0,
             sample_entry: AVC1_ENTRY,
         };
-        // version 0 の範囲だけなら受理する
+        // version 0 の範囲だけなら受理し、finalize まで成功する
         muxer.appendSample(JSON.stringify({ ...base, composition_time_offset: 3000000000 }));
-        // 同じトラックに負値を混ぜると version 1 になり表現できない
+        muxer.finalize();
+    } finally {
+        muxer.free();
+    }
+});
+
+test('appendSample が失敗した場合は ctts の状態を汚さない', () => {
+    const muxer = new wasm.Mp4FileMuxer(0);
+    try {
+        const base = {
+            track_kind: 'video',
+            timescale: 90000,
+            duration: 3000,
+            keyframe: true,
+            data_offset: muxer.initialBoxes().length,
+            data_size: 0,
+        };
+        // sample_entry を欠落させてコアの append を失敗させる
         assert.throws(
-            () => muxer.appendSample(JSON.stringify({ ...base, composition_time_offset: -1 })),
-            /cannot mix/,
+            () => muxer.appendSample(JSON.stringify({ ...base, composition_time_offset: 3000000000 })),
+            /failed to append sample/,
+        );
+        // 失敗したサンプルは取り込まれていないため、負値はそのまま受理される
+        muxer.appendSample(
+            JSON.stringify({ ...base, composition_time_offset: -1, sample_entry: AVC1_ENTRY }),
         );
     } finally {
         muxer.free();

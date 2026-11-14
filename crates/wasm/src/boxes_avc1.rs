@@ -416,5 +416,22 @@ mod tests {
             parse_json(json.value()).is_err(),
             "PPS 256 個は拒否されること"
         );
+
+        // 上限ちょうどは受理する
+        let sps = (0..31).map(|_| "[1]").collect::<Vec<_>>().join(",");
+        let json_str = format!(r#"{prefix},"sps":[{sps}],"pps":[[2]]}}"#);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(
+            parse_json(json.value()).is_ok(),
+            "SPS 31 個は受理されること"
+        );
+
+        let pps = (0..255).map(|_| "[2]").collect::<Vec<_>>().join(",");
+        let json_str = format!(r#"{prefix},"sps":[[1]],"pps":[{pps}]}}"#);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(
+            parse_json(json.value()).is_ok(),
+            "PPS 255 個は受理されること"
+        );
     }
 }

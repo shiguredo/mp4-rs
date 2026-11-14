@@ -36,6 +36,19 @@
   - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
   - GitHub Release の wasm アーカイブはルートの `mp4_wasm.wasm` を廃止し、`node/` と `web/` のディレクトリ構成に変更する。CI の artifact も `pkg/` 配下になる
   - @voluntas
+- [CHANGE] `TrackInfo` / `TrackMetadata` に編集リスト用のフィールドを追加する
+  - `TrackInfo` に `movie_timescale` と `edit_list` を追加する
+  - `TrackMetadata` に `edit_list` を追加する
+  - 構造体リテラルで `TrackMetadata` を構築している箇所は `..Default::default()` の追加が必要になる
+  - @voluntas
+- [ADD] demux した編集リスト（`edts` / `elst`）を mux で保持できるようにする
+  - `TrackInfo.edit_list` に `elst` の内容を、`TrackInfo.movie_timescale` に `mvhd` の timescale を入れる
+  - `EditList` 型を追加し、`TrackMetadata.edit_list` で mux に渡せるようにする
+  - muxer は `elst` の `edit_duration` を出力ファイルの movie timescale に換算して `edts` を書き出す。`media_time` / `media_rate` はそのまま保持する
+  - 編集リスト付きトラックの `mvhd` / `tkhd` の duration は `edit_duration` の合計から導出する
+  - fMP4 の初期化セグメントにも `edts` を書き出せる
+  - wasm の `tracks()` に `movie_timescale` と `edit_list` を追加し、`Mp4FileMuxer.withOptions()` / `Fmp4SegmentMuxer.withOptions()` で編集リストを指定できるようにする
+  - @voluntas
 - [FIX] `Fmp4FileDemuxer` が `tfhd` の `base_data_offset` にファイル先頭からの絶対値を持つファイルを読めなかったのを修正する
   - これまでは絶対値の `base_data_offset` をエラーにしていた
   - メディアセグメントの先頭位置を基準に相対値へ変換して扱うようにする

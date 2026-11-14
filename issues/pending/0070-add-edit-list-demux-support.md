@@ -7,7 +7,7 @@
 
 ## 目的
 
-現在の MP4 / fMP4 demuxer は `TrakBox::edts_box` を無視しており、他社の一般的な encoder が出力する `edts` / `elst` の内容を demux 結果のタイムラインに反映しない。
+現在の MP4 / fMP4 demuxer は `TrakBox::edts_box` を `TrackInfo.edit_list` に保持するが、他社の一般的な encoder が出力する `edts` / `elst` の内容を demux 結果のタイムラインに反映しない。
 
 これによって B-frame ありの H.264 / H.265 を含む MP4 (iPhone / QuickTime / ffmpeg などの典型的な出力) では、先頭の empty edit や offset edit が反映されず、demux 結果の `Sample::timestamp` が「利用側が期待する presentation timeline」から `edit_duration` / `media_time` の分だけずれる。
 
@@ -16,10 +16,11 @@
 ## 現状
 
 - `src/boxes_moov_tree.rs` の `EdtsBox` / `ElstBox` / `ElstEntry` は parse/encode 済み。`pbt/tests/prop_boxes.rs` にラウンドトリップ PBT も存在
-- `src/demux_mp4_file.rs` の `Mp4FileDemuxer::read_moov_box` / `build_sample` / `next_sample` / `prev_sample` / `seek` はいずれも `TrakBox::edts_box` を参照しない。`Sample::timestamp` は `SampleTableAccessor` (`src/auxiliary.rs` の `SampleAccessor::timestamp`) 由来の raw DTS (media timescale)
+- `src/demux_mp4_file.rs` の `Mp4FileDemuxer::read_moov_box` は `TrakBox::edts_box` を `TrackInfo.edit_list` に入れるようになったが、`build_sample` / `next_sample` / `prev_sample` / `seek` は `edit_list` を参照しない。`Sample::timestamp` は `SampleTableAccessor` (`src/auxiliary.rs` の `SampleAccessor::timestamp`) 由来の raw DTS (media timescale) のまま
 - `Sample::composition_time_offset` は `ctts` の値をそのまま露出し、`Sample` 型 doc コメント (`src/demux_mp4_file.rs`) 上「PTS = timestamp + composition_time_offset」の契約
-- `src/demux_fmp4_file.rs` / `src/demux_fmp4_segment.rs` も `edts_box` を無視する。fMP4 側は本 issue のスコープでは低優先度扱い (`issues/0071-other-position-timing-boxes-inventory.md` に方針記載)
+- `src/demux_fmp4_file.rs` / `src/demux_fmp4_segment.rs` も `edts_box` を `TrackInfo.edit_list` に保持するが、タイムスタンプには反映しない。fMP4 側は本 issue のスコープでは低優先度扱い (`issues/0071-other-position-timing-boxes-inventory.md` に方針記載)
 - `src/auxiliary.rs` の `SampleTableAccessor<T>` は `StblBox` のみをラップしており、`edts` は `TrakBox` 側にあるため対象外
+- 参考: 2026-11-14 時点の `tests/testdata` では 9 本中 8 本に `elst` がある。`beep-aac-audio.mp4` は `media_time=1024`（44100 Hz で 23.2 ms）、`black-h265-video.mp4` は `media_time=1024`（12800 Hz で 80.0 ms）であり、いずれも demux 結果のタイムスタンプには反映されていない
 
 ## 設計方針
 
@@ -87,6 +88,6 @@ edit list を反映する実装に着手する時点で、以下 6 点は必ず�
 - 本 issue は「edit list を demux に反映する場合の設計選択肢」を残すことが目的であり、採用方針 (選択肢 A〜D のいずれか) と実装スコープは未確定である
 - 採用方針と実装スコープは、本 issue 自身の定義により「実害の実例 (対象ファイル、`elst` の内容、ズレの実運用上の意味) が確認できた時点」で初めて確定する。実害の実例は現時点で存在せず、発見・報告が外部依存になっている
 - 「対象外」に明記されているとおり、本 issue では実装を行わない。実装は方針確定後に実装用の別 issue を切って進める運用であり、現時点で実装者が変更対象と完了条件を実行可能な形にはできない
-- 一方で、現状は実在する (demuxer が `edts_box` を無視することはソース照合で確認済み) ため、重複・バグ不存在・実装済みのいずれにも該当せず、closed にはしない
+- 一方で、`edts_box` を `TrackInfo.edit_list` に保持するがタイムスタンプには反映しないことはソース照合で確認済みであり、解釈の設計が未確定のため、重複・バグ不存在・実装済みのいずれにも該当せず、closed にはしない
 - 以上の理由により、shiguredo-issues 規約「設計判断が必要で保留中の issue は issues/pending/ に置くこと」に従い pending にした
 - 実害の実例が確認できた時点、または実運用での要求が具体化した時点で reopened にし、採用方針を確定して実装用の別 issue を切り、そちらに追跡を移す

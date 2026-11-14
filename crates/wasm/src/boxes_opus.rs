@@ -16,6 +16,7 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &OpusBox) ->
             crate::boxes::sample_rate_to_json(data.audio.samplerate),
         )?;
         f.member("sampleSize", data.audio.samplesize)?;
+        f.member("outputChannelCount", data.dops_box.output_channel_count)?;
         f.member("preSkip", data.dops_box.pre_skip)?;
         f.member("inputSampleRate", data.dops_box.input_sample_rate)?;
         f.member("outputGain", data.dops_box.output_gain)?;
@@ -32,8 +33,13 @@ pub(crate) fn parse_json(
 ) -> Result<OpusBox, nojson::JsonParseError> {
     let channel_count_value = value.to_member("channelCount")?.required()?;
     let channel_count: u16 = channel_count_value.try_into()?;
-    let output_channel_count = u8::try_from(channel_count)
-        .map_err(|_| channel_count_value.invalid("channelCount must fit in 8 bits for Opus"))?;
+    let output_channel_count = match value.to_member("outputChannelCount")?.optional() {
+        None => u8::try_from(channel_count)
+            .map_err(|_| channel_count_value.invalid("channelCount must fit in 8 bits for Opus"))?,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => u8::try_from(channel_count)
+            .map_err(|_| channel_count_value.invalid("channelCount must fit in 8 bits for Opus"))?,
+        Some(member) => member.try_into()?,
+    };
 
     let sample_rate = crate::boxes::sample_rate_from_json(value)?;
     let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;

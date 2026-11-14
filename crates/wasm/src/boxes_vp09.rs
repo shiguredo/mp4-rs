@@ -25,8 +25,23 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp09Box) ->
             data.vpcc_box.transfer_characteristics,
         )?;
         f.member("matrixCoefficients", data.vpcc_box.matrix_coefficients)?;
+        f.member(
+            "codecInitializationData",
+            data.vpcc_box.codec_initialization_data.as_slice(),
+        )?;
         crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
+}
+
+/// `codecInitializationData` を JSON から読み取る（省略時は空）
+fn parse_codec_initialization_data(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<Vec<u8>, nojson::JsonParseError> {
+    match value.to_member("codecInitializationData")?.optional() {
+        None => Ok(Vec::new()),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(Vec::new()),
+        Some(member) => member.try_into(),
+    }
 }
 
 /// JSON オブジェクトから VP9 サンプルエントリーを構築する
@@ -67,8 +82,7 @@ pub(crate) fn parse_json(
         colour_primaries,
         transfer_characteristics,
         matrix_coefficients,
-        // VP9 の vpcC は codec_initialization_data を常に空とする
-        codec_initialization_data: Vec::new(),
+        codec_initialization_data: parse_codec_initialization_data(value)?,
     };
 
     Ok(Vp09Box {

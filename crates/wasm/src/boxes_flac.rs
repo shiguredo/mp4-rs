@@ -25,29 +25,58 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &FlacBox) ->
             .first()
             .map_or(&[][..], |block| block.block_data.as_slice());
         f.member("streaminfoData", streaminfo_data)?;
-        // STREAMINFO 以外のメタデータブロックも往復できるようにすべて出力する
-        f.member(
-            "metadataBlocks",
-            nojson::array(|f| {
-                for block in &data.dfla_box.metadata_blocks {
-                    f.element(nojson::object(|f| {
-                        f.member("type", block.block_type.get())?;
-                        f.member("last", block.last_metadata_block_flag.get() == 1)?;
-                        f.member("data", block.block_data.as_slice())
-                    }))?;
-                }
-                Ok(())
-            }),
-        )?;
+        // STREAMINFO 以外のブロックがある場合だけ `metadataBlocks` を出力する。
+        // 1 個だけの場合は従来どおり `streaminfoData` だけで往復できる
+        if data.dfla_box.metadata_blocks.len() > 1 {
+            f.member(
+                "metadataBlocks",
+                nojson::array(|f| {
+                    for block in &data.dfla_box.metadata_blocks {
+                        f.element(nojson::object(|f| {
+                            f.member("type", block.block_type.get())?;
+                            f.member("last", block.last_metadata_block_flag.get() == 1)?;
+                            f.member("data", block.block_data.as_slice())
+                        }))?;
+                    }
+                    Ok(())
+                }),
+            )?;
+        }
         crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
+/// `dfLa` のメタデータブロック列を検証する
+///
+/// Xiph の FLAC 仕様では、先頭ブロックは STREAMINFO でなければならず、
+/// 最後のブロックだけが `last` フラグを持つ。コアの `DflaBox::decode` と同じ制約を
+/// 入力側でも検査し、読み戻せない MP4 を生成しないようにする。
+fn validate_metadata_blocks(
+    member: nojson::RawJsonValue<'_, '_>,
+    blocks: &[FlacMetadataBlock],
+) -> Result<(), nojson::JsonParseError> {
+    if blocks.is_empty() {
+        return Err(member.invalid("metadataBlocks must contain at least one block"));
+    }
+    if blocks[0].block_type != FlacMetadataBlock::BLOCK_TYPE_STREAMINFO {
+        return Err(member.invalid("the first metadata block must be STREAMINFO"));
+    }
+    for (index, block) in blocks.iter().enumerate() {
+        let is_last = block.last_metadata_block_flag.get() == 1;
+        if is_last != (index + 1 == blocks.len()) {
+            return Err(member.invalid("only the last metadata block may have last=true"));
+        }
+        if block.block_data.len() > 0xFF_FFFF {
+            return Err(member.invalid("metadata block data must be at most 24 bits"));
+        }
+    }
+    Ok(())
+}
+
 /// JSON オブジェクトから FLAC サンプルエントリーを構築する
 ///
-/// `streaminfoData` は STREAMINFO のブロックデータとして `dfLa` の
-/// メタデータブロックに格納する。`dfLa` は STREAMINFO を先頭に持つ必要があるため、
-/// 単一のメタデータブロックを組み立てる。
+/// `metadataBlocks` があればそれを優先し、無ければ `streaminfoData` から
+/// STREAMINFO 1 個だけのブロック列を組み立てる。``
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<FlacBox, nojson::JsonParseError> {
@@ -75,6 +104,7 @@ pub(crate) fn parse_json(
                     block_data,
                 });
             }
+            validate_metadata_blocks(member, &blocks)?;
             blocks
         }
     };
@@ -98,7 +128,7 @@ pub(crate) fn parse_json(
             samplerate: sample_rate,
         },
         dfla_box: DflaBox { metadata_blocks },
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"dfLa"])?,
     })
 }
 
@@ -239,5 +269,36 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
         let result = parse_json(json.value());
         assert!(result.is_err(), "channelCount 欠落時はパース失敗すること");
+    }
+
+    /// 複数のメタデータブロックが往復すること
+    #[test]
+    fn test_flac_json_roundtrip_preserves_metadata_blocks() {
+        let json_str = r#"{"kind":"flac","channelCount":2,"sampleRate":44100,"sampleSize":16,"streaminfoData":[1,2,3],"metadataBlocks":[{"type":0,"last":false,"data":[1,2,3]},{"type":1,"last":true,"data":[0,0]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let entry = parse_json(json.value()).expect("有効な flac JSON");
+        assert_eq!(entry.dfla_box.metadata_blocks.len(), 2);
+
+        let output = nojson::json(|f| fmt_json(f, &entry)).to_string();
+        let raw = nojson::RawJson::parse(&output).expect("有効な JSON");
+        let parsed = parse_json(raw.value()).expect("再パース");
+        assert_eq!(parsed, entry);
+    }
+
+    /// 先頭が STREAMINFO でない、または last の位置が不正な場合は拒否すること
+    #[test]
+    fn test_flac_json_rejects_invalid_metadata_blocks() {
+        let cases = [
+            // 先頭が STREAMINFO ではない
+            r#"{"kind":"flac","channelCount":2,"sampleRate":44100,"sampleSize":16,"streaminfoData":[1],"metadataBlocks":[{"type":1,"last":true,"data":[0]}]}"#,
+            // 最後以外に last=true がある
+            r#"{"kind":"flac","channelCount":2,"sampleRate":44100,"sampleSize":16,"streaminfoData":[1],"metadataBlocks":[{"type":0,"last":true,"data":[1]},{"type":1,"last":true,"data":[0]}]}"#,
+            // 最後のブロックに last がない
+            r#"{"kind":"flac","channelCount":2,"sampleRate":44100,"sampleSize":16,"streaminfoData":[1],"metadataBlocks":[{"type":0,"last":false,"data":[1]}]}"#,
+        ];
+        for json_str in cases {
+            let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+            assert!(parse_json(json.value()).is_err(), "{json_str}");
+        }
     }
 }

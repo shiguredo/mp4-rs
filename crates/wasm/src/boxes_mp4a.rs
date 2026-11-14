@@ -66,7 +66,7 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Mp4aBox) ->
 
 /// JSON オブジェクトから MP4A（AAC）サンプルエントリーを構築する
 ///
-/// ES 記述子は AAC 音声向けの既定値で構築する。`decSpecificInfo` は
+/// 省略された ES 記述子のフィールドは AAC 音声向けの既定値で構築する。`decSpecificInfo` は
 /// `DecoderSpecificInfo` のペイロードとしてそのまま格納する。
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
@@ -87,11 +87,20 @@ pub(crate) fn parse_json(
     let avg_bitrate: u32 = value.to_member("avgBitrate")?.required()?.try_into()?;
     let dec_specific_info: Vec<u8> = value.to_member("decSpecificInfo")?.required()?.try_into()?;
 
-    let es_id: u16 = match value.to_member("esId")?.optional() {
+    let es_id_value = value.to_member("esId")?.optional();
+    let es_id: u16 = match es_id_value {
         None => EsDescriptor::MIN_ES_ID,
         Some(member) if member.kind() == nojson::JsonValueKind::Null => EsDescriptor::MIN_ES_ID,
         Some(member) => member.try_into()?,
     };
+    // es_id の 0 は予約されている
+    if es_id == 0 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "esId",
+            "esId must be greater than or equal to 1",
+        ));
+    }
     let stream_priority: Uint<u8, 5> = match value.to_member("streamPriority")?.optional() {
         None => EsDescriptor::LOWEST_STREAM_PRIORITY,
         Some(member) if member.kind() == nojson::JsonValueKind::Null => {
@@ -189,7 +198,7 @@ pub(crate) fn parse_json(
             samplerate: sample_rate,
         },
         esds_box,
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"esds"])?,
     })
 }
 
@@ -429,5 +438,33 @@ mod tests {
             result.is_err(),
             "bufferSizeDb が 24 ビットに収まらない場合はパース失敗すること"
         );
+    }
+
+    /// ES 記述子の非既定値が往復すること
+    #[test]
+    fn test_mp4a_json_roundtrip_preserves_es_descriptor() {
+        let json_str = r#"{"kind":"mp4a","dataReferenceIndex":2,"channelCount":2,"sampleRate":48000,"sampleSize":16,"bufferSizeDb":6144,"maxBitrate":128000,"avgBitrate":96000,"decSpecificInfo":[17,144],"esId":7,"streamPriority":5,"dependsOnEsId":2,"urlString":"urn:test","ocrEsId":3,"objectTypeIndication":107,"streamType":5,"upStream":true}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let entry = parse_json(json.value()).expect("有効な mp4a JSON");
+        assert_eq!(entry.esds_box.es.es_id, 7);
+        assert_eq!(entry.esds_box.es.stream_priority.get(), 5);
+        assert_eq!(entry.esds_box.es.depends_on_es_id, Some(2));
+        assert_eq!(entry.esds_box.es.url_string.as_deref(), Some("urn:test"));
+        assert_eq!(entry.esds_box.es.ocr_es_id, Some(3));
+        assert_eq!(
+            entry.esds_box.es.dec_config_descr.object_type_indication,
+            107
+        );
+        assert!(entry.esds_box.es.dec_config_descr.up_stream.as_bool());
+
+        let output = nojson::json(|f| fmt_json(f, &entry)).to_string();
+        let raw = nojson::RawJson::parse(&output).expect("有効な JSON");
+        let parsed = parse_json(raw.value()).expect("再パース");
+        assert_eq!(parsed, entry);
+
+        // esId の 0 は予約されている
+        let json_str = r#"{"kind":"mp4a","channelCount":2,"sampleRate":48000,"sampleSize":16,"bufferSizeDb":6144,"maxBitrate":128000,"avgBitrate":96000,"decSpecificInfo":[17,144],"esId":0}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
     }
 }

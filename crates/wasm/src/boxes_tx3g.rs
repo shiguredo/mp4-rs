@@ -165,7 +165,7 @@ pub(crate) fn parse_json(
         ftab_box: FtabBox {
             entries: ftab_entries,
         },
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[])?,
     })
 }
 

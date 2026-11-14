@@ -282,12 +282,13 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 | フィールド | 上限 |
 |---|---|
 | `sps` | 31 個 |
+| `spsExt` | 255 個 |
 | `pps` | 255 個 |
 | `naluArrays` | 255 個 |
 | `units` | 65535 個 |
 | `ftab` | 65535 個 |
 | `font_name` | 255 バイト |
-| `sps` / `pps` の各要素 | 65535 バイト |
+| `sps` / `pps` / `spsExt` の各要素 | 65535 バイト |
 | `units` の各要素 | 65535 バイト |
 
 ### サンプルエントリーの共通フィールド
@@ -305,7 +306,7 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 
 音声系のサンプルエントリーは `dataReferenceIndex`（省略時は 1）を共通して持ちます。
 
-すべてのサンプルエントリーは `unknownBoxes` を持ちます。型付き実装を持たない子ボックス（`pasp` / `btrt` など）を `{ "type": "pasp", "data": [..] }` の配列として保持し、mux 時にそのまま書き戻します。`type` は 4 文字の文字列か、4 バイト / 16 バイト（UUID）の数値配列です。
+型付きのサンプルエントリーは `unknownBoxes` を持ちます（`kind` が `unknown` のものを除く）。型付き実装を持たない子ボックス（`pasp` / `btrt` など）を `{ "type": "pasp", "data": [..] }` の配列として保持し、mux 時にそのまま書き戻します。`type` は 4 文字の文字列か、4 バイト / 16 バイト（UUID）の数値配列です。`"uuid"` は 4 文字では指定できず、16 バイトの数値配列で指定します。`avcC` などの型付きボックスは専用のキーで指定するため、`unknownBoxes` には指定できません。
 
 ### 入力要求
 
@@ -415,6 +416,8 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 ```
 
 `chromaFormat` / `bitDepthLumaMinus8` / `bitDepthChromaMinus8` は、`avcC` に該当フィールドがある場合のみ出力されます。`avcProfileIndication` が 66 / 77 / 88 以外の場合はこの 3 つが必須です。
+
+`spsExt` は SPS 拡張の配列です。`avcProfileIndication` が 66 / 77 / 88 の場合に指定すると例外になります。
 
 #### HEV1 / HVC1 (H.265/HEVC)
 
@@ -536,6 +539,8 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 }
 ```
 
+ES 記述子の `esId` / `streamPriority` / `dependsOnEsId` / `urlString` / `ocrEsId` / `objectTypeIndication` / `streamType` / `upStream` も出力され、入力で上書きできます。省略した場合は AAC 音声向けの既定値になります。
+
 #### FLAC
 
 ```json
@@ -548,13 +553,23 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 }
 ```
 
-`streaminfoData` は `dfLa` の STREAMINFO メタデータブロックの内容です。
+`streaminfoData` は `dfLa` の STREAMINFO メタデータブロックの内容です（STREAMINFO は 34 バイト固定です）。STREAMINFO 以外のメタデータブロックがある場合は、すべてのブロックを `metadataBlocks` として出力します。
+
+```json
+"metadataBlocks": [
+  { "type": 0, "last": false, "data": [0, 16, 0, 16] },
+  { "type": 1, "last": true, "data": [0, 0] }
+]
+```
+
+`metadataBlocks` がある場合はそちらが優先され、`streaminfoData` は使われません。先頭のブロックは STREAMINFO（`type` が 0）でなければならず、`last` は最後のブロックだけに指定できます。
 
 #### STPP (TTML 字幕)
 
 ```json
 {
   "kind": "stpp",
+  "dataReferenceIndex": 1,
   "namespace": "http://www.w3.org/ns/ttml",
   "schemaLocation": "https://example.com/ttml.xsd",
   "auxiliaryMimeTypes": ""
@@ -564,14 +579,17 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 #### WVTT (WebVTT 字幕)
 
 ```json
-{ "kind": "wvtt", "config": "WEBVTT\n\nSTYLE" }
+{ "kind": "wvtt", "dataReferenceIndex": 1, "config": "WEBVTT\n\nSTYLE" }
 ```
+
+字幕系のサンプルエントリーも `dataReferenceIndex` と `unknownBoxes` を持ちます。
 
 #### TX3G (3GPP 字幕)
 
 ```json
 {
   "kind": "tx3g",
+  "dataReferenceIndex": 1,
   "display_flags": 0,
   "horizontal_justification": 0,
   "vertical_justification": 0,

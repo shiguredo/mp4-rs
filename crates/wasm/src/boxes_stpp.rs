@@ -53,7 +53,7 @@ pub(crate) fn parse_json(
         namespace,
         schema_location,
         auxiliary_mime_types,
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[])?,
     })
 }
 

@@ -30,7 +30,7 @@ pub(crate) fn parse_json(
             WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
         )?,
         vttc_box: VttCBox { config },
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[])?,
     })
 }
 

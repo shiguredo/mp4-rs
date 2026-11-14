@@ -17,7 +17,7 @@ pub(crate) fn parse_json(
     Ok(Hvc1Box {
         visual,
         hvcc_box,
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"hvcC"])?,
     })
 }
 

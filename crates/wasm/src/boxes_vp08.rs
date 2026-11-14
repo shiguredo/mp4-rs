@@ -86,7 +86,7 @@ pub(crate) fn parse_json(
     Ok(Vp08Box {
         visual,
         vpcc_box,
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"vpcC"])?,
     })
 }
 

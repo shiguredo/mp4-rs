@@ -135,6 +135,23 @@ pub(crate) fn parse_json(
             "bitDepthChromaMinus8 is required for this profile",
         ));
     }
+    // spsExt も SPS と同じ個数・長さの制約を受ける
+    if sps_ext_list.len() > 255 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "spsExt",
+            "spsExt must contain at most 255 entries",
+        ));
+    }
+    for nalu in &sps_ext_list {
+        if nalu.len() > usize::from(u16::MAX) {
+            return Err(crate::boxes::invalid_member(
+                value,
+                "spsExt",
+                "each SPS extension must be at most 65535 bytes",
+            ));
+        }
+    }
     // 66 / 77 / 88 では avcC に SPS 拡張を書かないため、指定されても無視される
     if !high_profile && !sps_ext_list.is_empty() {
         return Err(crate::boxes::invalid_member(
@@ -158,7 +175,7 @@ pub(crate) fn parse_json(
             bit_depth_chroma_minus8,
             sps_ext_list,
         },
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"avcC"])?,
     })
 }
 
@@ -365,9 +382,8 @@ mod tests {
     }
 
     #[test]
-    fn test_json_to_avc1_rejects_missing_width_after_sps_pps() {
-        // sps / pps を先に読み、その後に width を読む。必須フィールドが
-        // 欠落していれば、その時点でパースが失敗することを確認する
+    fn test_json_to_avc1_rejects_missing_width() {
+        // width が欠落していればパースが失敗することを確認する
         let json_str = r#"{"kind": "avc1", "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[103, 100, 0, 40]], "pps": [[104, 238, 60, 128]]}"#;
 
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
@@ -388,6 +404,14 @@ mod tests {
         assert_eq!(parsed.avcc_box.sps_ext_list, vec![vec![3]]);
     }
 
+    /// 型付きの子ボックスを unknownBoxes で指定できないこと
+    #[test]
+    fn test_json_to_avc1_rejects_typed_box_in_unknown_boxes() {
+        let json_str = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":66,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"sps":[[1]],"pps":[[2]],"unknownBoxes":[{"type":"avcC","data":[1]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
+    }
+
     /// 未知の子ボックスとコンプレッサー名が往復すること
     #[test]
     fn test_avc1_json_roundtrip_preserves_metadata() {
@@ -396,7 +420,7 @@ mod tests {
         compressorname[0] = 9;
         compressorname[1..10].copy_from_slice(b"test/avc1");
         sample_entry.visual.compressorname = compressorname;
-        sample_entry.visual.frame_count = 1;
+        sample_entry.visual.frame_count = 2;
         sample_entry
             .unknown_boxes
             .push(shiguredo_mp4::boxes::UnknownBox {

@@ -184,6 +184,10 @@ fn parse_compressorname(
         return Ok(raw);
     }
     let raw: [u8; 32] = member.try_into()?;
+    // 長さバイトは 31 以下でなければ名前として解釈できない
+    if raw[0] > 31 {
+        return Err(member.invalid("compressorname length must be at most 31"));
+    }
     Ok(raw)
 }
 
@@ -215,6 +219,7 @@ pub(crate) fn fmt_unknown_boxes(
 /// 型付き実装を持たない子ボックスを JSON から読み取る
 pub(crate) fn parse_unknown_boxes(
     value: nojson::RawJsonValue<'_, '_>,
+    known_types: &[&[u8; 4]],
 ) -> Result<Vec<UnknownBox>, nojson::JsonParseError> {
     let Some(member) = value.to_member("unknownBoxes")?.optional() else {
         return Ok(Vec::new());
@@ -259,6 +264,12 @@ pub(crate) fn parse_unknown_boxes(
                 _ => return Err(type_value.invalid("type must be 4 or 16 bytes")),
             }
         };
+        if let BoxType::Normal(ty) = box_type
+            && known_types.contains(&&ty)
+        {
+            return Err(type_value
+                .invalid("typed boxes must be specified with their own key, not unknownBoxes"));
+        }
         let payload: Vec<u8> = entry.to_member("data")?.required()?.try_into()?;
         let box_size = BoxSize::with_payload_size(box_type, payload.len() as u64);
         unknown_boxes.push(UnknownBox {
@@ -275,7 +286,7 @@ pub(crate) fn parse_unknown_boxes(
 /// [`FixedPointNumber`] は 16.16 固定小数点数なので、整数部と小数部を合わせて
 /// 1 つの実数として返す。
 pub(crate) fn sample_rate_to_json(sample_rate: FixedPointNumber<u16, u16>) -> f64 {
-    f64::from(sample_rate.integer) + f64::from(sample_rate.fraction) / 65536.0
+    fixed_point_to_f64(sample_rate)
 }
 
 /// JSON の `sampleRate` を音声系サンプルエントリーのサンプリングレートに変換する
@@ -521,7 +532,7 @@ mod tests {
         // 4 文字の文字列
         let json_str = r#"{"unknownBoxes":[{"type":"pasp","data":[0,0,0,1]}]}"#;
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
-        let boxes = parse_unknown_boxes(json.value()).expect("未知の子ボックス");
+        let boxes = parse_unknown_boxes(json.value(), &[]).expect("未知の子ボックス");
         assert_eq!(boxes.len(), 1);
         assert_eq!(boxes[0].box_type, BoxType::Normal(*b"pasp"));
         assert_eq!(boxes[0].payload, vec![0, 0, 0, 1]);
@@ -534,14 +545,14 @@ mod tests {
         // 4 バイトの数値配列
         let json_str = r#"{"unknownBoxes":[{"type":[112,97,115,112],"data":[]}]}"#;
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
-        let boxes = parse_unknown_boxes(json.value()).expect("4 バイトの種別");
+        let boxes = parse_unknown_boxes(json.value(), &[]).expect("4 バイトの種別");
         assert_eq!(boxes[0].box_type, BoxType::Normal(*b"pasp"));
 
         // 16 バイトの UUID
         let uuid = (0..16).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
         let json_str = format!(r#"{{"unknownBoxes":[{{"type":[{uuid}],"data":[1]}}]}}"#);
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let boxes = parse_unknown_boxes(json.value()).expect("UUID の種別");
+        let boxes = parse_unknown_boxes(json.value(), &[]).expect("UUID の種別");
         assert!(matches!(boxes[0].box_type, BoxType::Uuid(_)));
         assert_eq!(
             boxes[0].box_size,
@@ -553,15 +564,19 @@ mod tests {
         // 期待するため壊れたボックスになる。ここで拒否する
         let json_str = r#"{"unknownBoxes":[{"type":"uuid","data":[0]}]}"#;
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
-        assert!(parse_unknown_boxes(json.value()).is_err());
+        assert!(parse_unknown_boxes(json.value(), &[]).is_err());
 
         // 長さが 4 / 16 以外の配列は拒否する
         let json_str = r#"{"unknownBoxes":[{"type":[1,2,3],"data":[]}]}"#;
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
-        assert!(parse_unknown_boxes(json.value()).is_err());
+        assert!(parse_unknown_boxes(json.value(), &[]).is_err());
 
         // キーが無ければ空
         let json = nojson::RawJson::parse(r#"{}"#).expect("有効な JSON");
-        assert!(parse_unknown_boxes(json.value()).expect("空").is_empty());
+        assert!(
+            parse_unknown_boxes(json.value(), &[])
+                .expect("空")
+                .is_empty()
+        );
     }
 }

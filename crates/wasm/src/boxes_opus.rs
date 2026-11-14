@@ -60,7 +60,7 @@ pub(crate) fn parse_json(
             input_sample_rate,
             output_gain,
         },
-        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"dOps"])?,
     })
 }
 

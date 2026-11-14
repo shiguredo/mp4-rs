@@ -937,3 +937,12 @@ test('メモリを枯渇させる引数は例外になる', () => {
         /creationTimestampSecs is too large/,
     );
 });
+
+test('サンプルを追加せずに finalize すると例外になる', () => {
+    const muxer = new wasm.Mp4FileMuxer(0);
+    try {
+        assert.throws(() => muxer.finalize(), /no samples have been appended/);
+    } finally {
+        muxer.free();
+    }
+});

@@ -203,7 +203,7 @@ MP4 ファイルを構築します。
 | `initialBoxes(): Uint8Array` | ファイル先頭に書き込むべきバイト列を返す |
 | `appendSample(sampleJson: string)` | サンプルデータを書き込んだ位置とサイズを伝える |
 | `advancePosition(size: number)` | サンプル以外のデータを書き込んだ分だけ位置を進める |
-| `finalize()` | マルチプレックス処理を完了する |
+| `finalize()` | マルチプレックス処理を完了する。サンプルを 1 つも追加していない場合は例外 |
 | `nextOutput(): Mp4FileMuxerOutput \| undefined` | 未取得の出力ボックスを 1 つ返す。使い終えたら `free()` する |
 | `isFaststartEnabled(): boolean` | 確定したファイルで faststart が有効かどうかを返す |
 | `moovBoxSize(): number` | 確定した moov ボックスのサイズを返す |

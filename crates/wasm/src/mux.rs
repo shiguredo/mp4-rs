@@ -52,6 +52,7 @@ pub struct Mp4FileMuxer {
     faststart_enabled: bool,
     moov_box_size: usize,
     ctts_states: HashMap<TrackKind, CttsState>,
+    appended_samples: usize,
 }
 
 /// トラックごとの `ctts` の値域の状態
@@ -93,6 +94,7 @@ impl Mp4FileMuxer {
             faststart_enabled: false,
             moov_box_size: 0,
             ctts_states: HashMap::new(),
+            appended_samples: 0,
         })
     }
 
@@ -140,6 +142,7 @@ impl Mp4FileMuxer {
         if let Some(state) = ctts_state {
             self.ctts_states.insert(sample.track_kind, state);
         }
+        self.appended_samples += 1;
         Ok(())
     }
 
@@ -159,6 +162,12 @@ impl Mp4FileMuxer {
     /// 完了後に `nextOutput()` で書き込むべきボックスを取得する。
     #[wasm_bindgen(js_name = finalize)]
     pub fn finalize(&mut self) -> Result<(), JsError> {
+        // トラックが 1 つもない MP4 は再生できないため、空のまま完了させない
+        if self.appended_samples == 0 {
+            return Err(JsError::new(
+                "failed to finalize: no samples have been appended",
+            ));
+        }
         let finalized = self
             .inner
             .finalize()

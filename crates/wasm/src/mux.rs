@@ -1,4 +1,7 @@
 //! MP4 ファイルのマルチプレックスを行う JavaScript 向けクラス
+use std::collections::HashMap;
+
+use shiguredo_mp4::TrackKind;
 use shiguredo_mp4::mux::{Mp4FileMuxer as Inner, Mp4FileMuxerOptions, Sample};
 use wasm_bindgen::prelude::*;
 
@@ -48,6 +51,14 @@ pub struct Mp4FileMuxer {
     next_output_index: usize,
     faststart_enabled: bool,
     moov_box_size: usize,
+    ctts_states: HashMap<TrackKind, CttsState>,
+}
+
+/// トラックごとの `ctts` の値域の状態
+#[derive(Default)]
+struct CttsState {
+    has_negative: bool,
+    has_large: bool,
 }
 
 #[wasm_bindgen]
@@ -75,6 +86,7 @@ impl Mp4FileMuxer {
             next_output_index: 0,
             faststart_enabled: false,
             moov_box_size: 0,
+            ctts_states: HashMap::new(),
         })
     }
 
@@ -112,6 +124,8 @@ impl Mp4FileMuxer {
             .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
         let sample = parse_json_mux_sample(sample_json)
             .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
+        check_ctts_range(&mut self.ctts_states, &sample)
+            .map_err(|error| JsError::new(&format!("failed to append sample: {error}")))?;
         self.inner
             .append_sample(&sample)
             .map_err(|error| JsError::new(&format!("failed to append sample: {error}")))
@@ -183,9 +197,73 @@ fn parse_json_mux_sample(text: &str) -> Result<Sample, nojson::JsonParseError> {
     })
 }
 
+/// `ctts` の version 0 (u32) と version 1 (i32) が混在しないか検査する
+///
+/// コアはトラック内に負値が 1 つでもあると version 1 を選ぶため、
+/// 同じトラックに i32::MAX を超える正値と負値が混在すると finalize で失敗する。
+/// ここで先に拒否し、ファイルを書き終えた後の失敗を防ぐ。
+fn check_ctts_range(
+    states: &mut HashMap<TrackKind, CttsState>,
+    sample: &Sample,
+) -> Result<(), String> {
+    let Some(offset) = sample.composition_time_offset else {
+        return Ok(());
+    };
+    let state = states.entry(sample.track_kind).or_default();
+    if offset < 0 {
+        state.has_negative = true;
+    }
+    if offset > i64::from(i32::MAX) {
+        state.has_large = true;
+    }
+    if state.has_negative && state.has_large {
+        return Err(
+            "composition_time_offset cannot mix negative values with values above i32::MAX in the same track"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ctts` の混在を検出すること
+    #[test]
+    fn test_check_ctts_range() {
+        fn sample(offset: i64) -> Sample {
+            Sample {
+                track_kind: TrackKind::Video,
+                sample_entry: None,
+                keyframe: true,
+                timescale: std::num::NonZeroU32::new(90000).expect("0 ではない"),
+                duration: 3000,
+                composition_time_offset: Some(offset),
+                data_offset: 0,
+                data_size: 0,
+            }
+        }
+
+        let mut states = HashMap::new();
+        // version 0 の範囲だけなら混在しない
+        assert!(check_ctts_range(&mut states, &sample(0)).is_ok());
+        assert!(check_ctts_range(&mut states, &sample(i64::from(u32::MAX))).is_ok());
+
+        // 負値が入ると version 1 になり、i32 を超える値と混在できない
+        assert!(check_ctts_range(&mut states, &sample(-1)).is_err());
+
+        // 逆順でも検出する
+        let mut states = HashMap::new();
+        assert!(check_ctts_range(&mut states, &sample(-1)).is_ok());
+        assert!(check_ctts_range(&mut states, &sample(i64::from(i32::MAX) + 1)).is_err());
+
+        // ctts を持たないサンプルは状態を変えない
+        let mut states = HashMap::new();
+        let mut without = sample(0);
+        without.composition_time_offset = None;
+        assert!(check_ctts_range(&mut states, &without).is_ok());
+    }
 
     /// マルチプレックス用のサンプル JSON を組み立てる
     fn build_sample_json(extra: &str) -> String {

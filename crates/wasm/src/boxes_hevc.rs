@@ -614,6 +614,15 @@ mod tests {
         let json_str = build_test_json("hev1", &format!("[{arrays}]"), None);
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         assert!(parse_json(json.value(), "hev1").is_err());
+
+        // 上限ちょうどは受理する
+        let arrays = (0..255)
+            .map(|_| r#"{"naluType":32,"arrayCompleteness":0,"units":[[1]]}"#)
+            .collect::<Vec<_>>()
+            .join(",");
+        let json_str = build_test_json("hev1", &format!("[{arrays}]"), None);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value(), "hev1").is_ok());
     }
 
     /// 1 配列あたりの NALU 数の上限を parse 時に検査すること

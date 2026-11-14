@@ -834,3 +834,27 @@ test('sidx の時間があふれる場合は内部状態を進めない', () => 
         muxer.free();
     }
 });
+
+test('ctts の負値と i32 を超える値の混在は例外になる', () => {
+    const muxer = new wasm.Mp4FileMuxer(0);
+    try {
+        const base = {
+            track_kind: 'video',
+            timescale: 90000,
+            duration: 3000,
+            keyframe: true,
+            data_offset: muxer.initialBoxes().length,
+            data_size: 0,
+            sample_entry: AVC1_ENTRY,
+        };
+        // version 0 の範囲だけなら受理する
+        muxer.appendSample(JSON.stringify({ ...base, composition_time_offset: 3000000000 }));
+        // 同じトラックに負値を混ぜると version 1 になり表現できない
+        assert.throws(
+            () => muxer.appendSample(JSON.stringify({ ...base, composition_time_offset: -1 })),
+            /cannot mix/,
+        );
+    } finally {
+        muxer.free();
+    }
+});

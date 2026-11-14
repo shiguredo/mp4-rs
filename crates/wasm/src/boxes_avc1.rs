@@ -56,12 +56,21 @@ pub(crate) fn parse_json(
         ));
     }
     // avcC の NALU 長は 16 ビットであり、それ以上の要素はエンコードできない
-    for nalu in sps_list.iter().chain(pps_list.iter()) {
+    for nalu in &sps_list {
         if nalu.len() > usize::from(u16::MAX) {
             return Err(crate::boxes::invalid_member(
                 value,
                 "sps",
-                "each NALU must be at most 65535 bytes",
+                "each SPS must be at most 65535 bytes",
+            ));
+        }
+    }
+    for nalu in &pps_list {
+        if nalu.len() > usize::from(u16::MAX) {
+            return Err(crate::boxes::invalid_member(
+                value,
+                "pps",
+                "each PPS must be at most 65535 bytes",
             ));
         }
     }

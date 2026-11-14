@@ -25,6 +25,7 @@
   - `Mp4FileMuxerOutput` は `offset` と `takeData()` を持ち、データの所有権を移して受け渡す
   - `Mp4FileDemuxer` の `seek()` は `timestamp / timescale` 秒を受け付け、1 秒未満の指定も扱える
   - JSON の各数値はフィールドのビット幅・予約値・個数上限と整合するかを検証し、範囲外は例外にする
+  - 同じトラック内で `composition_time_offset` の負値と i32 の最大値を超える値を混在させた場合は例外にする
   - JSON のネストの深さと長さに上限を設け、上限を超える入力は wasm を停止させずに例外にする
   - `arrayCompleteness` は `hev1` では 0、`hvc1` では VPS / SPS / PPS のみ 1 を既定値とする。`hvc1` で明示する場合はこの組み合わせだけを受理し、`hev1` は 0 / 1 のどちらも受理する
   - `Mp4FileKindDetector` は入力が不正な場合に `handleInput` で例外を投げる

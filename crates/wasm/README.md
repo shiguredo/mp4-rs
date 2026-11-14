@@ -14,6 +14,18 @@ JavaScript / TypeScript から直接呼び出すことができます。
 
 トラック情報・サンプル情報・サンプルエントリーは JSON 文字列として受け渡します。バイナリデータ（SPS / PPS / NALU 等）は数値配列として表現します。
 
+## クラス一覧
+
+| クラス | 用途 |
+|---|---|
+| `Mp4FileDemuxer` | MP4 ファイルのデマルチプレックス |
+| `Mp4FileMuxer` | MP4 ファイルのマルチプレックス |
+| `Fmp4SegmentMuxer` | fMP4 の初期化セグメントとメディアセグメントの生成 |
+| `Fmp4SegmentDemuxer` | fMP4 の初期化セグメントとメディアセグメントの読み取り |
+| `Fmp4FileDemuxer` | fMP4 ファイル全体のデマルチプレックス |
+| `Mp4FileKindDetector` | MP4 / fMP4 ファイルの種別判定 |
+| `version()` | ライブラリのバージョン |
+
 ## ビルド方法
 
 ```bash

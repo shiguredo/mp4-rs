@@ -10,9 +10,11 @@ use shiguredo_mp4::boxes::StppBox;
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &StppBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "stpp")?;
+        f.member("dataReferenceIndex", data.data_reference_index.get())?;
         f.member("namespace", data.namespace.get())?;
         f.member("schemaLocation", data.schema_location.get())?;
-        f.member("auxiliaryMimeTypes", data.auxiliary_mime_types.get())
+        f.member("auxiliaryMimeTypes", data.auxiliary_mime_types.get())?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -43,12 +45,15 @@ pub(crate) fn parse_json(
     })?;
 
     Ok(StppBox {
-        data_reference_index: StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+        data_reference_index: crate::boxes::parse_non_zero_u16_member(
+            value,
+            "dataReferenceIndex",
+            StppBox::DEFAULT_DATA_REFERENCE_INDEX,
+        )?,
         namespace,
         schema_location,
         auxiliary_mime_types,
-        // stpp は型付き実装を持つ子ボックスを扱わないため、常に空にする
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 
@@ -118,5 +123,21 @@ mod tests {
             result.is_err(),
             "namespace に null 文字を含む場合はパース失敗すること"
         );
+    }
+
+    /// 未知の子ボックスとデータ参照インデックスが往復すること
+    #[test]
+    fn test_stpp_json_roundtrip_preserves_unknown_boxes() {
+        let json_str = r#"{"kind":"stpp","dataReferenceIndex":3,"namespace":"urn:x","schemaLocation":"","auxiliaryMimeTypes":"","unknownBoxes":[{"type":"btrt","data":[1,2,3,4]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let entry = parse_json(json.value()).expect("有効な stpp JSON");
+        assert_eq!(entry.data_reference_index.get(), 3);
+        assert_eq!(entry.unknown_boxes.len(), 1);
+        assert_eq!(entry.unknown_boxes[0].payload, vec![1, 2, 3, 4]);
+
+        let output = nojson::json(|f| fmt_json(f, &entry)).to_string();
+        let raw = nojson::RawJson::parse(&output).expect("有効な JSON");
+        let parsed = parse_json(raw.value()).expect("再パース");
+        assert_eq!(parsed, entry);
     }
 }

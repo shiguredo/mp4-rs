@@ -135,6 +135,14 @@ pub(crate) fn parse_json(
             "bitDepthChromaMinus8 is required for this profile",
         ));
     }
+    // 66 / 77 / 88 では avcC に SPS 拡張を書かないため、指定されても無視される
+    if !high_profile && !sps_ext_list.is_empty() {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "spsExt",
+            "spsExt is only available for profiles other than 66, 77, and 88",
+        ));
+    }
 
     Ok(Avc1Box {
         visual,
@@ -365,6 +373,19 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let result = parse_json(json.value());
         assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
+
+    /// 66 / 77 / 88 では SPS 拡張を指定できないこと
+    #[test]
+    fn test_json_to_avc1_rejects_sps_ext_for_baseline_profile() {
+        let json_str = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":66,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"sps":[[1]],"pps":[[2]],"spsExt":[[3]]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
+
+        let json_str = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":100,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"chromaFormat":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"sps":[[1]],"pps":[[2]],"spsExt":[[3]]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let parsed = parse_json(json.value()).expect("高プロファイルでは受理されること");
+        assert_eq!(parsed.avcc_box.sps_ext_list, vec![vec![3]]);
     }
 
     /// 未知の子ボックスとコンプレッサー名が往復すること

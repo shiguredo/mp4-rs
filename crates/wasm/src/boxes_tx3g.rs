@@ -10,6 +10,7 @@ use shiguredo_mp4::boxes::{BoxRecord, FontRecord, FtabBox, StyleRecord, Tx3gBox}
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Tx3gBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "tx3g")?;
+        f.member("dataReferenceIndex", data.data_reference_index.get())?;
         f.member("display_flags", data.display_flags)?;
         f.member("horizontal_justification", data.horizontal_justification)?;
         f.member("vertical_justification", data.vertical_justification)?;
@@ -52,7 +53,8 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Tx3gBox) ->
                     Ok(())
                 })
             }),
-        )
+        )?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -137,7 +139,11 @@ pub(crate) fn parse_json(
         .try_into()?;
 
     Ok(Tx3gBox {
-        data_reference_index: Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+        data_reference_index: crate::boxes::parse_non_zero_u16_member(
+            value,
+            "dataReferenceIndex",
+            Tx3gBox::DEFAULT_DATA_REFERENCE_INDEX,
+        )?,
         display_flags,
         horizontal_justification,
         vertical_justification,
@@ -159,8 +165,7 @@ pub(crate) fn parse_json(
         ftab_box: FtabBox {
             entries: ftab_entries,
         },
-        // tx3g は型付き実装を持つ子ボックスを扱わないため、常に空にする
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 
@@ -418,5 +423,20 @@ mod tests {
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         let error = parse_json(json.value()).expect_err("上限超過は拒否されること");
         assert!(error.to_string().contains("at most 255"), "{error}");
+    }
+
+    /// 未知の子ボックスとデータ参照インデックスが往復すること
+    #[test]
+    fn test_tx3g_json_roundtrip_preserves_unknown_boxes() {
+        let json_str = r#"{"kind":"tx3g","dataReferenceIndex":2,"display_flags":0,"horizontal_justification":0,"vertical_justification":0,"background_color_rgba":[0,0,0,255],"default_text_box":[0,0,240,320],"default_style":{"start_char":0,"end_char":0,"font_id":1,"face_style_flags":0,"font_size":12,"text_color_rgba":[255,255,255,255]},"ftab":[{"font_id":1,"font_name":[65]}],"unknownBoxes":[{"type":"dprp","data":[1,2]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let entry = parse_json(json.value()).expect("有効な tx3g JSON");
+        assert_eq!(entry.data_reference_index.get(), 2);
+        assert_eq!(entry.unknown_boxes.len(), 1);
+
+        let output = nojson::json(|f| fmt_json(f, &entry)).to_string();
+        let raw = nojson::RawJson::parse(&output).expect("有効な JSON");
+        let parsed = parse_json(raw.value()).expect("再パース");
+        assert_eq!(parsed, entry);
     }
 }

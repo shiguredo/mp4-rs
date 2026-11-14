@@ -9,7 +9,9 @@ use shiguredo_mp4::boxes::{VttCBox, WvttBox};
 pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &WvttBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "wvtt")?;
-        f.member("config", data.vttc_box.config.as_str())
+        f.member("dataReferenceIndex", data.data_reference_index.get())?;
+        f.member("config", data.vttc_box.config.as_str())?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
@@ -22,10 +24,13 @@ pub(crate) fn parse_json(
     let config: String = value.to_member("config")?.required()?.try_into()?;
 
     Ok(WvttBox {
-        data_reference_index: WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+        data_reference_index: crate::boxes::parse_non_zero_u16_member(
+            value,
+            "dataReferenceIndex",
+            WvttBox::DEFAULT_DATA_REFERENCE_INDEX,
+        )?,
         vttc_box: VttCBox { config },
-        // wvtt は型付き実装を持つ子ボックスを扱わないため、常に空にする
-        unknown_boxes: Vec::new(),
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value)?,
     })
 }
 

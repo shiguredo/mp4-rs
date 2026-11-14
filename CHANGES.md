@@ -29,6 +29,7 @@
   - JSON のネストの深さと長さに上限を設け、上限を超える入力は wasm を停止させずに例外にする
   - `arrayCompleteness` は `hev1` では 0、`hvc1` では VPS / SPS / PPS のみ 1 を既定値とする。`hvc1` で明示する場合はこの組み合わせだけを受理し、`hev1` は 0 / 1 のどちらも受理する
   - `Mp4FileKindDetector` は入力が不正な場合に `handleInput` で例外を投げる
+  - サンプルエントリーの `unknownBoxes`（`pasp` / `btrt` など）、`compressorname`、映像・音声の共通フィールド、ES 記述子、FLAC のメタデータブロックを JSON に含め、demux → mux で失われないようにする
   - `.d.ts` は wasm-bindgen が生成する
   - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
   - GitHub Release の wasm アーカイブはルートの `mp4_wasm.wasm` を廃止し、`node/` と `web/` のディレクトリ構成に変更する。CI の artifact も `pkg/` 配下になる

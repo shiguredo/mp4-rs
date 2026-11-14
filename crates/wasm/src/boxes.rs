@@ -52,18 +52,11 @@ pub(crate) fn parse_visual_sample_entry_fields(
 ) -> Result<VisualSampleEntryFields, nojson::JsonParseError> {
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let data_reference_index = match value.to_member("dataReferenceIndex")?.optional() {
-        None => VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
-        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
-            VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX
-        }
-        Some(member) => {
-            let index: u16 = member.try_into()?;
-            std::num::NonZeroU16::new(index).ok_or_else(|| {
-                member.invalid("dataReferenceIndex must be greater than or equal to 1")
-            })?
-        }
-    };
+    let data_reference_index = parse_non_zero_u16_member(
+        value,
+        "dataReferenceIndex",
+        VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+    )?;
     let horizresolution = parse_fixed_point(value, "horizresolution")?
         .unwrap_or(VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION);
     let vertresolution = parse_fixed_point(value, "vertresolution")?
@@ -143,11 +136,13 @@ fn parse_fixed_point(
     }
     let number: f64 = member.try_into()?;
     if !(0.0..=65535.0 + 65535.0 / 65536.0).contains(&number) {
-        return Err(member.invalid("value is out of range"));
+        let message = format!("{name} is out of range");
+        return Err(member.invalid(message.as_str()));
     }
     let fixed_point = (number * 65536.0).round();
     if fixed_point > f64::from(u32::MAX) {
-        return Err(member.invalid("value is out of range"));
+        let message = format!("{name} is out of range");
+        return Err(member.invalid(message.as_str()));
     }
     let fixed_point = fixed_point as u32;
     Ok(Some(FixedPointNumber::new(
@@ -239,6 +234,9 @@ pub(crate) fn parse_unknown_boxes(
             }
             let mut ty = [0u8; 4];
             ty.copy_from_slice(bytes);
+            if &ty == b"uuid" {
+                return Err(type_value.invalid("type \"uuid\" requires a 16-byte user type array"));
+            }
             BoxType::Normal(ty)
         } else {
             let bytes: Vec<u8> = type_value.try_into()?;
@@ -246,6 +244,11 @@ pub(crate) fn parse_unknown_boxes(
                 4 => {
                     let mut ty = [0u8; 4];
                     ty.copy_from_slice(&bytes);
+                    if &ty == b"uuid" {
+                        return Err(
+                            type_value.invalid("type \"uuid\" requires a 16-byte user type array")
+                        );
+                    }
                     BoxType::Normal(ty)
                 }
                 16 => {
@@ -257,18 +260,7 @@ pub(crate) fn parse_unknown_boxes(
             }
         };
         let payload: Vec<u8> = entry.to_member("data")?.required()?.try_into()?;
-        // ヘッダは size (4) + type (4、UUID なら +16) で構成される
-        let header_size = 8 + if matches!(box_type, BoxType::Uuid(_)) {
-            16
-        } else {
-            0
-        };
-        let total = header_size + payload.len();
-        let box_size = if total <= u32::MAX as usize {
-            BoxSize::U32(total as u32)
-        } else {
-            BoxSize::U64((total + 8) as u64)
-        };
+        let box_size = BoxSize::with_payload_size(box_type, payload.len() as u64);
         unknown_boxes.push(UnknownBox {
             box_type,
             box_size,
@@ -521,5 +513,55 @@ mod tests {
             error.to_string().contains("unknown sample entry kind"),
             "{error}"
         );
+    }
+
+    /// 未知の子ボックスの type と data を読み取れること
+    #[test]
+    fn test_parse_unknown_boxes() {
+        // 4 文字の文字列
+        let json_str = r#"{"unknownBoxes":[{"type":"pasp","data":[0,0,0,1]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let boxes = parse_unknown_boxes(json.value()).expect("未知の子ボックス");
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].box_type, BoxType::Normal(*b"pasp"));
+        assert_eq!(boxes[0].payload, vec![0, 0, 0, 1]);
+        assert_eq!(
+            boxes[0].box_size,
+            BoxSize::U32(8 + 4),
+            "ヘッダ 8 バイトと payload 4 バイト"
+        );
+
+        // 4 バイトの数値配列
+        let json_str = r#"{"unknownBoxes":[{"type":[112,97,115,112],"data":[]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let boxes = parse_unknown_boxes(json.value()).expect("4 バイトの種別");
+        assert_eq!(boxes[0].box_type, BoxType::Normal(*b"pasp"));
+
+        // 16 バイトの UUID
+        let uuid = (0..16).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let json_str = format!(r#"{{"unknownBoxes":[{{"type":[{uuid}],"data":[1]}}]}}"#);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let boxes = parse_unknown_boxes(json.value()).expect("UUID の種別");
+        assert!(matches!(boxes[0].box_type, BoxType::Uuid(_)));
+        assert_eq!(
+            boxes[0].box_size,
+            BoxSize::U32(24 + 1),
+            "UUID のヘッダは 24 バイト"
+        );
+
+        // "uuid" を 4 バイト種別として指定すると、読み手は 16 バイトのユーザータイプを
+        // 期待するため壊れたボックスになる。ここで拒否する
+        let json_str = r#"{"unknownBoxes":[{"type":"uuid","data":[0]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_unknown_boxes(json.value()).is_err());
+
+        // 長さが 4 / 16 以外の配列は拒否する
+        let json_str = r#"{"unknownBoxes":[{"type":[1,2,3],"data":[]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_unknown_boxes(json.value()).is_err());
+
+        // キーが無ければ空
+        let json = nojson::RawJson::parse(r#"{}"#).expect("有効な JSON");
+        assert!(parse_unknown_boxes(json.value()).expect("空").is_empty());
     }
 }

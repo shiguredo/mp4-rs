@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-smhd-balance-sign
 - Polished: 2026-10-05
+- Refreshed: 2026-11-14
 
 ## 目的
 
@@ -37,4 +38,4 @@ ISO/IEC 14496-12:2022 の 12.2.2.2 は `template int(16) balance` である。12
 - `SmhdBox::balance` の doc に、0 が中央、-1.0 が全左、+1.0 が全右であることと、ISO/IEC 14496-12:2022 の 12.2.2.3 が記載されている
 - `pbt/tests/prop_boxes.rs` と `pbt/tests/prop_container_boxes.rs` の `balance` を生成する箇所が `sample_i8` に追従している
 - `CHANGES.md` の develop に `[CHANGE]` エントリがある
-- CI と同じ次のコマンドが warning なしで通る: `cargo fmt --all --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings` / `cargo clippy --all-targets -- -D warnings` / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz`
+- CI と同じ次のコマンドが warning なしで通る: `cargo fmt --all --check` / `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings` / `cargo clippy --all-targets -- -D warnings`（`fuzz/` 内で実行。CI では Windows 以外が対象） / `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz` / `cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz`（環境変数 `RUSTDOCFLAGS="-D warnings"` を設定）

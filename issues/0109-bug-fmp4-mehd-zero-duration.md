@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-fmp4-mehd-zero-duration
 - Polished: 2026-10-05
+- Refreshed: 2026-11-14
 
 ## 目的
 
@@ -28,7 +29,7 @@ ISO/IEC 14496-12:2022 の 8.8.2.3 では、`fragment_duration` はフラグメ�
 
 - `Fmp4SegmentMuxer` の init セグメントの `mvex` に `mehd` が無い
 - `mvhd.duration` と `tkhd.duration` は 0 のままである（回帰確認）
-- `MoovBox::decode` と `MvexBox::decode` が `mehd` の無い `mvex` を読み、`Fmp4SegmentDemuxer::handle_init_segment` が `mehd` の無い init セグメントからトラックを返す（回帰確認。既存の手組みテストと `pbt/tests/prop_fmp4_segment_mux_demux.rs` の mux→demux 往復で確認できる）
+- `MoovBox::decode` と `MvexBox::decode` が `mehd` の無い `mvex` を読み、`Fmp4SegmentDemuxer::handle_init_segment` が `mehd` の無い init セグメントを処理し、`tracks()` でトラック情報を取得できる（回帰確認。既存の手組みテストと `pbt/tests/prop_fmp4_segment_mux_demux.rs` の mux→demux 往復で確認できる）
 - `Fmp4SegmentMuxer` の公開 API に `fragment_duration` や `mehd` を設定・更新するメソッドを追加していない
 - `CHANGES.md` の develop に `[FIX]` エントリがある
 - `cargo clippy --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz -- -D warnings` と `cargo test --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz` が通る

@@ -185,13 +185,13 @@ MP4 ファイルを段階的に読み込んでメディアサンプルを取り�
 |---|---|
 | `constructor()` | デマルチプレクサを作成する |
 | `requiredInput(): string \| undefined` | 次に必要な入力データを JSON で返す。不要になったら `undefined` |
-| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する。`position` が負値や小数の場合は例外 |
+| `handleInput(position: number, data: Uint8Array \| number[])` | 入力データを供給する。`position` が負値や小数の場合は例外 |
 | `tracks(): string` | トラック情報を JSON の配列で返す |
 | `nextSample(): string \| undefined` | 時系列順に次のサンプルを JSON で返す |
 | `prevSample(): string \| undefined` | 時系列順に前のサンプルを JSON で返す |
 | `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする。`timestamp` は小数でもよい。ナノ秒未満は切り上げる |
 
-入力が不正な場合、`requiredInput()` は `undefined` を返し、次の `tracks()` または `nextSample()` で例外になります。その例外は一度だけ返り、正しいデータを再投入すると回復します。
+入力が不正な場合、`requiredInput()` は `undefined` を返し、次の `tracks()` / `nextSample()` / `prevSample()` / `seek()` で例外になります。現在のコア実装ではその例外は一度だけ返り、正しいデータを再投入すると回復します。
 
 ### `Mp4FileMuxer`
 
@@ -217,8 +217,8 @@ fMP4 の初期化セグメントとメディアセグメントを生成します
 | メソッド | 説明 |
 |---|---|
 | `constructor(creationTimestampSecs: number)` | マルチプレクサを作成する |
-| `createMediaSegment(samplesJson: string, sampleData: Uint8Array): Uint8Array` | メディアセグメント全体を返す |
-| `createMediaSegmentWithSidx(samplesJson: string, sampleData: Uint8Array): Uint8Array` | `sidx` 付きのメディアセグメント全体を返す |
+| `createMediaSegment(samplesJson: string, sampleData: Uint8Array \| number[]): Uint8Array` | メディアセグメント全体を返す |
+| `createMediaSegmentWithSidx(samplesJson: string, sampleData: Uint8Array \| number[]): Uint8Array` | `sidx` 付きのメディアセグメント全体を返す |
 | `initSegment(): Uint8Array` | 初期化セグメントを返す。メディアセグメントを 1 つ以上生成した後に呼ぶ |
 | `mfra(): Uint8Array` | ランダムアクセス用の `mfra` ボックスを返す |
 
@@ -244,9 +244,9 @@ fMP4 の初期化セグメントとメディアセグメントを読み取りま
 | メソッド | 説明 |
 |---|---|
 | `constructor()` | デマルチプレクサを作成する |
-| `handleInitSegment(data: Uint8Array)` | 初期化セグメントを読み込む |
+| `handleInitSegment(data: Uint8Array \| number[])` | 初期化セグメントを読み込む |
 | `tracks(): string` | トラック情報を JSON の配列で返す |
-| `handleMediaSegment(data: Uint8Array): string` | メディアセグメントを読み込み、サンプル情報を JSON の配列で返す |
+| `handleMediaSegment(data: Uint8Array \| number[]): string` | メディアセグメントを読み込み、サンプル情報を JSON の配列で返す |
 
 ### `Mp4FileKindDetector`
 

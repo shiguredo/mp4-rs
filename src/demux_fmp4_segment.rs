@@ -155,6 +155,7 @@ impl Fmp4SegmentDemuxer {
             })?;
         };
 
+        let movie_timescale = moov_box.mvhd_box.timescale;
         let mvex_box = moov_box.mvex_box.ok_or_else(|| {
             DemuxError::DecodeError(Error::invalid_data(
                 "moov box does not contain mvex box (not an fMP4 init segment)",
@@ -202,11 +203,14 @@ impl Fmp4SegmentDemuxer {
                     )))
                 })?;
 
+            let edit_list = trak.edts_box.and_then(|edts_box| edts_box.elst_box);
             track_infos.push(TrackInfo {
                 track_id,
                 kind,
                 duration: trak.mdia_box.mdhd_box.duration,
                 timescale: trak.mdia_box.mdhd_box.timescale,
+                movie_timescale,
+                edit_list,
             });
             track_runtimes.push(TrackRuntime {
                 sample_entries,

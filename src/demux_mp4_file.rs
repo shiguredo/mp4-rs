@@ -46,6 +46,7 @@ use crate::{
     BoxHeader, Decode, Error, TrackKind,
     aux::{SampleTableAccessor, SampleTableAccessorError},
     boxes::{FtypBox, HdlrBox, MoovBox, SampleEntry, StblBox},
+    boxes_moov_tree::ElstBox,
 };
 
 /// メディアトラックの情報を表す構造体
@@ -67,6 +68,19 @@ pub struct TrackInfo {
 
     /// トラックで使用されているタイムスケール
     pub timescale: NonZeroU32,
+
+    /// ムービー全体のタイムスケール（`moov` の `mvhd` の値）
+    ///
+    /// [`ElstEntry::edit_duration`](crate::boxes::ElstEntry::edit_duration) はこの単位で表される。
+    pub movie_timescale: NonZeroU32,
+
+    /// 編集リスト（`edts` / `elst`）
+    ///
+    /// demux のタイムスタンプには反映されない。
+    /// mux する際に [`EditList`](crate::mux::EditList) に詰め替えて
+    /// [`TrackMetadata::edit_list`](crate::mux::TrackMetadata::edit_list) へ渡すことで
+    /// 編集リストを保持できる。
+    pub edit_list: Option<ElstBox>,
 }
 
 /// デマルチプレックス処理で抽出されたメディアサンプルを表す構造体
@@ -529,6 +543,7 @@ impl Mp4FileDemuxer {
             return Err(DemuxError::input_required(offset, box_size));
         };
         let (moov_box, _moov_box_size) = MoovBox::decode(data)?;
+        let movie_timescale = moov_box.mvhd_box.timescale;
 
         for trak_box in moov_box.trak_boxes {
             let track_id = trak_box.tkhd_box.track_id;
@@ -540,12 +555,15 @@ impl Mp4FileDemuxer {
                 _ => continue,
             };
             let timescale = trak_box.mdia_box.mdhd_box.timescale;
+            let edit_list = trak_box.edts_box.and_then(|edts_box| edts_box.elst_box);
             let table = SampleTableAccessor::new(trak_box.mdia_box.minf_box.stbl_box)?;
             self.track_infos.push(TrackInfo {
                 track_id,
                 kind,
                 duration: trak_box.mdia_box.mdhd_box.duration,
                 timescale,
+                movie_timescale,
+                edit_list,
             });
             self.tracks.push(TrackState {
                 table,

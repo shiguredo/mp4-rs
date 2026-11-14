@@ -386,6 +386,7 @@ impl Fmp4FileDemuxer {
 
         let data = self.available_bytes(input, offset, box_size)?;
         let (moov_box, _) = MoovBox::decode(&data[..box_size])?;
+        let movie_timescale = moov_box.mvhd_box.timescale;
 
         self.track_infos.clear();
         self.track_runtimes.clear();
@@ -401,11 +402,14 @@ impl Fmp4FileDemuxer {
             let track_id = trak.tkhd_box.track_id;
             let timescale = trak.mdia_box.mdhd_box.timescale;
             let duration = trak.mdia_box.mdhd_box.duration;
+            let edit_list = trak.edts_box.and_then(|edts_box| edts_box.elst_box);
             self.track_infos.push(TrackInfo {
                 track_id,
                 kind,
                 duration,
                 timescale,
+                movie_timescale,
+                edit_list,
             });
             self.track_runtimes.push(TrackRuntime {
                 sample_entry: None,

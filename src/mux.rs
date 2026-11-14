@@ -33,6 +33,7 @@
 //!     subtitle_track: TrackMetadata {
 //!         language: LanguageCode::from_ascii("eng").expect("valid language code"),
 //!         name: Utf8String::new("English").expect("no null byte"),
+//!         ..Default::default()
 //!     },
 //!     ..Default::default()
 //! };
@@ -40,6 +41,6 @@
 //! ```
 pub use crate::mux_fmp4_segment::{Fmp4SegmentMuxer, SegmentMuxerOptions};
 pub use crate::mux_mp4_file::{
-    FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample, TrackMetadata,
+    EditList, FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample, TrackMetadata,
     estimate_maximum_moov_box_size,
 };

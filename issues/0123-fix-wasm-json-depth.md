@@ -1,8 +1,8 @@
 # wasm の JSON 入力に深さと長さの上限を設ける
 
 - Created: 2026-11-14
-- Completed: {YYYY-MM-DD}
-- Branch: feature/fix-wasm-json-depth
+- Completed: 2026-11-14
+- Branch: feature/change-wasm-bindgen
 - Polished: {YYYY-MM-DD}
 
 ## 目的
@@ -11,12 +11,10 @@
 
 ## 現状
 
-- `crates/wasm` は `nojson` 0.3 で JSON をパースしており、`appendSample` / `createMediaSegment` / `createMediaSegmentWithSidx` の入口で深さと長さの検査を行っていない
-- 約 15 KB の JSON（7,500 段の配列を未使用メンバーに含むもの）を `appendSample` に渡すと `RuntimeError: memory access out of bounds` になる
-- trap した後は `version()` も `free()` も失敗し、同じ WebAssembly インスタンス上の他のオブジェクトも実用上使えなくなる
-- 巨大な数値配列（1,600 万要素、JSON で約 153 MB）でも 4 GB のメモリ上限に達して abort し、オブジェクトを解放できなくなる
-- どちらも `develop` の旧 C ABI 実装でも同じ深さ・サイズで再現する。`crates/wasm` の変更に起因する退行ではない
-- `crates/wasm/tests/` に回帰テストは無い
+- 実装済み。`crates/wasm/src/json_limit.rs` がパース前に深さ 128 段、文字列長 8 MiB を検査し、`appendSample` / `createMediaSegment` / `createMediaSegmentWithSidx` の 3 入口すべてに適用している
+- 深さを超える JSON は `RuntimeError` ではなく `JsError` になり、同じインスタンスの他のオブジェクトは使い続けられる
+- 回帰テストは `crates/wasm/tests/wasm_api.test.mjs` に追加し、深い JSON を渡した後に `version()` が成功することを検証している
+- 数値配列の要素数は、文字列長の上限で間接的に制限している（要素数専用の上限は設けていない）
 
 ## 設計方針
 
@@ -38,4 +36,8 @@
 
 ## 解決方法
 
-{実装後に記載する}
+- `crates/wasm/src/json_limit.rs` を追加し、文字列リテラルとエスケープを考慮した線形走査でネストの深さを数え、128 段を超える場合は例外にした
+- 同じ検査で JSON 文字列の長さを 8 MiB に制限した。wasm32 の線形メモリは 4 GiB であり、巨大な入力をそのままパースするとメモリ不足で abort して解放できなくなるため
+- `Mp4FileMuxer::appendSample` / `Fmp4SegmentMuxer::createMediaSegment` / `createMediaSegmentWithSidx` の入口で、パース前に検査するようにした
+- `crates/wasm/src/json_limit.rs` の単体テストと、深い JSON を渡しても `version()` が成功することを確認する統合テストを追加した
+- 数値配列の要素数は文字列長の上限で間接的に制限している。要素数専用の上限が必要になった場合は別途追加する

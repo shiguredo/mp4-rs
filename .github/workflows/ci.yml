@@ -121,10 +121,10 @@ jobs:
       - name: Run demux.js test
         run: |
           node crates/wasm/examples/demux.js /tmp/test_output.mp4
+          echo "demux.js completed successfully"
 
       - name: Run API tests
-        run: node --test crates/wasm/tests/
-          echo "demux.js completed successfully"
+        run: node --test crates/wasm/tests/wasm_api.test.mjs
 
   build-c-api:
     name: Build C API Library

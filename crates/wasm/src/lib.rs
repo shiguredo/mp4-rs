@@ -9,6 +9,8 @@
 //! バイナリデータ（SPS / PPS / NALU 等）は数値配列として表現する。
 //! JSON のスキーマは `crates/wasm/README.md` に記載している。
 #![warn(missing_docs)]
+// 生ポインタを扱わないため、unsafe の混入を禁止する
+#![forbid(unsafe_code)]
 
 use wasm_bindgen::prelude::*;
 
@@ -30,6 +32,7 @@ mod convert;
 mod demux;
 mod fmp4_segment_demux;
 mod fmp4_segment_mux;
+mod json_limit;
 mod mp4_file_kind_detector;
 mod mux;
 mod mux_sample;

@@ -6,7 +6,7 @@
 //! - `SampleEntry` のバリアントから対応するモジュールを選ぶ
 //! - 複数のコーデックで共通する JSON 変換のヘルパを提供する
 use shiguredo_mp4::{
-    FixedPointNumber,
+    FixedPointNumber, Uint,
     boxes::{SampleEntry, VisualSampleEntryFields},
 };
 
@@ -77,17 +77,73 @@ pub(crate) fn bool_or_int_member(
     }
 }
 
-/// 省略可能な u8 のメンバーを読み取る
+/// JSON の数値を `BITS` ビットで表現できるか検証する
 ///
-/// キーが存在しない場合と値が `null` の場合のどちらも `None` として扱う。
-pub(crate) fn optional_u8_member(
+/// `Uint::new()` は範囲を検証しないため、はみ出した値はエンコード時に
+/// 隣接フィールドのビットを侵食する。ここで入口の時点で拒否する。
+fn check_uint_bits(
+    number: u64,
+    bits: u32,
+    member: nojson::RawJsonValue<'_, '_>,
+) -> Result<(), nojson::JsonParseError> {
+    if bits < 64 {
+        let limit = 1u64 << bits;
+        if number >= limit {
+            let message = format!("must be less than {limit}");
+            return Err(member.invalid(message.as_str()));
+        }
+    }
+    Ok(())
+}
+
+/// JSON の数値を、指定したビット幅の `Uint<u8, BITS, OFFSET>` として読み取る
+pub(crate) fn uint_u8_member<const BITS: u32, const OFFSET: u32>(
     value: nojson::RawJsonValue<'_, '_>,
     name: &str,
-) -> Result<Option<u8>, nojson::JsonParseError> {
+) -> Result<Uint<u8, BITS, OFFSET>, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    let number: u8 = member.try_into()?;
+    check_uint_bits(u64::from(number), BITS, member)?;
+    Ok(Uint::new(number))
+}
+
+/// JSON の数値を、指定したビット幅の `Uint<u16, BITS, OFFSET>` として読み取る
+pub(crate) fn uint_u16_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Uint<u16, BITS, OFFSET>, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    let number: u16 = member.try_into()?;
+    check_uint_bits(u64::from(number), BITS, member)?;
+    Ok(Uint::new(number))
+}
+
+/// JSON の数値を、指定したビット幅の `Uint<u64, BITS, OFFSET>` として読み取る
+pub(crate) fn uint_u64_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Uint<u64, BITS, OFFSET>, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    let number: u64 = member.try_into()?;
+    check_uint_bits(number, BITS, member)?;
+    Ok(Uint::new(number))
+}
+
+/// 省略可能な数値を、指定したビット幅の `Uint<u8, BITS, OFFSET>` として読み取る
+///
+/// キーが存在しない場合と値が `null` の場合のどちらも `None` として扱う。
+pub(crate) fn optional_uint_u8_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Option<Uint<u8, BITS, OFFSET>>, nojson::JsonParseError> {
     match value.to_member(name)?.optional() {
         None => Ok(None),
         Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(None),
-        Some(member) => Ok(Some(member.try_into()?)),
+        Some(member) => {
+            let number: u8 = member.try_into()?;
+            check_uint_bits(u64::from(number), BITS, member)?;
+            Ok(Some(Uint::new(number)))
+        }
     }
 }
 

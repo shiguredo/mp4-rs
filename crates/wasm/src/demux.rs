@@ -108,6 +108,9 @@ impl Default for Mp4FileDemuxer {
 ///
 /// 整数に丸めずにそのまま変換することで、1 秒未満のシークも指定どおりに扱える。
 fn duration_from_timestamp(timestamp: f64, timescale: f64) -> Result<std::time::Duration, String> {
+    /// u64 で表現できるナノ秒の上限（2 の 64 乗）
+    const NANOS_LIMIT: f64 = 18_446_744_073_709_551_616.0;
+
     let timescale = to_positive_u32(timescale, "timescale")?;
     if !timestamp.is_finite() {
         return Err("timestamp must be finite".to_string());
@@ -115,13 +118,35 @@ fn duration_from_timestamp(timestamp: f64, timescale: f64) -> Result<std::time::
     if timestamp < 0.0 {
         return Err("timestamp must be greater than or equal to 0".to_string());
     }
-    std::time::Duration::try_from_secs_f64(timestamp / f64::from(timescale))
-        .map_err(|_| "timestamp is too large".to_string())
+    // 切り捨てると、サンプル境界ちょうどの指定が 1 ns だけ手前に落ち、
+    // コアの切り捨てと組み合わさって 1 サンプル前から再生されることがある
+    let nanos = (timestamp / f64::from(timescale) * 1_000_000_000.0).ceil();
+    if !nanos.is_finite() || nanos >= NANOS_LIMIT {
+        return Err("timestamp is too large".to_string());
+    }
+    Ok(std::time::Duration::from_nanos(nanos as u64))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_duration_from_timestamp_does_not_undershoot() {
+        // サンプル境界ちょうどの指定が、切り捨てで 1 サンプル前に落ちないこと。
+        // コアはナノ秒からタイムスタンプへ戻すときに切り捨てるため、
+        // ここで切り捨てると 2999 や 2047 になってしまう。
+        for (timestamp, timescale) in [(3000.0, 90000.0), (2048.0, 44100.0)] {
+            let duration =
+                duration_from_timestamp(timestamp, timescale).expect("境界の指定を受理すること");
+            let nanos = duration.as_nanos();
+            let recovered = nanos * u128::from(timescale as u32) / 1_000_000_000;
+            assert!(
+                recovered >= timestamp as u128,
+                "{timestamp}/{timescale} が {recovered} に戻らないこと"
+            );
+        }
+    }
 
     #[test]
     fn test_duration_from_timestamp_accepts_fraction() {

@@ -10,7 +10,7 @@
  * cargo build -p wasm --target wasm32-unknown-unknown --profile release-wasm
  * wasm-bindgen --target nodejs --out-dir crates/wasm/pkg/node \
  *   target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
- * node --test crates/wasm/tests/
+ * node --test crates/wasm/tests/wasm_api.test.mjs
  * ```
  */
 import assert from 'node:assert/strict';
@@ -290,9 +290,10 @@ test('faststart 形式で mux できる', () => {
     }
 });
 
-test('demux したサンプルエントリーをそのまま mux に戻せる', () => {
-    // コーデックごとに往復を確認する。VP8 / VP9 の videoFullRangeFlag のように
+test('demux したサンプルエントリーを mux に戻すと内容が保たれる', () => {
+    // コーデックごとに、mux したファイルを読み戻して sample_entry を比較する。
     // 出力と入力の型が食い違うと、ここで失敗する
+    const videoKinds = new Set(['avc1', 'hev1', 'hvc1', 'vp08', 'vp09', 'av01']);
     const cases = [
         ['black-h264-video.mp4', 'avc1'],
         ['black-h265-video.mp4', 'hev1'],
@@ -307,27 +308,32 @@ test('demux したサンプルエントリーをそのまま mux に戻せる', 
     for (const [fileName, expectedKind] of cases) {
         const { demuxer, samples } = demuxFile(readTestData(fileName));
         try {
-            assert.equal(samples[0].sample_entry.kind, expectedKind, `${fileName} の種別`);
+            const entry = samples[0].sample_entry;
+            assert.equal(entry.kind, expectedKind, `${fileName} の種別`);
 
-            const muxer = new wasm.Mp4FileMuxer(0);
-            try {
-                muxer.appendSample(
-                    JSON.stringify({
-                        track_kind: expectedKind === 'avc1' || expectedKind === 'hev1' || expectedKind === 'hvc1' || expectedKind === 'vp09' || expectedKind === 'av01'
-                            ? 'video'
-                            : 'audio',
+            const muxed = muxToBytes([
+                {
+                    metadata: {
+                        track_kind: videoKinds.has(expectedKind) ? 'video' : 'audio',
                         keyframe: true,
                         timescale: 48000,
                         duration: 960,
                         composition_time_offset: null,
-                        data_offset: muxer.initialBoxes().length,
-                        data_size: samples[0].data_size,
-                        sample_entry: samples[0].sample_entry,
-                    }),
+                        sample_entry: entry,
+                    },
+                    data: new Uint8Array(samples[0].data_size),
+                },
+            ]);
+
+            const roundtrip = demuxFile(muxed);
+            try {
+                assert.deepEqual(
+                    roundtrip.samples[0].sample_entry,
+                    entry,
+                    `${fileName} の sample_entry が往復すること`,
                 );
-                muxer.finalize();
             } finally {
-                muxer.free();
+                roundtrip.demuxer.free();
             }
         } finally {
             demuxer.free();
@@ -548,5 +554,109 @@ test('不正な数値引数は例外になる', () => {
         assert.throws(() => demuxer.seek(1, 0.5), /timescale/);
     } finally {
         demuxer.free();
+    }
+});
+
+test('深すぎる JSON は trap せず例外になり、インスタンスは使えるままである', () => {
+    const deep = '['.repeat(200) + ']'.repeat(200);
+    const json = `{"track_kind":"audio","keyframe":true,"timescale":48000,"duration":960,"x":${deep}}`;
+    const muxer = new wasm.Mp4FileMuxer(0);
+    try {
+        assert.throws(() => muxer.appendSample(json), /nesting depth/);
+    } finally {
+        muxer.free();
+    }
+    // trap していれば version() が失敗する
+    assert.equal(wasm.version(), readRootVersion());
+});
+
+test('ビット幅を超えるサンプルエントリーは例外になる', () => {
+    const muxer = new wasm.Mp4FileMuxer(0);
+    try {
+        assert.throws(
+            () =>
+                muxer.appendSample(
+                    JSON.stringify({
+                        track_kind: 'video',
+                        keyframe: true,
+                        timescale: 48000,
+                        duration: 960,
+                        composition_time_offset: null,
+                        data_offset: muxer.initialBoxes().length,
+                        data_size: 1,
+                        sample_entry: { ...AVC1_ENTRY, lengthSizeMinusOne: 4 },
+                    }),
+                ),
+            /must be less than/,
+        );
+    } finally {
+        muxer.free();
+    }
+});
+
+test('seek は 44100 のサンプル境界でも 1 サンプル前にずれない', () => {
+    const bytes = readTestData('beep-aac-audio.mp4');
+    const { demuxer } = demuxFile(bytes);
+    try {
+        // 1024 / 2048 / 3072 は AAC のサンプル境界
+        for (const target of [1024, 2048, 3072]) {
+            demuxer.seek(target, 44100);
+            assert.equal(
+                JSON.parse(demuxer.nextSample()).timestamp,
+                target,
+                `seek(${target}, 44100)`,
+            );
+        }
+    } finally {
+        demuxer.free();
+    }
+});
+
+test('hvc1 の arrayCompleteness は 1 のまま往復する', () => {
+    const { demuxer, samples } = demuxFile(readTestData('black-h265-hvc1-video.mp4'));
+    try {
+        const entry = samples[0].sample_entry;
+        const parameterSets = entry.naluArrays.filter((array) =>
+            [32, 33, 34].includes(array.naluType),
+        );
+        assert.ok(parameterSets.length > 0, 'パラメータセットの配列があること');
+        for (const array of parameterSets) {
+            assert.equal(array.arrayCompleteness, 1, `naluType ${array.naluType}`);
+        }
+
+        const muxed = muxToBytes([
+            {
+                metadata: {
+                    track_kind: 'video',
+                    keyframe: true,
+                    timescale: 48000,
+                    duration: 960,
+                    composition_time_offset: null,
+                    sample_entry: entry,
+                },
+                data: new Uint8Array(samples[0].data_size),
+            },
+        ]);
+        const roundtrip = demuxFile(muxed);
+        try {
+            assert.deepEqual(roundtrip.samples[0].sample_entry, entry);
+        } finally {
+            roundtrip.demuxer.free();
+        }
+    } finally {
+        demuxer.free();
+    }
+});
+
+test('種別判定器は不正な入力でその場で例外を投げる', () => {
+    const bytes = readTestData('black-h264-video.mp4');
+    const detector = new wasm.Mp4FileKindDetector();
+    try {
+        assert.throws(
+            () => detector.handleInput(0, bytes.subarray(0, 4)),
+            /failed to handle input/,
+        );
+    } finally {
+        detector.free();
     }
 });

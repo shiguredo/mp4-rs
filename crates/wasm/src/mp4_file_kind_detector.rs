@@ -36,10 +36,16 @@ impl Mp4FileKindDetector {
     ///
     /// `position` は `data` の先頭がファイル内の何バイト目かを表す。
     /// 整数でない値や負の値を渡すと例外を投げる。
+    /// 入力が不正で判定器がエラー状態になった場合も、その場で例外を投げる。
+    /// エラー状態になった判定器は再利用できないため、新しいインスタンスを作る。
     #[wasm_bindgen(js_name = handleInput)]
     pub fn handle_input(&mut self, position: f64, data: &[u8]) -> Result<(), JsError> {
         let position = to_u64(position, "position").map_err(js_error)?;
         self.inner.handle_input(Input { position, data });
+        // コアは入力の不備を内部に記録するだけで返さないため、その場で確認する
+        if let Err(error) = self.inner.file_kind() {
+            return Err(JsError::new(&format!("failed to handle input: {error}")));
+        }
         Ok(())
     }
 

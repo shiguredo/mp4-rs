@@ -42,40 +42,34 @@ pub(crate) fn parse_json(
 ) -> Result<Av01Box, nojson::JsonParseError> {
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let seq_profile: u8 = value.to_member("seqProfile")?.required()?.try_into()?;
-    let seq_level_idx_0: u8 = value.to_member("seqLevelIdx0")?.required()?.try_into()?;
-    let seq_tier_0: u8 = value.to_member("seqTier0")?.required()?.try_into()?;
-    let high_bitdepth: u8 = value.to_member("highBitdepth")?.required()?.try_into()?;
-    let twelve_bit: u8 = value.to_member("twelveBit")?.required()?.try_into()?;
-    let monochrome: u8 = value.to_member("monochrome")?.required()?.try_into()?;
-    let chroma_subsampling_x: u8 = value
-        .to_member("chromaSubsamplingX")?
-        .required()?
-        .try_into()?;
-    let chroma_subsampling_y: u8 = value
-        .to_member("chromaSubsamplingY")?
-        .required()?
-        .try_into()?;
-    let chroma_sample_position: u8 = value
-        .to_member("chromaSamplePosition")?
-        .required()?
-        .try_into()?;
+    let seq_profile: Uint<u8, 3, 5> = crate::boxes::uint_u8_member(value, "seqProfile")?;
+    let seq_level_idx_0: Uint<u8, 5, 0> = crate::boxes::uint_u8_member(value, "seqLevelIdx0")?;
+    let seq_tier_0: Uint<u8, 1, 7> = crate::boxes::uint_u8_member(value, "seqTier0")?;
+    let high_bitdepth: Uint<u8, 1, 6> = crate::boxes::uint_u8_member(value, "highBitdepth")?;
+    let twelve_bit: Uint<u8, 1, 5> = crate::boxes::uint_u8_member(value, "twelveBit")?;
+    let monochrome: Uint<u8, 1, 4> = crate::boxes::uint_u8_member(value, "monochrome")?;
+    let chroma_subsampling_x: Uint<u8, 1, 3> =
+        crate::boxes::uint_u8_member(value, "chromaSubsamplingX")?;
+    let chroma_subsampling_y: Uint<u8, 1, 2> =
+        crate::boxes::uint_u8_member(value, "chromaSubsamplingY")?;
+    let chroma_sample_position: Uint<u8, 2, 0> =
+        crate::boxes::uint_u8_member(value, "chromaSamplePosition")?;
     // キーがない省略可能なフィールドは None になる
-    let initial_presentation_delay_minus_one =
-        crate::boxes::optional_u8_member(value, "initialPresentationDelayMinusOne")?;
+    let initial_presentation_delay_minus_one: Option<Uint<u8, 4, 0>> =
+        crate::boxes::optional_uint_u8_member(value, "initialPresentationDelayMinusOne")?;
     let config_obus: Vec<u8> = value.to_member("configObus")?.required()?.try_into()?;
 
     let av1c_box = Av1cBox {
-        seq_profile: Uint::new(seq_profile),
-        seq_level_idx_0: Uint::new(seq_level_idx_0),
-        seq_tier_0: Uint::new(seq_tier_0),
-        high_bitdepth: Uint::new(high_bitdepth),
-        twelve_bit: Uint::new(twelve_bit),
-        monochrome: Uint::new(monochrome),
-        chroma_subsampling_x: Uint::new(chroma_subsampling_x),
-        chroma_subsampling_y: Uint::new(chroma_subsampling_y),
-        chroma_sample_position: Uint::new(chroma_sample_position),
-        initial_presentation_delay_minus_one: initial_presentation_delay_minus_one.map(Uint::new),
+        seq_profile,
+        seq_level_idx_0,
+        seq_tier_0,
+        high_bitdepth,
+        twelve_bit,
+        monochrome,
+        chroma_subsampling_x,
+        chroma_subsampling_y,
+        chroma_sample_position,
+        initial_presentation_delay_minus_one,
         config_obus,
     };
 
@@ -295,5 +289,31 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
         let result = parse_json(json.value());
         assert!(result.is_err(), "width 欠落時はパースに失敗すること");
+    }
+
+    /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること
+    #[test]
+    fn test_json_to_av01_rejects_out_of_range_bits() {
+        const BASE: &str = r#"{"kind":"av01","width":640,"height":480,"seqProfile":0,"seqLevelIdx0":13,"seqTier0":0,"highBitdepth":0,"twelveBit":0,"monochrome":0,"chromaSubsamplingX":1,"chromaSubsamplingY":1,"chromaSamplePosition":0,"configObus":[1]}"#;
+        let cases = [
+            (r#""seqProfile":0"#, r#""seqProfile":8"#),
+            (r#""seqLevelIdx0":13"#, r#""seqLevelIdx0":32"#),
+            (r#""seqTier0":0"#, r#""seqTier0":2"#),
+            (r#""highBitdepth":0"#, r#""highBitdepth":2"#),
+            (r#""chromaSamplePosition":0"#, r#""chromaSamplePosition":4"#),
+        ];
+        for (from, to) in cases {
+            let json_str = BASE.replace(from, to);
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            assert!(parse_json(json.value()).is_err(), "{to} は拒否されること");
+        }
+
+        // 省略可能な initialPresentationDelayMinusOne も 4 ビット
+        let json_str = BASE.replace(
+            r#""configObus":[1]"#,
+            r#""configObus":[1],"initialPresentationDelayMinusOne":16"#,
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
     }
 }

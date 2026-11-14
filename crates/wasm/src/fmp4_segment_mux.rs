@@ -62,6 +62,8 @@ impl Fmp4SegmentMuxer {
         #[wasm_bindgen(js_name = samplesJson)] samples_json: &str,
         #[wasm_bindgen(js_name = sampleData)] sample_data: &[u8],
     ) -> Result<Vec<u8>, JsError> {
+        crate::json_limit::check(samples_json)
+            .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
         let samples_with_ranges = parse_json_samples(samples_json)
             .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
         let (samples, payload) = arrange_payload(samples_with_ranges, sample_data)
@@ -82,6 +84,8 @@ impl Fmp4SegmentMuxer {
         #[wasm_bindgen(js_name = samplesJson)] samples_json: &str,
         #[wasm_bindgen(js_name = sampleData)] sample_data: &[u8],
     ) -> Result<Vec<u8>, JsError> {
+        crate::json_limit::check(samples_json)
+            .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
         let samples_with_ranges = parse_json_samples(samples_json)
             .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
         let (samples, payload) = arrange_payload(samples_with_ranges, sample_data)

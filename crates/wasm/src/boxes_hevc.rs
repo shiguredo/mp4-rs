@@ -62,6 +62,7 @@ fn fmt_nalu_arrays(
         for nalu_array in nalu_arrays {
             f.element(nojson::object(|f| {
                 f.member("naluType", nalu_array.nal_unit_type.get())?;
+                f.member("arrayCompleteness", nalu_array.array_completeness.get())?;
                 f.member("units", nalu_array.nalus.as_slice())
             }))?;
         }
@@ -69,95 +70,100 @@ fn fmt_nalu_arrays(
     })
 }
 
+/// `arrayCompleteness` が省略された場合の既定値を返す
+///
+/// `hvc1` はパラメータセットを `hvcC` に完全な形で持つことを表す fourcc であり、
+/// VPS / SPS / PPS の配列は `array_completeness` を 1 にする必要がある。
+/// `hev1` はパラメータセットをサンプル側に持てるため 0 を既定値にする。
+fn default_array_completeness(kind: &str, nal_unit_type: u8) -> u8 {
+    if kind == "hvc1" && matches!(nal_unit_type, 32..=34) {
+        1
+    } else {
+        0
+    }
+}
+
 /// JSON オブジェクトから HEVC の共通フィールドを構築する
 ///
 /// 幅・高さと `hvcC` を返す。呼び出し側が `hev1` / `hvc1` の型に包む。
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
+    kind: &str,
 ) -> Result<(u16, u16, HvccBox), nojson::JsonParseError> {
     let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
     let mut nalu_arrays = Vec::new();
     for nalu_array in nalu_arrays_value.to_array()? {
-        let nal_unit_type: u8 = nalu_array.to_member("naluType")?.required()?.try_into()?;
+        let nal_unit_type: Uint<u8, 6> = crate::boxes::uint_u8_member(nalu_array, "naluType")?;
         let nalus: Vec<Vec<u8>> = nalu_array.to_member("units")?.required()?.try_into()?;
+        let array_completeness = match nalu_array.to_member("arrayCompleteness")?.optional() {
+            None => default_array_completeness(kind, nal_unit_type.get()),
+            Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+                default_array_completeness(kind, nal_unit_type.get())
+            }
+            Some(member) => {
+                let completeness: u8 = member.try_into()?;
+                if completeness > 1 {
+                    return Err(member.invalid("must be 0 or 1"));
+                }
+                completeness
+            }
+        };
         nalu_arrays.push(HvccNalUintArray {
-            // JSON には `arrayCompleteness` に対応するキーが無いため、
-            // 「この NALU 型のすべてが配列に含まれるとは限らない」を表す 0 を補う
-            array_completeness: Uint::new(0),
-            nal_unit_type: Uint::new(nal_unit_type),
+            array_completeness: Uint::new(array_completeness),
+            nal_unit_type,
             nalus,
         });
     }
 
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let general_profile_space: u8 = value
-        .to_member("generalProfileSpace")?
-        .required()?
-        .try_into()?;
-    let general_tier_flag: u8 = value.to_member("generalTierFlag")?.required()?.try_into()?;
-    let general_profile_idc: u8 = value
-        .to_member("generalProfileIdc")?
-        .required()?
-        .try_into()?;
+    let general_profile_space: Uint<u8, 2, 6> =
+        crate::boxes::uint_u8_member(value, "generalProfileSpace")?;
+    let general_tier_flag: Uint<u8, 1, 5> = crate::boxes::uint_u8_member(value, "generalTierFlag")?;
+    let general_profile_idc: Uint<u8, 5, 0> =
+        crate::boxes::uint_u8_member(value, "generalProfileIdc")?;
     let general_profile_compatibility_flags: u32 = value
         .to_member("generalProfileCompatibilityFlags")?
         .required()?
         .try_into()?;
-    let general_constraint_indicator_flags: u64 = value
-        .to_member("generalConstraintIndicatorFlags")?
-        .required()?
-        .try_into()?;
+    let general_constraint_indicator_flags: Uint<u64, 48> =
+        crate::boxes::uint_u64_member(value, "generalConstraintIndicatorFlags")?;
     let general_level_idc: u8 = value.to_member("generalLevelIdc")?.required()?.try_into()?;
-    let chroma_format_idc: u8 = value.to_member("chromaFormatIdc")?.required()?.try_into()?;
-    let bit_depth_luma_minus8: u8 = value
-        .to_member("bitDepthLumaMinus8")?
-        .required()?
-        .try_into()?;
-    let bit_depth_chroma_minus8: u8 = value
-        .to_member("bitDepthChromaMinus8")?
-        .required()?
-        .try_into()?;
-    let min_spatial_segmentation_idc: u16 = value
-        .to_member("minSpatialSegmentationIdc")?
-        .required()?
-        .try_into()?;
-    let parallelism_type: u8 = value.to_member("parallelismType")?.required()?.try_into()?;
+    let chroma_format_idc: Uint<u8, 2> = crate::boxes::uint_u8_member(value, "chromaFormatIdc")?;
+    let bit_depth_luma_minus8: Uint<u8, 3> =
+        crate::boxes::uint_u8_member(value, "bitDepthLumaMinus8")?;
+    let bit_depth_chroma_minus8: Uint<u8, 3> =
+        crate::boxes::uint_u8_member(value, "bitDepthChromaMinus8")?;
+    let min_spatial_segmentation_idc: Uint<u16, 12> =
+        crate::boxes::uint_u16_member(value, "minSpatialSegmentationIdc")?;
+    let parallelism_type: Uint<u8, 2> = crate::boxes::uint_u8_member(value, "parallelismType")?;
     let avg_frame_rate: u16 = value.to_member("avgFrameRate")?.required()?.try_into()?;
-    let constant_frame_rate: u8 = value
-        .to_member("constantFrameRate")?
-        .required()?
-        .try_into()?;
-    let num_temporal_layers: u8 = value
-        .to_member("numTemporalLayers")?
-        .required()?
-        .try_into()?;
-    let temporal_id_nested: u8 = value
-        .to_member("temporalIdNested")?
-        .required()?
-        .try_into()?;
-    let length_size_minus_one: u8 = value
-        .to_member("lengthSizeMinusOne")?
-        .required()?
-        .try_into()?;
+    let constant_frame_rate: Uint<u8, 2, 6> =
+        crate::boxes::uint_u8_member(value, "constantFrameRate")?;
+    let num_temporal_layers: Uint<u8, 3, 3> =
+        crate::boxes::uint_u8_member(value, "numTemporalLayers")?;
+    let temporal_id_nested: Uint<u8, 1, 2> =
+        crate::boxes::uint_u8_member(value, "temporalIdNested")?;
+    let length_size_minus_one: Uint<u8, 2, 0> =
+        crate::boxes::uint_u8_member(value, "lengthSizeMinusOne")?;
 
     let hvcc_box = HvccBox {
-        general_profile_space: Uint::new(general_profile_space),
-        general_tier_flag: Uint::new(general_tier_flag),
-        general_profile_idc: Uint::new(general_profile_idc),
+        general_profile_space,
+        general_tier_flag,
+        general_profile_idc,
         general_profile_compatibility_flags,
-        general_constraint_indicator_flags: Uint::new(general_constraint_indicator_flags),
+        general_constraint_indicator_flags,
         general_level_idc,
-        min_spatial_segmentation_idc: Uint::new(min_spatial_segmentation_idc),
-        parallelism_type: Uint::new(parallelism_type),
-        chroma_format_idc: Uint::new(chroma_format_idc),
-        bit_depth_luma_minus8: Uint::new(bit_depth_luma_minus8),
-        bit_depth_chroma_minus8: Uint::new(bit_depth_chroma_minus8),
+        min_spatial_segmentation_idc,
+        parallelism_type,
+        chroma_format_idc,
+        bit_depth_luma_minus8,
+        bit_depth_chroma_minus8,
         avg_frame_rate,
-        constant_frame_rate: Uint::new(constant_frame_rate),
-        num_temporal_layers: Uint::new(num_temporal_layers),
-        temporal_id_nested: Uint::new(temporal_id_nested),
-        length_size_minus_one: Uint::new(length_size_minus_one),
+        constant_frame_rate,
+        num_temporal_layers,
+        temporal_id_nested,
+        length_size_minus_one,
         nalu_arrays,
     };
 
@@ -264,7 +270,7 @@ mod tests {
             "generalProfileIdc が出力されること: {json}"
         );
         assert!(
-            json.contains(r#""naluArrays":[{"naluType":32,"units":[[64,1,12,1]]},{"naluType":33,"units":[[66,1,1,1]]},{"naluType":34,"units":[[68,1,0]]}]"#),
+            json.contains(r#""naluArrays":[{"naluType":32,"arrayCompleteness":0,"units":[[64,1,12,1]]},{"naluType":33,"arrayCompleteness":0,"units":[[66,1,1,1]]},{"naluType":34,"arrayCompleteness":0,"units":[[68,1,0]]}]"#),
             "naluArrays が naluType と units の配列として出力されること: {json}"
         );
     }
@@ -282,7 +288,7 @@ mod tests {
         );
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (width, height, hvcc_box) = parse_json(json.value()).expect("有効な HEVC JSON");
+        let (width, height, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な HEVC JSON");
 
         // 18 個のスカラーフィールドが欠落・取り違えなく取り込まれることを検証する
         assert_eq!(width, 1920);
@@ -333,7 +339,7 @@ mod tests {
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
         assert!(
-            parse_json(json.value()).is_err(),
+            parse_json(json.value(), "hev1").is_err(),
             "width 欠落時はパース失敗すること"
         );
     }
@@ -345,7 +351,7 @@ mod tests {
             let json_str = build_test_json("hev1", "[]", Some(name));
             let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
             assert!(
-                parse_json(json.value()).is_err(),
+                parse_json(json.value(), "hev1").is_err(),
                 "{name} 欠落時はパース失敗すること"
             );
         }
@@ -356,7 +362,8 @@ mod tests {
         let json_str = build_test_json("hev1", r#"[{"naluType": 32, "units": [[]]}]"#, None);
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (width, height, hvcc_box) = parse_json(json.value()).expect("空 NALU 要素の JSON");
+        let (width, height, hvcc_box) =
+            parse_json(json.value(), "hev1").expect("空 NALU 要素の JSON");
         assert_eq!(hvcc_box.nalu_arrays[0].nalus, vec![Vec::new()]);
 
         let out = nojson::json(|f| {
@@ -383,7 +390,7 @@ mod tests {
         );
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (_, _, hvcc_box) = parse_json(json.value()).expect("有効な JSON");
+        let (_, _, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な JSON");
         assert_eq!(hvcc_box.nalu_arrays[0].nalus, vec![vec![1, 2], vec![3, 4]]);
     }
 
@@ -392,7 +399,7 @@ mod tests {
         let json_str = build_test_json("hev1", "[]", None);
 
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let (width, height, hvcc_box) = parse_json(json.value()).expect("有効な JSON");
+        let (width, height, hvcc_box) = parse_json(json.value(), "hev1").expect("有効な JSON");
         assert!(hvcc_box.nalu_arrays.is_empty());
 
         let out = nojson::json(|f| {
@@ -410,19 +417,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_hvc1_defaults_array_completeness_to_one() {
+        // hvc1 は VPS / SPS / PPS を hvcC に完全な形で持つため、
+        // arrayCompleteness が省略された場合は 1 を補う
+        let json_str = build_test_json(
+            "hvc1",
+            r#"[
+                {"naluType": 32, "units": [[64, 1, 12, 1]]},
+                {"naluType": 33, "units": [[66, 1, 1, 1]]},
+                {"naluType": 34, "units": [[68, 1, 0]]},
+                {"naluType": 39, "units": [[5, 1]]}
+            ]"#,
+            None,
+        );
+
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let (_, _, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
+
+        assert_eq!(hvcc_box.nalu_arrays[0].array_completeness.get(), 1);
+        assert_eq!(hvcc_box.nalu_arrays[1].array_completeness.get(), 1);
+        assert_eq!(hvcc_box.nalu_arrays[2].array_completeness.get(), 1);
+        // パラメータセット以外は 0 のまま
+        assert_eq!(hvcc_box.nalu_arrays[3].array_completeness.get(), 0);
+    }
+
+    #[test]
+    fn test_array_completeness_is_preserved() {
+        // 明示された値は kind に関係なくそのまま使う
+        let json_str = build_test_json(
+            "hvc1",
+            r#"[{"naluType": 32, "arrayCompleteness": 0, "units": [[64, 1, 12, 1]]}]"#,
+            None,
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        let (_, _, hvcc_box) = parse_json(json.value(), "hvc1").expect("有効な hvc1 JSON");
+        assert_eq!(hvcc_box.nalu_arrays[0].array_completeness.get(), 0);
+
+        let out = nojson::json(|f| {
+            fmt_json(
+                f,
+                "hvc1",
+                &crate::boxes::build_visual_sample_entry_fields(1920, 1080),
+                &hvcc_box,
+            )
+        })
+        .to_string();
+        assert!(
+            out.contains(r#""arrayCompleteness":0"#),
+            "明示した値が出力されること: {out}"
+        );
+
+        // 2 は拒否する
+        let json_str = build_test_json(
+            "hvc1",
+            r#"[{"naluType": 32, "arrayCompleteness": 2, "units": [[64, 1, 12, 1]]}]"#,
+            None,
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value(), "hvc1").is_err());
+    }
+
     /// JSON へ出力して再パースした結果が元の値と一致することを検証する
     #[test]
     fn test_hevc_json_roundtrip() {
         let (visual, hvcc_box) = test_hvcc_box();
 
-        let json = nojson::json(|f| fmt_json(f, "hvc1", &visual, &hvcc_box)).to_string();
+        let json = nojson::json(|f| fmt_json(f, "hev1", &visual, &hvcc_box)).to_string();
         let raw = nojson::RawJson::parse(&json).expect("有効な JSON");
-        let (width, height, parsed_hvcc_box) = parse_json(raw.value()).expect("有効な JSON");
+        let (width, height, parsed_hvcc_box) =
+            parse_json(raw.value(), "hev1").expect("有効な JSON");
 
         assert_eq!(
             crate::boxes::build_visual_sample_entry_fields(width, height),
             visual
         );
         assert_eq!(parsed_hvcc_box, hvcc_box);
+    }
+
+    /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること
+    #[test]
+    fn test_json_to_hevc_rejects_out_of_range_bits() {
+        let base = build_test_json("hev1", r#"[{"naluType":32,"units":[[1]]}]"#, None);
+        let cases = [
+            (r#""generalProfileSpace": 0"#, r#""generalProfileSpace": 4"#),
+            (r#""generalTierFlag": 0"#, r#""generalTierFlag": 2"#),
+            (r#""generalProfileIdc": 2"#, r#""generalProfileIdc": 32"#),
+            (
+                r#""generalConstraintIndicatorFlags": 193514046488576"#,
+                r#""generalConstraintIndicatorFlags": 281474976710656"#,
+            ),
+            (r#""chromaFormatIdc": 1"#, r#""chromaFormatIdc": 4"#),
+            (r#""bitDepthLumaMinus8": 0"#, r#""bitDepthLumaMinus8": 8"#),
+            (
+                r#""minSpatialSegmentationIdc": 0"#,
+                r#""minSpatialSegmentationIdc": 4096"#,
+            ),
+            (r#""numTemporalLayers": 1"#, r#""numTemporalLayers": 8"#),
+            (r#""lengthSizeMinusOne": 3"#, r#""lengthSizeMinusOne": 4"#),
+        ];
+        for (from, to) in cases {
+            let json_str = base.replace(from, to);
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            assert!(
+                parse_json(json.value(), "hev1").is_err(),
+                "{to} は拒否されること"
+            );
+        }
+
+        // naluType は 6 ビット
+        let json_str = build_test_json("hev1", r#"[{"naluType":64,"units":[[1]]}]"#, None);
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value(), "hev1").is_err());
     }
 }

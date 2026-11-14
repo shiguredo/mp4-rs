@@ -107,6 +107,8 @@ impl Mp4FileMuxer {
         &mut self,
         #[wasm_bindgen(js_name = sampleJson)] sample_json: &str,
     ) -> Result<(), JsError> {
+        crate::json_limit::check(sample_json)
+            .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
         let sample = parse_json_mux_sample(sample_json)
             .map_err(|error| JsError::new(&format!("failed to parse sample JSON: {error}")))?;
         self.inner

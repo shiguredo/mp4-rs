@@ -54,14 +54,15 @@ pub(crate) fn parse_json(
         .to_member("avcLevelIndication")?
         .required()?
         .try_into()?;
-    let length_size_minus_one: u8 = value
-        .to_member("lengthSizeMinusOne")?
-        .required()?
-        .try_into()?;
+    let length_size_minus_one: Uint<u8, 2> =
+        crate::boxes::uint_u8_member(value, "lengthSizeMinusOne")?;
     // キーが無いオプションフィールドは `None` になる
-    let chroma_format = crate::boxes::optional_u8_member(value, "chromaFormat")?;
-    let bit_depth_luma_minus8 = crate::boxes::optional_u8_member(value, "bitDepthLumaMinus8")?;
-    let bit_depth_chroma_minus8 = crate::boxes::optional_u8_member(value, "bitDepthChromaMinus8")?;
+    let chroma_format: Option<Uint<u8, 2>> =
+        crate::boxes::optional_uint_u8_member(value, "chromaFormat")?;
+    let bit_depth_luma_minus8: Option<Uint<u8, 3>> =
+        crate::boxes::optional_uint_u8_member(value, "bitDepthLumaMinus8")?;
+    let bit_depth_chroma_minus8: Option<Uint<u8, 3>> =
+        crate::boxes::optional_uint_u8_member(value, "bitDepthChromaMinus8")?;
 
     Ok(Avc1Box {
         visual: crate::boxes::build_visual_sample_entry_fields(width, height),
@@ -69,12 +70,12 @@ pub(crate) fn parse_json(
             avc_profile_indication,
             profile_compatibility,
             avc_level_indication,
-            length_size_minus_one: Uint::new(length_size_minus_one),
+            length_size_minus_one,
             sps_list,
             pps_list,
-            chroma_format: chroma_format.map(Uint::new),
-            bit_depth_luma_minus8: bit_depth_luma_minus8.map(Uint::new),
-            bit_depth_chroma_minus8: bit_depth_chroma_minus8.map(Uint::new),
+            chroma_format,
+            bit_depth_luma_minus8,
+            bit_depth_chroma_minus8,
             // JSON では SPS 拡張を扱わないため空にする
             sps_ext_list: Vec::new(),
         },
@@ -293,5 +294,22 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let result = parse_json(json.value());
         assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
+
+    /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること
+    #[test]
+    fn test_json_to_avc1_rejects_out_of_range_bits() {
+        const BASE: &str = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":100,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"chromaFormat":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"sps":[[1]],"pps":[[2]]}"#;
+        let cases = [
+            (r#""lengthSizeMinusOne":3"#, r#""lengthSizeMinusOne":4"#),
+            (r#""chromaFormat":1"#, r#""chromaFormat":4"#),
+            (r#""bitDepthLumaMinus8":0"#, r#""bitDepthLumaMinus8":8"#),
+            (r#""bitDepthChromaMinus8":0"#, r#""bitDepthChromaMinus8":8"#),
+        ];
+        for (from, to) in cases {
+            let json_str = BASE.replace(from, to);
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            assert!(parse_json(json.value()).is_err(), "{to} は拒否されること");
+        }
     }
 }

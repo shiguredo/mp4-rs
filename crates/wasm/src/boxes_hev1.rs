@@ -13,7 +13,7 @@ pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Hev1Box) ->
 pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
 ) -> Result<Hev1Box, nojson::JsonParseError> {
-    let (width, height, hvcc_box) = crate::boxes_hevc::parse_json(value)?;
+    let (width, height, hvcc_box) = crate::boxes_hevc::parse_json(value, "hev1")?;
     Ok(Hev1Box {
         visual: crate::boxes::build_visual_sample_entry_fields(width, height),
         hvcc_box,

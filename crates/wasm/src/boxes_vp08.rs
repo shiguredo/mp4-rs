@@ -33,11 +33,9 @@ pub(crate) fn parse_json(
 ) -> Result<Vp08Box, nojson::JsonParseError> {
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let bit_depth: u8 = value.to_member("bitDepth")?.required()?.try_into()?;
-    let chroma_subsampling: u8 = value
-        .to_member("chromaSubsampling")?
-        .required()?
-        .try_into()?;
+    let bit_depth: Uint<u8, 4, 4> = crate::boxes::uint_u8_member(value, "bitDepth")?;
+    let chroma_subsampling: Uint<u8, 3, 1> =
+        crate::boxes::uint_u8_member(value, "chromaSubsampling")?;
     let video_full_range_flag = crate::boxes::bool_or_int_member(value, "videoFullRangeFlag")?;
     let colour_primaries: u8 = value.to_member("colourPrimaries")?.required()?.try_into()?;
     let transfer_characteristics: u8 = value
@@ -54,8 +52,8 @@ pub(crate) fn parse_json(
         profile: 0,
         // VP8 に対応する level の定義がないため 0 (Undefined) とする
         level: 0,
-        bit_depth: Uint::new(bit_depth),
-        chroma_subsampling: Uint::new(chroma_subsampling),
+        bit_depth,
+        chroma_subsampling,
         video_full_range_flag: Uint::new(u8::from(video_full_range_flag)),
         colour_primaries,
         transfer_characteristics,
@@ -197,5 +195,20 @@ mod tests {
             sample_entry.unknown_boxes.is_empty(),
             "unknown_boxes が空であること"
         );
+    }
+
+    /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること
+    #[test]
+    fn test_json_to_vp08_rejects_out_of_range_bits() {
+        const BASE: &str = r#"{"kind":"vp08","width":640,"height":480,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#;
+        let cases = [
+            (r#""bitDepth":8"#, r#""bitDepth":16"#),
+            (r#""chromaSubsampling":1"#, r#""chromaSubsampling":8"#),
+        ];
+        for (from, to) in cases {
+            let json_str = BASE.replace(from, to);
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            assert!(parse_json(json.value()).is_err(), "{to} は拒否されること");
+        }
     }
 }

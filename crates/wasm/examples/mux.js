@@ -11,14 +11,10 @@
  * ```
  */
 import fs from 'node:fs';
-import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const wasm = require('../pkg/node/mp4_wasm.js');
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // 無音の Opus フレームデータ（3 バイト）
 const OPUS_SILENCE_FRAME = new Uint8Array([0xf8, 0xff, 0xfe]);
@@ -31,7 +27,8 @@ function createMP4WithOpus(outputPath) {
     const FRAME_DURATION = 960;
 
     const file = fs.openSync(outputPath, 'w');
-    // faststart 用の moov サイズは、トラック数とサンプル数から見積もる
+    // 0 を指定して faststart を無効にする。faststart にする場合は、
+    // 出力する moov のサイズ以上を予約して先頭に空き領域を確保する
     const muxer = new wasm.Mp4FileMuxer(0);
     try {
         const initial = muxer.initialBoxes();
@@ -77,8 +74,10 @@ function createMP4WithOpus(outputPath) {
             if (output === undefined) {
                 break;
             }
-            fs.writeSync(file, output.data, 0, output.data.length, output.offset);
-            console.log(`  Wrote ${output.data.length} bytes at offset ${output.offset}`);
+            const data = output.takeData();
+            fs.writeSync(file, data, 0, data.length, output.offset);
+            console.log(`  Wrote ${data.length} bytes at offset ${output.offset}`);
+            output.free();
         }
         console.log(`\nSuccessfully created '${outputPath}'`);
     } finally {

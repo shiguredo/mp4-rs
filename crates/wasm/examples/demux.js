@@ -13,12 +13,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const wasm = require('../pkg/node/mp4_wasm.js');
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // 必要な入力データをすべて供給する
 function feedAllInput(target, bytes) {

@@ -12,17 +12,35 @@
 ## develop
 
 - [CHANGE] `crates/wasm` を wasm-bindgen ベースの API に変更する
-  - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
-  - `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` / `mp4_mux_sample_from_json` / `mp4_mux_sample_free` / `mp4_demux_sample_to_json` / `mp4_demux_track_info_to_json` / `mp4_library_version` を削除する
+  - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Mp4FileMuxerOutput` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
+  - wasm が公開していた C ABI 関数 56 個（`c-api` 由来の 42 個と wasm 固有の 14 個）をすべて削除する
+    - 代表的なものは `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` / `mp4_mux_sample_from_json` / `mp4_mux_sample_free` / `mp4_demux_sample_to_json` / `mp4_demux_track_info_to_json` / `mp4_library_version` / `mp4_estimate_maximum_moov_box_size`
+    - `mp4_estimate_maximum_moov_box_size` の代替は用意しない。faststart 用の予約サイズは利用側で決める
+    - `c-api` クレート自体の削除は別途行う
   - `crates/wasm` が `c-api` クレートに依存しなくなり、`shiguredo_mp4` を直接使うようになる
   - ファイル位置とサイズは JavaScript の数値で受け渡す。`u64` を BigInt で扱う必要がなくなる
+    - 負値・小数・`NaN` を渡した場合は例外になる
   - メソッド名は JavaScript の慣習に合わせて camelCase になる
+  - `Fmp4SegmentMuxer` のメソッド名を `createMediaSegment` / `createMediaSegmentWithSidx` に変更する。返り値は `moof` と `mdat` だけでなくペイロードを含むメディアセグメント全体である
+  - `Mp4FileMuxerOutput` の `data` プロパティを `takeData()` メソッドに変更する。所有権を移すため、大きなデータをコピーせずに受け取れる
   - `.d.ts` は wasm-bindgen が生成する
   - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
+  - GitHub Release の wasm アーカイブはルートの `mp4_wasm.wasm` を廃止し、`node/` と `web/` のディレクトリ構成に変更する。CI の artifact も `pkg/` 配下になる
   - @voluntas
 - [FIX] wasm のマルチプレックスで、デマルチプレックス側が出力する `composition_time_offset: null` を受理できずに失敗していたのを修正する
   - これまでは `null` を整数として解釈しようとして JSON のパースに失敗していた
   - キーの省略と `null` のどちらも「コンポジション時間オフセットなし」として扱うようになる
+  - @voluntas
+- [FIX] wasm の VP8 / VP9 で `videoFullRangeFlag` の出力と入力の型が食い違い、デマルチプレックスした JSON をそのままマルチプレックス側へ渡せなかったのを修正する
+  - これまでは出力が `0` / `1` の数値、入力が boolean のみであった
+  - 出力を boolean に統一し、入力は boolean と `0` / `1` の両方を受理する
+  - @voluntas
+- [FIX] wasm の `Mp4FileDemuxer.seek()` が `timestamp` の小数部を切り捨てていたのを修正する
+  - これまでは `timestamp` を整数に丸めてから `timescale` で割っていたため、`seek(0.5, 1)` が先頭へシークしていた
+  - `timestamp / timescale` 秒をそのまま扱うようにする
+  - @voluntas
+- [FIX] wasm の `Fmp4SegmentMuxer` が `data_size` の合計より長い `sampleData` を黙って捨てていたのを修正する
+  - `data_size` の合計と `sampleData` の長さが一致しない場合は例外を返すようにする
   - @voluntas
 - [FIX] `Fmp4SegmentDemuxer::handle_media_segment` が `moof` より前の `styp` などのトップレベルボックスを読み飛ばすようにする
   - これまでは先頭の `sidx` を 1 個だけ読み飛ばしていたため、`styp` + `moof` + `mdat` や `sidx` + `sidx` + `moof` + `mdat` など ISO/IEC 14496-12 で有効なメディアセグメントをエラーにしていた
@@ -84,16 +102,22 @@
 - [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.93 に固定する
   - CI は `rustup show` で MSRV のツールチェーンを導入し、rust-cache にも同じバージョンを指定する
   - @voluntas
+- [UPDATE] wasm のビルド手順に wasm-bindgen によるバインディング生成を追加する
+  - `ci.yml` と `release.yml` に wasm-bindgen の導入と Node.js 向け・ブラウザ向けバインディングの生成を追加する
+  - wasm-bindgen の CLI のバージョンが Cargo.lock のクレートと一致しているかを CI で確認する
+  - wasm-opt はバインディング生成後の `.wasm` に対して適用する
+  - GitHub Release の wasm アーカイブに `node/` と `web/` のバインディングを含める
+  - wasm のサンプル `demux.js` / `mux.js` を新しい API に合わせて書き直す
+  - @voluntas
+- [UPDATE] wasm の API 層に対する統合テストを追加する
+  - mux と demux の往復、2 トラックの MP4、faststart、fMP4 のセグメント、ファイル種別判定、`seek` を Node.js のテストランナーで検証する
+  - コーデックごとに、デマルチプレックスしたサンプルエントリーをそのままマルチプレックス側へ戻せることを検証する
+  - CI の `test-wasm` で実行する
+  - @voluntas
 - [FIX] Release ワークフローが同一タグの重複実行で失敗するのを防ぐ
   - `concurrency` で重複実行をキャンセルし、リリース作成を冪等化する
   - アセットの `gh release upload` に `--clobber` を追加する
   - Slack 通知先のチャンネルを誤っていた `hisui` から `rust-oss` に直す
-  - @voluntas
-- [UPDATE] wasm のビルド手順に wasm-bindgen によるバインディング生成を追加する
-  - `ci.yml` と `release.yml` に wasm-bindgen の導入と Node.js 向け・ブラウザ向けバインディングの生成を追加する
-  - wasm-opt はバインディング生成後の `.wasm` に対して適用する
-  - GitHub Release の wasm アーカイブに `node/` と `web/` のバインディングを含める
-  - wasm のサンプル `demux.js` / `mux.js` を新しい API に合わせて書き直す
   - @voluntas
 
 ## 2026.5.0

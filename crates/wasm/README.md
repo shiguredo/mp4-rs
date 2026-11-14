@@ -38,10 +38,15 @@ wasm-bindgen --target web \
   target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
 
 # サイズを最適化する（生成した .wasm に対して行う）
-wasm-opt -Oz --strip-debug --enable-bulk-memory \
-  -o crates/wasm/pkg/node/mp4_wasm_bg.wasm \
-  crates/wasm/pkg/node/mp4_wasm_bg.wasm
+# --enable-bulk-memory は core のビルドが bulk memory 命令を使うため必要
+for target in node web; do
+  wasm-opt -Oz --strip-debug --enable-bulk-memory \
+    -o "crates/wasm/pkg/$target/mp4_wasm_bg.wasm" \
+    "crates/wasm/pkg/$target/mp4_wasm_bg.wasm"
+done
 ```
+
+`wasm-opt` は [binaryen](https://github.com/WebAssembly/binaryen) の `version_125` を CI と Release で使用しています。手元のバージョンが異なると出力サイズも変わるため、リリース物を再現する場合は同じバージョンを使用してください。
 
 ### release-wasm プロファイル
 
@@ -56,7 +61,7 @@ wasm-opt -Oz --strip-debug --enable-bulk-memory \
 
 ### サイズ
 
-2026.6.0-canary.2 の時点で、`wasm-opt -Oz --strip-debug` 適用後の `.wasm` は約 514 KB、gzip 後は約 187 KB です。これに加えて Node.js 向けの `.js` が約 25 KB、`.d.ts` が約 8 KB になります。
+2026.6.0-canary.2 の時点で、`wasm-opt -Oz --strip-debug` 適用後の `.wasm` は約 504 KB、gzip 後は約 188 KB です。これに加えて Node.js 向けの `.js` が約 25 KB、`.d.ts` が約 8 KB になります。
 
 ## 使い方
 
@@ -82,6 +87,9 @@ await init();
 Sans I/O のため、ファイルの読み込みは呼び出し側が行います。`requiredInput()` が要求するデータを `handleInput()` に渡します。
 
 ```js
+import fs from 'node:fs';
+const fileBytes = new Uint8Array(fs.readFileSync('input.mp4'));
+
 const demuxer = new Mp4FileDemuxer();
 try {
   for (;;) {
@@ -109,11 +117,18 @@ try {
 ### マルチプレックス
 
 ```js
+import fs from 'node:fs';
+
+// 書き込み先は任意でよい。ここでは fs を使う
+const file = fs.openSync('output.mp4', 'w');
+function write(file, offset, data) {
+  fs.writeSync(file, data, 0, data.length, offset);
+}
+
 const muxer = new Mp4FileMuxer(0);
 try {
   // 1. 初期ボックスをファイル先頭に書き込む
   const initial = muxer.initialBoxes();
-  // file は任意の書き込み先 (fs など)
   write(file, 0, initial);
   let offset = initial.length;
 
@@ -138,10 +153,12 @@ try {
   for (;;) {
     const output = muxer.nextOutput();
     if (output === undefined) break;
-    write(file, output.offset, output.data);
+    write(file, output.offset, output.takeData());
+    output.free();
   }
 } finally {
   muxer.free();
+  fs.closeSync(file);
 }
 ```
 
@@ -155,11 +172,11 @@ MP4 ファイルを段階的に読み込んでメディアサンプルを取り�
 |---|---|
 | `constructor()` | デマルチプレクサを作成する |
 | `requiredInput(): string \| undefined` | 次に必要な入力データを JSON で返す。不要になったら `undefined` |
-| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する |
+| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する。`position` が負値や小数の場合は例外 |
 | `tracks(): string` | トラック情報を JSON の配列で返す |
 | `nextSample(): string \| undefined` | 時系列順に次のサンプルを JSON で返す |
 | `prevSample(): string \| undefined` | 時系列順に前のサンプルを JSON で返す |
-| `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする |
+| `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする。`timestamp` は小数でもよい |
 
 ### `Mp4FileMuxer`
 
@@ -167,16 +184,16 @@ MP4 ファイルを構築します。
 
 | メソッド | 説明 |
 |---|---|
-| `constructor(reservedMoovBoxSize: number)` | マルチプレクサを作成する。0 を指定すると faststart は無効 |
+| `constructor(reservedMoovBoxSize: number)` | マルチプレクサを作成する。0 を指定すると faststart は通常無効 |
 | `initialBoxes(): Uint8Array` | ファイル先頭に書き込むべきバイト列を返す |
 | `appendSample(sampleJson: string)` | サンプルデータを書き込んだ位置とサイズを伝える |
 | `advancePosition(size: number)` | サンプル以外のデータを書き込んだ分だけ位置を進める |
 | `finalize()` | マルチプレックス処理を完了する |
-| `nextOutput(): Mp4FileMuxerOutput \| undefined` | 未取得の出力ボックスを 1 つ返す |
+| `nextOutput(): Mp4FileMuxerOutput \| undefined` | 未取得の出力ボックスを 1 つ返す。使い終えたら `free()` する |
 | `isFaststartEnabled(): boolean` | 確定したファイルで faststart が有効かどうかを返す |
 | `moovBoxSize(): number` | 確定した moov ボックスのサイズを返す |
 
-`Mp4FileMuxerOutput` は `offset: number` と `data: Uint8Array` を持ちます。
+`Mp4FileMuxerOutput` は `offset: number` と `takeData(): Uint8Array` を持ちます。`takeData()` は所有権を移すため、大きなデータをコピーせずに受け取れます。
 
 ### `Fmp4SegmentMuxer`
 
@@ -185,12 +202,21 @@ fMP4 の初期化セグメントとメディアセグメントを生成します
 | メソッド | 説明 |
 |---|---|
 | `constructor(creationTimestampSecs: number)` | マルチプレクサを作成する |
-| `createMediaSegmentMetadata(samplesJson: string, sampleData: Uint8Array): Uint8Array` | メディアセグメントを返す |
-| `createMediaSegmentMetadataWithSidx(samplesJson: string, sampleData: Uint8Array): Uint8Array` | `sidx` 付きのメディアセグメントを返す |
-| `initSegment(): Uint8Array` | 初期化セグメントを返す |
+| `createMediaSegment(samplesJson: string, sampleData: Uint8Array): Uint8Array` | メディアセグメント全体を返す |
+| `createMediaSegmentWithSidx(samplesJson: string, sampleData: Uint8Array): Uint8Array` | `sidx` 付きのメディアセグメント全体を返す |
+| `initSegment(): Uint8Array` | 初期化セグメントを返す。メディアセグメントを 1 つ以上生成した後に呼ぶ |
 | `mfra(): Uint8Array` | ランダムアクセス用の `mfra` ボックスを返す |
 
 `sampleData` はサンプルの出現順に連結したペイロードです。muxer が要求する並び順への並べ替えはこの関数が行うため、返り値をそのまま書き込めば完全なメディアセグメントになります。
+
+`initSegment()` は「メディアセグメントを 1 つ以上生成した後」に呼ぶ必要があります。先に呼ぶと `No tracks have been observed yet` で失敗します。
+
+```js
+const muxer = new Fmp4SegmentMuxer(0);
+const segment = muxer.createMediaSegment(samplesJson, sampleData);
+const init = muxer.initSegment();
+muxer.free();
+```
 
 ### `Fmp4SegmentDemuxer`
 
@@ -211,7 +237,7 @@ fMP4 の初期化セグメントとメディアセグメントを読み取りま
 |---|---|
 | `constructor()` | 判定器を作成する |
 | `requiredInput(): string \| undefined` | 次に必要な入力データを JSON で返す |
-| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する |
+| `handleInput(position: number, data: Uint8Array)` | 入力データを供給する。`position` が負値や小数の場合は例外 |
 | `fileKind(): string \| undefined` | `"mp4"` か `"fragmented-mp4"` を返す |
 
 ### `version()`
@@ -221,6 +247,10 @@ fMP4 の初期化セグメントとメディアセグメントを読み取りま
 ### リソースの解放
 
 wasm-bindgen が生成したクラスは `free()` で明示的に解放するか、`Symbol.dispose` に対応した構文（`using` 宣言）で自動解放します。
+
+### TypeScript の設定
+
+生成される `.d.ts` は `Symbol.dispose` を含むため、TypeScript の `lib` に `ESNext.Disposable` が含まれていないとコンパイルエラーになります。`lib` に追加するか、`skipLibCheck` を有効にしてください。
 
 ## JSON スキーマ
 
@@ -282,12 +312,12 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
 }
 ```
 
-- `sample_entry` は最初のサンプルでは必須です。以降は省略可能で、省略した場合は前のサンプルと同じ値が使われます
+- `sample_entry` は各トラックの最初のサンプルでは必須です。以降は省略可能で、省略した場合は同じトラックの直前のサンプルと同じ値が使われます
 - `composition_time_offset` は省略するか `null` を指定すると、コンポジション時間オフセットなしとして扱われます
 
 ### fMP4 メディアセグメント用サンプル
 
-`createMediaSegmentMetadata()` に渡す JSON 配列の要素です。
+`createMediaSegment()` / `createMediaSegmentWithSidx()` に渡す JSON 配列の要素です。
 
 ```json
 [
@@ -303,11 +333,12 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
 ]
 ```
 
-`data_size` の合計は `sampleData` の長さと一致している必要があります。
+`data_size` の合計は `sampleData` の長さと一致している必要があります。一致しない場合は例外になります。
+`sample_entry` は各トラックの最初のサンプルでは必須です。
 
 ### サンプルエントリー
 
-サンプルエントリーは `kind` フィールドでコーデックの種類を識別します。未対応のコーデックは `{ "kind": "unknown", "boxType": "xxxx" }` として出力されます。
+サンプルエントリーは `kind` フィールドでコーデックの種類を識別します。未対応のコーデックは `{ "kind": "unknown", "boxType": "xxxx" }` として出力されます。`unknown` は出力専用で、マルチプレクサの入力には使えません。
 
 #### AVC1 (H.264)
 
@@ -320,12 +351,15 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
   "profileCompatibility": 0,
   "avcLevelIndication": 40,
   "lengthSizeMinusOne": 3,
+  "chromaFormat": 1,
+  "bitDepthLumaMinus8": 0,
+  "bitDepthChromaMinus8": 0,
   "sps": [[103, 100, 0, 40]],
   "pps": [[104, 238, 60, 128]]
 }
 ```
 
-`chromaFormat` / `bitDepthLumaMinus8` / `bitDepthChromaMinus8` は、`avcC` に該当フィールドがある場合のみ出力されます。
+`chromaFormat` / `bitDepthLumaMinus8` / `bitDepthChromaMinus8` は、`avcC` に該当フィールドがある場合のみ出力されます。`avcProfileIndication` が 66 / 77 / 88 以外の場合はこの 3 つが必須です。
 
 #### HEV1 / HVC1 (H.265/HEVC)
 
@@ -338,7 +372,7 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
   "generalTierFlag": 0,
   "generalProfileIdc": 1,
   "generalProfileCompatibilityFlags": 1610612736,
-  "generalConstraintIndicatorFlags": 144115188075855872,
+  "generalConstraintIndicatorFlags": 193514046488576,
   "generalLevelIdc": 120,
   "chromaFormatIdc": 1,
   "bitDepthLumaMinus8": 0,
@@ -375,6 +409,8 @@ wasm-bindgen が生成したクラスは `free()` で明示的に解放するか
   "matrixCoefficients": 1
 }
 ```
+
+`videoFullRangeFlag` は boolean で出力されます。入力では後方互換のため `0` / `1` も受理します。
 
 #### VP9
 

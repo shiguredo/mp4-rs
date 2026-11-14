@@ -64,6 +64,7 @@ use crate::{
         MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, StblBox, StcoBox, StscBox,
         StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
     },
+    boxes_moov_tree::{EdtsBox, ElstBox},
     mux_fmp4_segment::{TrakDerivation, derive_trak_attributes, subtitle_trak_attributes},
 };
 
@@ -128,6 +129,111 @@ pub struct TrackMetadata {
     ///
     /// muxer は `HdlrBox::name` に「末尾 null 1 バイト付き UTF-8」として書き出す
     pub name: Utf8String,
+
+    /// 編集リスト（`edts` / `elst`）
+    ///
+    /// `Some` の場合は `trak` に `edts` を書き出す。
+    /// `edit_duration` の単位は [`EditList::movie_timescale`] で指定し、
+    /// muxer が出力ファイルの movie timescale に換算する。
+    pub edit_list: Option<EditList>,
+}
+
+/// muxer に渡す編集リスト
+///
+/// [`TrackInfo::edit_list`](crate::demux::TrackInfo::edit_list) の [`ElstBox`] を
+/// `movie_timescale` / `media_timescale` とともに保持する。
+/// demux したトラックの値から組み立てる例は次のとおり。
+///
+/// ```
+/// use shiguredo_mp4::mux::{EditList, TrackMetadata};
+/// use shiguredo_mp4::boxes::{ElstBox, ElstEntry};
+/// use shiguredo_mp4::FixedPointNumber;
+/// use std::num::NonZeroU32;
+///
+/// let metadata = TrackMetadata {
+///     edit_list: Some(EditList {
+///         movie_timescale: NonZeroU32::new(1000).expect("non-zero"),
+///         media_timescale: NonZeroU32::new(44100).expect("non-zero"),
+///         elst_box: ElstBox {
+///             entries: vec![ElstEntry {
+///                 edit_duration: 1000,
+///                 media_time: 1024,
+///                 media_rate: FixedPointNumber::new(1i16, 0i16),
+///             }],
+///         },
+///     }),
+///     ..Default::default()
+/// };
+/// assert!(metadata.edit_list.is_some());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditList {
+    /// `elst_box` の `edit_duration` の単位（入力ファイルの `mvhd` の timescale）
+    pub movie_timescale: NonZeroU32,
+
+    /// `elst_box` の `media_time` の単位
+    ///
+    /// 出力トラックの `mdhd` の timescale と一致していなければならない。
+    pub media_timescale: NonZeroU32,
+
+    /// 編集リスト
+    pub elst_box: ElstBox,
+}
+
+impl EditList {
+    /// 出力ファイルの movie timescale に換算した [`ElstBox`] を返す
+    ///
+    /// `media_time` / `media_rate` / エントリー数はそのまま保持する。
+    pub(crate) fn convert(&self, movie_timescale: NonZeroU32) -> Result<ElstBox, MuxError> {
+        let mut elst_box = self.elst_box.clone();
+        for entry in &mut elst_box.entries {
+            entry.edit_duration =
+                convert_edit_duration(entry.edit_duration, self.movie_timescale, movie_timescale)?;
+        }
+        Ok(elst_box)
+    }
+
+    /// 出力ファイルの movie timescale 単位での編集尺の合計を返す
+    pub(crate) fn total_duration(&self, movie_timescale: NonZeroU32) -> Result<u64, MuxError> {
+        let mut total: u128 = 0;
+        for entry in &self.elst_box.entries {
+            let converted =
+                convert_edit_duration(entry.edit_duration, self.movie_timescale, movie_timescale)?;
+            total = total.checked_add(converted as u128).ok_or_else(|| {
+                MuxError::EncodeError(Error::invalid_data(
+                    "edit list total duration exceeds u64::MAX",
+                ))
+            })?;
+        }
+        u64::try_from(total).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data(
+                "edit list total duration exceeds u64::MAX",
+            ))
+        })
+    }
+
+    /// presentation の尺をナノ秒単位で返す（最長トラックの比較用）
+    pub(crate) fn total_nanos(&self) -> u128 {
+        let mut total: u128 = 0;
+        for entry in &self.elst_box.entries {
+            total += entry.edit_duration as u128;
+        }
+        total * 1_000_000_000 / (self.movie_timescale.get() as u128)
+    }
+}
+
+/// `edit_duration` を別の movie timescale に四捨五入で換算する
+///
+/// `edit_duration` は編集尺そのものであるため、`tkhd` / `mvhd` の `duration` 換算
+/// （[`convert_duration_to_movie_timescale`]）とは異なり四捨五入を使う。
+fn convert_edit_duration(value: u64, from: NonZeroU32, to: NonZeroU32) -> Result<u64, MuxError> {
+    let numerator = (value as u128) * (to.get() as u128) + (from.get() as u128) / 2;
+    let converted = numerator / (from.get() as u128);
+    u64::try_from(converted).map_err(|_| {
+        MuxError::EncodeError(Error::invalid_data(
+            "converted edit duration exceeds u64::MAX",
+        ))
+    })
 }
 
 /// [`Mp4FileMuxer`] 用のオプション
@@ -916,8 +1022,9 @@ impl Mp4FileMuxer {
     fn build_moov_box(&self) -> Result<MoovBox, MuxError> {
         // 各トラックの `tkhd` の `duration` は `mvhd` の `timescale` 単位で書く必要があるため、
         // trak ボックスの構築よりも先に `mvhd` に入れる `timescale` を確定させる
-        // （`calculate_total_duration()` は `self.tracks` しか参照しないので、ここで先に呼んでよい）
-        let (movie_timescale, movie_duration) = self.calculate_total_duration();
+        // （`calculate_movie_timescale()` は `self.tracks` と `self.options` の編集リストのみを
+        // 参照するので、ここで先に呼んでよい）
+        let movie_timescale = self.calculate_movie_timescale()?;
 
         let mut trak_boxes = Vec::new();
 
@@ -931,6 +1038,15 @@ impl Mp4FileMuxer {
             let track_id = trak_boxes.len() as u32 + 1;
             trak_boxes.push(self.build_trak_box(entry, track_id, movie_timescale)?);
         }
+
+        // `mvhd.duration` は全トラックの `tkhd.duration` の最大値でなければならない。
+        // 編集リスト付きトラックはエントリーごとの換算で値が丸められるため、
+        // 事前に計算した尺ではなく、書き出した `tkhd` の値から最大値を取る
+        let movie_duration = trak_boxes
+            .iter()
+            .map(|trak_box| trak_box.tkhd_box.duration)
+            .max()
+            .unwrap_or(0);
 
         let creation_time = Mp4FileTime::from_unix_time(self.options.creation_timestamp);
         let mvhd_box = MvhdBox {
@@ -968,9 +1084,34 @@ impl Mp4FileMuxer {
         track_id: u32,
         movie_timescale: NonZeroU32,
     ) -> Result<TrakBox, MuxError> {
+        let metadata = self.options.track_metadata(entry.track_kind);
         let total_duration = total_sample_duration(entry);
-        let tkhd_duration =
-            convert_duration_to_movie_timescale(total_duration, entry.timescale, movie_timescale)?;
+        let (tkhd_duration, edts_box) = match &metadata.edit_list {
+            Some(edit_list) => {
+                if edit_list.media_timescale != entry.timescale {
+                    return Err(MuxError::TimescaleMismatch {
+                        track_kind: entry.track_kind,
+                        expected: edit_list.media_timescale,
+                        actual: entry.timescale,
+                    });
+                }
+                (
+                    edit_list.total_duration(movie_timescale)?,
+                    Some(EdtsBox {
+                        elst_box: Some(edit_list.convert(movie_timescale)?),
+                        unknown_boxes: Vec::new(),
+                    }),
+                )
+            }
+            None => (
+                convert_duration_to_movie_timescale(
+                    total_duration,
+                    entry.timescale,
+                    movie_timescale,
+                )?,
+                None,
+            ),
+        };
 
         let derived = self.derive_trak_derivation(entry)?;
 
@@ -994,7 +1135,7 @@ impl Mp4FileMuxer {
 
         Ok(TrakBox {
             tkhd_box,
-            edts_box: None,
+            edts_box,
             mdia_box: self.build_mdia_box(entry, &derived)?,
             unknown_boxes: Vec::new(),
         })
@@ -1212,27 +1353,48 @@ impl Mp4FileMuxer {
     ///
     /// トラックが 1 つも無い場合は `(NonZeroU32::MIN, 0)` を返す
     /// （このとき `trak` ボックスも 0 個になるため、`mvhd` に入る値は任意でよい）
-    fn calculate_total_duration(&self) -> (NonZeroU32, u64) {
-        let mut best: Option<(NonZeroU32, u64, Duration)> = None;
+    fn calculate_movie_timescale(&self) -> Result<NonZeroU32, MuxError> {
+        let mut best: Option<(NonZeroU32, u64, u128)> = None;
         for track in &self.tracks {
-            let duration = total_sample_duration(track);
-            let normalized = Duration::from_secs(duration) / track.timescale.get();
+            let metadata = self.options.track_metadata(track.track_kind);
+            let (duration, normalized_nanos) = match &metadata.edit_list {
+                Some(edit_list) => {
+                    if edit_list.media_timescale != track.timescale {
+                        return Err(MuxError::TimescaleMismatch {
+                            track_kind: track.track_kind,
+                            expected: edit_list.media_timescale,
+                            actual: track.timescale,
+                        });
+                    }
+                    (
+                        edit_list.total_duration(track.timescale)?,
+                        edit_list.total_nanos(),
+                    )
+                }
+                None => {
+                    let duration = total_sample_duration(track);
+                    (duration, normalized_nanos(duration, track.timescale))
+                }
+            };
 
             match best {
-                Some((_, _, best_normalized)) if best_normalized >= normalized => {}
-                _ => best = Some((track.timescale, duration, normalized)),
+                Some((_, _, best_normalized)) if best_normalized >= normalized_nanos => {}
+                _ => best = Some((track.timescale, duration, normalized_nanos)),
             }
         }
-        best.map(|(ts, dur, _)| (ts, dur))
-            .unwrap_or((NonZeroU32::MIN, 0))
+        Ok(best.map(|(ts, _, _)| ts).unwrap_or(NonZeroU32::MIN))
     }
 }
 
 /// [`TrackEntry`] が持つ全サンプルの尺の合計を返す（そのトラックの `timescale` 単位）
 ///
-/// `tkhd` / `mdhd` / `mvhd` に入る尺はいずれもこの値から導出される。
-/// `tkhd` の `duration` は `mdhd` の `duration` を換算した値でなければならないため、
-/// 数え方が箇所ごとに食い違うと静かに不整合な MP4 が出力される。それを避けるため 1 箇所に集約する
+/// 編集リストを持たないトラックでは、`tkhd` / `mdhd` / `mvhd` に入る尺はいずれも
+/// この値から導出される。`tkhd` の `duration` は `mdhd` の `duration` を換算した値で
+/// なければならないため、数え方が箇所ごとに食い違うと静かに不整合な MP4 が出力される。
+/// それを避けるため 1 箇所に集約する。
+///
+/// 編集リストを持つトラックでは、`tkhd` / `mvhd` の `duration` は
+/// [`EditList::total_duration`] から導出する。
 fn total_sample_duration(entry: &TrackEntry) -> u64 {
     entry
         .chunks
@@ -1275,6 +1437,11 @@ fn convert_duration_to_movie_timescale(
             "converted track duration exceeds u64::MAX",
         ))
     })
+}
+
+/// タイムスケール単位の尺をナノ秒に正規化する
+fn normalized_nanos(duration: u64, timescale: NonZeroU32) -> u128 {
+    (duration as u128) * 1_000_000_000 / (timescale.get() as u128)
 }
 
 fn build_ctts_box(chunks: &[Chunk]) -> Result<Option<CttsBox>, MuxError> {

@@ -13,11 +13,11 @@ MP4 / fMP4 の「位置調整系」および「時刻調整系」に分類でき
 
 ## 現状
 
-2026-08-19 時点の対応状況。
+2026-11-14 時点の対応状況。
 
 | ボックス | parse/encode | mux 生成 | demux 反映 | 一次実装場所 (存在するもの) |
 |---|---|---|---|---|
-| `edts` / `elst` | 実装済み | 常に `None` | 反映しない | `src/boxes_moov_tree.rs` |
+| `edts` / `elst` | 実装済み | `TrackMetadata.edit_list` 指定時に生成する | `TrackInfo.edit_list` として保持する（タイムスタンプには未反映） | `src/boxes_moov_tree.rs` / `src/mux_mp4_file.rs` |
 | `ctts` | 実装済み | 生成する | `Sample::composition_time_offset` として露出 | `src/boxes_moov_tree.rs` / `src/mux_mp4_file.rs` |
 | `cslg` | 実装済み | 常に `None` | 反映しない | `src/boxes_moov_tree.rs` |
 | `tfdt` | 実装済み | 生成する | `Fmp4SegmentDemuxer` で `base_media_decode_time` を反映 | `src/boxes_fmp4.rs` / `src/demux_fmp4_segment.rs` |
@@ -70,4 +70,5 @@ fMP4 系のボックス (`prft` など) の対応は当面低優先度扱いと�
 ## 関連 issue
 
 - `issues/pending/0070-add-edit-list-demux-support.md` (`edts` / `elst` の demux 反映方式の設計選択肢)
+- `issues/closed/0124-add-edit-list-preservation.md` (`edts` / `elst` の mux 生成と demux での保持)
 - `issues/pending/0049-add-multiple-tracks-per-kind.md` (同一 `TrackKind` の複数トラック対応。`tref` と関連)

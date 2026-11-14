@@ -367,9 +367,18 @@ const CASES_MAIN: usize = 20;
 fn track_metadata_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES_MAIN, |ctx| {
-        let video_meta = helpers::arb_track_metadata(ctx);
-        let audio_meta = helpers::arb_track_metadata(ctx);
-        let subtitle_meta = helpers::arb_track_metadata(ctx);
+        let video_meta = helpers::arb_track_metadata(
+            ctx,
+            NonZeroU32::new(30).expect("timescale は非ゼロである"),
+        );
+        let audio_meta = helpers::arb_track_metadata(
+            ctx,
+            NonZeroU32::new(48_000).expect("timescale は非ゼロである"),
+        );
+        let subtitle_meta = helpers::arb_track_metadata(
+            ctx,
+            NonZeroU32::new(1_000).expect("timescale は非ゼロである"),
+        );
 
         let options = Mp4FileMuxerOptions {
             video_track: video_meta.clone(),
@@ -444,9 +453,31 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             "moov の decode サイズがバイト列長と一致しない"
         );
         assert_eq!(decoded_moov.trak_boxes.len(), 3);
-        helpers::assert_track_metadata(&decoded_moov.trak_boxes[0], &video_meta);
-        helpers::assert_track_metadata(&decoded_moov.trak_boxes[1], &audio_meta);
-        helpers::assert_track_metadata(&decoded_moov.trak_boxes[2], &subtitle_meta);
+        helpers::assert_track_metadata(
+            &decoded_moov.trak_boxes[0],
+            &video_meta,
+            decoded_moov.mvhd_box.timescale,
+        );
+        helpers::assert_track_metadata(
+            &decoded_moov.trak_boxes[1],
+            &audio_meta,
+            decoded_moov.mvhd_box.timescale,
+        );
+        helpers::assert_track_metadata(
+            &decoded_moov.trak_boxes[2],
+            &subtitle_meta,
+            decoded_moov.mvhd_box.timescale,
+        );
+        assert_eq!(
+            decoded_moov.mvhd_box.duration,
+            decoded_moov
+                .trak_boxes
+                .iter()
+                .map(|trak_box| trak_box.tkhd_box.duration)
+                .max()
+                .unwrap_or(0),
+            "mvhd.duration が tkhd.duration の最大値と一致しない"
+        );
 
         // ファイルとしても demux できることを確認する
         let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
@@ -457,6 +488,9 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
         });
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         assert_eq!(tracks.len(), 3);
+        for (index, track) in tracks.iter().enumerate() {
+            helpers::assert_demuxed_track_info(track, &decoded_moov, index);
+        }
         Ok(())
     })?;
     Ok(())

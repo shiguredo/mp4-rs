@@ -52,6 +52,29 @@ impl Fmp4SegmentMuxer {
             creation_timestamp: std::time::Duration::from_secs(creation_timestamp_secs),
             ..Default::default()
         };
+        Self::from_options(options)
+    }
+
+    /// JSON のオプションからマルチプレクサを作成する
+    ///
+    /// `new()` と異なり、ファイル作成時刻とトラックごとの編集リストを指定できる。
+    /// スキーマは `crates/wasm/README.md` に記載している。
+    #[wasm_bindgen(js_name = withOptions)]
+    pub fn with_options(
+        #[wasm_bindgen(js_name = optionsJson)] options_json: &str,
+    ) -> Result<Fmp4SegmentMuxer, JsError> {
+        let parsed = crate::mux_options::parse(options_json)?;
+        let options = SegmentMuxerOptions {
+            creation_timestamp: parsed.creation_timestamp,
+            video_track: parsed.video_track,
+            audio_track: parsed.audio_track,
+            subtitle_track: parsed.subtitle_track,
+        };
+        Self::from_options(options)
+    }
+
+    /// コアのオプションからインスタンスを構築する
+    fn from_options(options: SegmentMuxerOptions) -> Result<Fmp4SegmentMuxer, JsError> {
         let inner = Inner::with_options(options)
             .map_err(|error| JsError::new(&format!("failed to create muxer: {error}")))?;
         Ok(Self { inner })

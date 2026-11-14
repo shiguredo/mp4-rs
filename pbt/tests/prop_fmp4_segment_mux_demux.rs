@@ -684,9 +684,18 @@ const CASES: usize = 256;
 fn track_metadata_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let video_meta = helpers::arb_track_metadata(ctx);
-        let audio_meta = helpers::arb_track_metadata(ctx);
-        let subtitle_meta = helpers::arb_track_metadata(ctx);
+        let video_meta = helpers::arb_track_metadata(
+            ctx,
+            NonZeroU32::new(VIDEO_TIMESCALE).expect("timescale は非ゼロである"),
+        );
+        let audio_meta = helpers::arb_track_metadata(
+            ctx,
+            NonZeroU32::new(AUDIO_TIMESCALE).expect("timescale は非ゼロである"),
+        );
+        let subtitle_meta = helpers::arb_track_metadata(
+            ctx,
+            NonZeroU32::new(SUBTITLE_TIMESCALE).expect("timescale は非ゼロである"),
+        );
 
         let options = SegmentMuxerOptions {
             video_track: video_meta.clone(),
@@ -740,9 +749,31 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             "moov の decode サイズがバイト列長と一致しない"
         );
         assert_eq!(moov_box.trak_boxes.len(), 3);
-        helpers::assert_track_metadata(&moov_box.trak_boxes[0], &video_meta);
-        helpers::assert_track_metadata(&moov_box.trak_boxes[1], &audio_meta);
-        helpers::assert_track_metadata(&moov_box.trak_boxes[2], &subtitle_meta);
+        helpers::assert_track_metadata(
+            &moov_box.trak_boxes[0],
+            &video_meta,
+            moov_box.mvhd_box.timescale,
+        );
+        helpers::assert_track_metadata(
+            &moov_box.trak_boxes[1],
+            &audio_meta,
+            moov_box.mvhd_box.timescale,
+        );
+        helpers::assert_track_metadata(
+            &moov_box.trak_boxes[2],
+            &subtitle_meta,
+            moov_box.mvhd_box.timescale,
+        );
+        assert_eq!(
+            moov_box.mvhd_box.duration,
+            moov_box
+                .trak_boxes
+                .iter()
+                .map(|trak_box| trak_box.tkhd_box.duration)
+                .max()
+                .unwrap_or(0),
+            "mvhd.duration が tkhd.duration の最大値と一致しない"
+        );
 
         // demuxer でも init を受理できることを確認する
         let mut demuxer = Fmp4SegmentDemuxer::new();
@@ -751,6 +782,9 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             .expect("init セグメントの処理に失敗した");
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         assert_eq!(tracks.len(), 3);
+        for (index, track) in tracks.iter().enumerate() {
+            helpers::assert_demuxed_track_info(track, &moov_box, index);
+        }
         Ok(())
     })?;
     Ok(())

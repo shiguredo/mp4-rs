@@ -77,14 +77,37 @@ impl Mp4FileMuxer {
             to_usize(reserved_moov_box_size, "reservedMoovBoxSize").map_err(js_error)?;
         // 予約サイズはそのままメモリ確保に使われる。wasm のメモリを枯渇させて
         // trap する前に、現実的な上限で拒否する
-        const MAX_RESERVED_MOOV_BOX_SIZE: usize = 512 * 1024 * 1024;
-        if reserved_moov_box_size > MAX_RESERVED_MOOV_BOX_SIZE {
+        if reserved_moov_box_size > crate::mux_options::MAX_RESERVED_MOOV_BOX_SIZE {
             return Err(JsError::new("reservedMoovBoxSize must be at most 512 MiB"));
         }
         let options = Mp4FileMuxerOptions {
             reserved_moov_box_size,
             ..Default::default()
         };
+        Self::from_options(options)
+    }
+
+    /// JSON のオプションからマルチプレクサを作成する
+    ///
+    /// `new()` と異なり、ファイル作成時刻とトラックごとの編集リストを指定できる。
+    /// スキーマは `crates/wasm/README.md` に記載している。
+    #[wasm_bindgen(js_name = withOptions)]
+    pub fn with_options(
+        #[wasm_bindgen(js_name = optionsJson)] options_json: &str,
+    ) -> Result<Mp4FileMuxer, JsError> {
+        let parsed = crate::mux_options::parse(options_json)?;
+        let options = Mp4FileMuxerOptions {
+            reserved_moov_box_size: parsed.reserved_moov_box_size.unwrap_or(0),
+            creation_timestamp: parsed.creation_timestamp,
+            video_track: parsed.video_track,
+            audio_track: parsed.audio_track,
+            subtitle_track: parsed.subtitle_track,
+        };
+        Self::from_options(options)
+    }
+
+    /// コアのオプションからインスタンスを構築する
+    fn from_options(options: Mp4FileMuxerOptions) -> Result<Mp4FileMuxer, JsError> {
         let inner = Inner::with_options(options)
             .map_err(|error| JsError::new(&format!("failed to create muxer: {error}")))?;
         Ok(Self {

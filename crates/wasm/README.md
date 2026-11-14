@@ -223,6 +223,7 @@ MP4 ファイルを構築します。
 | メソッド | 説明 |
 |---|---|
 | `constructor(reservedMoovBoxSize: number)` | マルチプレクサを作成する。0 を指定すると faststart は通常無効。512 MiB を超える値は例外 |
+| `static withOptions(optionsJson: string)` | オプション JSON からマルチプレクサを作成する。`reservedMoovBoxSize`、`creationTimestampSecs`、トラックごとの `edit_list` を指定できる。不正な JSON や上限超過は例外 |
 | `initialBoxes(): Uint8Array` | ファイル先頭に書き込むべきバイト列を返す |
 | `appendSample(sampleJson: string)` | サンプルデータを書き込んだ位置とサイズを伝える |
 | `advancePosition(size: number)` | サンプル以外のデータを書き込んだ分だけ位置を進める |
@@ -240,6 +241,7 @@ fMP4 の初期化セグメントとメディアセグメントを生成します
 | メソッド | 説明 |
 |---|---|
 | `constructor(creationTimestampSecs: number)` | マルチプレクサを作成する。u64 の範囲を超える値は例外 |
+| `static withOptions(optionsJson: string)` | オプション JSON からマルチプレクサを作成する。`creationTimestampSecs` とトラックごとの `edit_list` を指定できる。不正な JSON や上限超過は例外 |
 | `createMediaSegment(samplesJson: string, sampleData: Uint8Array \| number[]): Uint8Array` | メディアセグメント全体を返す |
 | `createMediaSegmentWithSidx(samplesJson: string, sampleData: Uint8Array \| number[]): Uint8Array` | `sidx` 付きのメディアセグメント全体を返す |
 | `initSegment(): Uint8Array` | 初期化セグメントを返す。メディアセグメントを 1 つ以上生成した後に呼ぶ |
@@ -362,10 +364,56 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 `tracks()` が返す配列の要素です。
 
 ```json
-{ "track_id": 1, "kind": "video", "duration": 512, "timescale": 12800 }
+{
+  "track_id": 1,
+  "kind": "audio",
+  "duration": 45124,
+  "timescale": 44100,
+  "movie_timescale": 1000,
+  "edit_list": {
+    "movie_timescale": 1000,
+    "media_timescale": 44100,
+    "entries": [{ "segment_duration": 1000, "media_time": 1024, "media_rate": 1.0 }]
+  }
+}
 ```
 
 `kind` は `"audio"` / `"video"` / `"subtitle"` のいずれかです。
+
+- `movie_timescale` は `moov` の `mvhd` のタイムスケールです
+- `edit_list` は編集リスト（`edts` / `elst`）がある場合だけ含まれます。`segment_duration` は `edit_list.movie_timescale` 単位、`media_time` は `media_timescale` 単位です。`media_time` が `-1` のエントリーは empty edit を表します
+- `edit_list` をそのまま `withOptions()` に渡すと、mux 時に編集リストが保持されます。`segment_duration` は出力ファイルの movie timescale に換算されるため、再取得した `tracks()` では `movie_timescale` と `segment_duration` が出力側の値になります
+
+### muxer のオプション JSON
+
+`Mp4FileMuxer.withOptions()` と `Fmp4SegmentMuxer.withOptions()` に渡す JSON です。すべてのキーは省略できます。
+
+```json
+{
+  "reservedMoovBoxSize": 0,
+  "creationTimestampSecs": 0,
+  "video": {
+    "edit_list": {
+      "movie_timescale": 1000,
+      "media_timescale": 12800,
+      "entries": [{ "segment_duration": 1000, "media_time": 1024, "media_rate": 1.0 }]
+    }
+  },
+  "audio": {
+    "edit_list": {
+      "movie_timescale": 1000,
+      "media_timescale": 44100,
+      "entries": [{ "segment_duration": 1000, "media_time": 1024, "media_rate": 1.0 }]
+    }
+  },
+  "subtitle": {}
+}
+```
+
+- `reservedMoovBoxSize` は `Mp4FileMuxer` のみで使います
+- `creationTimestampSecs` は両方で使います
+- `video` / `audio` / `subtitle` の `edit_list` の形式は `tracks()` が返すものと同じです。`media_timescale` は mux するトラックの `timescale` と一致させる必要があり、一致しない場合は例外になります
+- JSON の深さは 128、長さは 8 MiB が上限です
 
 ### サンプル情報
 

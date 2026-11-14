@@ -65,6 +65,7 @@ use crate::{
         SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
         TrunSample, VmhdBox,
     },
+    boxes_moov_tree::EdtsBox,
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
 };
 
@@ -776,9 +777,28 @@ impl Fmp4SegmentMuxer {
             unknown_boxes: Vec::new(),
         };
 
+        // fMP4 の初期化セグメントの movie timescale は `build_init_moov()` が常に 1000 を使う
+        let movie_timescale = NonZeroU32::new(1000).expect("1000 is non-zero");
+        let edts_box = match &metadata.edit_list {
+            Some(edit_list) => {
+                if edit_list.media_timescale != entry.timescale {
+                    return Err(MuxError::TimescaleMismatch {
+                        track_kind: entry.track_kind,
+                        expected: edit_list.media_timescale,
+                        actual: entry.timescale,
+                    });
+                }
+                Some(EdtsBox {
+                    elst_box: Some(edit_list.convert(movie_timescale)?),
+                    unknown_boxes: Vec::new(),
+                })
+            }
+            None => None,
+        };
+
         Ok(TrakBox {
             tkhd_box,
-            edts_box: None,
+            edts_box,
             mdia_box,
             unknown_boxes: Vec::new(),
         })

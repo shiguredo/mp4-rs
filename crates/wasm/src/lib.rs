@@ -36,6 +36,7 @@ mod fmp4_segment_mux;
 mod json_limit;
 mod mp4_file_kind_detector;
 mod mux;
+mod mux_options;
 mod mux_sample;
 mod track;
 

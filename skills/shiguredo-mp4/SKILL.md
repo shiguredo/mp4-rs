@@ -170,9 +170,11 @@ while let Some(required) = detector.required_input() {
 
 ### demux の共通型
 
-- `TrackInfo`: `{ track_id: u32, kind: TrackKind, duration: u64, timescale: NonZeroU32 }`
+- `TrackInfo`: `{ track_id: u32, kind: TrackKind, duration: u64, timescale: NonZeroU32, movie_timescale: NonZeroU32, edit_list: Option<ElstBox> }`
   - `duration` / `timestamp` はタイムスケール単位。秒は `timescale` で割る
   - fMP4 では `duration` は init segment 由来で 0 になることが多い
+  - `movie_timescale` は `mvhd` のタイムスケール。`edit_list` の `edit_duration` はこの単位
+  - `edit_list` は demux のタイムスタンプには反映されない。mux するときは `EditList` に詰め替えて `TrackMetadata.edit_list` に渡すと保持できる
 - `Sample<'a>`: `{ track: &'a TrackInfo, sample_entry: Option<&'a SampleEntry>, keyframe: bool, timestamp: u64, duration: u32, data_offset: u64, data_size: usize, composition_time_offset: Option<i64> }`
   - `sample_entry` は前のサンプルから変更がない場合 `None` (最初のサンプルは常に `Some`)
   - `timestamp` は DTS。PTS は `timestamp + composition_time_offset`
@@ -259,7 +261,11 @@ faststart 形式になる (`FinalizedBoxes::is_faststart_enabled()` で判定)�
 - `creation_timestamp: Duration` - 作成時刻 (デフォルト UNIX エポック)
 - `audio_track` / `video_track` / `subtitle_track: TrackMetadata` - `mdhd.language` / `hdlr.name` のメタデータ
 
-`TrackMetadata` は `{ language: LanguageCode, name: Utf8String }`。
+`TrackMetadata` は `{ language: LanguageCode, name: Utf8String, edit_list: Option<EditList> }`。
+
+`EditList` は `{ movie_timescale: NonZeroU32, media_timescale: NonZeroU32, elst_box: ElstBox }`。
+`edit_list` を指定すると muxer が `trak` に `edts` を書き出し、`edit_duration` を出力ファイルの movie timescale に換算する。
+`media_timescale` は mux するトラックの `timescale` と一致させる必要がある。
 
 ### `Fmp4SegmentMuxer` - fMP4 セグメントのマルチプレックス
 

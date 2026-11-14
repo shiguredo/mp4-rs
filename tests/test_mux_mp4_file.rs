@@ -5,13 +5,16 @@
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
-    FixedPointNumber, TrackKind, Uint,
+    FixedPointNumber, FullBox, TrackKind, Uint,
     boxes::{
-        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry,
-        VisualSampleEntryFields,
+        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, ElstBox, ElstEntry, OpusBox,
+        SampleEntry, VisualSampleEntryFields,
     },
     demux::{Input, Mp4FileDemuxer},
-    mux::{FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, Sample},
+    mux::{
+        EditList, FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample,
+        TrackMetadata,
+    },
 };
 
 /// テスト用の H.264 SampleEntry を作成
@@ -395,5 +398,351 @@ mod mux_error_tests {
         // 2回目の finalize は失敗
         let result = muxer.finalize();
         assert!(matches!(result, Err(MuxError::AlreadyFinalized)));
+    }
+}
+
+// ===== 編集リスト（edts / elst）のテスト =====
+
+mod edit_list_tests {
+    use super::*;
+
+    /// `media_rate` が 1.0 のエントリーを生成する
+    fn one_rate() -> FixedPointNumber<i16, i16> {
+        FixedPointNumber::new(1i16, 0i16)
+    }
+
+    /// 編集リストを生成する
+    fn edit_list(movie_timescale: u32, media_timescale: u32, entries: Vec<ElstEntry>) -> EditList {
+        EditList {
+            movie_timescale: NonZeroU32::new(movie_timescale).expect("movie_timescale は非ゼロ"),
+            media_timescale: NonZeroU32::new(media_timescale).expect("media_timescale は非ゼロ"),
+            elst_box: ElstBox { entries },
+        }
+    }
+
+    /// 音声 1 サンプルを追加する
+    fn append_audio_sample(muxer: &mut Mp4FileMuxer, data_offset: u64) {
+        let sample = Sample {
+            track_kind: TrackKind::Audio,
+            sample_entry: Some(create_opus_sample_entry(2)),
+            keyframe: true,
+            timescale: NonZeroU32::new(44100).expect("44100 は非ゼロ"),
+            duration: 45124,
+            composition_time_offset: None,
+            data_offset,
+            data_size: 64,
+        };
+        muxer
+            .append_sample(&sample)
+            .expect("audio sample の追加に失敗した");
+    }
+
+    /// 音声 1 トラックを編集リスト付きで mux する
+    fn mux_audio_with_edit_list(edit_list: EditList) -> Result<FinalizedBoxes, MuxError> {
+        let options = Mp4FileMuxerOptions {
+            audio_track: TrackMetadata {
+                edit_list: Some(edit_list),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut muxer = Mp4FileMuxer::with_options(options).expect("muxer の作成に失敗した");
+        let data_offset = muxer.initial_boxes_bytes().len() as u64;
+        append_audio_sample(&mut muxer, data_offset);
+        muxer.finalize().cloned()
+    }
+
+    /// 出力された `elst` を返す
+    fn elst_of(finalized: &FinalizedBoxes) -> &ElstBox {
+        finalized.moov_box().trak_boxes[0]
+            .edts_box
+            .as_ref()
+            .expect("edts が出力されていない")
+            .elst_box
+            .as_ref()
+            .expect("elst が出力されていない")
+    }
+
+    /// `edit_duration` が出力 movie timescale に換算されること
+    #[test]
+    fn edit_list_is_written_with_output_movie_timescale() {
+        // 入力 movie timescale は 1000、出力は音声トラックの 44100 になる
+        let finalized = mux_audio_with_edit_list(edit_list(
+            1000,
+            44100,
+            vec![ElstEntry {
+                edit_duration: 1000,
+                media_time: 1024,
+                media_rate: one_rate(),
+            }],
+        ))
+        .expect("編集リスト付きの mux に失敗した");
+
+        let moov_box = finalized.moov_box();
+        assert_eq!(moov_box.mvhd_box.timescale.get(), 44100);
+        assert_eq!(moov_box.mvhd_box.duration, 44100);
+        assert_eq!(moov_box.trak_boxes[0].tkhd_box.duration, 44100);
+
+        let elst_box = elst_of(&finalized);
+        assert_eq!(elst_box.entries.len(), 1);
+        assert_eq!(elst_box.entries[0].edit_duration, 44100);
+        assert_eq!(elst_box.entries[0].media_time, 1024);
+    }
+
+    /// `media_timescale` が出力トラックの timescale と一致しない場合は拒否されること
+    #[test]
+    fn edit_list_media_timescale_mismatch_is_rejected() {
+        let error = mux_audio_with_edit_list(edit_list(
+            1000,
+            48000,
+            vec![ElstEntry {
+                edit_duration: 1000,
+                media_time: 1024,
+                media_rate: one_rate(),
+            }],
+        ))
+        .expect_err("timescale の不一致は拒否される");
+        assert!(
+            matches!(error, MuxError::TimescaleMismatch { .. }),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    /// empty edit と 1.0 以外の `media_rate` が保持されること
+    #[test]
+    fn edit_list_empty_edit_and_media_rate_are_preserved() {
+        let finalized = mux_audio_with_edit_list(edit_list(
+            1000,
+            44100,
+            vec![
+                ElstEntry {
+                    edit_duration: 500,
+                    media_time: -1,
+                    media_rate: one_rate(),
+                },
+                ElstEntry {
+                    edit_duration: 1000,
+                    media_time: 0,
+                    media_rate: FixedPointNumber::new(2i16, 0i16),
+                },
+            ],
+        ))
+        .expect("編集リスト付きの mux に失敗した");
+
+        let elst_box = elst_of(&finalized);
+        assert_eq!(elst_box.entries.len(), 2);
+        assert_eq!(elst_box.entries[0].media_time, -1);
+        assert_eq!(elst_box.entries[1].media_time, 0);
+        assert_eq!(
+            elst_box.entries[1].media_rate,
+            FixedPointNumber::new(2i16, 0i16)
+        );
+        assert_eq!(elst_box.entries[1].edit_duration, 44100);
+    }
+
+    /// `elst` の version が値域から再計算されること
+    #[test]
+    fn edit_list_version_is_recomputed_from_values() {
+        // 換算後の値が u32 に収まる場合は version 0
+        let v0 = mux_audio_with_edit_list(edit_list(
+            1,
+            44100,
+            vec![ElstEntry {
+                edit_duration: 1000,
+                media_time: 0,
+                media_rate: one_rate(),
+            }],
+        ))
+        .expect("編集リスト付きの mux に失敗した");
+        assert_eq!(elst_of(&v0).entries[0].edit_duration, 44_100_000);
+        assert_eq!(elst_of(&v0).full_box_version(), 0);
+
+        // 換算後の値が u32::MAX を超える場合は version 1
+        let v1 = mux_audio_with_edit_list(edit_list(
+            1,
+            44100,
+            vec![ElstEntry {
+                edit_duration: 100_000,
+                media_time: 0,
+                media_rate: one_rate(),
+            }],
+        ))
+        .expect("編集リスト付きの mux に失敗した");
+        assert_eq!(elst_of(&v1).entries[0].edit_duration, 4_410_000_000);
+        assert_eq!(elst_of(&v1).full_box_version(), 1);
+    }
+
+    /// 複数エントリーの合計が `u64` を超える場合は拒否されること
+    #[test]
+    fn edit_list_total_duration_overflow_is_rejected() {
+        let error = mux_audio_with_edit_list(edit_list(
+            44100,
+            44100,
+            vec![
+                ElstEntry {
+                    edit_duration: u64::MAX,
+                    media_time: 0,
+                    media_rate: one_rate(),
+                },
+                ElstEntry {
+                    edit_duration: u64::MAX,
+                    media_time: 0,
+                    media_rate: one_rate(),
+                },
+            ],
+        ))
+        .expect_err("合計の桁溢れは拒否される");
+        assert!(
+            matches!(error, MuxError::EncodeError(_)),
+            "unexpected error: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("edit list total duration"),
+            "unexpected error message: {error}"
+        );
+    }
+
+    /// 編集リスト付き音声と編集リストなし映像を mux する
+    fn mux_audio_and_video(video_duration: u32) -> FinalizedBoxes {
+        let options = Mp4FileMuxerOptions {
+            audio_track: TrackMetadata {
+                edit_list: Some(edit_list(
+                    1000,
+                    44100,
+                    vec![ElstEntry {
+                        edit_duration: 1000,
+                        media_time: 1024,
+                        media_rate: one_rate(),
+                    }],
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut muxer = Mp4FileMuxer::with_options(options).expect("muxer の作成に失敗した");
+        let data_offset = muxer.initial_boxes_bytes().len() as u64;
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry(320, 240)),
+            keyframe: true,
+            timescale: NonZeroU32::new(12800).expect("12800 は非ゼロ"),
+            duration: video_duration,
+            composition_time_offset: None,
+            data_offset,
+            data_size: 128,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("video sample の追加に失敗した");
+        append_audio_sample(&mut muxer, data_offset + 128);
+        muxer.finalize().cloned().expect("finalize に失敗した")
+    }
+
+    /// 編集リスト付きトラックが最長の場合、その timescale が `mvhd` に採用されること
+    #[test]
+    fn edit_list_track_can_be_the_longest_track() {
+        // 音声 1.0 秒（編集リスト）、映像 0.5 秒（6400 / 12800）
+        let finalized = mux_audio_and_video(6400);
+        let moov_box = finalized.moov_box();
+        assert_eq!(moov_box.mvhd_box.timescale.get(), 44100);
+        assert_eq!(moov_box.mvhd_box.duration, 44100);
+        assert_eq!(moov_box.trak_boxes[0].tkhd_box.duration, 22050);
+        assert_eq!(moov_box.trak_boxes[1].tkhd_box.duration, 44100);
+    }
+
+    /// エントリーごとの丸めで最長が反転しても `mvhd.duration` が最大 `tkhd` と一致すること
+    #[test]
+    fn mvhd_duration_is_max_of_tkhd_durations() {
+        // 生の合計では音声 (200222 / 10^7 秒) が映像 (200136 / 10^7 秒) より長いが、
+        // 出力 movie timescale への換算で音声 882 tick、映像 883 tick になる
+        let audio_edit_list = edit_list(
+            10_000_000,
+            44100,
+            vec![
+                ElstEntry {
+                    edit_duration: 100_111,
+                    media_time: 0,
+                    media_rate: one_rate(),
+                },
+                ElstEntry {
+                    edit_duration: 100_111,
+                    media_time: 0,
+                    media_rate: one_rate(),
+                },
+            ],
+        );
+        let video_edit_list = edit_list(
+            10_000_000,
+            44100,
+            vec![ElstEntry {
+                edit_duration: 200_136,
+                media_time: 0,
+                media_rate: one_rate(),
+            }],
+        );
+        let options = Mp4FileMuxerOptions {
+            audio_track: TrackMetadata {
+                edit_list: Some(audio_edit_list),
+                ..Default::default()
+            },
+            video_track: TrackMetadata {
+                edit_list: Some(video_edit_list),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut muxer = Mp4FileMuxer::with_options(options).expect("muxer の作成に失敗した");
+        let data_offset = muxer.initial_boxes_bytes().len() as u64;
+        let video_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry(320, 240)),
+            keyframe: true,
+            timescale: NonZeroU32::new(44100).expect("44100 は非ゼロ"),
+            duration: 45124,
+            composition_time_offset: None,
+            data_offset,
+            data_size: 128,
+        };
+        muxer
+            .append_sample(&video_sample)
+            .expect("video sample の追加に失敗した");
+        append_audio_sample(&mut muxer, data_offset + 128);
+        let finalized = muxer.finalize().cloned().expect("finalize に失敗した");
+
+        let moov_box = finalized.moov_box();
+        assert_eq!(moov_box.mvhd_box.timescale.get(), 44100);
+        assert_eq!(moov_box.trak_boxes[0].tkhd_box.duration, 883, "映像の tkhd");
+        assert_eq!(moov_box.trak_boxes[1].tkhd_box.duration, 882, "音声の tkhd");
+        assert_eq!(
+            moov_box.mvhd_box.duration,
+            moov_box
+                .trak_boxes
+                .iter()
+                .map(|trak_box| trak_box.tkhd_box.duration)
+                .max()
+                .unwrap_or(0),
+            "mvhd.duration が最大 tkhd.duration と一致しない"
+        );
+        assert_eq!(moov_box.mvhd_box.duration, 883);
+    }
+
+    /// 編集リストなしトラックが最長の場合も `mvhd` と各 `tkhd` が正しいこと
+    #[test]
+    fn edit_list_track_can_be_shorter_than_another_track() {
+        // 音声 1.0 秒（編集リスト）、映像 2.0 秒（25600 / 12800）
+        let finalized = mux_audio_and_video(25600);
+        let moov_box = finalized.moov_box();
+        assert_eq!(moov_box.mvhd_box.timescale.get(), 12800);
+        assert_eq!(moov_box.mvhd_box.duration, 25600);
+        assert_eq!(moov_box.trak_boxes[0].tkhd_box.duration, 25600);
+        assert_eq!(moov_box.trak_boxes[1].tkhd_box.duration, 12800);
+        let elst_box = moov_box.trak_boxes[1]
+            .edts_box
+            .as_ref()
+            .expect("edts が出力されていない")
+            .elst_box
+            .as_ref()
+            .expect("elst が出力されていない");
+        assert_eq!(elst_box.entries[0].edit_duration, 12800);
     }
 }

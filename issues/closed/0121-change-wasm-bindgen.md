@@ -18,6 +18,7 @@
 - `crates/wasm/src/lib.rs` は `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` を提供している
 - `crates/wasm/src/fmp4_segment_mux.rs` の `OwnedMp4SampleEntry` は、C ABI に渡す生ポインタの所有権を `Drop` で管理するためだけに存在する
 - wasm のソース 4,702 行のうち 513 行がポインタ橋渡し (`mp4_alloc` / `from_raw_parts` / `is_null` / `Box::into_raw` 等) に費やされている
+  - 生ポインタ・`unsafe`・メモリ確保に関係する行を目視で分類した概数である。機械的に再現する条件は定めていない
 - JSON の入出力が非対称である。`mp4_demux_sample_to_json` は `"composition_time_offset": null` を出力するが、`mp4_mux_sample_from_json` は `null` を整数として解釈できずに失敗する
 - JavaScript 側が `Mp4DemuxTrackInfo` (wasm32 で 24 バイト) や `Mp4DemuxSample` (wasm32 で 56 バイト) のサイズを定数として持つ必要がある
 - `crates/wasm/examples/demux.js` は `Mp4DemuxTrackInfo` を 20 バイト刻みで読んでおり、2 トラック以上のファイルで誤った値を出す
@@ -49,7 +50,8 @@
 - `cargo build -p wasm --target wasm32-unknown-unknown --profile release-wasm` が通り、`wasm-bindgen` で `.js` と `.d.ts` を生成できる
 - Node.js から `Mp4FileDemuxer` / `Mp4FileMuxer` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Mp4FileKindDetector` が動作する
 - 2 トラック以上の MP4 をデマルチプレックスでき、すべてのトラック情報が正しく取得できる
-- デマルチプレックスしたサンプルの JSON を、`composition_time_offset: null` を含めてそのままマルチプレックス側に渡せる
+- デマルチプレックスしたサンプルの `sample_entry` と `composition_time_offset: null` を、そのままマルチプレックス側に渡せる
+  - `track_id` / `timestamp` は `track_kind` / `timescale` に読み替える必要がある。これは demux 側がファイルから得た情報、mux 側が利用者の指定を必要とする情報という違いによるもので、スキーマの不整合ではない
 - `cargo test -p wasm` が通る
 - `crates/wasm/README.md` の API 一覧と JSON スキーマを新しい構成に更新する
 
@@ -61,7 +63,7 @@
 - 生ポインタを扱う関数を全廃し、wasm-bindgen のクラスとして公開する
   - `Mp4FileDemuxer`: `requiredInput` / `handleInput` / `tracks` / `nextSample` / `prevSample` / `seek`
   - `Mp4FileMuxer`: `initialBoxes` / `appendSample` / `advancePosition` / `finalize` / `nextOutput` / `isFaststartEnabled` / `moovBoxSize`
-  - `Fmp4SegmentMuxer`: `createMediaSegmentMetadata` / `createMediaSegmentMetadataWithSidx` / `initSegment` / `mfra`
+  - `Fmp4SegmentMuxer`: `createMediaSegment` / `createMediaSegmentWithSidx` / `initSegment` / `mfra`
   - `Fmp4SegmentDemuxer`: `handleInitSegment` / `tracks` / `handleMediaSegment`
   - `Mp4FileKindDetector`: `requiredInput` / `handleInput` / `fileKind`
 - ファイル位置とサイズは `f64` で受け渡す。`u64` をそのまま公開すると `BigInt` が必要になるため
@@ -69,7 +71,7 @@
   - JSON のキー名と構造は変えない
   - 生ポインタの確保・解放、`NaluList` のような橋渡し用の型、`allocate_and_copy_*` / `free_*` を削除する
 - `crates/wasm/src/fmp4_segment_mux.rs` の `OwnedMp4SampleEntry` を削除する。コアの `Sample` が sample entry を所有するため不要になる
-- `crates/wasm/src/track.rs` に `optional_i64_member` を追加し、`composition_time_offset` の `null` と省略をどちらも `None` として扱う
+- `crates/wasm/src/mux_sample.rs` にマルチプレックス入力の共通解釈を置き、`composition_time_offset` の `null` と省略をどちらも `None` として扱う
 - `crates/wasm/src/demux.rs` の `next_sample` / `prev_sample` が返す JSON は、コアの `Sample` から直接組み立てる
 - ルートの `Cargo.toml` の `release-wasm` プロファイルから `strip = true` を外し、`wasm-opt --strip-debug` でデバッグ情報を削除する方針に変更する
   - ビルド手順は cargo → wasm-bindgen → wasm-opt の順になる
@@ -77,14 +79,18 @@
   - これまで `Mp4DemuxTrackInfo` を 20 バイト刻みで読んでいたため、2 トラック以上で誤った値を出していた問題も解消する
 - `.github/workflows/ci.yml` と `release.yml` に wasm-bindgen の導入と Node.js 向け・ブラウザ向けバインディング生成を追加する
 - `.gitignore` に `crates/wasm/pkg/` を追加する
+- `crates/wasm/src/boxes_hevc.rs` を追加し、`hev1` / `hvc1` の JSON 変換を共通化する
+- `crates/wasm/src/convert.rs` を追加し、JavaScript の数値を整数へ変換する際の検証を共通化する
+- `crates/wasm/tests/wasm_api.test.mjs` を追加し、Node.js のテストランナーで API 層を検証する
 
 検証結果:
 
-- `cargo test -p wasm` が 57 件すべて成功する
+- `cargo test -p wasm` が 79 件すべて成功する
 - `cargo test --workspace --exclude c-api` が成功する
 - `cargo clippy -p wasm --all-targets -- -D warnings` が警告なしで通る
 - `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude c-api --no-deps` が通る
 - 2 トラックの MP4 をデマルチプレックスでき、`track_id` / `kind` / `duration` / `timescale` が正しく取得できる
-- デマルチプレックスしたサンプルの JSON を `composition_time_offset: null` のままマルチプレックス側に渡せる
+- デマルチプレックスしたサンプルの `sample_entry` と `composition_time_offset: null` をそのままマルチプレックス側に渡せる。8 コーデックで往復を確認する
 - fMP4 のメディアセグメントを生成して読み戻せる
-- `wasm-opt -Oz --strip-debug` 後で `.wasm` が 526,481 バイト、gzip 後で 191,523 バイトになる
+- `node --test crates/wasm/tests/` が 11 件すべて成功する
+- `wasm-opt -Oz --strip-debug` 後で `.wasm` が 516,210 バイト、gzip 後で 192,795 バイトになる

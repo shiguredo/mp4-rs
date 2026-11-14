@@ -660,3 +660,139 @@ test('種別判定器は不正な入力でその場で例外を投げる', () =>
         detector.free();
     }
 });
+
+test('finalize まで待たずに拒否すべき入力は appendSample で例外になる', () => {
+    const cases = [
+        // 高プロファイルの avc1 で拡張フィールドを省略
+        {
+            track_kind: 'video',
+            sample_entry: {
+                kind: 'avc1',
+                width: 640,
+                height: 480,
+                avcProfileIndication: 100,
+                profileCompatibility: 0,
+                avcLevelIndication: 40,
+                lengthSizeMinusOne: 3,
+                sps: [[1]],
+                pps: [[2]],
+            },
+        },
+        // ctts で表現できないコンポジション時間オフセット
+        {
+            track_kind: 'video',
+            composition_time_offset: -2147483649,
+            sample_entry: AVC1_ENTRY,
+        },
+        // hvcC の NALU 長は 16 ビット
+        {
+            track_kind: 'video',
+            sample_entry: {
+                kind: 'hev1',
+                width: 640,
+                height: 480,
+                generalProfileSpace: 0,
+                generalTierFlag: 0,
+                generalProfileIdc: 2,
+                generalProfileCompatibilityFlags: 1610612736,
+                generalConstraintIndicatorFlags: 193514046488576,
+                generalLevelIdc: 120,
+                chromaFormatIdc: 1,
+                bitDepthLumaMinus8: 0,
+                bitDepthChromaMinus8: 0,
+                minSpatialSegmentationIdc: 0,
+                parallelismType: 0,
+                avgFrameRate: 0,
+                constantFrameRate: 0,
+                numTemporalLayers: 1,
+                temporalIdNested: 0,
+                lengthSizeMinusOne: 3,
+                naluArrays: [
+                    { naluType: 32, arrayCompleteness: 0, units: [new Array(65536).fill(0)] },
+                ],
+            },
+        },
+    ];
+
+    for (const entry of cases) {
+        const muxer = new wasm.Mp4FileMuxer(0);
+        try {
+            assert.throws(
+                () =>
+                    muxer.appendSample(
+                        JSON.stringify({
+                            keyframe: true,
+                            timescale: 48000,
+                            duration: 960,
+                            composition_time_offset: null,
+                            data_offset: muxer.initialBoxes().length,
+                            data_size: 1,
+                            ...entry,
+                        }),
+                    ),
+                /failed to parse sample JSON/,
+            );
+        } finally {
+            muxer.free();
+        }
+    }
+});
+
+test('sidx の時間があふれる場合は内部状態を進めない', () => {
+    const muxer = new wasm.Fmp4SegmentMuxer(0);
+    try {
+        const overflow = [
+            {
+                track_kind: 'video',
+                timescale: 90000,
+                duration: 0xffffffff,
+                keyframe: true,
+                composition_time_offset: null,
+                data_size: VIDEO_FRAME.length,
+                sample_entry: AVC1_ENTRY,
+            },
+            {
+                track_kind: 'video',
+                timescale: 90000,
+                duration: 0xffffffff,
+                keyframe: true,
+                composition_time_offset: null,
+                data_size: VIDEO_FRAME.length,
+            },
+        ];
+        assert.throws(
+            () =>
+                muxer.createMediaSegmentWithSidx(
+                    JSON.stringify(overflow),
+                    new Uint8Array(VIDEO_FRAME.length * 2),
+                ),
+            /subsegment_duration/,
+        );
+
+        // 失敗したセグメントの時刻が進んでいないこと
+        const good = [
+            {
+                track_kind: 'video',
+                timescale: 90000,
+                duration: 3000,
+                keyframe: true,
+                composition_time_offset: null,
+                data_size: VIDEO_FRAME.length,
+                sample_entry: AVC1_ENTRY,
+            },
+        ];
+        const segment = muxer.createMediaSegment(JSON.stringify(good), VIDEO_FRAME);
+        const init = muxer.initSegment();
+
+        const demuxer = new wasm.Fmp4SegmentDemuxer();
+        try {
+            demuxer.handleInitSegment(init);
+            const samples = JSON.parse(demuxer.handleMediaSegment(segment));
+            assert.equal(samples[0].timestamp, 0);
+        } finally {
+            demuxer.free();
+        }
+    } finally {
+        muxer.free();
+    }
+});

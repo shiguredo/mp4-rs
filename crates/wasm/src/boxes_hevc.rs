@@ -95,6 +95,14 @@ pub(crate) fn parse_json(
     for nalu_array in nalu_arrays_value.to_array()? {
         let nal_unit_type: Uint<u8, 6> = crate::boxes::uint_u8_member(nalu_array, "naluType")?;
         let nalus: Vec<Vec<u8>> = nalu_array.to_member("units")?.required()?.try_into()?;
+        // hvcC の NALU 長は 16 ビットであり、それ以上の要素はエンコードできない
+        if nalus.iter().any(|nalu| nalu.len() > usize::from(u16::MAX)) {
+            return Err(nalu_array
+                .to_member("units")
+                .and_then(|member| member.required())
+                .map(|value| value.invalid("each NALU must be at most 65535 bytes"))
+                .unwrap_or_else(|error| error));
+        }
         let array_completeness = match nalu_array.to_member("arrayCompleteness")?.optional() {
             None => default_array_completeness(kind, nal_unit_type.get()),
             Some(member) if member.kind() == nojson::JsonValueKind::Null => {

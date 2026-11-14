@@ -33,6 +33,18 @@ pub(crate) fn parse_metadata(
     let duration: u32 = value.to_member("duration")?.required()?.try_into()?;
     let keyframe: bool = value.to_member("keyframe")?.required()?.try_into()?;
     let composition_time_offset = optional_i64_member(value, "composition_time_offset")?;
+    // ctts の version 0 は u32、version 1 は i32 の範囲しか表現できない
+    if let Some(offset) = composition_time_offset
+        && !(i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(&offset)
+    {
+        return Err(value
+            .to_member("composition_time_offset")
+            .and_then(|member| member.required())
+            .map(|member| {
+                member.invalid("composition_time_offset must be between i32::MIN and u32::MAX")
+            })
+            .unwrap_or_else(|error| error));
+    }
     let sample_entry = optional_sample_entry(value)?;
 
     Ok(MuxSampleMetadata {

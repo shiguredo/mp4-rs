@@ -189,7 +189,9 @@ MP4 ファイルを段階的に読み込んでメディアサンプルを取り�
 | `tracks(): string` | トラック情報を JSON の配列で返す |
 | `nextSample(): string \| undefined` | 時系列順に次のサンプルを JSON で返す |
 | `prevSample(): string \| undefined` | 時系列順に前のサンプルを JSON で返す |
-| `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする。`timestamp` は小数でもよい |
+| `seek(timestamp: number, timescale: number)` | `timestamp / timescale` 秒の位置へシークする。`timestamp` は小数でもよい。ナノ秒未満は切り上げる |
+
+入力が不正な場合、`requiredInput()` は `undefined` を返し、次の `tracks()` または `nextSample()` で例外になります。その例外は一度だけ返り、正しいデータを再投入すると回復します。
 
 ### `Mp4FileMuxer`
 
@@ -360,7 +362,7 @@ JSON のネストは 128 段、文字列長は 8 MiB を上限とします。上
 
 ### サンプルエントリー
 
-サンプルエントリーは `kind` フィールドでコーデックの種類を識別します。未対応のコーデックは `{ "kind": "unknown", "boxType": "xxxx" }` として出力されます。`unknown` は出力専用で、マルチプレクサの入力には使えません。
+サンプルエントリーは `kind` フィールドでコーデックの種類を識別します。JSON に表現されない子ボックス（`pasp` / `btrt` など）と、映像共通フィールドの `compressorname` などは demux → mux で失われます。未対応のコーデックは `{ "kind": "unknown", "boxType": "xxxx" }` として出力されます。`unknown` は出力専用で、マルチプレクサの入力には使えません。
 
 #### AVC1 (H.264)
 

@@ -40,6 +40,16 @@ pub(crate) fn parse_json(
 ) -> Result<Avc1Box, nojson::JsonParseError> {
     let sps_list: Vec<Vec<u8>> = value.to_member("sps")?.required()?.try_into()?;
     let pps_list: Vec<Vec<u8>> = value.to_member("pps")?.required()?.try_into()?;
+    // avcC の NALU 長は 16 ビットであり、それ以上の要素はエンコードできない
+    for nalu in sps_list.iter().chain(pps_list.iter()) {
+        if nalu.len() > usize::from(u16::MAX) {
+            return Err(crate::boxes::invalid_member(
+                value,
+                "sps",
+                "each NALU must be at most 65535 bytes",
+            ));
+        }
+    }
     let width: u16 = value.to_member("width")?.required()?.try_into()?;
     let height: u16 = value.to_member("height")?.required()?.try_into()?;
     let avc_profile_indication: u8 = value
@@ -71,6 +81,30 @@ pub(crate) fn parse_json(
         crate::boxes::optional_uint_u8_member(value, "bitDepthLumaMinus8")?;
     let bit_depth_chroma_minus8: Option<Uint<u8, 3>> =
         crate::boxes::optional_uint_u8_member(value, "bitDepthChromaMinus8")?;
+
+    // 66 / 77 / 88 以外のプロファイルは、avcC の拡張フィールドが必須である
+    let high_profile = !matches!(avc_profile_indication, 66 | 77 | 88);
+    if high_profile && chroma_format.is_none() {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "chromaFormat",
+            "chromaFormat is required for this profile",
+        ));
+    }
+    if high_profile && bit_depth_luma_minus8.is_none() {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "bitDepthLumaMinus8",
+            "bitDepthLumaMinus8 is required for this profile",
+        ));
+    }
+    if high_profile && bit_depth_chroma_minus8.is_none() {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "bitDepthChromaMinus8",
+            "bitDepthChromaMinus8 is required for this profile",
+        ));
+    }
 
     Ok(Avc1Box {
         visual: crate::boxes::build_visual_sample_entry_fields(width, height),
@@ -109,7 +143,7 @@ mod tests {
         Avc1Box {
             visual: crate::boxes::build_visual_sample_entry_fields(1920, 1080),
             avcc_box: AvccBox {
-                avc_profile_indication: 100,
+                avc_profile_indication: 66,
                 profile_compatibility: 0,
                 avc_level_indication: 40,
                 length_size_minus_one: Uint::new(3),
@@ -142,7 +176,7 @@ mod tests {
             "height が出力されること: {json}"
         );
         assert!(
-            json.contains(r#""avcProfileIndication":100"#),
+            json.contains(r#""avcProfileIndication":66"#),
             "avcProfileIndication が出力されること: {json}"
         );
         assert!(
@@ -204,18 +238,18 @@ mod tests {
 
     #[test]
     fn test_json_to_avc1() {
-        let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[103, 100, 0, 40]], "pps": [[104, 238, 60, 128]]}"#;
+        let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 66, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[103, 66, 0, 40]], "pps": [[104, 238, 60, 128]]}"#;
 
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let sample_entry = parse_json(json.value()).expect("有効な avc1 JSON");
 
         assert_eq!(sample_entry.visual.width, 1920);
         assert_eq!(sample_entry.visual.height, 1080);
-        assert_eq!(sample_entry.avcc_box.avc_profile_indication, 100);
+        assert_eq!(sample_entry.avcc_box.avc_profile_indication, 66);
         assert_eq!(sample_entry.avcc_box.profile_compatibility, 0);
         assert_eq!(sample_entry.avcc_box.avc_level_indication, 40);
         assert_eq!(sample_entry.avcc_box.length_size_minus_one.get(), 3);
-        assert_eq!(sample_entry.avcc_box.sps_list, vec![vec![103, 100, 0, 40]]);
+        assert_eq!(sample_entry.avcc_box.sps_list, vec![vec![103, 66, 0, 40]]);
         assert_eq!(
             sample_entry.avcc_box.pps_list,
             vec![vec![104, 238, 60, 128]]
@@ -259,7 +293,7 @@ mod tests {
     /// 空配列要素が `[[]]` として再出力されることを検証する
     #[test]
     fn test_json_to_avc1_empty_nalu_element_roundtrip() {
-        let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 100, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[]], "pps": [[]]}"#;
+        let json_str = r#"{"kind": "avc1", "width": 1920, "height": 1080, "avcProfileIndication": 66, "profileCompatibility": 0, "avcLevelIndication": 40, "lengthSizeMinusOne": 3, "sps": [[]], "pps": [[]]}"#;
 
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let sample_entry = parse_json(json.value()).expect("空 NALU 要素の avc1 JSON");
@@ -302,6 +336,23 @@ mod tests {
         let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
         let result = parse_json(json.value());
         assert!(result.is_err(), "width 欠落時はパース失敗すること");
+    }
+
+    /// 66 / 77 / 88 以外のプロファイルでは avcC の拡張フィールドを必須にすること
+    #[test]
+    fn test_json_to_avc1_requires_optional_fields_for_high_profile() {
+        let without = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":100,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"sps":[[1]],"pps":[[2]]}"#;
+        let json = nojson::RawJson::parse(without).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
+
+        let with = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":100,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"chromaFormat":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"sps":[[1]],"pps":[[2]]}"#;
+        let json = nojson::RawJson::parse(with).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_ok());
+
+        // 66 は拡張フィールドなしでもよい
+        let baseline = r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":66,"profileCompatibility":0,"avcLevelIndication":40,"lengthSizeMinusOne":3,"sps":[[1]],"pps":[[2]]}"#;
+        let json = nojson::RawJson::parse(baseline).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_ok());
     }
 
     /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること

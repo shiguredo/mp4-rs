@@ -90,6 +90,9 @@ impl Fmp4SegmentMuxer {
             .map_err(|error| JsError::new(&format!("failed to parse samples JSON: {error}")))?;
         let (samples, payload) = arrange_payload(samples_with_ranges, sample_data)
             .map_err(|message| JsError::new(&message))?;
+        // コアはセグメントを構築してから sidx の subsegment_duration を u32 に変換するため、
+        // ここで先に検査しないとエラー時に内部のデコード時刻が進んでしまう
+        check_subsegment_duration(&samples).map_err(|message| JsError::new(&message))?;
         let metadata = self
             .inner
             .create_media_segment_metadata_with_sidx(&samples)
@@ -145,6 +148,25 @@ fn parse_json_samples(text: &str) -> Result<Vec<SampleWithSize>, nojson::JsonPar
             })
         })
         .collect()
+}
+
+/// `sidx` の `subsegment_duration` が u32 に収まるか検査する
+fn check_subsegment_duration(samples: &[Sample]) -> Result<(), String> {
+    let Some(first) = samples.first() else {
+        return Ok(());
+    };
+    let total = samples
+        .iter()
+        .filter(|sample| sample.track_kind == first.track_kind)
+        .map(|sample| u64::from(sample.duration))
+        .sum::<u64>();
+    if total > u64::from(u32::MAX) {
+        return Err(
+            "failed to create media segment with sidx: subsegment_duration exceeds u32 max"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// サンプルデータをトラック単位に並べ替え、各サンプルの `data_offset` を確定する
@@ -259,6 +281,26 @@ mod tests {
 
         // ペイロードも同じ順に並べ替えられる
         assert_eq!(payload, vec![1, 2, 6, 7, 8, 9, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_check_subsegment_duration() {
+        // u32::MAX ちょうどは受理し、超えたら拒否する
+        let mux_sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: None,
+            keyframe: true,
+            timescale: std::num::NonZeroU32::new(90000).expect("0 ではない"),
+            duration: u32::MAX,
+            composition_time_offset: None,
+            data_offset: 0,
+            data_size: 0,
+        };
+        assert!(check_subsegment_duration(std::slice::from_ref(&mux_sample)).is_ok());
+
+        let mut second = mux_sample.clone();
+        second.duration = 1;
+        assert!(check_subsegment_duration(&[mux_sample, second]).is_err());
     }
 
     #[test]

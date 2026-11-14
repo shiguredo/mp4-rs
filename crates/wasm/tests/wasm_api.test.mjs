@@ -835,21 +835,42 @@ test('sidx の時間があふれる場合は内部状態を進めない', () => 
     }
 });
 
+const CTTS_BASE = (muxer) => ({
+    track_kind: 'video',
+    timescale: 90000,
+    duration: 3000,
+    keyframe: true,
+    data_offset: muxer.initialBoxes().length,
+    data_size: 0,
+    sample_entry: AVC1_ENTRY,
+});
+
+test('ctts の u32 値は finalize まで成功する', () => {
+    const muxer = new wasm.Mp4FileMuxer(0);
+    try {
+        muxer.appendSample(
+            JSON.stringify({ ...CTTS_BASE(muxer), composition_time_offset: 3000000000 }),
+        );
+        muxer.finalize();
+    } finally {
+        muxer.free();
+    }
+});
+
 test('ctts の負値と i32 を超える値の混在は例外になる', () => {
     const muxer = new wasm.Mp4FileMuxer(0);
     try {
-        const base = {
-            track_kind: 'video',
-            timescale: 90000,
-            duration: 3000,
-            keyframe: true,
-            data_offset: muxer.initialBoxes().length,
-            data_size: 0,
-            sample_entry: AVC1_ENTRY,
-        };
-        // version 0 の範囲だけなら受理し、finalize まで成功する
-        muxer.appendSample(JSON.stringify({ ...base, composition_time_offset: 3000000000 }));
-        muxer.finalize();
+        muxer.appendSample(
+            JSON.stringify({ ...CTTS_BASE(muxer), composition_time_offset: 3000000000 }),
+        );
+        // 負値を混ぜると ctts version 1 になり、u32 の値を表現できない
+        assert.throws(
+            () =>
+                muxer.appendSample(
+                    JSON.stringify({ ...CTTS_BASE(muxer), composition_time_offset: -1 }),
+                ),
+            /cannot mix/,
+        );
     } finally {
         muxer.free();
     }

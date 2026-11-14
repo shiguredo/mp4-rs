@@ -28,8 +28,9 @@ exclude = ["fuzz"]
 inherits = "release"
 # 速度より出力サイズを優先
 opt-level = "z"
-# デバッグシンボルを削除してサイズを削減
-strip = true
+# NOTE: ここで strip すると target_features カスタムセクションが消え、
+# wasm-bindgen が有効な wasm 機能を検出できなくなる。
+# デバッグ情報の削除は wasm-bindgen の後段で wasm-opt --strip-debug が行う。
 # LTO でクレート間の最適化を行いサイズを削減
 lto = true
 # スタックアンワインドを省略してサイズを削減

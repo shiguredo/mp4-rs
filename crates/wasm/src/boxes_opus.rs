@@ -1,59 +1,126 @@
-//! c_api::boxes の JSON シリアライズ機能を提供する wasm 専用モジュール（opus 用）
+//! Opus サンプルエントリー（`Opus`）の JSON 変換を提供する wasm 専用モジュール
 
-use c_api::boxes::Mp4SampleEntryOpus;
+use shiguredo_mp4::boxes::{AudioSampleEntryFields, DopsBox, OpusBox};
 
-/// Opus サンプルエントリーを JSON フォーマットする
-pub fn fmt_json_mp4_sample_entry_opus(
-    f: &mut nojson::JsonFormatter<'_, '_>,
-    data: &Mp4SampleEntryOpus,
-) -> std::fmt::Result {
+/// Opus サンプルエントリーを JSON オブジェクトとしてフォーマットする
+///
+/// `sampleRate` は音声共通フィールドの 16.16 固定小数点数を、整数部と小数部を
+/// 合わせた 1 つの実数として出力する。
+pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &OpusBox) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "opus")?;
-        f.member("channelCount", data.channel_count)?;
-        f.member("sampleRate", data.sample_rate)?;
-        f.member("sampleSize", data.sample_size)?;
-        f.member("preSkip", data.pre_skip)?;
-        f.member("inputSampleRate", data.input_sample_rate)?;
-        f.member("outputGain", data.output_gain)
+        f.member("dataReferenceIndex", data.audio.data_reference_index.get())?;
+        f.member("channelCount", data.audio.channelcount)?;
+        f.member(
+            "sampleRate",
+            crate::boxes::sample_rate_to_json(data.audio.samplerate),
+        )?;
+        f.member("sampleSize", data.audio.samplesize)?;
+        f.member("outputChannelCount", data.dops_box.output_channel_count)?;
+        f.member("preSkip", data.dops_box.pre_skip)?;
+        f.member("inputSampleRate", data.dops_box.input_sample_rate)?;
+        f.member("outputGain", data.dops_box.output_gain)?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
-/// JSON から Mp4SampleEntryOpus に変換する
-pub fn parse_json_mp4_sample_entry_opus(
+/// JSON オブジェクトから Opus サンプルエントリーを構築する
+///
+/// `channelCount` は音声共通フィールドと `dOps` の出力チャンネル数の両方に設定する。
+/// `dOps` 側は `u8` なので、表現できない値はパースエラーになる。
+pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
-) -> Result<Mp4SampleEntryOpus, nojson::JsonParseError> {
-    Ok(Mp4SampleEntryOpus {
-        channel_count: value.to_member("channelCount")?.required()?.try_into()?,
-        sample_rate: value.to_member("sampleRate")?.required()?.try_into()?,
-        sample_size: value.to_member("sampleSize")?.required()?.try_into()?,
-        pre_skip: value.to_member("preSkip")?.required()?.try_into()?,
-        input_sample_rate: value.to_member("inputSampleRate")?.required()?.try_into()?,
-        output_gain: value.to_member("outputGain")?.required()?.try_into()?,
+) -> Result<OpusBox, nojson::JsonParseError> {
+    let channel_count_value = value.to_member("channelCount")?.required()?;
+    let channel_count: u16 = channel_count_value.try_into()?;
+    let output_channel_count = match value.to_member("outputChannelCount")?.optional() {
+        None => u8::try_from(channel_count)
+            .map_err(|_| channel_count_value.invalid("channelCount must fit in 8 bits for Opus"))?,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => u8::try_from(channel_count)
+            .map_err(|_| channel_count_value.invalid("channelCount must fit in 8 bits for Opus"))?,
+        Some(member) => member.try_into()?,
+    };
+
+    let sample_rate = crate::boxes::sample_rate_from_json(value)?;
+    let sample_size: u16 = value.to_member("sampleSize")?.required()?.try_into()?;
+    let pre_skip: u16 = value.to_member("preSkip")?.required()?.try_into()?;
+    let input_sample_rate: u32 = value.to_member("inputSampleRate")?.required()?.try_into()?;
+    let output_gain: i16 = value.to_member("outputGain")?.required()?.try_into()?;
+
+    Ok(OpusBox {
+        audio: AudioSampleEntryFields {
+            data_reference_index: crate::boxes::parse_audio_data_reference_index(value)?,
+            channelcount: channel_count,
+            samplesize: sample_size,
+            samplerate: sample_rate,
+        },
+        dops_box: DopsBox {
+            output_channel_count,
+            pre_skip,
+            input_sample_rate,
+            output_gain,
+        },
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"dOps"])?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shiguredo_mp4::FixedPointNumber;
+
+    /// テスト用の Opus サンプルエントリーを構築する
+    fn build_opus_box() -> OpusBox {
+        OpusBox {
+            audio: AudioSampleEntryFields {
+                data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+                channelcount: 2,
+                samplesize: 16,
+                samplerate: FixedPointNumber::new(48000, 0),
+            },
+            dops_box: DopsBox {
+                output_channel_count: 2,
+                pre_skip: 312,
+                input_sample_rate: 48000,
+                output_gain: 0,
+            },
+            unknown_boxes: Vec::new(),
+        }
+    }
 
     #[test]
     fn test_opus_to_json() {
-        let sample_entry = Mp4SampleEntryOpus {
-            channel_count: 2,
-            sample_rate: 48000,
-            sample_size: 16,
-            pre_skip: 312,
-            input_sample_rate: 48000,
-            output_gain: 0,
-        };
+        let sample_entry = build_opus_box();
 
-        let json = nojson::json(|f| fmt_json_mp4_sample_entry_opus(f, &sample_entry)).to_string();
-        assert!(json.contains(r#""kind":"opus""#));
-        assert!(json.contains(r#""channelCount":2"#));
-        assert!(json.contains(r#""sampleRate":48000"#));
-        assert!(json.contains(r#""preSkip":312"#));
-        assert!(json.contains(r#""inputSampleRate":48000"#));
-        assert!(json.contains(r#""outputGain":0"#));
+        let json = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        assert!(
+            json.contains(r#""kind":"opus""#),
+            "kind が opus であること: {json}"
+        );
+        assert!(
+            json.contains(r#""channelCount":2"#),
+            "channelCount が 2 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""sampleRate":48000"#),
+            "sampleRate が 48000 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""sampleSize":16"#),
+            "sampleSize が 16 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""preSkip":312"#),
+            "preSkip が 312 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""inputSampleRate":48000"#),
+            "inputSampleRate が 48000 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""outputGain":0"#),
+            "outputGain が 0 であること: {json}"
+        );
     }
 
     #[test]
@@ -68,14 +135,89 @@ mod tests {
             "outputGain": 0
         }"#;
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
-        let sample_entry = parse_json_mp4_sample_entry_opus(json.value()).expect("valid opus JSON");
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let sample_entry = parse_json(json.value()).expect("opus の JSON をパースできること");
 
-        assert_eq!(sample_entry.channel_count, 2);
-        assert_eq!(sample_entry.sample_rate, 48000);
-        assert_eq!(sample_entry.sample_size, 16);
-        assert_eq!(sample_entry.pre_skip, 312);
-        assert_eq!(sample_entry.input_sample_rate, 48000);
-        assert_eq!(sample_entry.output_gain, 0);
+        assert_eq!(
+            sample_entry.audio.channelcount, 2,
+            "channelCount が 2 であること"
+        );
+        assert_eq!(
+            sample_entry.audio.samplerate,
+            FixedPointNumber::new(48000, 0),
+            "sampleRate が 48000 であること"
+        );
+        assert_eq!(
+            sample_entry.audio.samplesize, 16,
+            "sampleSize が 16 であること"
+        );
+        assert_eq!(
+            sample_entry.dops_box.output_channel_count, 2,
+            "dOps の出力チャンネル数が 2 であること"
+        );
+        assert_eq!(
+            sample_entry.dops_box.pre_skip, 312,
+            "preSkip が 312 であること"
+        );
+        assert_eq!(
+            sample_entry.dops_box.input_sample_rate, 48000,
+            "inputSampleRate が 48000 であること"
+        );
+        assert_eq!(
+            sample_entry.dops_box.output_gain, 0,
+            "outputGain が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.audio.data_reference_index,
+            AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            "data_reference_index が既定値であること"
+        );
+        assert!(
+            sample_entry.unknown_boxes.is_empty(),
+            "unknown_boxes が空であること"
+        );
+    }
+
+    #[test]
+    fn test_opus_sample_rate_fraction_roundtrip() {
+        // 16.16 固定小数点の小数部を持つ sampleRate が、整数部と小数部を合わせた
+        // 実数として出力され、パースで元の固定小数点数に戻ることを検証する
+        let mut sample_entry = build_opus_box();
+        sample_entry.audio.samplerate = FixedPointNumber::new(48000, 32768);
+
+        let json = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        assert!(
+            json.contains(r#""sampleRate":48000.5"#),
+            "小数部を持つ sampleRate が実数として出力されること: {json}"
+        );
+
+        let parsed_json = nojson::RawJson::parse(&json).expect("出力した JSON をパースできること");
+        let parsed = parse_json(parsed_json.value()).expect("opus の JSON をパースできること");
+        assert_eq!(
+            parsed.audio.samplerate,
+            FixedPointNumber::new(48000, 32768),
+            "小数部を含めて往復できること"
+        );
+    }
+
+    #[test]
+    fn test_json_to_opus_rejects_channel_count_over_u8() {
+        // dOps の出力チャンネル数は u8 なので、u8 に収まらない channelCount は拒否する
+        let json_str = r#"{
+            "kind": "opus",
+            "channelCount": 256,
+            "sampleRate": 48000,
+            "sampleSize": 16,
+            "preSkip": 312,
+            "inputSampleRate": 48000,
+            "outputGain": 0
+        }"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let result = parse_json(json.value());
+        assert!(
+            result.is_err(),
+            "channelCount が u8 に収まらない場合はパース失敗すること"
+        );
     }
 }

@@ -1,953 +1,582 @@
-//! c_api::boxes の JSON シリアライズ機能を提供する wasm 専用モジュール
+//! サンプルエントリーの JSON 変換を束ねるモジュール
+//!
+//! コーデックごとの変換は `boxes_<codec>` モジュールが担当する。
+//! このモジュールは次の 2 つの役割を持つ。
+//!
+//! - `SampleEntry` のバリアントから対応するモジュールを選ぶ
+//! - 複数のコーデックで共通する JSON 変換のヘルパを提供する
+use shiguredo_mp4::boxes::{
+    AudioSampleEntryFields, SampleEntry, UnknownBox, VisualSampleEntryFields,
+};
+use shiguredo_mp4::{BoxSize, BoxType, FixedPointNumber, Uint};
 
-use std::alloc::Layout;
-
-use c_api::boxes::{Mp4SampleEntry, Mp4SampleEntryKind};
-
-/// wasm ABI 越しに扱う POD 型（`u16` / `u32` / 生ポインタ等）の配列を、
-/// 要素型 `T` のアライメントで領域を確保して `data` をコピーする
-///
-/// `mp4_alloc`（align 1）経由では `u16` / `u32` / ポインタ配列として読めないため、
-/// typed 配列の確保はこの関数（またはこれを使う公開ヘルパ）経由に限定する。
-/// 解放は必ず同じ型引数 `T` の [`free_aligned`] を通すこと（layout 不整合で UB）
-fn allocate_and_copy_aligned<T: Copy>(data: &[T]) -> (*const T, u32) {
-    if data.is_empty() {
-        return (std::ptr::null(), 0);
-    }
-
-    let byte_size = std::mem::size_of_val(data);
-    // Rust の `align_of::<T>()` は必ず power-of-two、`&[T]` の byte 長は必ず `isize::MAX` 以下
-    // なので Layout の構築は失敗しない
-    let layout = Layout::from_size_align(byte_size, std::mem::align_of::<T>())
-        .expect("Rust align is power-of-two and slice byte length fits isize::MAX");
-    let allocated = unsafe { std::alloc::alloc(layout) };
-    if allocated.is_null() {
-        // `mp4_alloc` と同じ方針で、確保失敗は abort に寄せる（死なない OOM を残さない）
-        std::alloc::handle_alloc_error(layout);
-    }
-    unsafe {
-        std::ptr::copy_nonoverlapping(data.as_ptr().cast::<u8>(), allocated, byte_size);
-    }
-    (allocated.cast::<T>(), data.len() as u32)
-}
-
-/// [`allocate_and_copy_aligned`] で確保した領域を、同じ align で解放する
-///
-/// # Safety
-///
-/// - `ptr` は [`allocate_and_copy_aligned`] を **同じ型引数 `T`** で呼んで得たポインタでなければならない
-/// - `count` は確保時の要素数（[`allocate_and_copy_aligned`] の第 2 返り値）と一致していなければならない
-/// - 同じ `ptr` に対して二重に呼んではならない
-///
-/// これらを満たさない場合、layout 不整合で UB になる
-unsafe fn free_aligned<T>(ptr: *mut T, count: u32) {
-    if ptr.is_null() || count == 0 {
-        return;
-    }
-    let byte_size = count as usize * std::mem::size_of::<T>();
-    // Rust の `align_of::<T>()` は必ず power-of-two、`byte_size` は確保時と同じ計算式なので
-    // Layout の構築は失敗しない
-    let layout = Layout::from_size_align(byte_size, std::mem::align_of::<T>())
-        .expect("Rust align is power-of-two and byte_size matches allocation-time value");
-    unsafe {
-        std::alloc::dealloc(ptr.cast::<u8>(), layout);
+/// テスト用に映像系サンプルエントリーの共通フィールドを既定値で構築する
+#[cfg(test)]
+pub(crate) fn build_visual_sample_entry_fields(width: u16, height: u16) -> VisualSampleEntryFields {
+    VisualSampleEntryFields {
+        data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+        width,
+        height,
+        horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+        vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+        frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+        compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+        depth: VisualSampleEntryFields::DEFAULT_DEPTH,
     }
 }
 
-pub(crate) fn fmt_json_mp4_sample_entry(
-    f: &mut nojson::JsonFormatter<'_, '_>,
-    sample_entry: &Mp4SampleEntry,
+/// 映像系サンプルエントリーの共通フィールドを JSON に出力する
+pub(crate) fn fmt_visual_sample_entry_fields(
+    f: &mut nojson::JsonObjectFormatter<'_, '_, '_>,
+    visual: &VisualSampleEntryFields,
 ) -> std::fmt::Result {
-    match sample_entry.kind {
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_AVC1 => {
-            let data = unsafe { &sample_entry.data.avc1 };
-            crate::boxes_avc1::fmt_json_mp4_sample_entry_avc1(f, data)?;
+    f.member("dataReferenceIndex", visual.data_reference_index.get())?;
+    f.member("width", visual.width)?;
+    f.member("height", visual.height)?;
+    f.member(
+        "horizresolution",
+        fixed_point_to_f64(visual.horizresolution),
+    )?;
+    f.member("vertresolution", fixed_point_to_f64(visual.vertresolution))?;
+    f.member("frameCount", visual.frame_count)?;
+    match compressorname_to_str(&visual.compressorname) {
+        Some(name) => f.member("compressorname", name)?,
+        None => f.member("compressorname", visual.compressorname.as_slice())?,
+    }
+    f.member("depth", visual.depth)
+}
+
+/// 映像系サンプルエントリーの共通フィールドを JSON から読み取る
+pub(crate) fn parse_visual_sample_entry_fields(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<VisualSampleEntryFields, nojson::JsonParseError> {
+    let width: u16 = value.to_member("width")?.required()?.try_into()?;
+    let height: u16 = value.to_member("height")?.required()?.try_into()?;
+    let data_reference_index = parse_non_zero_u16_member(
+        value,
+        "dataReferenceIndex",
+        VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+    )?;
+    let horizresolution = parse_fixed_point(value, "horizresolution")?
+        .unwrap_or(VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION);
+    let vertresolution = parse_fixed_point(value, "vertresolution")?
+        .unwrap_or(VisualSampleEntryFields::DEFAULT_VERTRESOLUTION);
+    let frame_count: u16 = match value.to_member("frameCount")?.optional() {
+        None => VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            VisualSampleEntryFields::DEFAULT_FRAME_COUNT
         }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HEV1 => {
-            let data = unsafe { &sample_entry.data.hev1 };
-            crate::boxes_hev1::fmt_json_mp4_sample_entry_hev1(f, data)?;
+        Some(member) => member.try_into()?,
+    };
+    let depth: u16 = match value.to_member("depth")?.optional() {
+        None => VisualSampleEntryFields::DEFAULT_DEPTH,
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => {
+            VisualSampleEntryFields::DEFAULT_DEPTH
         }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HVC1 => {
-            let data = unsafe { &sample_entry.data.hvc1 };
-            crate::boxes_hvc1::fmt_json_mp4_sample_entry_hvc1(f, data)?;
+        Some(member) => member.try_into()?,
+    };
+    let compressorname = parse_compressorname(value)?;
+    Ok(VisualSampleEntryFields {
+        data_reference_index,
+        width,
+        height,
+        horizresolution,
+        vertresolution,
+        frame_count,
+        compressorname,
+        depth,
+    })
+}
+
+/// 省略可能な非ゼロの u16 を JSON から読み取る
+pub(crate) fn parse_non_zero_u16_member(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+    default: std::num::NonZeroU16,
+) -> Result<std::num::NonZeroU16, nojson::JsonParseError> {
+    match value.to_member(name)?.optional() {
+        None => Ok(default),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(default),
+        Some(member) => {
+            let index: u16 = member.try_into()?;
+            std::num::NonZeroU16::new(index)
+                .ok_or_else(|| member.invalid(format!("{name} must be greater than or equal to 1")))
         }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_VP08 => {
-            let data = unsafe { &sample_entry.data.vp08 };
-            crate::boxes_vp08::fmt_json_mp4_sample_entry_vp08(f, data)?;
+    }
+}
+
+/// 音声系サンプルエントリーのデータ参照インデックスを JSON から読み取る
+pub(crate) fn parse_audio_data_reference_index(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<std::num::NonZeroU16, nojson::JsonParseError> {
+    parse_non_zero_u16_member(
+        value,
+        "dataReferenceIndex",
+        AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+    )
+}
+
+/// 固定小数点数を JSON の数値に変換する
+fn fixed_point_to_f64(value: FixedPointNumber<u16, u16>) -> f64 {
+    f64::from(value.integer) + f64::from(value.fraction) / 65536.0
+}
+
+/// JSON の数値を固定小数点数として読み取る
+///
+/// キーが無い場合は `None` を返す。
+fn parse_fixed_point(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Option<FixedPointNumber<u16, u16>>, nojson::JsonParseError> {
+    let Some(member) = value.to_member(name)?.optional() else {
+        return Ok(None);
+    };
+    if member.kind() == nojson::JsonValueKind::Null {
+        return Ok(None);
+    }
+    let number: f64 = member.try_into()?;
+    if !(0.0..=65535.0 + 65535.0 / 65536.0).contains(&number) {
+        let message = format!("{name} is out of range");
+        return Err(member.invalid(message.as_str()));
+    }
+    let fixed_point = (number * 65536.0).round();
+    if fixed_point > f64::from(u32::MAX) {
+        let message = format!("{name} is out of range");
+        return Err(member.invalid(message.as_str()));
+    }
+    let fixed_point = fixed_point as u32;
+    Ok(Some(FixedPointNumber::new(
+        (fixed_point >> 16) as u16,
+        (fixed_point & 0xFFFF) as u16,
+    )))
+}
+
+/// コンプレッサー名を文字列として返す
+///
+/// 先頭 1 バイトが長さで、続くバイト列が名前という Pascal 文字列形式である。
+/// 名前が UTF-8 として解釈できない場合は `None` を返し、生の 32 バイトを出力する。
+fn compressorname_to_str(raw: &[u8; 32]) -> Option<String> {
+    let length = usize::from(raw[0]).min(31);
+    core::str::from_utf8(&raw[1..1 + length])
+        .ok()
+        .map(str::to_string)
+}
+
+/// コンプレッサー名を JSON から読み取る
+fn parse_compressorname(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<[u8; 32], nojson::JsonParseError> {
+    let Some(member) = value.to_member("compressorname")?.optional() else {
+        return Ok(VisualSampleEntryFields::NULL_COMPRESSORNAME);
+    };
+    if member.kind() == nojson::JsonValueKind::Null {
+        return Ok(VisualSampleEntryFields::NULL_COMPRESSORNAME);
+    }
+    if member.kind() == nojson::JsonValueKind::String {
+        let name: String = member.try_into()?;
+        let bytes = name.as_bytes();
+        if bytes.len() > 31 {
+            return Err(member.invalid("compressorname must be at most 31 bytes"));
         }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_VP09 => {
-            let data = unsafe { &sample_entry.data.vp09 };
-            crate::boxes_vp09::fmt_json_mp4_sample_entry_vp09(f, data)?;
+        let mut raw = [0u8; 32];
+        raw[0] = bytes.len() as u8;
+        raw[1..1 + bytes.len()].copy_from_slice(bytes);
+        return Ok(raw);
+    }
+    let raw: [u8; 32] = member.try_into()?;
+    // 長さバイトは 31 以下でなければ名前として解釈できない
+    if raw[0] > 31 {
+        return Err(member.invalid("compressorname length must be at most 31"));
+    }
+    Ok(raw)
+}
+
+/// 型付き実装を持たない子ボックスを JSON に出力する
+pub(crate) fn fmt_unknown_boxes(
+    f: &mut nojson::JsonObjectFormatter<'_, '_, '_>,
+    unknown_boxes: &[UnknownBox],
+) -> std::fmt::Result {
+    f.member(
+        "unknownBoxes",
+        nojson::array(|f| {
+            for unknown_box in unknown_boxes {
+                f.element(nojson::object(|f| {
+                    match unknown_box.box_type {
+                        BoxType::Normal(ty) => match core::str::from_utf8(&ty) {
+                            Ok(name) => f.member("type", name)?,
+                            Err(_) => f.member("type", ty.as_slice())?,
+                        },
+                        BoxType::Uuid(_) => f.member("type", unknown_box.box_type.as_bytes())?,
+                    }
+                    f.member("data", unknown_box.payload.as_slice())
+                }))?;
+            }
+            Ok(())
+        }),
+    )
+}
+
+/// 型付き実装を持たない子ボックスを JSON から読み取る
+pub(crate) fn parse_unknown_boxes(
+    value: nojson::RawJsonValue<'_, '_>,
+    known_types: &[&[u8; 4]],
+) -> Result<Vec<UnknownBox>, nojson::JsonParseError> {
+    let Some(member) = value.to_member("unknownBoxes")?.optional() else {
+        return Ok(Vec::new());
+    };
+    if member.kind() == nojson::JsonValueKind::Null {
+        return Ok(Vec::new());
+    }
+
+    let mut unknown_boxes = Vec::new();
+    for entry in member.to_array()? {
+        let type_value = entry.to_member("type")?.required()?;
+        let box_type = if type_value.kind() == nojson::JsonValueKind::String {
+            let name: String = type_value.try_into()?;
+            let bytes = name.as_bytes();
+            if bytes.len() != 4 {
+                return Err(type_value.invalid("type must be 4 bytes"));
+            }
+            let mut ty = [0u8; 4];
+            ty.copy_from_slice(bytes);
+            if &ty == b"uuid" {
+                return Err(type_value.invalid("type \"uuid\" requires a 16-byte user type array"));
+            }
+            BoxType::Normal(ty)
+        } else {
+            let bytes: Vec<u8> = type_value.try_into()?;
+            match bytes.len() {
+                4 => {
+                    let mut ty = [0u8; 4];
+                    ty.copy_from_slice(&bytes);
+                    if &ty == b"uuid" {
+                        return Err(
+                            type_value.invalid("type \"uuid\" requires a 16-byte user type array")
+                        );
+                    }
+                    BoxType::Normal(ty)
+                }
+                16 => {
+                    let mut ty = [0u8; 16];
+                    ty.copy_from_slice(&bytes);
+                    BoxType::Uuid(ty)
+                }
+                _ => return Err(type_value.invalid("type must be 4 or 16 bytes")),
+            }
+        };
+        if let BoxType::Normal(ty) = box_type
+            && known_types.contains(&&ty)
+        {
+            return Err(type_value
+                .invalid("typed boxes must be specified with their own key, not unknownBoxes"));
         }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_AV01 => {
-            let data = unsafe { &sample_entry.data.av01 };
-            crate::boxes_av01::fmt_json_mp4_sample_entry_av01(f, data)?;
+        let payload: Vec<u8> = entry.to_member("data")?.required()?.try_into()?;
+        let box_size = BoxSize::with_payload_size(box_type, payload.len() as u64);
+        unknown_boxes.push(UnknownBox {
+            box_type,
+            box_size,
+            payload,
+        });
+    }
+    Ok(unknown_boxes)
+}
+
+/// 音声系サンプルエントリーのサンプリングレートを JSON の数値に変換する
+///
+/// [`FixedPointNumber`] は 16.16 固定小数点数なので、整数部と小数部を合わせて
+/// 1 つの実数として返す。
+pub(crate) fn sample_rate_to_json(sample_rate: FixedPointNumber<u16, u16>) -> f64 {
+    fixed_point_to_f64(sample_rate)
+}
+
+/// JSON の `sampleRate` を音声系サンプルエントリーのサンプリングレートに変換する
+///
+/// JSON では 16.16 固定小数点数を 1 つの実数として表現しているため、
+/// 実数を固定小数点のビット列に直してから整数部と小数部に分解する。
+pub(crate) fn sample_rate_from_json(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<FixedPointNumber<u16, u16>, nojson::JsonParseError> {
+    let sample_rate_value = value.to_member("sampleRate")?.required()?;
+    let sample_rate: f64 = sample_rate_value.try_into()?;
+    if !(0.0..65536.0).contains(&sample_rate) {
+        return Err(sample_rate_value.invalid("sampleRate must be in the range [0, 65536)"));
+    }
+
+    let fixed_point = (sample_rate * 65536.0).round() as u32;
+    Ok(FixedPointNumber::new(
+        (fixed_point >> 16) as u16,
+        (fixed_point & 0xFFFF) as u16,
+    ))
+}
+
+/// JSON の真偽値を読み取る
+///
+/// JSON の boolean に加えて、旧実装が出力していた `0` / `1` の数値も受理する。
+/// デマルチプレックス側の出力とマルチプレックス側の入力を往復させるために必要である。
+pub(crate) fn bool_or_int_member(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<bool, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    match member.kind() {
+        nojson::JsonValueKind::Boolean => member.try_into(),
+        nojson::JsonValueKind::Integer => {
+            let number: u8 = member.try_into()?;
+            match number {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(member.invalid("must be a boolean or 0/1")),
+            }
         }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_OPUS => {
-            let data = unsafe { &sample_entry.data.opus };
-            crate::boxes_opus::fmt_json_mp4_sample_entry_opus(f, data)?;
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_MP4A => {
-            let data = unsafe { &sample_entry.data.mp4a };
-            crate::boxes_mp4a::fmt_json_mp4_sample_entry_mp4a(f, data)?;
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_FLAC => {
-            let data = unsafe { &sample_entry.data.flac };
-            crate::boxes_flac::fmt_json_mp4_sample_entry_flac(f, data)?;
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP => {
-            let data = unsafe { &sample_entry.data.stpp };
-            crate::boxes_stpp::fmt_json_mp4_sample_entry_stpp(f, data)?;
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT => {
-            let data = unsafe { &sample_entry.data.wvtt };
-            crate::boxes_wvtt::fmt_json_mp4_sample_entry_wvtt(f, data)?;
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G => {
-            let data = unsafe { &sample_entry.data.tx3g };
-            crate::boxes_tx3g::fmt_json_mp4_sample_entry_tx3g(f, data)?;
+        _ => Err(member.invalid("must be a boolean or 0/1")),
+    }
+}
+
+/// JSON の数値を `BITS` ビットで表現できるか検証する
+///
+/// `Uint::new()` は範囲を検証しないため、はみ出した値はエンコード時に
+/// 隣接フィールドのビットを侵食する。ここで入口の時点で拒否する。
+fn check_uint_bits(
+    number: u64,
+    bits: u32,
+    name: &str,
+    member: nojson::RawJsonValue<'_, '_>,
+) -> Result<(), nojson::JsonParseError> {
+    if bits < 64 {
+        let limit = 1u64 << bits;
+        if number >= limit {
+            let message = format!("{name} must be less than {limit}");
+            return Err(member.invalid(message.as_str()));
         }
     }
     Ok(())
 }
 
-/// JSON から Mp4SampleEntry に変換する
-pub fn parse_json_mp4_sample_entry(
+/// メンバーを取り直してエラーを作る
+///
+/// 値の検証をした後に、そのフィールド名を含むエラーを返すために使う。
+pub(crate) fn invalid_member(
     value: nojson::RawJsonValue<'_, '_>,
-) -> Result<Mp4SampleEntry, nojson::JsonParseError> {
+    name: &str,
+    message: &str,
+) -> nojson::JsonParseError {
+    match value.to_member(name).and_then(|member| member.required()) {
+        Ok(member) => member.invalid(message),
+        Err(error) => error,
+    }
+}
+
+/// JSON の数値を、指定したビット幅の `Uint<u8, BITS, OFFSET>` として読み取る
+pub(crate) fn uint_u8_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Uint<u8, BITS, OFFSET>, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    let number: u8 = member.try_into()?;
+    check_uint_bits(u64::from(number), BITS, name, member)?;
+    Ok(Uint::new(number))
+}
+
+/// JSON の数値を、指定したビット幅の `Uint<u16, BITS, OFFSET>` として読み取る
+pub(crate) fn uint_u16_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Uint<u16, BITS, OFFSET>, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    let number: u16 = member.try_into()?;
+    check_uint_bits(u64::from(number), BITS, name, member)?;
+    Ok(Uint::new(number))
+}
+
+/// JSON の数値を、指定したビット幅の `Uint<u64, BITS, OFFSET>` として読み取る
+pub(crate) fn uint_u64_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Uint<u64, BITS, OFFSET>, nojson::JsonParseError> {
+    let member = value.to_member(name)?.required()?;
+    let number: u64 = member.try_into()?;
+    check_uint_bits(number, BITS, name, member)?;
+    Ok(Uint::new(number))
+}
+
+/// 省略可能な数値を、指定したビット幅の `Uint<u8, BITS, OFFSET>` として読み取る
+///
+/// キーが存在しない場合と値が `null` の場合のどちらも `None` として扱う。
+pub(crate) fn optional_uint_u8_member<const BITS: u32, const OFFSET: u32>(
+    value: nojson::RawJsonValue<'_, '_>,
+    name: &str,
+) -> Result<Option<Uint<u8, BITS, OFFSET>>, nojson::JsonParseError> {
+    match value.to_member(name)?.optional() {
+        None => Ok(None),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(None),
+        Some(member) => {
+            let number: u8 = member.try_into()?;
+            check_uint_bits(u64::from(number), BITS, name, member)?;
+            Ok(Some(Uint::new(number)))
+        }
+    }
+}
+
+/// サンプルエントリーを JSON に変換する
+pub(crate) fn fmt_json(
+    f: &mut nojson::JsonFormatter<'_, '_>,
+    sample_entry: &SampleEntry,
+) -> std::fmt::Result {
+    match sample_entry {
+        SampleEntry::Avc1(b) => crate::boxes_avc1::fmt_json(f, b),
+        SampleEntry::Hev1(b) => crate::boxes_hev1::fmt_json(f, b),
+        SampleEntry::Hvc1(b) => crate::boxes_hvc1::fmt_json(f, b),
+        SampleEntry::Vp08(b) => crate::boxes_vp08::fmt_json(f, b),
+        SampleEntry::Vp09(b) => crate::boxes_vp09::fmt_json(f, b),
+        SampleEntry::Av01(b) => crate::boxes_av01::fmt_json(f, b),
+        SampleEntry::Opus(b) => crate::boxes_opus::fmt_json(f, b),
+        SampleEntry::Mp4a(b) => crate::boxes_mp4a::fmt_json(f, b),
+        SampleEntry::Flac(b) => crate::boxes_flac::fmt_json(f, b),
+        SampleEntry::Stpp(b) => crate::boxes_stpp::fmt_json(f, b),
+        SampleEntry::Wvtt(b) => crate::boxes_wvtt::fmt_json(f, b),
+        SampleEntry::Tx3g(b) => crate::boxes_tx3g::fmt_json(f, b),
+        // 未知のサンプルエントリーは種別だけを返す。
+        // ここでエラーにすると、未対応コーデックを含むファイルの他のトラックまで
+        // 読めなくなってしまうため、利用側が判断できる形で情報を残す
+        SampleEntry::Unknown(b) => f.object(|f| {
+            f.member("kind", "unknown")?;
+            f.member("boxType", b.box_type.to_string())
+        }),
+    }
+}
+
+/// JSON からサンプルエントリーに変換する
+///
+/// `kind` の文字列でコーデックを判別する。
+/// 未知のサンプルエントリーの出力 (`"kind": "unknown"`) は受理しない。
+pub(crate) fn parse_json(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<SampleEntry, nojson::JsonParseError> {
     let kind_value = value.to_member("kind")?.required()?;
     let kind_str = kind_value.to_unquoted_string_str()?;
 
     match kind_str.as_ref() {
-        "avc1" => {
-            let avc1 = crate::boxes_avc1::parse_json_mp4_sample_entry_avc1(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_AVC1,
-                data: c_api::boxes::Mp4SampleEntryData { avc1 },
-            })
-        }
-        "hev1" => {
-            let hev1 = crate::boxes_hev1::parse_json_mp4_sample_entry_hev1(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HEV1,
-                data: c_api::boxes::Mp4SampleEntryData { hev1 },
-            })
-        }
-        "hvc1" => {
-            let hvc1 = crate::boxes_hvc1::parse_json_mp4_sample_entry_hvc1(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HVC1,
-                data: c_api::boxes::Mp4SampleEntryData { hvc1 },
-            })
-        }
-        "vp08" => {
-            let vp08 = crate::boxes_vp08::parse_json_mp4_sample_entry_vp08(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_VP08,
-                data: c_api::boxes::Mp4SampleEntryData { vp08 },
-            })
-        }
-        "vp09" => {
-            let vp09 = crate::boxes_vp09::parse_json_mp4_sample_entry_vp09(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_VP09,
-                data: c_api::boxes::Mp4SampleEntryData { vp09 },
-            })
-        }
-        "av01" => {
-            let av01 = crate::boxes_av01::parse_json_mp4_sample_entry_av01(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_AV01,
-                data: c_api::boxes::Mp4SampleEntryData { av01 },
-            })
-        }
-        "opus" => {
-            let opus = crate::boxes_opus::parse_json_mp4_sample_entry_opus(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_OPUS,
-                data: c_api::boxes::Mp4SampleEntryData { opus },
-            })
-        }
-        "mp4a" => {
-            let mp4a = crate::boxes_mp4a::parse_json_mp4_sample_entry_mp4a(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_MP4A,
-                data: c_api::boxes::Mp4SampleEntryData { mp4a },
-            })
-        }
-        "flac" => {
-            let flac = crate::boxes_flac::parse_json_mp4_sample_entry_flac(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_FLAC,
-                data: c_api::boxes::Mp4SampleEntryData { flac },
-            })
-        }
-        "stpp" => {
-            let stpp = crate::boxes_stpp::parse_json_mp4_sample_entry_stpp(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP,
-                data: c_api::boxes::Mp4SampleEntryData { stpp },
-            })
-        }
-        "wvtt" => {
-            let wvtt = crate::boxes_wvtt::parse_json_mp4_sample_entry_wvtt(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT,
-                data: c_api::boxes::Mp4SampleEntryData { wvtt },
-            })
-        }
-        "tx3g" => {
-            let tx3g = crate::boxes_tx3g::parse_json_mp4_sample_entry_tx3g(value)?;
-            Ok(Mp4SampleEntry {
-                kind: Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G,
-                data: c_api::boxes::Mp4SampleEntryData { tx3g },
-            })
-        }
+        "avc1" => Ok(SampleEntry::Avc1(crate::boxes_avc1::parse_json(value)?)),
+        "hev1" => Ok(SampleEntry::Hev1(crate::boxes_hev1::parse_json(value)?)),
+        "hvc1" => Ok(SampleEntry::Hvc1(crate::boxes_hvc1::parse_json(value)?)),
+        "vp08" => Ok(SampleEntry::Vp08(crate::boxes_vp08::parse_json(value)?)),
+        "vp09" => Ok(SampleEntry::Vp09(crate::boxes_vp09::parse_json(value)?)),
+        "av01" => Ok(SampleEntry::Av01(crate::boxes_av01::parse_json(value)?)),
+        "opus" => Ok(SampleEntry::Opus(crate::boxes_opus::parse_json(value)?)),
+        "mp4a" => Ok(SampleEntry::Mp4a(crate::boxes_mp4a::parse_json(value)?)),
+        "flac" => Ok(SampleEntry::Flac(crate::boxes_flac::parse_json(value)?)),
+        "stpp" => Ok(SampleEntry::Stpp(crate::boxes_stpp::parse_json(value)?)),
+        "wvtt" => Ok(SampleEntry::Wvtt(crate::boxes_wvtt::parse_json(value)?)),
+        "tx3g" => Ok(SampleEntry::Tx3g(crate::boxes_tx3g::parse_json(value)?)),
         _ => Err(kind_value.invalid("unknown sample entry kind")),
     }
-}
-
-/// Mp4SampleEntry のメモリを解放する
-pub unsafe fn mp4_sample_entry_free(sample_entry: *mut Mp4SampleEntry) {
-    if sample_entry.is_null() {
-        return;
-    }
-
-    let sample_entry = unsafe { &mut *sample_entry };
-
-    match sample_entry.kind {
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_AVC1 => {
-            let data = unsafe { &mut sample_entry.data.avc1 };
-            crate::boxes_avc1::mp4_sample_entry_avc1_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HEV1 => {
-            let data = unsafe { &mut sample_entry.data.hev1 };
-            crate::boxes_hev1::mp4_sample_entry_hev1_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_HVC1 => {
-            let data = unsafe { &mut sample_entry.data.hvc1 };
-            crate::boxes_hvc1::mp4_sample_entry_hvc1_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_VP08 => {
-            // VP08 はポインタフィールドがないため解放処理なし
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_VP09 => {
-            // VP09 はポインタフィールドがないため解放処理なし
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_AV01 => {
-            let data = unsafe { &mut sample_entry.data.av01 };
-            crate::boxes_av01::mp4_sample_entry_av01_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_OPUS => {
-            // Opus はポインタフィールドがないため解放処理なし
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_MP4A => {
-            let data = unsafe { &mut sample_entry.data.mp4a };
-            crate::boxes_mp4a::mp4_sample_entry_mp4a_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_FLAC => {
-            let data = unsafe { &mut sample_entry.data.flac };
-            crate::boxes_flac::mp4_sample_entry_flac_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_STPP => {
-            let data = unsafe { &mut sample_entry.data.stpp };
-            crate::boxes_stpp::mp4_sample_entry_stpp_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_WVTT => {
-            let data = unsafe { &mut sample_entry.data.wvtt };
-            crate::boxes_wvtt::mp4_sample_entry_wvtt_free(data);
-        }
-        Mp4SampleEntryKind::MP4_SAMPLE_ENTRY_KIND_TX3G => {
-            let data = unsafe { &mut sample_entry.data.tx3g };
-            crate::boxes_tx3g::mp4_sample_entry_tx3g_free(data);
-        }
-    }
-
-    // 構造体自体を解放
-    let _ = unsafe { Box::from_raw(sample_entry) };
-}
-
-/// Mp4SampleEntry* の `*const u8 + u32` フィールドを `&str` に復元する共通ヘルパ
-///
-/// バイト列は必ず有効な UTF-8 でなければならない（invariant は書き出し側で保証される）。
-/// invariant が壊れて UTF-8 不正なバイト列が渡された場合は実装バグとして panic する。
-///
-/// 第 1 引数 `_bound` は返り値 `&str` のライフタイムを借用に紐付けるためだけに存在し、
-/// 関数本体では未使用。呼び出し側はバッファを所有する struct への借用を渡す
-pub(crate) fn raw_bytes_as_str<T>(_bound: &T, data: *const u8, size: u32) -> &str {
-    // 空入力（parse 経路の `(null, 0)`、c-api demux 経路の `(非 null ダングリング, 0)`）は
-    // いずれも `size == 0` で捕捉できる。`from_raw_parts` は size 0 でも非 null ポインタを
-    // 要求するため、size == 0 の枝を先に落として空文字を返す
-    if size == 0 {
-        return "";
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(data, size as usize) };
-    std::str::from_utf8(bytes).expect("Mp4SampleEntry field bytes must be valid UTF-8")
-}
-
-/// バイト配列を mp4_alloc で確保してコピーするユーティリティ関数
-///
-/// 返り値は「空入力 → `(null, 0)`」または「非空入力 → `(非 null, 非 0)`」の二択で、
-/// `size == 0` のチェックがそのまま null チェックを兼ねる
-/// （確保失敗時は `mp4_alloc` が abort するため `(null, 非 0)` は生産されない）
-pub fn allocate_and_copy_bytes(data: &[u8]) -> (*const u8, u32) {
-    if data.is_empty() {
-        return (std::ptr::null(), 0);
-    }
-
-    let size = data.len() as u32;
-    let ptr = unsafe {
-        let allocated = crate::mp4_alloc(size);
-        std::ptr::copy_nonoverlapping(data.as_ptr(), allocated, data.len());
-        allocated as *const u8
-    };
-    (ptr, size)
-}
-
-/// 複数のバイト列をメモリに割り当ててコピーする
-///
-/// JSON から複数の配列（SPS/PPS や NALU リストなど）を割り当てる際に使用する。
-/// 各要素バイト列は `mp4_alloc`（u8 用途）で確保し、ポインタ配列とサイズ配列は
-/// それぞれ `*const u8` / `u32` のアライメントで確保する。
-/// 空要素は `(null, 0)`、非空要素の確保失敗は `mp4_alloc` / `allocate_and_copy_aligned`
-/// 側で abort するため、`(null, 非ゼロ)` の非常態は生産されない
-pub fn allocate_and_copy_array_list(arrays: &[Vec<u8>]) -> (*const *const u8, *const u32, u32) {
-    let count = arrays.len() as u32;
-
-    if count == 0 {
-        return (std::ptr::null(), std::ptr::null(), 0);
-    }
-
-    // 各要素バイト列を確保し、そのポインタ列を align 付きで確保する
-    let data_ptrs: Vec<*const u8> = arrays
-        .iter()
-        .map(|array| allocate_and_copy_bytes(array).0)
-        .collect();
-    let (data_ptr, _) = allocate_and_copy_aligned(&data_ptrs);
-
-    // サイズ配列を u32 アライメントで確保する
-    let sizes: Vec<u32> = arrays.iter().map(|array| array.len() as u32).collect();
-    let (sizes_ptr, _) = allocate_and_copy_aligned(&sizes);
-
-    (data_ptr, sizes_ptr, count)
-}
-
-/// u16 の 1 本の連続バッファを、u16 アライメントで確保してコピーする
-///
-/// 返り値は「バッファ先頭ポインタ」と「要素数」。
-/// 解放は必ず `free_u16_array` を使う（`mp4_free` では align が合わない）
-pub fn allocate_and_copy_u16_array(data: &[u16]) -> (*const u16, u32) {
-    allocate_and_copy_aligned(data)
-}
-
-/// `allocate_and_copy_u16_array()` で割り当てられたメモリを解放する
-///
-/// # Safety
-///
-/// - `ptr` は [`allocate_and_copy_u16_array`] で得たポインタでなければならない（`mp4_free` などで解放しないこと）
-/// - `count` は確保時の要素数と一致していなければならない
-/// - 同じ `ptr` に対して二重に呼んではならない
-pub unsafe fn free_u16_array(ptr: *mut u16, count: u32) {
-    unsafe {
-        free_aligned(ptr, count);
-    }
-}
-
-/// u32 の 1 本の連続バッファを、u32 アライメントで確保してコピーする
-///
-/// 返り値は「バッファ先頭ポインタ」と「要素数」。
-/// 解放は必ず `free_u32_array` を使う（`mp4_free` では align が合わない）
-pub fn allocate_and_copy_u32_array(data: &[u32]) -> (*const u32, u32) {
-    allocate_and_copy_aligned(data)
-}
-
-/// `allocate_and_copy_u32_array()` で割り当てられたメモリを解放する
-///
-/// # Safety
-///
-/// - `ptr` は [`allocate_and_copy_u32_array`] で得たポインタでなければならない（`mp4_free` などで解放しないこと）
-/// - `count` は確保時の要素数と一致していなければならない
-/// - 同じ `ptr` に対して二重に呼んではならない
-pub unsafe fn free_u32_array(ptr: *mut u32, count: u32) {
-    unsafe {
-        free_aligned(ptr, count);
-    }
-}
-
-/// `allocate_and_copy_array_list()` で割り当てられたメモリを解放する
-///
-/// 各要素バイト列は `mp4_free`、ポインタ配列とサイズ配列は確保時と同じ align で `dealloc` する。
-///
-/// # Safety
-///
-/// - `data_ptrs` / `sizes` は [`allocate_and_copy_array_list`] の返り値（同じ組）でなければならない
-/// - `element_count` は「ポインタ配列と size 配列に共通するスロット数」（＝解放対象のバイト列本数）で、
-///   [`allocate_and_copy_array_list`] の第 3 返り値と一致していなければならない。
-///   NALU 配列の「外側の配列個数」ではなく「全バイト列の総数」であることに注意
-/// - 同じ `data_ptrs` / `sizes` に対して二重に呼んではならない
-pub unsafe fn free_array_list(data_ptrs: *mut *mut u8, sizes: *mut u32, element_count: u32) {
-    if element_count == 0 {
-        return;
-    }
-
-    // 各バイト列のメモリを解放
-    if !data_ptrs.is_null() && !sizes.is_null() {
-        let ptrs = unsafe { std::slice::from_raw_parts(data_ptrs, element_count as usize) };
-        let size_list = unsafe { std::slice::from_raw_parts(sizes, element_count as usize) };
-
-        // 各バイト列を実際のサイズで解放（u8 用途なので mp4_free）
-        for (ptr, size) in ptrs.iter().zip(size_list.iter()) {
-            if !ptr.is_null() {
-                unsafe {
-                    crate::mp4_free(*ptr, *size);
-                }
-            }
-        }
-
-        // ポインタ配列自体を解放（確保時の *const u8 アライメントと対にする）
-        unsafe {
-            free_aligned(data_ptrs.cast::<*const u8>(), element_count);
-        }
-    }
-
-    // サイズ配列を解放（確保時の u32 アライメントと対にする）
-    if !sizes.is_null() {
-        unsafe {
-            free_aligned(sizes, element_count);
-        }
-    }
-}
-
-/// HEVC（hev1 / hvc1）NALU 配列の JSON シリアライズ用構造体
-pub(crate) struct HevcNaluArrays {
-    pub(crate) nalu_types: *const u8,
-    pub(crate) nalu_counts: *const u32,
-    pub(crate) nalu_data: *const *const u8,
-    pub(crate) nalu_sizes: *const u32,
-    pub(crate) nalu_array_count: u32,
-}
-
-impl nojson::DisplayJson for HevcNaluArrays {
-    fn fmt(&self, f: &mut nojson::JsonFormatter<'_, '_>) -> std::fmt::Result {
-        f.array(|f| {
-            let mut nalu_index_base = 0u32;
-            for i in 0..self.nalu_array_count as usize {
-                let nalu_type = unsafe { *self.nalu_types.add(i) };
-                let nalu_count = unsafe { *self.nalu_counts.add(i) };
-
-                f.element(nojson::object(|f| {
-                    f.member("naluType", nalu_type)?;
-                    f.member(
-                        "units",
-                        nojson::array(|f| {
-                            for j in 0..nalu_count {
-                                let nalu_index = nalu_index_base + j;
-                                let nalu_ptr = unsafe { *self.nalu_data.add(nalu_index as usize) };
-                                let nalu_size =
-                                    unsafe { *self.nalu_sizes.add(nalu_index as usize) } as usize;
-                                // パース時に格納されたポインタ／サイズを読む（ここでは確保しない）。
-                                // 空要素は (null, 0)。`from_raw_parts` は size 0 でも非 null ポインタを
-                                // 要求するため、size == 0 の枝を先に落として空配列として出力する
-                                let nalu = if nalu_size == 0 {
-                                    &[][..]
-                                } else {
-                                    unsafe { std::slice::from_raw_parts(nalu_ptr, nalu_size) }
-                                };
-                                f.element(nalu)?;
-                            }
-                            Ok(())
-                        }),
-                    )
-                }))?;
-
-                nalu_index_base += nalu_count;
-            }
-            Ok(())
-        })
-    }
-}
-
-/// HEVC（hev1 / hvc1）サンプルエントリーの共通フィールド（割り当て済み）
-///
-/// `Mp4SampleEntryHev1` / `Mp4SampleEntryHvc1` と同型のフィールドを持ち、
-/// 公開関数側で対応する `#[repr(C)]` 構造体へ写し替える。
-///
-/// この構造体は `parse_json_hevc_sample_entry_fields` から
-/// `hevc_fields_to_hev1` / `_hvc1` への一回限りの受け渡し用途に限定し、
-/// フィールドの部分書き換えは行わないこと。生ポインタと個数の invariant を
-/// 局所コードで壊さないため。
-///
-/// `parse_json_hevc_sample_entry_fields` のフェーズ 2 の確保失敗は
-/// `handle_alloc_error` でプロセス abort するため、OOM 途中の部分確保を
-/// `Drop` で回収する必要はなく、本構造体は `Drop` を実装していない。
-/// 所有権設計を変える場合は別途見直すこと
-pub(crate) struct HevcSampleEntryFields {
-    pub(crate) width: u16,
-    pub(crate) height: u16,
-    pub(crate) general_profile_space: u8,
-    pub(crate) general_tier_flag: u8,
-    pub(crate) general_profile_idc: u8,
-    pub(crate) general_profile_compatibility_flags: u32,
-    pub(crate) general_constraint_indicator_flags: u64,
-    pub(crate) general_level_idc: u8,
-    pub(crate) chroma_format_idc: u8,
-    pub(crate) bit_depth_luma_minus8: u8,
-    pub(crate) bit_depth_chroma_minus8: u8,
-    pub(crate) min_spatial_segmentation_idc: u16,
-    pub(crate) parallelism_type: u8,
-    pub(crate) avg_frame_rate: u16,
-    pub(crate) constant_frame_rate: u8,
-    pub(crate) num_temporal_layers: u8,
-    pub(crate) temporal_id_nested: u8,
-    pub(crate) length_size_minus_one: u8,
-    pub(crate) nalu_array_count: u32,
-    pub(crate) nalu_types: *const u8,
-    pub(crate) nalu_counts: *const u32,
-    pub(crate) nalu_data: *const *const u8,
-    pub(crate) nalu_sizes: *const u32,
-}
-
-/// JSON から HEVC 共通フィールドをパースしてメモリを確保する
-///
-/// パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
-/// 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
-/// 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
-pub(crate) fn parse_json_hevc_sample_entry_fields(
-    value: nojson::RawJsonValue<'_, '_>,
-) -> Result<HevcSampleEntryFields, nojson::JsonParseError> {
-    // フェーズ 1: JSON → Rust 型
-    // NALU 配列を走査して nalu_types_vec / nalu_counts_vec / nalu_data_vec を構築する
-    let nalu_arrays_value = value.to_member("naluArrays")?.required()?;
-
-    let mut nalu_types_vec = Vec::new();
-    let mut nalu_counts_vec = Vec::new();
-    let mut nalu_data_vec = Vec::new();
-
-    for nalu_array in nalu_arrays_value.to_array()? {
-        let nalu_type: u8 = nalu_array.to_member("naluType")?.required()?.try_into()?;
-        nalu_types_vec.push(nalu_type);
-
-        let units_value = nalu_array.to_member("units")?.required()?;
-
-        let mut nalu_count = 0u32;
-        for unit in units_value.to_array()? {
-            let nalu_bytes: Vec<u8> = unit.try_into()?;
-            nalu_data_vec.push(nalu_bytes);
-            nalu_count += 1;
-        }
-        nalu_counts_vec.push(nalu_count);
-    }
-
-    // 残りのスカラーフィールド
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let general_profile_space: u8 = value
-        .to_member("generalProfileSpace")?
-        .required()?
-        .try_into()?;
-    let general_tier_flag: u8 = value.to_member("generalTierFlag")?.required()?.try_into()?;
-    let general_profile_idc: u8 = value
-        .to_member("generalProfileIdc")?
-        .required()?
-        .try_into()?;
-    let general_profile_compatibility_flags: u32 = value
-        .to_member("generalProfileCompatibilityFlags")?
-        .required()?
-        .try_into()?;
-    let general_constraint_indicator_flags: u64 = value
-        .to_member("generalConstraintIndicatorFlags")?
-        .required()?
-        .try_into()?;
-    let general_level_idc: u8 = value.to_member("generalLevelIdc")?.required()?.try_into()?;
-    let chroma_format_idc: u8 = value.to_member("chromaFormatIdc")?.required()?.try_into()?;
-    let bit_depth_luma_minus8: u8 = value
-        .to_member("bitDepthLumaMinus8")?
-        .required()?
-        .try_into()?;
-    let bit_depth_chroma_minus8: u8 = value
-        .to_member("bitDepthChromaMinus8")?
-        .required()?
-        .try_into()?;
-    let min_spatial_segmentation_idc: u16 = value
-        .to_member("minSpatialSegmentationIdc")?
-        .required()?
-        .try_into()?;
-    let parallelism_type: u8 = value.to_member("parallelismType")?.required()?.try_into()?;
-    let avg_frame_rate: u16 = value.to_member("avgFrameRate")?.required()?.try_into()?;
-    let constant_frame_rate: u8 = value
-        .to_member("constantFrameRate")?
-        .required()?
-        .try_into()?;
-    let num_temporal_layers: u8 = value
-        .to_member("numTemporalLayers")?
-        .required()?
-        .try_into()?;
-    let temporal_id_nested: u8 = value
-        .to_member("temporalIdNested")?
-        .required()?
-        .try_into()?;
-    let length_size_minus_one: u8 = value
-        .to_member("lengthSizeMinusOne")?
-        .required()?
-        .try_into()?;
-    let nalu_array_count = nalu_types_vec.len() as u32;
-
-    // フェーズ 2: メモリ確保
-    // `nalu_types` は u8 なので `mp4_alloc`（align 1）経由の `allocate_and_copy_bytes` で足りる
-    // `nalu_counts` は u32 の連続バッファとして read されるため、`allocate_and_copy_u32_array`
-    // 経由で u32 align に載せる（align 1 経路では contract 違反で UB になる）
-    let (nalu_types, _) = allocate_and_copy_bytes(unsafe {
-        std::slice::from_raw_parts(nalu_types_vec.as_ptr(), nalu_types_vec.len())
-    });
-    let (nalu_counts, _) = allocate_and_copy_u32_array(&nalu_counts_vec);
-    let (nalu_data, nalu_sizes, _) = allocate_and_copy_array_list(&nalu_data_vec);
-
-    Ok(HevcSampleEntryFields {
-        width,
-        height,
-        general_profile_space,
-        general_tier_flag,
-        general_profile_idc,
-        general_profile_compatibility_flags,
-        general_constraint_indicator_flags,
-        general_level_idc,
-        chroma_format_idc,
-        bit_depth_luma_minus8,
-        bit_depth_chroma_minus8,
-        min_spatial_segmentation_idc,
-        parallelism_type,
-        avg_frame_rate,
-        constant_frame_rate,
-        num_temporal_layers,
-        temporal_id_nested,
-        length_size_minus_one,
-        nalu_array_count,
-        nalu_types,
-        nalu_counts,
-        nalu_data,
-        nalu_sizes,
-    })
-}
-
-/// HEVC（hev1 / hvc1）サンプルエントリーのポインタフィールドを解放する
-///
-/// `parse_json_hevc_sample_entry_fields()` で割り当てられたメモリを解放する。
-/// 公開の `mp4_sample_entry_hev1_free` / `_hvc1_free` からフィールドを取り出して呼ぶ
-pub(crate) fn free_hevc_sample_entry_fields(
-    nalu_array_count: &mut u32,
-    nalu_types: &mut *const u8,
-    nalu_counts: &mut *const u32,
-    nalu_data: &mut *const *const u8,
-    nalu_sizes: &mut *const u32,
-) {
-    // 全 NALU 総数を関数先頭のローカルに持たせておく理由は、後段の `free_array_list` の
-    // count 引数に使うため。総数の算出は `nalu_counts` の解放より前に済ませないと
-    // use-after-free になる。
-    //
-    // 各フィールドの確保サイズは要素型と `nalu_array_count` から求まる:
-    // - `nalu_types`: 要素 `u8` × `nalu_array_count`
-    // - `nalu_counts`: 要素 `u32` × `nalu_array_count`
-    // - `nalu_data` / `nalu_sizes`: 要素数は「NALU 配列の個数」ではなく「全 NALU の総数」
-    let mut total_nalu_count: u32 = 0;
-
-    if !nalu_types.is_null() {
-        unsafe {
-            crate::mp4_free(nalu_types.cast_mut(), *nalu_array_count);
-        }
-        *nalu_types = std::ptr::null();
-    }
-
-    if !nalu_counts.is_null() {
-        unsafe {
-            let counts = std::slice::from_raw_parts(*nalu_counts, *nalu_array_count as usize);
-            for count in counts {
-                total_nalu_count = total_nalu_count
-                    .checked_add(*count)
-                    .expect("invariant broken: total nalu count exceeds u32::MAX");
-            }
-
-            // 確保は allocate_and_copy_u32_array（u32 align）なので、対になる free を使う
-            free_u32_array(nalu_counts.cast_mut(), *nalu_array_count);
-        }
-        *nalu_counts = std::ptr::null();
-    }
-
-    // `allocate_and_copy_array_list` により `nalu_data` と `nalu_sizes` は
-    // 同時 null／同時非 null になる（`(null, null, 0)` か `(非 null, 非 null, 非 0)`）。
-    // `free_array_list` は `element_count == 0` および `data_ptrs` / `sizes` の null で
-    // 早期 return するため、無条件に呼んでよい
-    unsafe {
-        free_array_list(
-            *nalu_data as *mut *mut u8,
-            *nalu_sizes as *mut u32,
-            total_nalu_count,
-        );
-    }
-    *nalu_data = std::ptr::null();
-    *nalu_sizes = std::ptr::null();
-
-    *nalu_array_count = 0;
-}
-
-/// HEVC（hev1 / hvc1）テスト用 JSON の既定スカラーフィールド一覧
-///
-/// キー名は camelCase の JSON メンバー名、値は JSON 数値リテラル文字列。
-/// `build_hevc_test_json` / `build_hevc_test_json_omitting` の両者が参照し、
-/// フィールドの追加・値変更時にリテラルを 1 箇所に集約する
-#[cfg(test)]
-const HEVC_TEST_JSON_SCALAR_FIELDS: &[(&str, &str)] = &[
-    ("width", "1920"),
-    ("height", "1080"),
-    ("generalProfileSpace", "0"),
-    ("generalTierFlag", "0"),
-    ("generalProfileIdc", "2"),
-    ("generalProfileCompatibilityFlags", "1610612736"),
-    ("generalConstraintIndicatorFlags", "12682136550675546112"),
-    ("generalLevelIdc", "120"),
-    ("chromaFormatIdc", "1"),
-    ("bitDepthLumaMinus8", "0"),
-    ("bitDepthChromaMinus8", "0"),
-    ("minSpatialSegmentationIdc", "0"),
-    ("parallelismType", "0"),
-    ("avgFrameRate", "0"),
-    ("constantFrameRate", "0"),
-    ("numTemporalLayers", "1"),
-    ("temporalIdNested", "0"),
-    ("lengthSizeMinusOne", "3"),
-];
-
-/// HEVC（hev1 / hvc1）テスト用 JSON を組み立てる
-///
-/// スカラーフィールドは回帰テストで共有する既定値を使い、差が出る `kind` と
-/// `naluArrays` だけを呼び出し側から差し替える
-#[cfg(test)]
-pub(crate) fn build_hevc_test_json(kind: &str, nalu_arrays_json: &str) -> String {
-    build_hevc_test_json_omitting(kind, nalu_arrays_json, None)
-}
-
-/// スカラーフィールドを 1 つ欠落させた HEVC テスト用 JSON を組み立てる
-///
-/// `parse_json_hevc_sample_entry_fields` の「必須フィールド欠落時にパース失敗する」
-/// 経路を検証するテスト用。文字列ベースの `.replace` はヘルパーの整形に依存して
-/// silent に no-op 化しうるため、`HEVC_TEST_JSON_SCALAR_FIELDS` のキー名を
-/// フィルタする構造化された欠落 API を提供する。
-///
-/// `omit_field` が `None` のとき、`build_hevc_test_json` と等価
-#[cfg(test)]
-pub(crate) fn build_hevc_test_json_omitting(
-    kind: &str,
-    nalu_arrays_json: &str,
-    omit_field: Option<&str>,
-) -> String {
-    // 一致するフィールド名を飛ばしてスカラー行を組み立てる
-    let body = HEVC_TEST_JSON_SCALAR_FIELDS
-        .iter()
-        .filter(|(name, _)| Some(*name) != omit_field)
-        .map(|(name, value)| format!("    \"{name}\": {value}"))
-        .collect::<Vec<_>>()
-        .join(",\n");
-
-    format!("{{\n    \"kind\": \"{kind}\",\n{body},\n    \"naluArrays\": {nalu_arrays_json}\n}}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// ポインタが要素型 `T` の align 境界に載っていることを検証する
-    fn assert_aligned<T>(ptr: *const T) {
-        assert_eq!(
-            ptr as usize % std::mem::align_of::<T>(),
-            0,
-            "確保されたポインタが align_of::<{}>() = {} の境界に載っていない",
-            std::any::type_name::<T>(),
-            std::mem::align_of::<T>(),
-        );
-    }
-
-    #[test]
-    fn test_allocate_and_copy_u16_array_empty_returns_null() {
-        // 空スライスは (null, 0) を返し、以後 free 側の early return と噛み合う
-        let (ptr, count) = allocate_and_copy_u16_array(&[]);
-        assert!(ptr.is_null());
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_allocate_and_copy_u16_array_roundtrip() {
-        // 非空スライスの alloc → 中身読み出し → align 検証 → free
-        let src: [u16; 4] = [0x0102, 0x0304, 0x0506, 0x0708];
-        let (ptr, count) = allocate_and_copy_u16_array(&src);
-        assert!(!ptr.is_null());
-        assert_eq!(count, 4);
-        assert_aligned(ptr);
-        // 各要素が元の値と一致することを read で確認する
-        for (i, expected) in src.iter().enumerate() {
-            assert_eq!(unsafe { *ptr.add(i) }, *expected);
-        }
-        unsafe { free_u16_array(ptr.cast_mut(), count) };
-    }
-
-    #[test]
-    fn test_allocate_and_copy_u32_array_empty_returns_null() {
-        // 空スライスは (null, 0) を返す
-        let (ptr, count) = allocate_and_copy_u32_array(&[]);
-        assert!(ptr.is_null());
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_allocate_and_copy_u32_array_roundtrip() {
-        // 非空スライスの alloc → 中身読み出し → align 検証 → free
-        let src: [u32; 3] = [0x0102_0304, 0x0506_0708, 0x090a_0b0c];
-        let (ptr, count) = allocate_and_copy_u32_array(&src);
-        assert!(!ptr.is_null());
-        assert_eq!(count, 3);
-        assert_aligned(ptr);
-        for (i, expected) in src.iter().enumerate() {
-            assert_eq!(unsafe { *ptr.add(i) }, *expected);
-        }
-        unsafe { free_u32_array(ptr.cast_mut(), count) };
-    }
-
-    #[test]
-    fn test_allocate_and_copy_array_list_empty_returns_all_null() {
-        // 空 arrays は (null, null, 0) を返し、free 側の分岐がすべて素通りする
-        let (data_ptr, sizes_ptr, count) = allocate_and_copy_array_list(&[]);
-        assert!(data_ptr.is_null());
-        assert!(sizes_ptr.is_null());
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_allocate_and_copy_array_list_roundtrip() {
-        // 複数バイト列の alloc → 各要素バイト列とサイズ配列の中身確認 →
-        // ポインタ配列とサイズ配列の align 検証 → free
-        let src = vec![vec![0x01_u8, 0x02], vec![0x03, 0x04, 0x05], vec![0x06]];
-        let (data_ptr, sizes_ptr, count) = allocate_and_copy_array_list(&src);
-        assert!(!data_ptr.is_null());
-        assert!(!sizes_ptr.is_null());
-        assert_eq!(count, 3);
-        // ポインタ配列とサイズ配列自体が要素型の align に載っていることが本 diff の主眼
-        assert_aligned(data_ptr);
-        assert_aligned(sizes_ptr);
-
-        // 各バイト列の内容とサイズが元の Vec と一致することを read で確認する
-        for (i, expected) in src.iter().enumerate() {
-            let element_ptr = unsafe { *data_ptr.add(i) };
-            let element_size = unsafe { *sizes_ptr.add(i) };
-            assert_eq!(element_size as usize, expected.len());
-            let element = unsafe { std::slice::from_raw_parts(element_ptr, element_size as usize) };
-            assert_eq!(element, expected.as_slice());
-        }
-
-        // 実際の呼び出し元（boxes_avc1 など）と同じキャストを通して free する
-        unsafe {
-            free_array_list(data_ptr as *mut *mut u8, sizes_ptr as *mut u32, count);
-        }
-    }
-
-    #[test]
-    fn test_free_u16_array_null_or_zero_is_noop() {
-        // null / count 0 の組み合わせがどれも panic せず素通りすることを確認する
-        unsafe {
-            free_u16_array(std::ptr::null_mut(), 0);
-            free_u16_array(std::ptr::null_mut(), 4);
-            let dummy_but_zero_count: [u16; 1] = [0];
-            free_u16_array(dummy_but_zero_count.as_ptr().cast_mut(), 0);
-        }
-    }
-
-    #[test]
-    fn test_free_u32_array_null_or_zero_is_noop() {
-        // null / count 0 の組み合わせがどれも panic せず素通りすることを確認する
-        unsafe {
-            free_u32_array(std::ptr::null_mut(), 0);
-            free_u32_array(std::ptr::null_mut(), 4);
-            let dummy_but_zero_count: [u32; 1] = [0];
-            free_u32_array(dummy_but_zero_count.as_ptr().cast_mut(), 0);
-        }
-    }
-
-    #[test]
-    fn test_free_array_list_zero_element_count_is_noop() {
-        // element_count = 0 は最外側の early return で素通りする（引数の null 有無に依らず）
-        unsafe {
-            free_array_list(std::ptr::null_mut(), std::ptr::null_mut(), 0);
-        }
-    }
-
-    /// `build_hevc_test_json_omitting` が指定フィールドを実際に欠落させ、
-    /// 残りのフィールド行を保つことを検証する
-    #[test]
-    fn test_build_hevc_test_json_omitting_actually_omits_field() {
-        let with_width = build_hevc_test_json_omitting("hev1", "[]", None);
-        assert!(with_width.contains("\"width\": 1920"));
-
-        let without_width = build_hevc_test_json_omitting("hev1", "[]", Some("width"));
-        assert!(!without_width.contains("\"width\""));
-        // 他の必須フィールドは残る
-        assert!(without_width.contains("\"height\": 1080"));
-        assert!(without_width.contains("\"lengthSizeMinusOne\": 3"));
-    }
-
-    /// 必須スカラーフィールドを 1 つずつ欠落させた JSON を渡し、
-    /// いずれのケースでも `parse_json_hevc_sample_entry_fields` が `Err` を返すことを検証する。
+    /// 全コーデックのサンプルエントリーを表現する JSON の一覧
     ///
-    /// 「フェーズ 1 で全 JSON フィールドを Rust 型に落としてから
-    /// フェーズ 2 で一括メモリ確保する」順序の invariant を、18 個の全スカラー欠落
-    /// パターンで守るための表駆動テスト
+    /// ディスパッチの配線漏れを検出するため、`kind` ごとに 1 件ずつ用意する。
+    fn sample_entry_json_list() -> Vec<&'static str> {
+        vec![
+            r#"{"kind":"avc1","width":640,"height":480,"avcProfileIndication":66,"profileCompatibility":0,"avcLevelIndication":30,"lengthSizeMinusOne":3,"sps":[[103,66,0,30]],"pps":[[104,206,60]]}"#,
+            r#"{"kind":"hev1","width":640,"height":480,"generalProfileSpace":0,"generalTierFlag":0,"generalProfileIdc":2,"generalProfileCompatibilityFlags":1610612736,"generalConstraintIndicatorFlags":193514046488576,"generalLevelIdc":120,"chromaFormatIdc":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"minSpatialSegmentationIdc":0,"parallelismType":0,"avgFrameRate":0,"constantFrameRate":0,"numTemporalLayers":1,"temporalIdNested":1,"lengthSizeMinusOne":3,"naluArrays":[{"naluType":32,"units":[[64,1,12,1]]}]}"#,
+            r#"{"kind":"hvc1","width":640,"height":480,"generalProfileSpace":0,"generalTierFlag":0,"generalProfileIdc":2,"generalProfileCompatibilityFlags":1610612736,"generalConstraintIndicatorFlags":193514046488576,"generalLevelIdc":120,"chromaFormatIdc":1,"bitDepthLumaMinus8":0,"bitDepthChromaMinus8":0,"minSpatialSegmentationIdc":0,"parallelismType":0,"avgFrameRate":0,"constantFrameRate":0,"numTemporalLayers":1,"temporalIdNested":1,"lengthSizeMinusOne":3,"naluArrays":[{"naluType":32,"units":[[64,1,12,1]]}]}"#,
+            r#"{"kind":"vp08","width":640,"height":480,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#,
+            r#"{"kind":"vp09","width":640,"height":480,"profile":0,"level":31,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#,
+            r#"{"kind":"av01","width":640,"height":480,"seqProfile":0,"seqLevelIdx0":13,"seqTier0":0,"highBitdepth":0,"twelveBit":0,"monochrome":0,"chromaSubsamplingX":1,"chromaSubsamplingY":1,"chromaSamplePosition":0,"configObus":[10,11]}"#,
+            r#"{"kind":"opus","channelCount":2,"sampleRate":48000,"sampleSize":16,"preSkip":0,"inputSampleRate":48000,"outputGain":0}"#,
+            r#"{"kind":"mp4a","channelCount":2,"sampleRate":44100,"sampleSize":16,"bufferSizeDb":0,"maxBitrate":128000,"avgBitrate":128000,"decSpecificInfo":[1,2]}"#,
+            r#"{"kind":"flac","channelCount":2,"sampleRate":44100,"sampleSize":16,"streaminfoData":[0,16,0,16]}"#,
+            r#"{"kind":"stpp","namespace":"http://www.w3.org/ns/ttml","schemaLocation":"","auxiliaryMimeTypes":""}"#,
+            r#"{"kind":"wvtt","config":"WEBVTT\n\n"}"#,
+            r#"{"kind":"tx3g","display_flags":0,"horizontal_justification":0,"vertical_justification":0,"background_color_rgba":[0,0,0,255],"default_text_box":[0,0,240,320],"default_style":{"start_char":0,"end_char":0,"font_id":1,"face_style_flags":0,"font_size":12,"text_color_rgba":[255,255,255,255]},"ftab":[{"font_id":1,"font_name":[65]}]}"#,
+        ]
+    }
+
     #[test]
-    fn test_parse_json_hevc_sample_entry_fields_rejects_each_missing_scalar_field() {
-        let arrays = r#"[{"naluType": 32, "units": [[1, 2]]}]"#;
-        for &(field_name, _) in HEVC_TEST_JSON_SCALAR_FIELDS {
-            let json_str = build_hevc_test_json_omitting("hev1", arrays, Some(field_name));
-            let json = nojson::RawJson::parse(&json_str)
-                .expect("有効な JSON（スカラー欠落は JSON 構造としては壊さない）");
-            let result = parse_json_hevc_sample_entry_fields(json.value());
-            assert!(
-                result.is_err(),
-                "スカラーフィールド {field_name} 欠落時はパース失敗すること"
+    fn test_all_kinds_roundtrip_through_dispatch() {
+        // 12 コーデックすべてが fmt_json と parse_json の両方に配線されていること
+        for json_str in sample_entry_json_list() {
+            let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+            let sample_entry = parse_json(json.value()).expect("パースできること");
+
+            let output = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+            let output_json = nojson::RawJson::parse(&output).expect("出力が JSON であること");
+            let roundtripped = parse_json(output_json.value()).expect("出力を再パースできること");
+
+            let output2 = nojson::json(|f| fmt_json(f, &roundtripped)).to_string();
+            assert_eq!(
+                output, output2,
+                "往復して JSON が変化しないこと: {json_str}"
             );
         }
     }
 
-    /// `naluArrays` メンバ自体が欠落した JSON を渡すと `Err` を返すことを検証する。
-    ///
-    /// `parse_json_hevc_sample_entry_fields` はフェーズ 1 の先頭で `naluArrays` を読むため、
-    /// この経路はスカラーの取り込みに到達する前に失敗する
     #[test]
-    fn test_parse_json_hevc_sample_entry_fields_rejects_missing_nalu_arrays() {
-        // スカラーは全揃いで `naluArrays` だけ欠落させる
-        let body = HEVC_TEST_JSON_SCALAR_FIELDS
-            .iter()
-            .map(|(name, value)| format!("    \"{name}\": {value}"))
-            .collect::<Vec<_>>()
-            .join(",\n");
-        let json_str = format!("{{\n    \"kind\": \"hev1\",\n{body}\n}}");
-
-        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let result = parse_json_hevc_sample_entry_fields(json.value());
-        assert!(result.is_err(), "naluArrays 欠落時はパース失敗すること");
+    fn test_unknown_kind_is_rejected() {
+        let json_str = r#"{"kind":"unknown","boxType":"zzzz"}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let error = parse_json(json.value()).expect_err("unknown は受理されないこと");
+        assert!(
+            error.to_string().contains("unknown sample entry kind"),
+            "{error}"
+        );
     }
 
-    /// `naluArrays[i].naluType` が欠落した JSON を渡すと `Err` を返すことを検証する
+    /// 未知の子ボックスの type と data を読み取れること
     #[test]
-    fn test_parse_json_hevc_sample_entry_fields_rejects_missing_nalu_type_in_array_element() {
-        let arrays = r#"[{"units": [[1, 2]]}]"#;
-        let json_str = build_hevc_test_json_omitting("hev1", arrays, None);
-        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let result = parse_json_hevc_sample_entry_fields(json.value());
-        assert!(result.is_err(), "naluType 欠落時はパース失敗すること");
-    }
+    fn test_parse_unknown_boxes() {
+        // 4 文字の文字列
+        let json_str = r#"{"unknownBoxes":[{"type":"pasp","data":[0,0,0,1]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let boxes = parse_unknown_boxes(json.value(), &[]).expect("未知の子ボックス");
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].box_type, BoxType::Normal(*b"pasp"));
+        assert_eq!(boxes[0].payload, vec![0, 0, 0, 1]);
+        assert_eq!(
+            boxes[0].box_size,
+            BoxSize::U32(8 + 4),
+            "ヘッダ 8 バイトと payload 4 バイト"
+        );
 
-    /// `naluArrays[i].units` が欠落した JSON を渡すと `Err` を返すことを検証する
-    #[test]
-    fn test_parse_json_hevc_sample_entry_fields_rejects_missing_units_in_array_element() {
-        let arrays = r#"[{"naluType": 32}]"#;
-        let json_str = build_hevc_test_json_omitting("hev1", arrays, None);
+        // 4 バイトの数値配列
+        let json_str = r#"{"unknownBoxes":[{"type":[112,97,115,112],"data":[]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        let boxes = parse_unknown_boxes(json.value(), &[]).expect("4 バイトの種別");
+        assert_eq!(boxes[0].box_type, BoxType::Normal(*b"pasp"));
+
+        // 16 バイトの UUID
+        let uuid = (0..16).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let json_str = format!(r#"{{"unknownBoxes":[{{"type":[{uuid}],"data":[1]}}]}}"#);
         let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
-        let result = parse_json_hevc_sample_entry_fields(json.value());
-        assert!(result.is_err(), "units 欠落時はパース失敗すること");
+        let boxes = parse_unknown_boxes(json.value(), &[]).expect("UUID の種別");
+        assert!(matches!(boxes[0].box_type, BoxType::Uuid(_)));
+        assert_eq!(
+            boxes[0].box_size,
+            BoxSize::U32(24 + 1),
+            "UUID のヘッダは 24 バイト"
+        );
+
+        // "uuid" を 4 バイト種別として指定すると、読み手は 16 バイトのユーザータイプを
+        // 期待するため壊れたボックスになる。ここで拒否する
+        let json_str = r#"{"unknownBoxes":[{"type":"uuid","data":[0]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_unknown_boxes(json.value(), &[]).is_err());
+
+        // 長さが 4 / 16 以外の配列は拒否する
+        let json_str = r#"{"unknownBoxes":[{"type":[1,2,3],"data":[]}]}"#;
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
+        assert!(parse_unknown_boxes(json.value(), &[]).is_err());
+
+        // キーが無ければ空
+        let json = nojson::RawJson::parse(r#"{}"#).expect("有効な JSON");
+        assert!(
+            parse_unknown_boxes(json.value(), &[])
+                .expect("空")
+                .is_empty()
+        );
     }
 }

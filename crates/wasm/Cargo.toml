@@ -8,7 +8,11 @@ publish = false
 crate-type = ["cdylib"]
 name = "mp4_wasm"
 
+# バージョンは build.rs がルートの Cargo.toml から取得して埋め込む
 [dependencies]
-c_api = { package = "c-api", path = "../c-api" }
 # JSON の入出力に使用する
 nojson = "0.3"
+# コアライブラリ本体
+shiguredo_mp4 = { path = "../.." }
+# JavaScript / TypeScript 向けの型付きバインディングを生成するために使用する
+wasm-bindgen = "0.2"

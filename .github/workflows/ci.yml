@@ -86,8 +86,39 @@ jobs:
         with:
           node-version: "24"
 
+      # wasm-bindgen の CLI は Cargo.lock に固定したクレートとバージョンを完全に一致させる必要がある
+      - name: Install wasm-bindgen
+        run: |
+          locked_version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = \"\(.*\)\"$/\1/p;}' Cargo.lock)
+          if [ "$locked_version" != "0.2.130" ]; then
+            echo "Cargo.lock has wasm-bindgen ${locked_version}, but this workflow installs 0.2.130" >&2
+            echo "Update ci.yml, release.yml and crates/wasm/README.md together" >&2
+            exit 1
+          fi
+          curl -L -o wasm-bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz
+          echo "9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  wasm-bindgen.tar.gz" | sha256sum -c -
+          tar xzf wasm-bindgen.tar.gz
+          sudo mv wasm-bindgen-0.2.130-x86_64-unknown-linux-musl/wasm-bindgen /usr/local/bin/
+
+      - name: Install wasm-opt
+        run: |
+          curl -L -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_125/binaryen-version_125-x86_64-linux.tar.gz
+          echo "7c3bc16599c8274a04d34a504fe4be2047884f900e0e2da2f6fb9cd667183be4  binaryen.tar.gz" | sha256sum -c -
+          tar xzf binaryen.tar.gz
+          sudo mv binaryen-version_125/bin/wasm-opt /usr/local/bin/
+
       - name: Build WebAssembly
         run: cargo build -p wasm --target wasm32-unknown-unknown --profile release-wasm
+
+      - name: Generate bindings
+        run: |
+          wasm-bindgen --target nodejs \
+            --out-dir crates/wasm/pkg/node \
+            target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      # リリース物と同じ最適化を適用した成果物をテストする
+      - name: Optimize node bindings
+        run: wasm-opt -Oz --strip-debug --enable-bulk-memory -o crates/wasm/pkg/node/mp4_wasm_bg.wasm crates/wasm/pkg/node/mp4_wasm_bg.wasm
 
       - name: Run mux.js test
         run: |
@@ -102,6 +133,18 @@ jobs:
         run: |
           node crates/wasm/examples/demux.js /tmp/test_output.mp4
           echo "demux.js completed successfully"
+
+      - name: Run API tests
+        run: node --test crates/wasm/tests/wasm_api.test.mjs
+
+      - name: Generate web bindings
+        run: wasm-bindgen --target web --out-dir crates/wasm/pkg/web target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      - name: Optimize web bindings
+        run: wasm-opt -Oz --strip-debug --enable-bulk-memory -o crates/wasm/pkg/web/mp4_wasm_bg.wasm crates/wasm/pkg/web/mp4_wasm_bg.wasm
+
+      - name: Run web API tests
+        run: node --test crates/wasm/tests/wasm_web.test.mjs
 
   build-c-api:
     name: Build C API Library
@@ -171,6 +214,20 @@ jobs:
           os: ubuntu-24.04
           toolchain: "1.93"
 
+      # wasm-bindgen の CLI は Cargo.lock に固定したクレートとバージョンを完全に一致させる必要がある
+      - name: Install wasm-bindgen
+        run: |
+          locked_version=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = \"\(.*\)\"$/\1/p;}' Cargo.lock)
+          if [ "$locked_version" != "0.2.130" ]; then
+            echo "Cargo.lock has wasm-bindgen ${locked_version}, but this workflow installs 0.2.130" >&2
+            echo "Update ci.yml, release.yml and crates/wasm/README.md together" >&2
+            exit 1
+          fi
+          curl -L -o wasm-bindgen.tar.gz https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz
+          echo "9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f  wasm-bindgen.tar.gz" | sha256sum -c -
+          tar xzf wasm-bindgen.tar.gz
+          sudo mv wasm-bindgen-0.2.130-x86_64-unknown-linux-musl/wasm-bindgen /usr/local/bin/
+
       - name: Install wasm-opt
         run: |
           curl -L -o binaryen.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_125/binaryen-version_125-x86_64-linux.tar.gz
@@ -181,15 +238,30 @@ jobs:
       - name: Build WebAssembly
         run: cargo build --profile release-wasm --package wasm --target wasm32-unknown-unknown
 
+      - name: Generate bindings
+        run: |
+          wasm-bindgen --target nodejs \
+            --out-dir crates/wasm/pkg/node \
+            target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+          wasm-bindgen --target web \
+            --out-dir crates/wasm/pkg/web \
+            target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+
+      # wasm-opt は wasm-bindgen の生成物に対して適用する。
+      # cargo のプロファイルで strip すると wasm-bindgen が機能を検出できないため、
+      # デバッグ情報の削除はここで行う
       - name: Optimize with wasm-opt
         run: |
-          wasm-opt -Oz --enable-bulk-memory -o target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
-          mv target/wasm32-unknown-unknown/release-wasm/mp4_wasm-opt.wasm target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm
+          for target in node web; do
+            wasm-opt -Oz --strip-debug --enable-bulk-memory \
+              -o "crates/wasm/pkg/${target}/mp4_wasm_bg.wasm" \
+              "crates/wasm/pkg/${target}/mp4_wasm_bg.wasm"
+          done
 
       - name: Prepare artifacts
         run: |
           mkdir -p artifacts
-          cp target/wasm32-unknown-unknown/release-wasm/mp4_wasm.wasm artifacts/
+          cp -r crates/wasm/pkg artifacts/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

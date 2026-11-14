@@ -284,6 +284,13 @@ impl Fmp4SegmentMuxer {
             .filter(|s| s.track_kind == first_track_kind)
             .map(|s| s.duration as u64)
             .sum();
+        // セグメントを構築して状態を進める前に検査する。構築後に失敗すると
+        // decode_time などが進んだままになり、次のセグメントの時刻がずれる
+        let subsegment_duration_u32 = u32::try_from(subsegment_duration).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_data(
+                "subsegment_duration overflow: duration exceeds u32 max",
+            ))
+        })?;
         // build_media_segment_bytes 呼び出し前なので、ここでの decode_time は
         // 当該セグメント先頭の累積 DTS（未登録トラックなら 0）である。
         let decode_time = self
@@ -321,12 +328,6 @@ impl Fmp4SegmentMuxer {
                 "referenced_size overflow: media segment size exceeds u32 max",
             ))
         })?;
-        let subsegment_duration_u32 = u32::try_from(subsegment_duration).map_err(|_| {
-            MuxError::EncodeError(Error::invalid_data(
-                "subsegment_duration overflow: duration exceeds u32 max",
-            ))
-        })?;
-
         let sidx_box = SidxBox {
             reference_id: reference_track.track_id,
             timescale: reference_track.timescale.get(),

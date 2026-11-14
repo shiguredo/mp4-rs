@@ -11,6 +11,46 @@
 
 ## develop
 
+- [CHANGE] `crates/wasm` を wasm-bindgen ベースの API に変更する
+  - 生ポインタと手書きの C ABI を廃止し、`Mp4FileDemuxer` / `Mp4FileMuxer` / `Mp4FileMuxerOutput` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` / `Mp4FileKindDetector` のクラスと `version()` 関数を公開する
+  - wasm が公開していた C ABI 関数 56 個（`c-api` 由来の 42 個と wasm 固有の 14 個）をすべて削除する
+    - 代表的なものは `mp4_alloc` / `mp4_free` / `mp4_vec_ptr` / `mp4_vec_len` / `mp4_vec_free` / `mp4_mux_sample_from_json` / `mp4_mux_sample_free` / `mp4_demux_sample_to_json` / `mp4_demux_track_info_to_json` / `mp4_library_version` / `mp4_estimate_maximum_moov_box_size`
+    - `mp4_estimate_maximum_moov_box_size` の代替は用意しない。faststart 用の予約サイズは利用側で決める
+    - `c-api` クレート自体の削除は別途行う
+  - `crates/wasm` が `c-api` クレートに依存しなくなり、`shiguredo_mp4` を直接使うようになる
+  - ファイル位置とサイズは JavaScript の数値で受け渡す。`u64` を BigInt で扱う必要がなくなる
+    - 負値・小数・`NaN` を渡した場合は例外になる
+  - メソッド名は JavaScript の慣習に合わせて camelCase になる
+  - `Fmp4SegmentMuxer` は `createMediaSegment` / `createMediaSegmentWithSidx` で、ペイロードを含むメディアセグメント全体を返す
+  - `Mp4FileMuxerOutput` は `offset` と `takeData()` を持ち、データの所有権を移して受け渡す
+  - `Mp4FileDemuxer` の `seek()` は `timestamp / timescale` 秒を受け付け、1 秒未満の指定も扱える
+  - JSON の各数値はフィールドのビット幅・予約値・個数上限と整合するかを検証し、範囲外は例外にする
+  - 同じトラック内で `composition_time_offset` の負値と i32 の最大値を超える値を混在させた場合は例外にする
+  - JSON のネストの深さと長さに上限を設け、上限を超える入力は wasm を停止させずに例外にする
+  - `arrayCompleteness` は `hev1` では 0、`hvc1` では VPS / SPS / PPS のみ 1 を既定値とする。`hvc1` で明示する場合はこの組み合わせだけを受理し、`hev1` は 0 / 1 のどちらも受理する
+  - `Mp4FileKindDetector` は入力が不正な場合に `handleInput` で例外を投げる
+  - `Mp4FileDemuxer.handleInput()` は入力が不正な場合にその場で例外を返す
+  - `reservedMoovBoxSize` は 512 MiB、`creationTimestampSecs` は u64 の範囲を上限とし、超える場合は例外にする
+  - サンプルエントリーの `unknownBoxes`（`pasp` / `btrt` など）、`compressorname`、映像・音声の共通フィールド、ES 記述子、FLAC のメタデータブロックを JSON に含め、demux → mux で失われないようにする
+  - `.d.ts` は wasm-bindgen が生成する
+  - `release-wasm` プロファイルから `strip = true` を外す。wasm-bindgen が `target_features` カスタムセクションを読めなくなるため
+  - GitHub Release の wasm アーカイブはルートの `mp4_wasm.wasm` を廃止し、`node/` と `web/` のディレクトリ構成に変更する。CI の artifact も `pkg/` 配下になる
+  - @voluntas
+- [FIX] `Fmp4FileDemuxer` が `tfhd` の `base_data_offset` にファイル先頭からの絶対値を持つファイルを読めなかったのを修正する
+  - これまでは絶対値の `base_data_offset` をエラーにしていた
+  - メディアセグメントの先頭位置を基準に相対値へ変換して扱うようにする
+  - @voluntas
+- [FIX] wasm のマルチプレックスで、デマルチプレックス側が出力する `composition_time_offset: null` を受理できずに失敗していたのを修正する
+  - これまでは `null` を整数として解釈しようとして JSON のパースに失敗していた
+  - キーの省略と `null` のどちらも「コンポジション時間オフセットなし」として扱うようになる
+  - @voluntas
+- [FIX] wasm の VP8 / VP9 で `videoFullRangeFlag` の出力と入力の型が食い違い、デマルチプレックスした JSON をそのままマルチプレックス側へ渡せなかったのを修正する
+  - これまでは出力が `0` / `1` の数値、入力が boolean のみであった
+  - 出力を boolean に統一し、入力は boolean と `0` / `1` の両方を受理する
+  - @voluntas
+- [FIX] wasm の `Fmp4SegmentMuxer` が `data_size` の合計より長い `sampleData` を黙って捨てていたのを修正する
+  - `data_size` の合計と `sampleData` の長さが一致しない場合は例外を返すようにする
+  - @voluntas
 - [FIX] `Fmp4SegmentDemuxer::handle_media_segment` が `moof` より前の `styp` などのトップレベルボックスを読み飛ばすようにする
   - これまでは先頭の `sidx` を 1 個だけ読み飛ばしていたため、`styp` + `moof` + `mdat` や `sidx` + `sidx` + `moof` + `mdat` など ISO/IEC 14496-12 で有効なメディアセグメントをエラーにしていた
   - 読み飛ばすボックスの中身は種別を問わず解釈しない。`data_offset` はこれまでどおり渡したデータの先頭を基準にする
@@ -70,6 +110,18 @@
 
 - [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.93 に固定する
   - CI は `rustup show` で MSRV のツールチェーンを導入し、rust-cache にも同じバージョンを指定する
+  - @voluntas
+- [UPDATE] wasm のビルド手順に wasm-bindgen によるバインディング生成を追加する
+  - `ci.yml` と `release.yml` に wasm-bindgen の導入と Node.js 向け・ブラウザ向けバインディングの生成を追加する
+  - wasm-bindgen の CLI のバージョンが Cargo.lock のクレートと一致しているかを CI で確認する
+  - wasm-opt はバインディング生成後の `.wasm` に対して適用する
+  - GitHub Release の wasm アーカイブに `node/` と `web/` のバインディングを含める
+  - wasm のサンプル `demux.js` / `mux.js` を新しい API に合わせて書き直す
+  - @voluntas
+- [UPDATE] wasm の API 層に対する統合テストを追加する
+  - mux と demux の往復、2 トラックの MP4、faststart、fMP4 のセグメント、ファイル種別判定、`seek` を Node.js のテストランナーで検証する
+  - コーデックごとに、デマルチプレックスしたサンプルエントリーをそのままマルチプレックス側へ戻せることを検証する
+  - CI の `test-wasm` で実行する
   - @voluntas
 - [FIX] Release ワークフローが同一タグの重複実行で失敗するのを防ぐ
   - `concurrency` で重複実行をキャンセルし、リリース作成を冪等化する

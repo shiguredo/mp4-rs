@@ -1,88 +1,80 @@
-//! c_api::boxes の JSON シリアライズ機能を提供する wasm 専用モジュール（av01 用）
+//! AV1 サンプルエントリー（`av01`）の JSON 変換を提供するモジュール
 
-use c_api::boxes::Mp4SampleEntryAv01;
+use shiguredo_mp4::Uint;
+use shiguredo_mp4::boxes::{Av01Box, Av1cBox};
 
-/// AV01（AV1）サンプルエントリーを JSON フォーマットする
-pub fn fmt_json_mp4_sample_entry_av01(
-    f: &mut nojson::JsonFormatter<'_, '_>,
-    data: &Mp4SampleEntryAv01,
-) -> std::fmt::Result {
+/// AV1 サンプルエントリーを JSON オブジェクトとしてフォーマットする
+pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Av01Box) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "av01")?;
-        f.member("width", data.width)?;
-        f.member("height", data.height)?;
-        f.member("seqProfile", data.seq_profile)?;
-        f.member("seqLevelIdx0", data.seq_level_idx_0)?;
-        f.member("seqTier0", data.seq_tier_0)?;
-        f.member("highBitdepth", data.high_bitdepth)?;
-        f.member("twelveBit", data.twelve_bit)?;
-        f.member("monochrome", data.monochrome)?;
-        f.member("chromaSubsamplingX", data.chroma_subsampling_x)?;
-        f.member("chromaSubsamplingY", data.chroma_subsampling_y)?;
-        f.member("chromaSamplePosition", data.chroma_sample_position)?;
-        if data.initial_presentation_delay_present {
-            f.member(
-                "initialPresentationDelayMinusOne",
-                data.initial_presentation_delay_minus_one,
-            )?;
+        crate::boxes::fmt_visual_sample_entry_fields(f, &data.visual)?;
+        f.member("seqProfile", data.av1c_box.seq_profile.get())?;
+        f.member("seqLevelIdx0", data.av1c_box.seq_level_idx_0.get())?;
+        f.member("seqTier0", data.av1c_box.seq_tier_0.get())?;
+        f.member("highBitdepth", data.av1c_box.high_bitdepth.get())?;
+        f.member("twelveBit", data.av1c_box.twelve_bit.get())?;
+        f.member("monochrome", data.av1c_box.monochrome.get())?;
+        f.member(
+            "chromaSubsamplingX",
+            data.av1c_box.chroma_subsampling_x.get(),
+        )?;
+        f.member(
+            "chromaSubsamplingY",
+            data.av1c_box.chroma_subsampling_y.get(),
+        )?;
+        f.member(
+            "chromaSamplePosition",
+            data.av1c_box.chroma_sample_position.get(),
+        )?;
+        // 初期表示遅延は省略可能なので、値が存在する場合だけキーを出力する
+        if let Some(delay) = data.av1c_box.initial_presentation_delay_minus_one {
+            f.member("initialPresentationDelayMinusOne", delay.get())?;
         }
-        // パース時の allocate_and_copy_bytes は空入力で (null, 0) を格納し得る。
-        // `from_raw_parts` は size 0 でも非 null ポインタを要求するため、
-        // size == 0 の枝を先に落として空配列として出力する
-        let config_obus = if data.config_obus_size == 0 {
-            &[][..]
-        } else {
-            unsafe { std::slice::from_raw_parts(data.config_obus, data.config_obus_size as usize) }
-        };
-        f.member("configObus", config_obus)
+        // configOBUs はバイト列をそのまま数値配列として出力する
+        f.member("configObus", data.av1c_box.config_obus.as_slice())?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
-/// JSON から Mp4SampleEntryAv01 に変換する
-pub fn parse_json_mp4_sample_entry_av01(
+/// JSON オブジェクトから AV1 サンプルエントリーを構築する
+pub(crate) fn parse_json(
     value: nojson::RawJsonValue<'_, '_>,
-) -> Result<Mp4SampleEntryAv01, nojson::JsonParseError> {
-    // パースとメモリ確保を交互に行うと、途中でパースが失敗したときに
-    // 確保済みバッファがリークする。まず全フィールドを Rust 型に落としてから
-    // 一括でメモリを確保して、パース失敗時には確保処理に到達しないようにする
+) -> Result<Av01Box, nojson::JsonParseError> {
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
+    let seq_profile: Uint<u8, 3, 5> = crate::boxes::uint_u8_member(value, "seqProfile")?;
+    // 3..=7 は予約値
+    if seq_profile.get() > 2 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "seqProfile",
+            "seqProfile must be 0, 1, or 2",
+        ));
+    }
+    let seq_level_idx_0: Uint<u8, 5, 0> = crate::boxes::uint_u8_member(value, "seqLevelIdx0")?;
+    let seq_tier_0: Uint<u8, 1, 7> = crate::boxes::uint_u8_member(value, "seqTier0")?;
+    let high_bitdepth: Uint<u8, 1, 6> = crate::boxes::uint_u8_member(value, "highBitdepth")?;
+    let twelve_bit: Uint<u8, 1, 5> = crate::boxes::uint_u8_member(value, "twelveBit")?;
+    let monochrome: Uint<u8, 1, 4> = crate::boxes::uint_u8_member(value, "monochrome")?;
+    let chroma_subsampling_x: Uint<u8, 1, 3> =
+        crate::boxes::uint_u8_member(value, "chromaSubsamplingX")?;
+    let chroma_subsampling_y: Uint<u8, 1, 2> =
+        crate::boxes::uint_u8_member(value, "chromaSubsamplingY")?;
+    let chroma_sample_position: Uint<u8, 2, 0> =
+        crate::boxes::uint_u8_member(value, "chromaSamplePosition")?;
+    // 3 は予約値
+    if chroma_sample_position.get() == 3 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "chromaSamplePosition",
+            "chromaSamplePosition must be 0, 1, or 2",
+        ));
+    }
+    // キーがない省略可能なフィールドは None になる
+    let initial_presentation_delay_minus_one: Option<Uint<u8, 4, 0>> =
+        crate::boxes::optional_uint_u8_member(value, "initialPresentationDelayMinusOne")?;
+    let config_obus: Vec<u8> = value.to_member("configObus")?.required()?.try_into()?;
 
-    // フェーズ 1: すべての JSON フィールドを Rust 型に落とす（メモリ確保前）
-    let config_obus_vec: Vec<u8> = value.to_member("configObus")?.required()?.try_into()?;
-    let width: u16 = value.to_member("width")?.required()?.try_into()?;
-    let height: u16 = value.to_member("height")?.required()?.try_into()?;
-    let seq_profile: u8 = value.to_member("seqProfile")?.required()?.try_into()?;
-    let seq_level_idx_0: u8 = value.to_member("seqLevelIdx0")?.required()?.try_into()?;
-    let seq_tier_0: u8 = value.to_member("seqTier0")?.required()?.try_into()?;
-    let high_bitdepth: u8 = value.to_member("highBitdepth")?.required()?.try_into()?;
-    let twelve_bit: u8 = value.to_member("twelveBit")?.required()?.try_into()?;
-    let monochrome: u8 = value.to_member("monochrome")?.required()?.try_into()?;
-    let chroma_subsampling_x: u8 = value
-        .to_member("chromaSubsamplingX")?
-        .required()?
-        .try_into()?;
-    let chroma_subsampling_y: u8 = value
-        .to_member("chromaSubsamplingY")?
-        .required()?
-        .try_into()?;
-    let chroma_sample_position: u8 = value
-        .to_member("chromaSamplePosition")?
-        .required()?
-        .try_into()?;
-    let initial_presentation_delay_present = value
-        .to_member("initialPresentationDelayMinusOne")?
-        .optional()
-        .is_some();
-    let initial_presentation_delay_minus_one: u8 = value
-        .to_member("initialPresentationDelayMinusOne")?
-        .map(|v| v.try_into())?
-        .unwrap_or(0);
-
-    // フェーズ 2: すべてのパースが成功したときだけメモリを確保する
-    let (config_obus, config_obus_size) = crate::boxes::allocate_and_copy_bytes(&config_obus_vec);
-
-    Ok(Mp4SampleEntryAv01 {
-        width,
-        height,
+    let av1c_box = Av1cBox {
         seq_profile,
         seq_level_idx_0,
         seq_tier_0,
@@ -92,133 +84,253 @@ pub fn parse_json_mp4_sample_entry_av01(
         chroma_subsampling_x,
         chroma_subsampling_y,
         chroma_sample_position,
-        initial_presentation_delay_present,
         initial_presentation_delay_minus_one,
         config_obus,
-        config_obus_size,
-    })
-}
+    };
 
-/// AV01 サンプルエントリーのメモリを解放する
-///
-/// `parse_json_mp4_sample_entry_av01()` で割り当てられたメモリを解放する
-pub fn mp4_sample_entry_av01_free(entry: &mut Mp4SampleEntryAv01) {
-    // `allocate_and_copy_bytes` の契約により `(null, 0)` か `(非 null, 非 0)` の対で、
-    // `mp4_free` は null / size 0 のいずれでも noop なので無条件に呼んでよい
-    unsafe {
-        crate::mp4_free(entry.config_obus.cast_mut(), entry.config_obus_size);
-    }
-    entry.config_obus = std::ptr::null();
-    entry.config_obus_size = 0;
+    Ok(Av01Box {
+        visual,
+        av1c_box,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"av1C"])?,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shiguredo_mp4::boxes::VisualSampleEntryFields;
+
+    /// テスト用の AV1 サンプルエントリーを構築する
+    ///
+    /// `initial_presentation_delay_minus_one` に `None` を渡すと、
+    /// 初期表示遅延を持たないサンプルエントリーになる。
+    fn build_av01_box(initial_presentation_delay_minus_one: Option<u8>) -> Av01Box {
+        Av01Box {
+            visual: crate::boxes::build_visual_sample_entry_fields(3840, 2160),
+            av1c_box: Av1cBox {
+                seq_profile: Uint::new(0),
+                seq_level_idx_0: Uint::new(13),
+                seq_tier_0: Uint::new(0),
+                high_bitdepth: Uint::new(0),
+                twelve_bit: Uint::new(0),
+                monochrome: Uint::new(0),
+                chroma_subsampling_x: Uint::new(1),
+                chroma_subsampling_y: Uint::new(1),
+                chroma_sample_position: Uint::new(0),
+                initial_presentation_delay_minus_one: initial_presentation_delay_minus_one
+                    .map(Uint::new),
+                config_obus: vec![0x0a, 0x0b, 0x00, 0x00],
+            },
+            unknown_boxes: Vec::new(),
+        }
+    }
 
     #[test]
     fn test_av01_to_json() {
-        static CONFIG_OBUS: &[u8] = &[0x0a, 0x0b, 0x00, 0x00];
+        let sample_entry = build_av01_box(None);
 
-        let sample_entry = Mp4SampleEntryAv01 {
-            width: 3840,
-            height: 2160,
-            seq_profile: 0,
-            seq_level_idx_0: 13,
-            seq_tier_0: 0,
-            high_bitdepth: 0,
-            twelve_bit: 0,
-            monochrome: 0,
-            chroma_subsampling_x: 1,
-            chroma_subsampling_y: 1,
-            chroma_sample_position: 0,
-            initial_presentation_delay_present: false,
-            initial_presentation_delay_minus_one: 0,
-            config_obus: CONFIG_OBUS.as_ptr(),
-            config_obus_size: CONFIG_OBUS.len() as u32,
-        };
+        let json = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        assert!(
+            json.contains(r#""kind":"av01""#),
+            "kind が av01 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""width":3840"#),
+            "width が 3840 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""height":2160"#),
+            "height が 2160 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""seqProfile":0"#),
+            "seqProfile が 0 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""seqLevelIdx0":13"#),
+            "seqLevelIdx0 が 13 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""seqTier0":0"#),
+            "seqTier0 が 0 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""configObus":[10,11,0,0]"#),
+            "configObus が数値配列で出力されること: {json}"
+        );
+        assert!(
+            !json.contains("initialPresentationDelayMinusOne"),
+            "初期表示遅延を持たない場合はキー自体を出力しないこと: {json}"
+        );
+    }
 
-        let json = nojson::json(|f| fmt_json_mp4_sample_entry_av01(f, &sample_entry)).to_string();
-        assert!(json.contains(r#""kind":"av01""#));
-        assert!(json.contains(r#""width":3840"#));
-        assert!(json.contains(r#""height":2160"#));
-        assert!(json.contains(r#""seqProfile":0"#));
-        assert!(json.contains(r#""seqLevelIdx0":13"#));
-        assert!(json.contains(r#""seqTier0":0"#));
-        assert!(json.contains(r#""configObus":"#));
+    #[test]
+    fn test_av01_to_json_with_initial_presentation_delay() {
+        let sample_entry = build_av01_box(Some(3));
+
+        let json = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        assert!(
+            json.contains(r#""initialPresentationDelayMinusOne":3"#),
+            "初期表示遅延を持つ場合は値付きでキーを出力すること: {json}"
+        );
     }
 
     #[test]
     fn test_json_to_av01() {
         let json_str = r#"{"kind": "av01", "width": 3840, "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "configObus": [10, 11, 0, 0]}"#;
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
-        let mut sample_entry =
-            parse_json_mp4_sample_entry_av01(json.value()).expect("valid av01 JSON");
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let sample_entry = parse_json(json.value()).expect("av01 の JSON をパースできること");
 
-        assert_eq!(sample_entry.width, 3840);
-        assert_eq!(sample_entry.height, 2160);
-        assert_eq!(sample_entry.seq_profile, 0);
-        assert_eq!(sample_entry.seq_level_idx_0, 13);
-        assert_eq!(sample_entry.seq_tier_0, 0);
-        assert_eq!(sample_entry.high_bitdepth, 0);
-        assert_eq!(sample_entry.twelve_bit, 0);
-        assert_eq!(sample_entry.monochrome, 0);
-        assert_eq!(sample_entry.chroma_subsampling_x, 1);
-        assert_eq!(sample_entry.chroma_subsampling_y, 1);
-        assert_eq!(sample_entry.chroma_sample_position, 0);
-        assert_eq!(sample_entry.config_obus_size, 4);
-        assert!(!sample_entry.config_obus.is_null());
-        let data = unsafe {
-            std::slice::from_raw_parts(
-                sample_entry.config_obus,
-                sample_entry.config_obus_size as usize,
-            )
-        };
-        assert_eq!(data, &[10, 11, 0, 0]);
-
-        // メモリ解放
-        mp4_sample_entry_av01_free(&mut sample_entry);
-        assert_eq!(sample_entry.config_obus_size, 0);
-        assert!(sample_entry.config_obus.is_null());
+        assert_eq!(sample_entry.visual.width, 3840, "width が 3840 であること");
+        assert_eq!(
+            sample_entry.visual.height, 2160,
+            "height が 2160 であること"
+        );
+        assert_eq!(
+            sample_entry.visual.data_reference_index,
+            VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            "data_reference_index が既定値であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.seq_profile.get(),
+            0,
+            "seqProfile が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.seq_level_idx_0.get(),
+            13,
+            "seqLevelIdx0 が 13 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.seq_tier_0.get(),
+            0,
+            "seqTier0 が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.high_bitdepth.get(),
+            0,
+            "highBitdepth が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.twelve_bit.get(),
+            0,
+            "twelveBit が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.monochrome.get(),
+            0,
+            "monochrome が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.chroma_subsampling_x.get(),
+            1,
+            "chromaSubsamplingX が 1 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.chroma_subsampling_y.get(),
+            1,
+            "chromaSubsamplingY が 1 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.chroma_sample_position.get(),
+            0,
+            "chromaSamplePosition が 0 であること"
+        );
+        assert_eq!(
+            sample_entry.av1c_box.config_obus,
+            vec![10, 11, 0, 0],
+            "configObus が入力どおりの数値配列になること"
+        );
+        assert!(
+            sample_entry
+                .av1c_box
+                .initial_presentation_delay_minus_one
+                .is_none(),
+            "初期表示遅延のキーがない場合は None になること"
+        );
+        assert!(
+            sample_entry.unknown_boxes.is_empty(),
+            "unknown_boxes が空であること"
+        );
     }
 
-    /// 空の configObus を parse → JSON 再出力する往復テスト
+    #[test]
+    fn test_json_to_av01_with_initial_presentation_delay() {
+        let json_str = r#"{"kind": "av01", "width": 3840, "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "initialPresentationDelayMinusOne": 3, "configObus": [10, 11, 0, 0]}"#;
+
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let sample_entry =
+            parse_json(json.value()).expect("初期表示遅延を持つ av01 の JSON をパースできること");
+
+        assert_eq!(
+            sample_entry
+                .av1c_box
+                .initial_presentation_delay_minus_one
+                .map(Uint::get),
+            Some(3),
+            "初期表示遅延が 3 としてパースされること"
+        );
+    }
+
+    /// 空の configObus を parse して JSON に再出力する往復テスト
     ///
-    /// `allocate_and_copy_bytes` は空入力で `(null, 0)` を返す。
-    /// fmt 側が `from_raw_parts(null, 0)` を呼ぶと UB になるため、
-    /// ガード後も空配列として再出力できることを検証する
+    /// 空のバイト列が `[]` としてそのまま再出力されることを検証する。
     #[test]
     fn test_json_to_av01_empty_config_obus_roundtrip() {
         let json_str = r#"{"kind": "av01", "width": 3840, "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "configObus": []}"#;
 
-        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
-        let mut sample_entry =
-            parse_json_mp4_sample_entry_av01(json.value()).expect("空 configObus の av01 JSON");
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let sample_entry = parse_json(json.value())
+            .expect("空の configObus を持つ av01 の JSON をパースできること");
 
-        assert_eq!(sample_entry.config_obus_size, 0);
-        assert!(sample_entry.config_obus.is_null());
-
-        let out = nojson::json(|f| fmt_json_mp4_sample_entry_av01(f, &sample_entry)).to_string();
         assert!(
-            out.contains(r#""configObus":[]"#),
-            "空 configObus が [] として再出力されること: {out}"
+            sample_entry.av1c_box.config_obus.is_empty(),
+            "空の configObus が空のバイト列としてパースされること"
         );
 
-        mp4_sample_entry_av01_free(&mut sample_entry);
-        assert_eq!(sample_entry.config_obus_size, 0);
-        assert!(sample_entry.config_obus.is_null());
+        let out = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        assert!(
+            out.contains(r#""configObus":[]"#),
+            "空の configObus が [] として再出力されること: {out}"
+        );
     }
 
     #[test]
-    fn test_json_to_av01_rejects_missing_width_after_config_obus() {
-        // configObus は揃っているが後段の必須フィールド width が欠落している。
-        // 全フィールドを Rust 型に落としてからメモリ確保する順序なので、
-        // この失敗経路では確保処理に到達せず Err だけが返る
+    fn test_json_to_av01_rejects_missing_width() {
+        // configObus は揃っているが必須フィールドの width が欠落している場合はパースに失敗する
         let json_str = r#"{"kind": "av01", "height": 2160, "seqProfile": 0, "seqLevelIdx0": 13, "seqTier0": 0, "highBitdepth": 0, "twelveBit": 0, "monochrome": 0, "chromaSubsamplingX": 1, "chromaSubsamplingY": 1, "chromaSamplePosition": 0, "configObus": [10, 11, 0, 0]}"#;
 
-        let json = nojson::RawJson::parse(json_str).expect("有効な JSON");
-        let result = parse_json_mp4_sample_entry_av01(json.value());
-        assert!(result.is_err(), "width 欠落時はパース失敗すること");
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let result = parse_json(json.value());
+        assert!(result.is_err(), "width 欠落時はパースに失敗すること");
+    }
+
+    /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること
+    #[test]
+    fn test_json_to_av01_rejects_out_of_range_bits() {
+        const BASE: &str = r#"{"kind":"av01","width":640,"height":480,"seqProfile":0,"seqLevelIdx0":13,"seqTier0":0,"highBitdepth":0,"twelveBit":0,"monochrome":0,"chromaSubsamplingX":1,"chromaSubsamplingY":1,"chromaSamplePosition":0,"configObus":[1]}"#;
+        let cases = [
+            (r#""seqProfile":0"#, r#""seqProfile":8"#),
+            (r#""seqProfile":0"#, r#""seqProfile":3"#),
+            (r#""seqLevelIdx0":13"#, r#""seqLevelIdx0":32"#),
+            (r#""seqTier0":0"#, r#""seqTier0":2"#),
+            (r#""highBitdepth":0"#, r#""highBitdepth":2"#),
+            (r#""chromaSamplePosition":0"#, r#""chromaSamplePosition":4"#),
+            (r#""chromaSamplePosition":0"#, r#""chromaSamplePosition":3"#),
+        ];
+        for (from, to) in cases {
+            let json_str = BASE.replace(from, to);
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            assert!(parse_json(json.value()).is_err(), "{to} は拒否されること");
+        }
+
+        // 省略可能な initialPresentationDelayMinusOne も 4 ビット
+        let json_str = BASE.replace(
+            r#""configObus":[1]"#,
+            r#""configObus":[1],"initialPresentationDelayMinusOne":16"#,
+        );
+        let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+        assert!(parse_json(json.value()).is_err());
     }
 }

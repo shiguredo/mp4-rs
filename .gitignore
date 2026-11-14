@@ -1,1 +1,4 @@
 /target
+
+# wasm-bindgen の生成物
+/crates/wasm/pkg/

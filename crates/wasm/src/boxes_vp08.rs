@@ -1,80 +1,155 @@
-//! c_api::boxes の JSON シリアライズ機能を提供する wasm 専用モジュール（vp08 用）
+//! VP8 サンプルエントリー（`vp08`）の JSON 変換を提供するモジュール
 
-use c_api::boxes::Mp4SampleEntryVp08;
+use shiguredo_mp4::Uint;
+use shiguredo_mp4::boxes::{Vp08Box, VpccBox};
 
-/// VP08（VP8）サンプルエントリーを JSON フォーマットする
-pub fn fmt_json_mp4_sample_entry_vp08(
-    f: &mut nojson::JsonFormatter<'_, '_>,
-    data: &Mp4SampleEntryVp08,
-) -> std::fmt::Result {
+/// VP8 サンプルエントリーを JSON オブジェクトとしてフォーマットする
+pub(crate) fn fmt_json(f: &mut nojson::JsonFormatter<'_, '_>, data: &Vp08Box) -> std::fmt::Result {
     f.object(|f| {
         f.member("kind", "vp08")?;
-        f.member("width", data.width)?;
-        f.member("height", data.height)?;
-        f.member("bitDepth", data.bit_depth)?;
-        f.member("chromaSubsampling", data.chroma_subsampling)?;
-        f.member("videoFullRangeFlag", u8::from(data.video_full_range_flag))?;
-        f.member("colourPrimaries", data.colour_primaries)?;
-        f.member("transferCharacteristics", data.transfer_characteristics)?;
-        f.member("matrixCoefficients", data.matrix_coefficients)
+        crate::boxes::fmt_visual_sample_entry_fields(f, &data.visual)?;
+        f.member("bitDepth", data.vpcc_box.bit_depth.get())?;
+        f.member("chromaSubsampling", data.vpcc_box.chroma_subsampling.get())?;
+        // 旧実装は 0 / 1 の数値を出力していたが、入力側は boolean しか受け付けず
+        // demux した JSON をそのまま mux に渡せなかった。出力は boolean に統一し、
+        // 入力は `crate::boxes::bool_or_int_member` で 0 / 1 も受理する
+        f.member(
+            "videoFullRangeFlag",
+            data.vpcc_box.video_full_range_flag.as_bool(),
+        )?;
+        f.member("colourPrimaries", data.vpcc_box.colour_primaries)?;
+        f.member(
+            "transferCharacteristics",
+            data.vpcc_box.transfer_characteristics,
+        )?;
+        f.member("matrixCoefficients", data.vpcc_box.matrix_coefficients)?;
+        f.member(
+            "codecInitializationData",
+            data.vpcc_box.codec_initialization_data.as_slice(),
+        )?;
+        crate::boxes::fmt_unknown_boxes(f, &data.unknown_boxes)
     })
 }
 
-/// JSON から Mp4SampleEntryVp08 に変換する
-pub fn parse_json_mp4_sample_entry_vp08(
+/// `codecInitializationData` を JSON から読み取る（省略時は空）
+fn parse_codec_initialization_data(
     value: nojson::RawJsonValue<'_, '_>,
-) -> Result<Mp4SampleEntryVp08, nojson::JsonParseError> {
-    Ok(Mp4SampleEntryVp08 {
-        width: value.to_member("width")?.required()?.try_into()?,
-        height: value.to_member("height")?.required()?.try_into()?,
-        bit_depth: value.to_member("bitDepth")?.required()?.try_into()?,
-        chroma_subsampling: value
-            .to_member("chromaSubsampling")?
-            .required()?
-            .try_into()?,
-        video_full_range_flag: value
-            .to_member("videoFullRangeFlag")?
-            .required()?
-            .try_into()?,
-        colour_primaries: value.to_member("colourPrimaries")?.required()?.try_into()?,
-        transfer_characteristics: value
-            .to_member("transferCharacteristics")?
-            .required()?
-            .try_into()?,
-        matrix_coefficients: value
-            .to_member("matrixCoefficients")?
-            .required()?
-            .try_into()?,
+) -> Result<Vec<u8>, nojson::JsonParseError> {
+    match value.to_member("codecInitializationData")?.optional() {
+        None => Ok(Vec::new()),
+        Some(member) if member.kind() == nojson::JsonValueKind::Null => Ok(Vec::new()),
+        Some(member) => member.try_into(),
+    }
+}
+
+/// JSON オブジェクトから VP8 サンプルエントリーを構築する
+pub(crate) fn parse_json(
+    value: nojson::RawJsonValue<'_, '_>,
+) -> Result<Vp08Box, nojson::JsonParseError> {
+    let visual = crate::boxes::parse_visual_sample_entry_fields(value)?;
+    let bit_depth: Uint<u8, 4, 4> = crate::boxes::uint_u8_member(value, "bitDepth")?;
+    // VP8 は 8 ビットのみ
+    if bit_depth.get() != 8 {
+        return Err(crate::boxes::invalid_member(
+            value,
+            "bitDepth",
+            "bitDepth must be 8 for VP8",
+        ));
+    }
+    let chroma_subsampling: Uint<u8, 3, 1> =
+        crate::boxes::uint_u8_member(value, "chromaSubsampling")?;
+    let video_full_range_flag = crate::boxes::bool_or_int_member(value, "videoFullRangeFlag")?;
+    let colour_primaries: u8 = value.to_member("colourPrimaries")?.required()?.try_into()?;
+    let transfer_characteristics: u8 = value
+        .to_member("transferCharacteristics")?
+        .required()?
+        .try_into()?;
+    let matrix_coefficients: u8 = value
+        .to_member("matrixCoefficients")?
+        .required()?
+        .try_into()?;
+
+    let vpcc_box = VpccBox {
+        // VP8 は profile 0 のみなので固定値とする
+        profile: 0,
+        // VP8 に対応する level の定義がないため 0 (Undefined) とする
+        level: 0,
+        bit_depth,
+        chroma_subsampling,
+        video_full_range_flag: Uint::new(u8::from(video_full_range_flag)),
+        colour_primaries,
+        transfer_characteristics,
+        matrix_coefficients,
+        codec_initialization_data: parse_codec_initialization_data(value)?,
+    };
+
+    Ok(Vp08Box {
+        visual,
+        vpcc_box,
+        unknown_boxes: crate::boxes::parse_unknown_boxes(value, &[b"vpcC"])?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shiguredo_mp4::boxes::VisualSampleEntryFields;
 
     #[test]
     fn test_vp08_to_json() {
-        let sample_entry = Mp4SampleEntryVp08 {
-            width: 1920,
-            height: 1080,
-            bit_depth: 8,
-            chroma_subsampling: 1, // 4:2:0
-            video_full_range_flag: false,
-            colour_primaries: 1,         // BT.709
-            transfer_characteristics: 1, // BT.709
-            matrix_coefficients: 1,      // BT.709
+        let sample_entry = Vp08Box {
+            visual: crate::boxes::build_visual_sample_entry_fields(1920, 1080),
+            vpcc_box: VpccBox {
+                profile: 0,
+                level: 0,
+                bit_depth: Uint::new(8),
+                chroma_subsampling: Uint::new(1), // 4:2:0
+                video_full_range_flag: Uint::new(0),
+                colour_primaries: 1,         // BT.709
+                transfer_characteristics: 1, // BT.709
+                matrix_coefficients: 1,      // BT.709
+                codec_initialization_data: Vec::new(),
+            },
+            unknown_boxes: Vec::new(),
         };
 
-        let json = nojson::json(|f| fmt_json_mp4_sample_entry_vp08(f, &sample_entry)).to_string();
-        assert!(json.contains(r#""kind":"vp08""#));
-        assert!(json.contains(r#""width":1920"#));
-        assert!(json.contains(r#""height":1080"#));
-        assert!(json.contains(r#""bitDepth":8"#));
-        assert!(json.contains(r#""chromaSubsampling":1"#));
-        assert!(json.contains(r#""videoFullRangeFlag":0"#));
-        assert!(json.contains(r#""colourPrimaries":1"#));
-        assert!(json.contains(r#""transferCharacteristics":1"#));
-        assert!(json.contains(r#""matrixCoefficients":1"#));
+        let json = nojson::json(|f| fmt_json(f, &sample_entry)).to_string();
+        assert!(
+            json.contains(r#""kind":"vp08""#),
+            "kind が vp08 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""width":1920"#),
+            "width が 1920 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""height":1080"#),
+            "height が 1080 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""bitDepth":8"#),
+            "bitDepth が 8 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""chromaSubsampling":1"#),
+            "chromaSubsampling が 1 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""videoFullRangeFlag":false"#),
+            "videoFullRangeFlag が false であること: {json}"
+        );
+        assert!(
+            json.contains(r#""colourPrimaries":1"#),
+            "colourPrimaries が 1 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""transferCharacteristics":1"#),
+            "transferCharacteristics が 1 であること: {json}"
+        );
+        assert!(
+            json.contains(r#""matrixCoefficients":1"#),
+            "matrixCoefficients が 1 であること: {json}"
+        );
     }
 
     #[test]
@@ -91,16 +166,71 @@ mod tests {
     "matrixCoefficients": 1
 }"#;
 
-        let json = nojson::RawJson::parse(json_str).expect("valid JSON");
-        let sample_entry = parse_json_mp4_sample_entry_vp08(json.value()).expect("valid vp08 JSON");
+        let json = nojson::RawJson::parse(json_str).expect("有効な JSON であること");
+        let sample_entry = parse_json(json.value()).expect("vp08 の JSON をパースできること");
 
-        assert_eq!(sample_entry.width, 1920);
-        assert_eq!(sample_entry.height, 1080);
-        assert_eq!(sample_entry.bit_depth, 8);
-        assert_eq!(sample_entry.chroma_subsampling, 1);
-        assert!(!sample_entry.video_full_range_flag);
-        assert_eq!(sample_entry.colour_primaries, 1);
-        assert_eq!(sample_entry.transfer_characteristics, 1);
-        assert_eq!(sample_entry.matrix_coefficients, 1);
+        assert_eq!(sample_entry.visual.width, 1920, "width が 1920 であること");
+        assert_eq!(
+            sample_entry.visual.height, 1080,
+            "height が 1080 であること"
+        );
+        assert_eq!(
+            sample_entry.visual.data_reference_index,
+            VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            "data_reference_index が既定値であること"
+        );
+        assert_eq!(
+            sample_entry.vpcc_box.bit_depth.get(),
+            8,
+            "bitDepth が 8 であること"
+        );
+        assert_eq!(
+            sample_entry.vpcc_box.chroma_subsampling.get(),
+            1,
+            "chromaSubsampling が 1 であること"
+        );
+        assert!(
+            !sample_entry.vpcc_box.video_full_range_flag.as_bool(),
+            "videoFullRangeFlag が false であること"
+        );
+        assert_eq!(
+            sample_entry.vpcc_box.colour_primaries, 1,
+            "colourPrimaries が 1 であること"
+        );
+        assert_eq!(
+            sample_entry.vpcc_box.transfer_characteristics, 1,
+            "transferCharacteristics が 1 であること"
+        );
+        assert_eq!(
+            sample_entry.vpcc_box.matrix_coefficients, 1,
+            "matrixCoefficients が 1 であること"
+        );
+        // JSON 表現を持たないフィールドは VP8 の固定値で補完される
+        assert_eq!(sample_entry.vpcc_box.profile, 0, "profile が 0 であること");
+        assert_eq!(sample_entry.vpcc_box.level, 0, "level が 0 であること");
+        assert!(
+            sample_entry.vpcc_box.codec_initialization_data.is_empty(),
+            "codec_initialization_data が空であること"
+        );
+        assert!(
+            sample_entry.unknown_boxes.is_empty(),
+            "unknown_boxes が空であること"
+        );
+    }
+
+    /// ビット幅を超える値は、隣接フィールドを壊す前に拒否すること
+    #[test]
+    fn test_json_to_vp08_rejects_out_of_range_bits() {
+        const BASE: &str = r#"{"kind":"vp08","width":640,"height":480,"bitDepth":8,"chromaSubsampling":1,"videoFullRangeFlag":false,"colourPrimaries":1,"transferCharacteristics":1,"matrixCoefficients":1}"#;
+        let cases = [
+            (r#""bitDepth":8"#, r#""bitDepth":16"#),
+            (r#""bitDepth":8"#, r#""bitDepth":9"#),
+            (r#""chromaSubsampling":1"#, r#""chromaSubsampling":8"#),
+        ];
+        for (from, to) in cases {
+            let json_str = BASE.replace(from, to);
+            let json = nojson::RawJson::parse(&json_str).expect("有効な JSON");
+            assert!(parse_json(json.value()).is_err(), "{to} は拒否されること");
+        }
     }
 }

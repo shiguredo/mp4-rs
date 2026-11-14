@@ -18,11 +18,11 @@ MP4 ライブラリを JavaScript / TypeScript から容易に利用できるよ
 
 ## 設計方針
 
-- パッケージは別リポジトリではなく本リポジトリに置く。wasm は `shiguredo_mp4` / `c-api` の配布形態の 1 つであり、JSON スキーマと型定義の整合を同一 CI で検証できるようにするため
+- パッケージは別リポジトリではなく本リポジトリに置く。wasm は `shiguredo_mp4` の配布形態の 1 つであり、JSON スキーマと型定義の整合を同一 CI で検証できるようにするため
 - パッケージのプロジェクトルートは `crates/wasm/npm/` とし、パッケージマネージャーに pnpm、JS 側のビルド・テスト・lint に vite-plus (`vp` CLI) を使う
   - Node / pnpm のバージョンは `package.json` の `packageManager` / `engines` で宣言する (Rust の `rust-toolchain.toml` との対応)
 - パッケージ名は `@shiguredo/mp4` とする。`@shiguredo/mp4` と `@shiguredo/mp4-wasm` はどちらも npm に未登録である
-- `.wasm` はパッケージに同梱する。サイズは gzip 後約 188 KB (2026.6.0-canary.2 実測) で同梱に十分小さい
+- `.wasm` はパッケージに同梱する。サイズは gzip 後約 188 KiB で同梱に十分小さい
 - Node.js 向け (CommonJS) とブラウザ向け (ESM) は wasm-bindgen の生成物が別物になるため、`exports` の conditions で分岐する
   - `require` は `pkg/node/mp4_wasm.js`、`import` は `pkg/web/mp4_wasm.js` を指す
   - `"type": "module"` を付けると Node 向けの生成物が ESM として解釈されて壊れるため、拡張子 (`.cjs` / `.mjs`) か `exports` の条件分岐で区別する

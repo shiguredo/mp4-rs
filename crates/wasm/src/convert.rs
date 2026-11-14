@@ -8,7 +8,7 @@ use wasm_bindgen::JsError;
 /// u64 で正確に表現できる上限（2 の 64 乗）
 ///
 /// `u64::MAX as f64` は丸めの結果 2 の 64 乗になるため、比較にはこの値を使う。
-const U64_LIMIT: f64 = 18_446_744_073_709_551_616.0;
+pub(crate) const U64_LIMIT: f64 = 18_446_744_073_709_551_616.0;
 
 /// 0 以上の整数として解釈できる f64 を u64 に変換する
 pub(crate) fn to_u64(value: f64, name: &str) -> Result<u64, String> {

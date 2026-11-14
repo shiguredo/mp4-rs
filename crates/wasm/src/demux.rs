@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use shiguredo_mp4::demux::{Input, Mp4FileDemuxer as Inner};
 
-use crate::convert::{js_error, to_positive_u32, to_u64};
+use crate::convert::{U64_LIMIT, js_error, to_positive_u32, to_u64};
 use crate::track::{fmt_required_input, fmt_sample, fmt_track_info_array};
 
 /// MP4 ファイルを段階的に読み込んでメディアサンプルを取り出す
@@ -109,9 +109,6 @@ impl Default for Mp4FileDemuxer {
 ///
 /// 1 秒未満のシークも指定どおりに扱えるよう、ナノ秒に変換してから切り上げる。
 fn duration_from_timestamp(timestamp: f64, timescale: f64) -> Result<std::time::Duration, String> {
-    /// u64 で表現できるナノ秒の上限（2 の 64 乗）
-    const NANOS_LIMIT: f64 = 18_446_744_073_709_551_616.0;
-
     let timescale = to_positive_u32(timescale, "timescale")?;
     if !timestamp.is_finite() {
         return Err("timestamp must be finite".to_string());
@@ -122,7 +119,7 @@ fn duration_from_timestamp(timestamp: f64, timescale: f64) -> Result<std::time::
     // 切り捨てると、サンプル境界ちょうどの指定が 1 ns だけ手前に落ち、
     // コアの切り捨てと組み合わさって 1 サンプル前から再生されることがある
     let nanos = (timestamp / f64::from(timescale) * 1_000_000_000.0).ceil();
-    if !nanos.is_finite() || nanos >= NANOS_LIMIT {
+    if !nanos.is_finite() || nanos >= U64_LIMIT {
         return Err("timestamp is too large".to_string());
     }
     Ok(std::time::Duration::from_nanos(nanos as u64))

@@ -3,7 +3,7 @@
 - Created: 2026-11-13
 - Completed: {YYYY-MM-DD}
 - Branch: feature/remove-c-api
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-14
 
 ## 目的
 
@@ -37,6 +37,8 @@ C API は Python バインディングを想定して作られたが、Python �
   - `release.yml` の 8 プラットフォームビルドジョブ
   - `README.md` / `README.en.md` の C API に関する記述
   - `skills/shiguredo-mp4/SKILL.md` の C API に関する記述
+  - `Cargo.lock` の `c-api` エントリー（workspace からの削除に伴い再生成する）
+  - `CHANGES.md` の `[CHANGE]` への削除の追記
 - iOS / Android 向けには、必要になった時点で利用側が薄いファサードクレートを作るか、UniFFI で Swift / Kotlin のバインディングを生成する。本リポジトリでは C ABI の構造体を公開しない
 
 ## 完了条件
@@ -46,6 +48,8 @@ C API は Python バインディングを想定して作られたが、Python �
 - `ci.yml` と `release.yml` から C API 関連のジョブと手順が消えている
 - `README.md` / `README.en.md` / `skills/shiguredo-mp4/SKILL.md` に C API の記述が残っていない
 - `prek` のフックがすべて通る
+- `Cargo.lock` から `c-api` のエントリーが消えている
+- `CHANGES.md` に削除の `[CHANGE]` が追記されている
 
 ## 解決方法
 

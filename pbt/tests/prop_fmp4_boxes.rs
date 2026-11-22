@@ -8,7 +8,7 @@ use shiguredo_mp4::{
     Decode, Encode, ErrorKind, SampleFlags,
     boxes::{
         FreeBox, MehdBox, MfhdBox, MfraBox, MfroBox, MoofBox, MvexBox, SidxBox, SidxReference,
-        TfdtBox, TfhdBox, TfraBox, TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
+        TfdtBox, TfhdBox, TfraBox, TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample, TrunSamples,
     },
 };
 
@@ -194,15 +194,24 @@ fn arb_trun_box(ctx: &mut TestCaseContext) -> TrunBox {
         }
     };
 
-    let mut samples = Vec::new();
-    for _ in 0..count {
-        samples.push(TrunSample {
-            duration: sample_dur(ctx),
-            size: sample_size(ctx),
-            flags: sample_flg(ctx),
-            composition_time_offset: sample_cto(ctx),
-        });
-    }
+    // 0 件の場合と、各サンプル行にフィールドが 1 つもない場合は、件数だけの形式（`TrunSamples::CountOnly`）で生成する。
+    // どちらもサンプルごとの値を持つ形式で表すと件数だけの形式と同じバイト列になり、
+    // デコードでは件数だけの形式になるため
+    let has_any_field = has_duration || has_size || has_flags || has_cto;
+    let samples = if count == 0 || !has_any_field {
+        TrunSamples::CountOnly(u32::try_from(count).expect("サンプル数は u32 に収まる"))
+    } else {
+        let mut samples = Vec::new();
+        for _ in 0..count {
+            samples.push(TrunSample {
+                duration: sample_dur(ctx),
+                size: sample_size(ctx),
+                flags: sample_flg(ctx),
+                composition_time_offset: sample_cto(ctx),
+            });
+        }
+        TrunSamples::PerSample(samples)
+    };
     TrunBox {
         data_offset,
         first_sample_flags,
@@ -253,7 +262,7 @@ fn arb_trun_box_inconsistent(ctx: &mut TestCaseContext) -> TrunBox {
     TrunBox {
         data_offset: None,
         first_sample_flags: None,
-        samples,
+        samples: TrunSamples::PerSample(samples),
     }
 }
 
@@ -594,8 +603,86 @@ fn trun_box_roundtrip() -> noprop::TestResult {
             .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
-        assert_eq!(decoded.data_offset, trun.data_offset);
-        assert_eq!(decoded.samples.len(), trun.samples.len());
+        assert_eq!(decoded, trun);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// サンプルごとのフィールドがない TrunBox は、件数だけの形式で論理件数を保つ
+///
+/// 件数だけの形式と、全フィールドが `None` のサンプル行を並べた形式の両方から始める。
+/// どちらもサンプル行を書かずに同じバイト列になり、デコードすると件数だけの形式になること、
+/// 論理件数と `data_offset`、`first_sample_flags` が再エンコードと再デコードを経ても変わらないことを確認する
+#[test]
+fn trun_box_without_per_sample_fields_keeps_count() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let data_offset = if noprop::sample_bool(ctx) {
+            Some(noprop::sample_i32(ctx))
+        } else {
+            None
+        };
+        let first_sample_flags = if noprop::sample_bool(ctx) {
+            Some(arb_sample_flags(ctx))
+        } else {
+            None
+        };
+        let count =
+            u32::try_from(noprop::sample_usize_in(ctx, 0..10)).expect("サンプル数は u32 に収まる");
+
+        let count_only = TrunBox {
+            data_offset,
+            first_sample_flags,
+            samples: TrunSamples::CountOnly(count),
+        };
+        let empty_rows = TrunBox {
+            data_offset,
+            first_sample_flags,
+            samples: TrunSamples::PerSample(
+                (0..count)
+                    .map(|_| TrunSample {
+                        duration: None,
+                        size: None,
+                        flags: None,
+                        composition_time_offset: None,
+                    })
+                    .collect(),
+            ),
+        };
+
+        let encoded = count_only
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        // 全フィールドが None のサンプル行は 1 バイトも書かれないため、件数だけの形式と同じバイト列になる
+        assert_eq!(
+            empty_rows
+                .encode_to_vec()
+                .expect("Vec への書き込みは失敗しない"),
+            encoded
+        );
+        // 通常ヘッダー 8 バイト、FullBox ヘッダー 4 バイト、sample_count 4 バイトと、
+        // data_offset と first_sample_flags（各 4 バイト）だけからなり、サンプル行を含まない
+        let expected_len = 16
+            + if data_offset.is_some() { 4 } else { 0 }
+            + if first_sample_flags.is_some() { 4 } else { 0 };
+        assert_eq!(encoded.len(), expected_len);
+
+        let (decoded, size) = TrunBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded.samples, TrunSamples::CountOnly(count));
+        assert_eq!(decoded.data_offset, data_offset);
+        assert_eq!(decoded.first_sample_flags, first_sample_flags);
+
+        // 再エンコードと再デコードを経ても変わらない
+        let reencoded = decoded
+            .encode_to_vec()
+            .expect("デコードした TrunBox は必ずエンコードできる");
+        assert_eq!(reencoded, encoded);
+        let (redecoded, _) =
+            TrunBox::decode(&reencoded).expect("再エンコードした TrunBox は必ずデコードできる");
+        assert_eq!(redecoded, count_only);
         Ok(())
     })?;
     Ok(())

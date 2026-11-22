@@ -43,7 +43,7 @@ use crate::{
     BoxHeader, BoxSize, Decode, Error, TrackKind,
     boxes::{
         FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrafBox, TrexBox,
-        TrunBox, TrunSample,
+        TrunBox, TrunSample, TrunSamples,
     },
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
@@ -500,14 +500,14 @@ impl Fmp4SegmentDemuxer {
 
                     let mut sample_data_offset = trun_data_start;
 
-                    for (i, trun_sample) in trun.samples.iter().enumerate() {
-                        let duration = trun_sample
-                            .duration
+                    for (i, trun_row) in trun_sample_rows(&trun.samples).enumerate() {
+                        let duration = trun_row
+                            .and_then(|sample| sample.duration)
                             .or(traf.tfhd_box.default_sample_duration)
                             .unwrap_or(track_runtime.trex.default_sample_duration);
                         let size = usize::try_from(
                             resolve_sample_size(
-                                trun_sample,
+                                trun_row.and_then(|sample| sample.size),
                                 &traf.tfhd_box,
                                 Some(&track_runtime.trex),
                             )
@@ -524,8 +524,8 @@ impl Fmp4SegmentDemuxer {
                         {
                             first_sample_flags
                         } else {
-                            trun_sample
-                                .flags
+                            trun_row
+                                .and_then(|sample| sample.flags)
                                 .or(traf.tfhd_box.default_sample_flags)
                                 .unwrap_or(track_runtime.trex.default_sample_flags)
                         };
@@ -552,7 +552,8 @@ impl Fmp4SegmentDemuxer {
                             keyframe,
                             data_offset: sample_data_offset as u64,
                             data_size: size,
-                            composition_time_offset: trun_sample.composition_time_offset,
+                            composition_time_offset: trun_row
+                                .and_then(|sample| sample.composition_time_offset),
                         });
                         current_sample_description_indices[track_index] =
                             Some(sample_description_index);
@@ -663,7 +664,8 @@ impl Fmp4SegmentDemuxer {
 /// サンプルは返さないが、`default_base_is_moof = false` かつ `base_data_offset` なしの場合は、
 /// 次の `traf` の基準位置がこの `traf` のデータ末尾になるため、サンプルサイズからデータ末尾だけを求める。
 /// サンプルサイズは対応しているトラックと同じ順（`trun`、`tfhd` の `default_sample_size`、
-/// `trex` の `default_sample_size`）で決める。
+/// `trex` の `default_sample_size`）で決める。件数だけの run は既定サイズと件数の積でデータの長さを求め、
+/// 件数が 0 の場合は既定サイズを決めない。
 /// `trex` の既定値が要るのに `trex` がない場合はエラーになる
 fn skipped_traf_data_end(
     traf: &TrafBox,
@@ -675,31 +677,55 @@ fn skipped_traf_data_end(
     let base_data_offset =
         traf_base_data_offset(traf, moof_offset, prev_traf_data_end, file_offset)?;
 
+    // run のデータ長が溢れる場合は、データ末尾（開始位置 + データ長）も必ず溢れる。
+    // そのため run のデータ長の計算とデータ末尾の計算で、同じエラーを返す
+    let data_offset_overflow =
+        || DemuxError::DecodeError(Error::invalid_data("sample data offset overflow"));
+    let resolve_size = |trun_sample_size: Option<u32>| -> Result<usize, DemuxError> {
+        let size = resolve_sample_size(
+            trun_sample_size,
+            &traf.tfhd_box,
+            skipped_track.trex.as_ref(),
+        )
+        .ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(format!(
+                "trex not found for skipped track_id={}",
+                skipped_track.track_id,
+            )))
+        })?;
+        usize::try_from(size).map_err(|_| {
+            DemuxError::DecodeError(Error::invalid_data("sample size exceeds usize::MAX"))
+        })
+    };
+
     let mut traf_data_end = base_data_offset;
     let mut prev_trun_data_end: Option<usize> = None;
     for trun in &traf.trun_boxes {
-        let mut sample_data_offset =
+        let sample_data_start =
             resolve_trun_data_start(trun, base_data_offset, prev_trun_data_end)?;
 
-        for trun_sample in &trun.samples {
-            let size =
-                resolve_sample_size(trun_sample, &traf.tfhd_box, skipped_track.trex.as_ref())
-                    .ok_or_else(|| {
-                        DemuxError::DecodeError(Error::invalid_data(format!(
-                            "trex not found for skipped track_id={}",
-                            skipped_track.track_id,
-                        )))
-                    })?;
-            let size = usize::try_from(size).map_err(|_| {
-                DemuxError::DecodeError(Error::invalid_data("sample size exceeds usize::MAX"))
-            })?;
-            sample_data_offset = sample_data_offset.checked_add(size).ok_or_else(|| {
-                DemuxError::DecodeError(Error::invalid_data("sample data offset overflow"))
-            })?;
-        }
+        let run_data_size = match &trun.samples {
+            // 件数が 0 の run はデータがないので、既定サイズを決める必要がない（trex がなくてもエラーにしない）
+            TrunSamples::CountOnly(0) => 0,
+            // 件数だけの run は全サンプルが同じ既定サイズになるため、サンプルごとに走査せず積で求める。
+            // u32 同士の積なので、usize が 64 ビットの環境では溢れない（32 ビット環境では溢れうる）
+            TrunSamples::CountOnly(sample_count) => resolve_size(None)?
+                .checked_mul(*sample_count as usize)
+                .ok_or_else(data_offset_overflow)?,
+            TrunSamples::PerSample(samples) => {
+                samples.iter().try_fold(0usize, |total, trun_sample| {
+                    total
+                        .checked_add(resolve_size(trun_sample.size)?)
+                        .ok_or_else(data_offset_overflow)
+                })?
+            }
+        };
+        let sample_data_end = sample_data_start
+            .checked_add(run_data_size)
+            .ok_or_else(data_offset_overflow)?;
 
-        prev_trun_data_end = Some(sample_data_offset);
-        traf_data_end = traf_data_end.max(sample_data_offset);
+        prev_trun_data_end = Some(sample_data_end);
+        traf_data_end = traf_data_end.max(sample_data_end);
     }
 
     Ok(traf_data_end)
@@ -756,17 +782,33 @@ fn traf_base_data_offset(
     Ok(prev_traf_data_end.unwrap_or(moof_offset))
 }
 
+/// `trun` のサンプル行を先頭から順に返す
+///
+/// 件数だけの run は各サンプル行にフィールドがないため、件数分の `None` を返す。
+/// 空の [`TrunSample`] を件数分作らないようにするためである
+fn trun_sample_rows(samples: &TrunSamples) -> impl Iterator<Item = Option<&TrunSample>> {
+    // 2 つの形式を 1 つのイテレーターの型で返すため、件数分の `None` とサンプル行を連結する。
+    // どちらか一方は必ず空になる
+    let (count_only_rows, per_sample_rows): (u32, &[TrunSample]) = match samples {
+        TrunSamples::CountOnly(sample_count) => (*sample_count, &[]),
+        TrunSamples::PerSample(samples) => (0, samples),
+    };
+    (0..count_only_rows)
+        .map(|_| None)
+        .chain(per_sample_rows.iter().map(Some))
+}
+
 /// `trun` のサンプルサイズを決める
 ///
-/// `trun` の値、`tfhd` の `default_sample_size`、`trex` の `default_sample_size` の順に使う。
+/// `trun` のサンプル行の値（`trun_sample_size`）、`tfhd` の `default_sample_size`、
+/// `trex` の `default_sample_size` の順に使う。
 /// `trex` の既定値が要るのに `trex` がない場合は `None` を返す
 fn resolve_sample_size(
-    trun_sample: &TrunSample,
+    trun_sample_size: Option<u32>,
     tfhd_box: &TfhdBox,
     trex_box: Option<&TrexBox>,
 ) -> Option<u32> {
-    trun_sample
-        .size
+    trun_sample_size
         .or(tfhd_box.default_sample_size)
         .or_else(|| trex_box.map(|trex_box| trex_box.default_sample_size))
 }

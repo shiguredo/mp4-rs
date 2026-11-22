@@ -349,12 +349,14 @@ let mfra = muxer.mfra_bytes()?;
 | `TrafBox` | トラックフラグメント (`tfhd_box` + `tfdt_box: Option` + `trun_boxes`) |
 | `TfhdBox` | トラックフラグメントヘッダー。`FLAG_BASE_DATA_OFFSET_PRESENT` 等のフラグ定数あり。`default_base_is_moof` / `base_data_offset` / `default_sample_*` フィールド |
 | `TfdtBox` | フラグメントデコード時間 (`base_media_decode_time`) |
-| `TrunBox` | トラックフラグメントラン (`data_offset: Option<i32>` + `samples: Vec<TrunSample>`) |
+| `TrunBox` | トラックフラグメントラン (`data_offset: Option<i32>` + `first_sample_flags: Option<SampleFlags>` + `samples: TrunSamples`) |
+| `TrunSamples` | `CountOnly(u32)` (サンプルごとのフィールドがない run の件数だけ) / `PerSample(Vec<TrunSample>)` |
 | `TrunSample` | `duration` / `size` / `flags` / `composition_time_offset` (すべて `Option`) |
 | `SidxBox` / `SidxReference` | セグメントインデックス (DASH 用) |
 | `MfraBox` / `TfraBox` / `TfraEntry` / `MfroBox` | ムービーフラグメントランダムアクセス |
 
 `TrunBox` のフィールドに `Option` を渡すと、対応するフラグが立っていない場合はフィールドが省略される。
+サンプルごとのフィールドが 1 つもない `trun` と `sample_count` が 0 の `trun` は、decode すると `TrunSamples::CountOnly` で件数だけを持つ。各サンプルの尺・サイズ・フラグは `tfhd`、次いで `trex` の既定値を使い、先頭サンプルのフラグは `first_sample_flags` があればそれを使う。
 
 ### サンプルエントリー (`boxes_sample_entry`)
 

@@ -5,7 +5,7 @@ use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result}
 
 pub use crate::boxes_fmp4::{
     MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
-    TfraEntry, TrafBox, TrunBox, TrunSample,
+    TfraEntry, TrafBox, TrunBox, TrunSample, TrunSamples,
 };
 pub use crate::boxes_moov_tree::{
     Co64Box, CslgBox, CttsBox, CttsEntry, DinfBox, DrefBox, EdtsBox, ElstBox, ElstEntry, EsdsBox,

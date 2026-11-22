@@ -47,6 +47,16 @@
   - `TrackMetadata` に `edit_list` を追加する
   - 構造体リテラルで `TrackMetadata` を構築している箇所は `..Default::default()` の追加が必要になる
   - @voluntas
+- [CHANGE] `TrunBox::samples` の型を `Vec<TrunSample>` から `TrunSamples` に変更する
+  - decode は、`tr_flags` にサンプルごとのフィールド（`duration` / `size` / `flags` / `composition_time_offset`）のフラグが 1 つも立っていない `trun` と、`sample_count` が 0 の `trun` を、`TrunSamples::CountOnly` でサンプル数だけを保持して返す
+  - これまでは、16 バイトの `trun` を decode するだけで、全フィールドが `None` の `TrunSample` を最大 16,777,216 個確保していた
+  - サンプルごとの値を持つ `trun` は、`TrunSamples::PerSample` でこれまでの `Vec<TrunSample>` と同じ内容を保持する
+  - 構造体リテラルで `samples: vec![...]` を渡している箇所は `samples: TrunSamples::PerSample(vec![...])` への変更が必要になる
+  - 全フィールドが `None` の配列（空の配列を含む）は、encode すると同じ件数の `TrunSamples::CountOnly` と同じバイト列になる。decode した結果と `==` などで比べる箇所では、`TrunSamples::CountOnly` に置き換える必要がある
+  - decode した `trun.samples` を読む箇所は、`TrunSamples::CountOnly` と `TrunSamples::PerSample` の両方を扱う必要がある。`TrunSamples::CountOnly` の各サンプルの尺・サイズ・フラグは `tfhd`、次いで `trex` の既定値を使い、先頭サンプルのフラグは `first_sample_flags` があればそれを使う
+  - サンプルごとのフィールドがない `trun` で受け付けるサンプル数の上限（16,777,216）は変えない
+  - `Fmp4SegmentMuxer` の出力と、`Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` が返すサンプルは変わらない
+  - @voluntas
 - [ADD] demux した編集リスト（`edts` / `elst`）を mux で保持できるようにする
   - `TrackInfo.edit_list` に `elst` の内容を、`TrackInfo.movie_timescale` に `mvhd` の timescale を入れる
   - `EditList` 型を追加し、`TrackMetadata.edit_list` で mux に渡せるようにする

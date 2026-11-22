@@ -165,7 +165,7 @@ mod trun_sample_option_consistency {
 
     use shiguredo_mp4::{
         Encode, ErrorKind, SampleFlags,
-        boxes::{TrunBox, TrunSample},
+        boxes::{TrunBox, TrunSample, TrunSamples},
     };
 
     /// 全フィールド `None` のベースサンプル
@@ -190,7 +190,7 @@ mod trun_sample_option_consistency {
         TrunBox {
             data_offset: None,
             first_sample_flags: None,
-            samples: vec![first, second],
+            samples: TrunSamples::PerSample(vec![first, second]),
         }
     }
 
@@ -268,10 +268,10 @@ mod trun_sample_option_consistency {
 
 mod fmp4_boxes_boundary_tests {
     use shiguredo_mp4::{
-        BaseBox, Decode, Encode, FullBox, SampleFlags,
+        BaseBox, Decode, Encode, ErrorKind, FullBox, SampleFlags,
         boxes::{
             MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
-            TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
+            TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample, TrunSamples,
         },
     };
 
@@ -389,20 +389,119 @@ mod fmp4_boxes_boundary_tests {
         assert!(decoded.default_base_is_moof);
     }
 
-    /// TrunBox: 空のサンプルリスト
-    #[test]
-    fn trun_box_empty_samples() {
-        let trun = TrunBox {
-            data_offset: Some(8),
-            first_sample_flags: None,
-            samples: vec![],
-        };
+    /// デコードした TrunBox のサンプル行を返す（サンプルごとの値を持つ形式であることを前提にする）
+    #[track_caller]
+    fn per_sample_rows(trun: &TrunBox) -> &[TrunSample] {
+        match &trun.samples {
+            TrunSamples::PerSample(samples) => samples,
+            TrunSamples::CountOnly(count) => {
+                panic!("サンプルごとの値を持つ形式を期待したが、件数だけの形式 ({count} 件) だった")
+            }
+        }
+    }
 
-        let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
-        let (decoded, _) = TrunBox::decode(&encoded)
-            .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
-        assert!(decoded.samples.is_empty());
+    /// version 0 の `trun` のバイト列を組み立てる
+    ///
+    /// `fields` には `sample_count` より後ろのフィールド（`data_offset`、`first_sample_flags`、サンプル行）を
+    /// 並べたバイト列を渡す
+    fn trun_bytes(tr_flags: u32, sample_count: u32, fields: &[u8]) -> Vec<u8> {
+        // 通常ヘッダー 8 バイト、FullBox ヘッダー 4 バイト、sample_count 4 バイト
+        let size = u32::try_from(16 + fields.len()).expect("trun のサイズは u32 に収まる");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&size.to_be_bytes());
+        bytes.extend_from_slice(b"trun");
+        // version 0 なので、FullBox ヘッダーの 4 バイトは tr_flags の値そのものになる
+        bytes.extend_from_slice(&tr_flags.to_be_bytes());
+        bytes.extend_from_slice(&sample_count.to_be_bytes());
+        bytes.extend_from_slice(fields);
+        bytes
+    }
+
+    /// TrunBox: サンプルごとのフィールドのフラグが立っていても、`sample_count` が 0 なら件数だけの形式になる
+    ///
+    /// 行が 0 個なので保持する値がない。エンコードはサンプル行がないためフラグを立てず、
+    /// 再デコードしても同じ値に戻る。このようなバイト列はこのクレートのエンコードでは作れないため、
+    /// PBT ではなくバイト列を固定して確認する
+    #[test]
+    fn trun_box_zero_sample_count_with_per_sample_flags_is_count_only() {
+        let flags = TrunBox::FLAG_DATA_OFFSET_PRESENT
+            | TrunBox::FLAG_SAMPLE_DURATION_PRESENT
+            | TrunBox::FLAG_SAMPLE_SIZE_PRESENT;
+        let bytes = trun_bytes(flags, 0, &8i32.to_be_bytes());
+        let (decoded, size) =
+            TrunBox::decode(&bytes).expect("サンプル行が 0 個の trun はデコードできる");
+        assert_eq!(size, bytes.len());
+        assert_eq!(decoded.samples, TrunSamples::CountOnly(0));
         assert_eq!(decoded.data_offset, Some(8));
+
+        // サンプル行がないので、エンコードはサンプルごとのフィールドのフラグを立てない
+        let reencoded = decoded
+            .encode_to_vec()
+            .expect("デコードした TrunBox は必ずエンコードできる");
+        assert_eq!(
+            reencoded,
+            trun_bytes(TrunBox::FLAG_DATA_OFFSET_PRESENT, 0, &8i32.to_be_bytes())
+        );
+        let (redecoded, _) =
+            TrunBox::decode(&reencoded).expect("再エンコードした TrunBox は必ずデコードできる");
+        assert_eq!(redecoded, decoded, "再デコードしても同じ値に戻る");
+    }
+
+    /// TrunBox: サンプル行が残りのペイロードに収まらない `sample_count` は `InvalidData` になる
+    ///
+    /// 残りのペイロードは `data_offset` を読んだ後から数える。ちょうど収まる件数は受理する
+    #[test]
+    fn trun_box_per_sample_rows_must_fit_in_payload() {
+        let flags = TrunBox::FLAG_DATA_OFFSET_PRESENT | TrunBox::FLAG_SAMPLE_DURATION_PRESENT;
+        // data_offset（4 バイト）の後に、duration だけのサンプル行（4 バイト）を 1 つ置く
+        let mut fields = 8i32.to_be_bytes().to_vec();
+        fields.extend_from_slice(&1024u32.to_be_bytes());
+
+        let bytes = trun_bytes(flags, 1, &fields);
+        let (decoded, size) =
+            TrunBox::decode(&bytes).expect("サンプル行がちょうど収まる件数はデコードできる");
+        assert_eq!(size, bytes.len());
+        assert_eq!(decoded.data_offset, Some(8));
+        assert_eq!(
+            decoded.samples,
+            TrunSamples::PerSample(vec![TrunSample {
+                duration: Some(1024),
+                size: None,
+                flags: None,
+                composition_time_offset: None,
+            }])
+        );
+
+        let bytes = trun_bytes(flags, 2, &fields);
+        let err = TrunBox::decode(&bytes)
+            .expect_err("サンプル行が 1 つ分足りない件数はデコードに失敗する");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert_eq!(err.reason, "TrunBox sample_count exceeds available payload");
+    }
+
+    /// TrunBox: サンプルごとのフィールドがない場合の件数の上限
+    ///
+    /// 上限ちょうどの件数は件数だけの形式でデコードでき、上限を 1 つ超える件数は `InvalidData` になる
+    #[test]
+    fn trun_box_count_only_sample_count_limit() {
+        const MAX_SAMPLES_WITHOUT_DATA: u32 = 16_777_216;
+
+        let bytes = trun_bytes(0, MAX_SAMPLES_WITHOUT_DATA, &[]);
+        let (decoded, size) =
+            TrunBox::decode(&bytes).expect("上限ちょうどの件数は件数だけの形式でデコードできる");
+        assert_eq!(size, bytes.len());
+        assert_eq!(
+            decoded.samples,
+            TrunSamples::CountOnly(MAX_SAMPLES_WITHOUT_DATA)
+        );
+
+        let bytes = trun_bytes(0, MAX_SAMPLES_WITHOUT_DATA + 1, &[]);
+        let err = TrunBox::decode(&bytes).expect_err("上限を超える件数はデコードに失敗する");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert_eq!(
+            err.reason,
+            "TrunBox sample_count exceeds maximum allowed when no per-sample data is present"
+        );
     }
 
     /// TrunBox: 複数のサンプル
@@ -411,7 +510,7 @@ mod fmp4_boxes_boundary_tests {
         let trun = TrunBox {
             data_offset: None,
             first_sample_flags: Some(SampleFlags::new(0x02000000)),
-            samples: vec![
+            samples: TrunSamples::PerSample(vec![
                 TrunSample {
                     duration: Some(1024),
                     size: Some(512),
@@ -424,15 +523,16 @@ mod fmp4_boxes_boundary_tests {
                     flags: Some(SampleFlags::new(0x01010000)),
                     composition_time_offset: Some(1024),
                 },
-            ],
+            ]),
         };
 
         let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, _) = TrunBox::decode(&encoded)
             .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
-        assert_eq!(decoded.samples.len(), 2);
-        assert_eq!(decoded.samples[0].duration, Some(1024));
-        assert_eq!(decoded.samples[1].size, Some(256));
+        let samples = per_sample_rows(&decoded);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].duration, Some(1024));
+        assert_eq!(samples[1].size, Some(256));
     }
 
     /// TrunBox: 負の composition_time_offset (version 1)
@@ -441,12 +541,12 @@ mod fmp4_boxes_boundary_tests {
         let trun = TrunBox {
             data_offset: None,
             first_sample_flags: None,
-            samples: vec![TrunSample {
+            samples: TrunSamples::PerSample(vec![TrunSample {
                 duration: Some(1024),
                 size: Some(512),
                 flags: None,
                 composition_time_offset: Some(-100),
-            }],
+            }]),
         };
 
         assert_eq!(trun.full_box_version(), 1);
@@ -454,7 +554,10 @@ mod fmp4_boxes_boundary_tests {
         let encoded = trun.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, _) = TrunBox::decode(&encoded)
             .expect("直前にエンコードした有効な TrunBox は必ずデコードできる");
-        assert_eq!(decoded.samples[0].composition_time_offset, Some(-100));
+        assert_eq!(
+            per_sample_rows(&decoded)[0].composition_time_offset,
+            Some(-100)
+        );
     }
 
     /// 指定した composition_time_offset を持つ TrunBox を組み立てるヘルパー
@@ -462,12 +565,12 @@ mod fmp4_boxes_boundary_tests {
         TrunBox {
             data_offset: None,
             first_sample_flags: None,
-            samples: vec![TrunSample {
+            samples: TrunSamples::PerSample(vec![TrunSample {
                 duration: Some(1024),
                 size: Some(512),
                 flags: None,
                 composition_time_offset: Some(cto),
-            }],
+            }]),
         }
     }
 
@@ -488,7 +591,7 @@ mod fmp4_boxes_boundary_tests {
             let (decoded, _) = TrunBox::decode(&encoded)
                 .unwrap_or_else(|e| panic!("cto={cto} の decode は成功する: {e:?}"));
             assert_eq!(
-                decoded.samples[0].composition_time_offset,
+                per_sample_rows(&decoded)[0].composition_time_offset,
                 Some(cto),
                 "cto={cto} の roundtrip 値が一致する"
             );
@@ -508,7 +611,7 @@ mod fmp4_boxes_boundary_tests {
             let (decoded, _) = TrunBox::decode(&encoded)
                 .unwrap_or_else(|e| panic!("cto={cto} の decode は成功する: {e:?}"));
             assert_eq!(
-                decoded.samples[0].composition_time_offset,
+                per_sample_rows(&decoded)[0].composition_time_offset,
                 Some(cto),
                 "cto={cto} の roundtrip 値が一致する"
             );
@@ -543,7 +646,7 @@ mod fmp4_boxes_boundary_tests {
         let trun = TrunBox {
             data_offset: None,
             first_sample_flags: None,
-            samples: vec![
+            samples: TrunSamples::PerSample(vec![
                 TrunSample {
                     duration: Some(1024),
                     size: Some(512),
@@ -556,7 +659,7 @@ mod fmp4_boxes_boundary_tests {
                     flags: None,
                     composition_time_offset: Some(i32::MAX as i64 + 1),
                 },
-            ],
+            ]),
         };
         assert_eq!(trun.full_box_version(), 1);
         assert!(

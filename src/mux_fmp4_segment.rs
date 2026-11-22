@@ -63,7 +63,7 @@ use crate::{
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SampleEntry,
         SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox,
         SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
-        TrunSample, VmhdBox,
+        TrunSample, TrunSamples, VmhdBox,
     },
     boxes_moov_tree::EdtsBox,
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
@@ -838,7 +838,7 @@ impl Fmp4SegmentMuxer {
             let trun_box = TrunBox {
                 data_offset: Some(data_offsets[resolved_track.track_index]),
                 first_sample_flags: None,
-                samples: trun_samples,
+                samples: TrunSamples::PerSample(trun_samples),
             };
 
             let tfhd_box = TfhdBox {

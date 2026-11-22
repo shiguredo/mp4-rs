@@ -11,7 +11,7 @@ use shiguredo_mp4::{
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, FtypBox,
         Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, SampleEntry, SidxBox,
-        StppBox, TfdtBox, VisualSampleEntryFields,
+        StppBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
@@ -534,6 +534,51 @@ fn rewrite_media_segment_mdat_size_zero(media_segment: &[u8]) -> Vec<u8> {
     rewritten
 }
 
+/// muxer が出力した `trun` のサンプル行を返す
+///
+/// muxer は `trun` に常にサンプルごとの尺・サイズ・フラグを書くため、件数だけの形式は前提に反する
+#[track_caller]
+fn muxer_trun_rows(trun_box: &TrunBox) -> &[TrunSample] {
+    match &trun_box.samples {
+        TrunSamples::PerSample(samples) => samples,
+        TrunSamples::CountOnly(_) => panic!("muxer は trun にサンプルごとの値を書く"),
+    }
+}
+
+/// muxer が出力した `trun` のサンプル行を書き換え用に返す（[`muxer_trun_rows`] 参照）
+#[track_caller]
+fn muxer_trun_rows_mut(trun_box: &mut TrunBox) -> &mut Vec<TrunSample> {
+    match &mut trun_box.samples {
+        TrunSamples::PerSample(samples) => samples,
+        TrunSamples::CountOnly(_) => panic!("muxer は trun にサンプルごとの値を書く"),
+    }
+}
+
+/// `trun` のサンプルデータのバイト数の合計を、`trun` と `tfhd` の値から求める
+///
+/// `TrunSamples::CountOnly` の `trun` を含む `traf` は、`tfhd` に既定のサンプルサイズを書いていることを前提にする
+/// （この関数を呼ぶテストはそのように書き換える）
+fn trun_data_size(trun_box: &TrunBox, tfhd_box: &TfhdBox) -> i64 {
+    match &trun_box.samples {
+        TrunSamples::CountOnly(sample_count) => {
+            let default_sample_size = tfhd_box
+                .default_sample_size
+                .expect("件数だけの形式の trun を含む traf は tfhd に既定のサンプルサイズを書く");
+            i64::from(default_sample_size) * i64::from(*sample_count)
+        }
+        TrunSamples::PerSample(samples) => samples
+            .iter()
+            .map(|sample| {
+                i64::from(
+                    sample
+                        .size
+                        .expect("muxer は trun に各サンプルのサイズを書く"),
+                )
+            })
+            .sum(),
+    }
+}
+
 /// メディアセグメントの `moof` を `default_base_is_moof = false` の形に書き換え、書き換えたセグメントと `traf` の個数を返す
 ///
 /// `moof_position` は `media_segment` 内の `moof` の開始位置。
@@ -577,17 +622,7 @@ fn rewrite_media_segment_default_base_is_moof_false(
                     .data_offset
                     .expect("muxer は trun に data_offset を書く"),
             );
-            let data_size: i64 = trun_box
-                .samples
-                .iter()
-                .map(|sample| {
-                    i64::from(
-                        sample
-                            .size
-                            .expect("muxer は trun に各サンプルのサイズを書く"),
-                    )
-                })
-                .sum();
+            let data_size = trun_data_size(trun_box, &traf_box.tfhd_box);
             traf_data_end = traf_data_end.max(data_start + data_size);
             trun_box.data_offset = Some(
                 i32::try_from(data_start - base).expect("書き換えた data_offset は i32 に収まる"),
@@ -2643,14 +2678,14 @@ fn build_invalid_media_segment(
             traf_box
                 .trun_boxes
                 .iter()
-                .any(|trun_box| !trun_box.samples.is_empty()),
+                .any(|trun_box| !muxer_trun_rows(trun_box).is_empty()),
             "エラーになる入力の元にするセグメントの各 traf はサンプルを 1 つ以上含む"
         );
     }
     let first_sample_duration = moof_box.traf_boxes[0]
         .trun_boxes
         .iter()
-        .flat_map(|trun_box| &trun_box.samples)
+        .flat_map(muxer_trun_rows)
         .next()
         .and_then(|sample| sample.duration)
         .expect("muxer は trun に各サンプルの尺を書く");
@@ -2684,7 +2719,7 @@ fn build_invalid_media_segment(
                     .traf_boxes
                     .last_mut()
                     .and_then(|traf_box| traf_box.trun_boxes.last_mut())
-                    .and_then(|trun_box| trun_box.samples.last_mut())
+                    .and_then(|trun_box| muxer_trun_rows_mut(trun_box).last_mut())
                     .expect("最後の traf の最後の trun はサンプルを含む");
                 let size = last_sample
                     .size
@@ -2920,8 +2955,8 @@ fn split_single_traf(
         "muxer は traf ごとに trun を 1 つ出力する"
     );
 
-    let second_samples = first_traf_box.trun_boxes[0].samples.split_off(split_at);
-    let first_samples = &first_traf_box.trun_boxes[0].samples;
+    let second_samples = muxer_trun_rows_mut(&mut first_traf_box.trun_boxes[0]).split_off(split_at);
+    let first_samples = muxer_trun_rows(&first_traf_box.trun_boxes[0]);
     let first_duration: u64 = first_samples
         .iter()
         .map(|sample| {
@@ -2944,7 +2979,7 @@ fn split_single_traf(
         .sum();
 
     let mut second_traf_box = first_traf_box.clone();
-    second_traf_box.trun_boxes[0].samples = second_samples;
+    second_traf_box.trun_boxes[0].samples = TrunSamples::PerSample(second_samples);
     let first_data_offset = first_traf_box.trun_boxes[0]
         .data_offset
         .expect("muxer は trun に data_offset を書く");
@@ -4220,9 +4255,9 @@ fn trun_without_data_offset_starts_after_previous_run() -> noprop::TestResult {
             let trun_box = moof_box.traf_boxes[0].trun_boxes[0].clone();
             let data_offset = trun_box.data_offset.expect("muxer は data_offset を書く");
             let mut split_trun_boxes = Vec::new();
-            for (i, sample) in trun_box.samples.iter().enumerate() {
+            for (i, sample) in muxer_trun_rows(&trun_box).iter().enumerate() {
                 let mut split_trun_box = trun_box.clone();
-                split_trun_box.samples = vec![sample.clone()];
+                split_trun_box.samples = TrunSamples::PerSample(vec![sample.clone()]);
                 split_trun_box.data_offset = (i == 0).then_some(data_offset);
                 split_trun_boxes.push(split_trun_box);
             }
@@ -4296,6 +4331,459 @@ fn trun_without_data_offset_starts_after_previous_run() -> noprop::TestResult {
         Ok(())
     })?;
 
+    Ok(())
+}
+
+/// `moof` で始まり、その直後に 32 ビットのサイズの `mdat` が続くメディアセグメントで、
+/// `mdat` の payload の先頭位置を返す
+///
+/// 書き換えで `moof` の長さが変わると payload の先頭位置も変わるため、サンプルの位置は payload の先頭から比べる
+fn mdat_payload_start(media_segment: &[u8]) -> u64 {
+    let (_, moof_size) =
+        MoofBox::decode(media_segment).expect("media セグメントからの moof デコードに失敗した");
+    assert_eq!(
+        &media_segment[moof_size + 4..moof_size + 8],
+        b"mdat",
+        "moof の直後に mdat が続く"
+    );
+    // size が 0（末尾まで）や 1（largesize が続く）でなければ、ヘッダーは 8 バイトになる
+    let mdat_size = u32::from_be_bytes(
+        media_segment[moof_size..moof_size + 4]
+            .try_into()
+            .expect("mdat の size は 4 バイト"),
+    );
+    assert!(mdat_size >= 8, "mdat は 32 ビットの size を持つ");
+    u64::try_from(moof_size + 8).expect("mdat の payload の先頭位置は u64 に収まる")
+}
+
+/// 新しい `Fmp4SegmentDemuxer` で init セグメントとメディアセグメントを処理し、比較できる形のサンプル列を返す
+fn demux_media_segment(init_segment: &[u8], media_segment: &[u8]) -> Vec<ComparableSample> {
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(init_segment)
+        .expect("init セグメントの処理に失敗した");
+    to_comparable_samples(
+        &demuxer
+            .handle_media_segment(media_segment)
+            .expect("media セグメントの処理に失敗した"),
+    )
+}
+
+/// 2 つのメディアセグメントのサンプル列が、`data_offset` 以外のフィールドと、
+/// 各セグメントの `mdat` の payload 内の範囲（payload の先頭からの位置とサイズ）で一致することを確認する
+///
+/// 2 つのセグメントは `moof` だけが異なり、`mdat` の payload は同じバイト列であることも確認する
+fn assert_samples_match_in_mdat_payload(
+    reference_samples: &[ComparableSample],
+    reference_segment: &[u8],
+    actual_samples: &[ComparableSample],
+    actual_segment: &[u8],
+) {
+    let reference_payload_start = mdat_payload_start(reference_segment);
+    let actual_payload_start = mdat_payload_start(actual_segment);
+    assert_eq!(
+        &actual_segment[actual_payload_start as usize..],
+        &reference_segment[reference_payload_start as usize..],
+        "mdat の payload は書き換えない"
+    );
+    assert_eq!(
+        actual_samples.len(),
+        reference_samples.len(),
+        "サンプル数が一致する"
+    );
+    for (reference_sample, actual_sample) in reference_samples.iter().zip(actual_samples) {
+        assert_eq!(
+            comparable_without_data_offset(actual_sample),
+            comparable_without_data_offset(reference_sample),
+            "data_offset 以外が一致する"
+        );
+        assert_eq!(
+            actual_sample
+                .data_offset
+                .checked_sub(actual_payload_start)
+                .expect("比較先のサンプルは mdat の payload 内を指す"),
+            reference_sample
+                .data_offset
+                .checked_sub(reference_payload_start)
+                .expect("比較元のサンプルは mdat の payload 内を指す"),
+            "mdat の payload 内で同じ位置を指す"
+        );
+    }
+}
+
+/// 対応しているトラックで、件数だけの形式の `trun` が、等価な値を各サンプル行に明示した `trun` と
+/// 同じサンプルを返すことを確認する
+///
+/// muxer の出力の `trun` を 2 つに分ける。1 つ目は尺とサイズが揃ったサンプル（先頭だけキーフレーム）からなり、
+/// 2 つ目は `data_offset` を持たず、1 つ目のデータの直後から始まる。
+/// - 比較元: 1 つ目もサンプル行に尺・サイズ・フラグを明示する（`first_sample_flags` は使わない）
+/// - 比較先: 1 つ目を `TrunSamples::CountOnly` にする。尺・サイズ・フラグは既定値（`tfhd` または `trex`）から、
+///   先頭のフラグは `first_sample_flags` から決まる
+///
+/// サンプルの尺・サイズ・キーフレーム判定・タイムスタンプが一致し、`composition_time_offset` が
+/// 両方とも `None` であること、各セグメントの `mdat` の payload 内で同じ範囲を指すことを確かめる
+#[test]
+fn count_only_trun_matches_explicit_rows_on_supported_track() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    // 既定値を `tfhd` に置いたケース数と `trex` に置いたケース数。各ケースで 1/2 の確率で選ぶ
+    let tfhd_default_cases = std::cell::Cell::new(0usize);
+    let trex_default_cases = std::cell::Cell::new(0usize);
+
+    let mut runner = noprop::Runner::new(seed);
+    runner.run(CASES, |ctx| {
+        // `TrunSamples::CountOnly` にする `trun` のサンプル数。先頭と残りでキーフレーム判定を変えるため 2 以上にする
+        let count_only_len = noprop::sample_usize_in(ctx, 2..6);
+        let following_len = noprop::sample_usize_in(ctx, 1..4);
+        let duration = noprop::sample_u64_in(ctx, 1..3001) as u32;
+        let size = noprop::sample_usize_in(ctx, 1..64);
+        let defaults_in_trex = noprop::sample_bool(ctx);
+
+        // `TrunSamples::CountOnly` にする `trun` のサンプルは尺とサイズを揃え、先頭だけをキーフレームにする
+        let mut samples = Vec::new();
+        for i in 0..count_only_len {
+            samples.push(TestSample {
+                track_index: 0,
+                duration,
+                keyframe: i == 0,
+                data: noprop::sample_bytes_vec(ctx, size),
+            });
+        }
+        // 2 つ目の `trun` のサンプルは個別の尺・サイズ・キーフレーム判定を持つ
+        for _ in 0..following_len {
+            samples.push(arb_video_sample(ctx, 0));
+        }
+
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let mut fmp4_samples = Vec::new();
+        let mut payloads: Vec<&[u8]> = Vec::new();
+        for sample in &samples {
+            fmp4_samples.push(video_segment_sample(&sample_entry, sample, None));
+            payloads.push(&sample.data);
+        }
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+        let init_segment = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // muxer の出力の各サンプル行から、`TrunSamples::CountOnly` で使う既定値を取り出す
+        let (moof_box, _) = MoofBox::decode(&media_segment)
+            .expect("media セグメントからの moof デコードに失敗した");
+        let rows = muxer_trun_rows(&moof_box.traf_boxes[0].trun_boxes[0]).to_vec();
+        assert_eq!(rows.len(), samples.len(), "muxer は trun を 1 つ出力する");
+        let first_flags = rows[0]
+            .flags
+            .expect("muxer は trun に各サンプルのフラグを書く");
+        let rest_flags = rows[1]
+            .flags
+            .expect("muxer は trun に各サンプルのフラグを書く");
+        assert_ne!(
+            first_flags.sample_is_non_sync_sample(),
+            rest_flags.sample_is_non_sync_sample(),
+            "先頭と残りのサンプルはキーフレーム判定が異なるフラグを持つ"
+        );
+
+        // `trun` を 2 つに分け、2 つ目の `data_offset` を省く。`row_trun` で 1 つ目の `trun` を作る
+        let split = |row_trun: &dyn Fn(&TrunBox) -> TrunBox| {
+            rewrite_media_segment_moof(&media_segment, |moof_box| {
+                let traf_box = &mut moof_box.traf_boxes[0];
+                let trun_box = traf_box.trun_boxes[0].clone();
+                let mut following_trun_box = trun_box.clone();
+                following_trun_box.data_offset = None;
+                following_trun_box.samples =
+                    TrunSamples::PerSample(rows[count_only_len..].to_vec());
+                traf_box.trun_boxes = vec![row_trun(&trun_box), following_trun_box];
+            })
+        };
+        // 比較元: 1 つ目の `trun` の各サンプル行に値を明示する
+        let reference_segment = split(&|trun_box| TrunBox {
+            data_offset: trun_box.data_offset,
+            first_sample_flags: None,
+            samples: TrunSamples::PerSample(rows[..count_only_len].to_vec()),
+        });
+        // 比較先: 1 つ目の `trun` を `TrunSamples::CountOnly` にし、既定値を `tfhd` に置く場合は `tfhd` に書く
+        let actual_segment = rewrite_media_segment_moof(
+            &split(&|trun_box| TrunBox {
+                data_offset: trun_box.data_offset,
+                first_sample_flags: Some(first_flags),
+                samples: TrunSamples::CountOnly(
+                    u32::try_from(count_only_len).expect("サンプル数は u32 に収まる"),
+                ),
+            }),
+            |moof_box| {
+                if !defaults_in_trex {
+                    let tfhd_box = &mut moof_box.traf_boxes[0].tfhd_box;
+                    tfhd_box.default_sample_duration = Some(duration);
+                    tfhd_box.default_sample_size =
+                        Some(u32::try_from(size).expect("サンプルサイズは u32 に収まる"));
+                    tfhd_box.default_sample_flags = Some(rest_flags);
+                }
+            },
+        );
+        // 既定値を `trex` に置く場合は、比較元と比較先の両方で同じ init セグメントを使う。
+        // 比較元の各サンプル行は値を明示しているため、`trex` の既定値の影響を受けない
+        let init_segment = if defaults_in_trex {
+            trex_default_cases.set(trex_default_cases.get() + 1);
+            rewrite_init_segment(&init_segment, |moov_box| {
+                let trex_box = &mut moov_box
+                    .mvex_box
+                    .as_mut()
+                    .expect("muxer は init セグメントに mvex を出力する")
+                    .trex_boxes[0];
+                trex_box.default_sample_duration = duration;
+                trex_box.default_sample_size =
+                    u32::try_from(size).expect("サンプルサイズは u32 に収まる");
+                trex_box.default_sample_flags = rest_flags;
+            })
+        } else {
+            tfhd_default_cases.set(tfhd_default_cases.get() + 1);
+            init_segment
+        };
+
+        // 書き換えた結果が狙いどおりであることを確かめる。
+        // 黙って値を明示した trun 同士を比べるテストにならないようにするため
+        let (reference_moof_box, _) = MoofBox::decode(&reference_segment)
+            .expect("比較元のメディアセグメントからの moof デコードに失敗した");
+        let reference_truns = &reference_moof_box.traf_boxes[0].trun_boxes;
+        assert_eq!(
+            reference_truns[0].first_sample_flags, None,
+            "比較元の 1 つ目の trun は first_sample_flags を使わない"
+        );
+        let TrunSamples::PerSample(reference_rows) = &reference_truns[0].samples else {
+            panic!("比較元の 1 つ目の trun はサンプル行を持つ");
+        };
+        assert!(
+            reference_rows.iter().all(|row| row.flags.is_some()),
+            "比較元の 1 つ目の trun は各サンプル行にフラグを明示する"
+        );
+        let (actual_moof_box, _) = MoofBox::decode(&actual_segment)
+            .expect("比較先のメディアセグメントからの moof デコードに失敗した");
+        let actual_truns = &actual_moof_box.traf_boxes[0].trun_boxes;
+        assert_eq!(
+            actual_truns[0].samples,
+            TrunSamples::CountOnly(
+                u32::try_from(count_only_len).expect("サンプル数は u32 に収まる")
+            ),
+            "比較先の 1 つ目の trun は TrunSamples::CountOnly になる"
+        );
+        // 既定値は選んだ側（`tfhd` または `trex`）にだけ置く。
+        // muxer が `tfhd` に既定値を書くようになったときに、黙って `tfhd` の検証に変わらないようにするため
+        let actual_tfhd_box = &actual_moof_box.traf_boxes[0].tfhd_box;
+        let tfhd_defaults = (
+            actual_tfhd_box.default_sample_duration,
+            actual_tfhd_box.default_sample_size,
+            actual_tfhd_box.default_sample_flags,
+        );
+        if defaults_in_trex {
+            assert_eq!(
+                tfhd_defaults,
+                (None, None, None),
+                "既定値を trex に置く場合は tfhd に既定値がない"
+            );
+        } else {
+            assert_eq!(
+                tfhd_defaults,
+                (
+                    Some(duration),
+                    Some(u32::try_from(size).expect("サンプルサイズは u32 に収まる")),
+                    Some(rest_flags)
+                ),
+                "既定値を tfhd に置く場合は tfhd に既定値がある"
+            );
+        }
+        for truns in [reference_truns, actual_truns] {
+            assert_eq!(truns.len(), 2, "trun を 2 つに分ける");
+            assert!(
+                truns[0].data_offset.is_some(),
+                "1 つ目の trun は data_offset を持つ"
+            );
+            assert_eq!(
+                truns[1].data_offset, None,
+                "2 つ目の trun は data_offset を持たない"
+            );
+        }
+
+        let reference_samples = demux_media_segment(&init_segment, &reference_segment);
+        let actual_samples = demux_media_segment(&init_segment, &actual_segment);
+
+        assert_eq!(
+            actual_samples.len(),
+            samples.len(),
+            "入力したサンプルがすべて返る"
+        );
+        for (actual_sample, sample) in actual_samples.iter().zip(&samples) {
+            assert_eq!(
+                actual_sample.duration, sample.duration,
+                "尺が入力と一致する"
+            );
+            assert_eq!(
+                actual_sample.data_size,
+                sample.data.len(),
+                "サイズが入力と一致する"
+            );
+            // 1 つ目の `trun` では、先頭だけが first_sample_flags によってキーフレームになり、
+            // 残りは既定のフラグによって非キーフレームになる
+            assert_eq!(
+                actual_sample.keyframe, sample.keyframe,
+                "キーフレーム判定が入力と一致する"
+            );
+        }
+        assert!(
+            reference_samples
+                .iter()
+                .chain(&actual_samples)
+                .all(|sample| sample.composition_time_offset.is_none()),
+            "composition_time_offset は両方とも None になる"
+        );
+        assert_samples_match_in_mdat_payload(
+            &reference_samples,
+            &reference_segment,
+            &actual_samples,
+            &actual_segment,
+        );
+        Ok(())
+    })?;
+
+    assert!(
+        tfhd_default_cases.get() > 0,
+        "既定値を tfhd に置いたケースが 1 つもなかった\n{runner}"
+    );
+    assert!(
+        trex_default_cases.get() > 0,
+        "既定値を trex に置いたケースが 1 つもなかった\n{runner}"
+    );
+    Ok(())
+}
+
+/// 読み飛ばすトラックの件数だけの形式の `trun` から求めたデータ末尾を、次の `traf` が基準位置に使うことを確認する
+///
+/// 映像のトラックを読み飛ばし、`moof` の先頭にあるその `traf` の `trun` を件数だけの形式にする（サイズは
+/// `tfhd` の `default_sample_size`）。すべての `traf` を `base_data_offset` なし、`default_base_is_moof = false` に
+/// 書き換えるため、音声の `traf` の基準位置は読み飛ばす `traf` のデータ末尾になる。
+/// 読み飛ばす `trun` の各サンプル行にサイズを明示した場合と比べて、音声のサンプルが同じになり、
+/// 各セグメントの `mdat` の payload 内で同じ範囲を指すことを確かめる
+#[test]
+fn count_only_trun_data_end_is_used_by_next_traf_on_skipped_track() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        // 読み飛ばす映像のトラックのサンプルは、件数だけの形式で表せるようサイズを揃える
+        let skipped_len = noprop::sample_usize_in(ctx, 1..5);
+        let skipped_size = noprop::sample_usize_in(ctx, 1..64);
+        let mut video_samples = Vec::new();
+        for _ in 0..skipped_len {
+            let mut sample = arb_video_sample(ctx, 0);
+            sample.data = noprop::sample_bytes_vec(ctx, skipped_size);
+            video_samples.push(sample);
+        }
+        let audio_samples = sample_vec(ctx, 1..4, |ctx| arb_audio_sample(ctx, 1));
+
+        // 映像のサンプルを先に並べ、映像の `traf` と payload を先頭にする
+        let video_sample_entry = create_avc1_sample_entry(320, 240);
+        let audio_sample_entry = create_opus_sample_entry();
+        let mut fmp4_samples = Vec::new();
+        let mut payloads: Vec<&[u8]> = Vec::new();
+        for sample in &video_samples {
+            fmp4_samples.push(video_segment_sample(&video_sample_entry, sample, None));
+            payloads.push(&sample.data);
+        }
+        for sample in &audio_samples {
+            fmp4_samples.push(audio_segment_sample(&audio_sample_entry, sample));
+            payloads.push(&sample.data);
+        }
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let media_segment = build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads);
+        let init_segment = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // 映像のトラックを読み飛ばす。muxer は映像のトラックを先に登録するため、trak の順は映像、音声になる
+        let skipped_track_id = std::cell::Cell::new(0u32);
+        let init_segment = rewrite_init_segment(&init_segment, |moov_box| {
+            let trak = &mut moov_box.trak_boxes[0];
+            assert_eq!(
+                trak.mdia_box.hdlr_box.handler_type, *b"vide",
+                "1 つ目のトラックは映像である"
+            );
+            skipped_track_id.set(trak.tkhd_box.track_id);
+            trak.mdia_box.hdlr_box.handler_type = *b"meta";
+        });
+        let skipped_track_id = skipped_track_id.get();
+
+        // 比較元: 読み飛ばす `trun` の各サンプル行にサイズを明示したまま、`default_base_is_moof = false` にする
+        let (reference_segment, traf_count) =
+            rewrite_media_segment_default_base_is_moof_false(&media_segment, 0);
+        assert_eq!(traf_count, 2, "映像と音声の 2 つの traf がある");
+        // 比較先: 読み飛ばす `trun` を件数だけの形式にしてから、`default_base_is_moof = false` にする
+        let count_only_segment = rewrite_media_segment_moof(&media_segment, |moof_box| {
+            let traf_box = &mut moof_box.traf_boxes[0];
+            assert_eq!(
+                traf_box.tfhd_box.track_id, skipped_track_id,
+                "moof の先頭の traf は読み飛ばす映像のトラックのもの"
+            );
+            assert_eq!(
+                traf_box.trun_boxes.len(),
+                1,
+                "muxer は traf ごとに trun を 1 つ出力する"
+            );
+            traf_box.tfhd_box.default_sample_size =
+                Some(u32::try_from(skipped_size).expect("サンプルサイズは u32 に収まる"));
+            traf_box.trun_boxes[0].samples = TrunSamples::CountOnly(
+                u32::try_from(skipped_len).expect("サンプル数は u32 に収まる"),
+            );
+        });
+        let (actual_segment, _) =
+            rewrite_media_segment_default_base_is_moof_false(&count_only_segment, 0);
+
+        // 書き換えた結果が狙いどおりであることを確かめる
+        let (actual_moof_box, _) = MoofBox::decode(&actual_segment)
+            .expect("比較先のメディアセグメントからの moof デコードに失敗した");
+        assert_eq!(
+            actual_moof_box.traf_boxes[0].trun_boxes[0].samples,
+            TrunSamples::CountOnly(u32::try_from(skipped_len).expect("サンプル数は u32 に収まる")),
+            "読み飛ばす traf の trun は TrunSamples::CountOnly になる"
+        );
+        for traf_box in &actual_moof_box.traf_boxes {
+            assert!(
+                !traf_box.tfhd_box.default_base_is_moof,
+                "すべての traf を default_base_is_moof = false にする"
+            );
+            assert_eq!(
+                traf_box.tfhd_box.base_data_offset, None,
+                "すべての traf は base_data_offset を持たない"
+            );
+        }
+
+        let reference_samples = demux_media_segment(&init_segment, &reference_segment);
+        let actual_samples = demux_media_segment(&init_segment, &actual_segment);
+
+        assert_eq!(
+            actual_samples.len(),
+            audio_samples.len(),
+            "読み飛ばすトラック以外の音声のサンプルだけが返る"
+        );
+        assert!(
+            actual_samples
+                .iter()
+                .all(|sample| sample.track.track_id != skipped_track_id),
+            "読み飛ばすトラックのサンプルは返らない"
+        );
+        // 音声の先頭のサンプルは、読み飛ばす映像のデータ（件数 × サイズ）の直後にある
+        assert_eq!(
+            actual_samples[0]
+                .data_offset
+                .checked_sub(mdat_payload_start(&actual_segment))
+                .expect("音声の先頭のサンプルは mdat の payload 内を指す"),
+            (skipped_len * skipped_size) as u64,
+            "音声の traf の基準位置は読み飛ばす traf のデータ末尾になる"
+        );
+        assert_samples_match_in_mdat_payload(
+            &reference_samples,
+            &reference_segment,
+            &actual_samples,
+            &actual_segment,
+        );
+        Ok(())
+    })?;
     Ok(())
 }
 

@@ -554,11 +554,12 @@ impl FullBox for TfdtBox {
 
 /// [ISO/IEC 14496-12] TrackRunBox class (親: [`TrafBox`])
 ///
-/// サンプルのリストを格納する。フラグによって存在するフィールドが異なる。
+/// サンプル情報（サンプル数だけ、またはサンプルごとの値の列）を格納する。
+/// フラグによって存在するフィールドが異なる。
 ///
 /// # 事前条件
 ///
-/// [`TrunSample`] の各 per-sample フィールド (`duration` / `size` / `flags` /
+/// [`TrunSamples::PerSample`] の各 [`TrunSample`] の per-sample フィールド (`duration` / `size` / `flags` /
 /// `composition_time_offset`) の [`Option`] 有無は run 全体で一致していなければならない
 /// （ISO/IEC 14496-12 8.8.8 の `tr_flags` は run 全体共通のため）。
 /// 不整合な入力に対して [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
@@ -567,12 +568,14 @@ pub struct TrunBox {
     /// この run 内サンプルの基準オフセット（[`TfhdBox`] で決まる基準位置からの相対バイト数）
     pub data_offset: Option<i32>,
 
-    /// 最初のサンプルにだけ適用する [`SampleFlags`]（残りは [`TrunSample::flags`] または
-    /// [`TfhdBox::default_sample_flags`] を使う）
+    /// 最初のサンプルにだけ適用する [`SampleFlags`]
+    ///
+    /// 残りのサンプルは [`TrunSample::flags`] を使い、それがない場合（[`TrunSamples::CountOnly`] を含む）は
+    /// [`TfhdBox::default_sample_flags`]、次いで [`crate::boxes::TrexBox::default_sample_flags`] を使う
     pub first_sample_flags: Option<SampleFlags>,
 
-    /// この run に含まれるサンプル情報の列
-    pub samples: Vec<TrunSample>,
+    /// この run に含まれるサンプル情報
+    pub samples: TrunSamples,
 }
 
 impl TrunBox {
@@ -605,24 +608,24 @@ impl TrunBox {
         if self.first_sample_flags.is_some() {
             flags |= Self::FLAG_FIRST_SAMPLE_FLAGS_PRESENT;
         }
+        // 件数だけの run は各サンプル行にフィールドがないため、per-sample フラグを立てない
+        let TrunSamples::PerSample(samples) = &self.samples else {
+            return flags;
+        };
         // per-sample フラグは run 全体共通（ISO/IEC 14496-12 8.8.8）。
         // どのサンプルかに Some があればフラグを立てる（uses_version_1 と流儀を揃える）。
         // これで FullBox::full_box_flags 経由で直接呼ばれても決定論的な値を返せる
         // （不整合入力は Encode::encode 冒頭の validate_sample_option_consistency() が拒否する）。
-        if self.samples.iter().any(|s| s.duration.is_some()) {
+        if samples.iter().any(|s| s.duration.is_some()) {
             flags |= Self::FLAG_SAMPLE_DURATION_PRESENT;
         }
-        if self.samples.iter().any(|s| s.size.is_some()) {
+        if samples.iter().any(|s| s.size.is_some()) {
             flags |= Self::FLAG_SAMPLE_SIZE_PRESENT;
         }
-        if self.samples.iter().any(|s| s.flags.is_some()) {
+        if samples.iter().any(|s| s.flags.is_some()) {
             flags |= Self::FLAG_SAMPLE_FLAGS_PRESENT;
         }
-        if self
-            .samples
-            .iter()
-            .any(|s| s.composition_time_offset.is_some())
-        {
+        if samples.iter().any(|s| s.composition_time_offset.is_some()) {
             flags |= Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT;
         }
         flags
@@ -635,7 +638,11 @@ impl TrunBox {
     /// 入力は表現できない。不整合なら [`crate::ErrorKind::InvalidInput`] を返す。
     /// エラー文言には最初に不整合が検出されたサンプル index とフィールド名が含まれる。
     fn validate_sample_option_consistency(&self) -> Result<()> {
-        let Some(first) = self.samples.first() else {
+        // 件数だけの run はサンプル行の値を持たないため、不整合になりえない
+        let TrunSamples::PerSample(samples) = &self.samples else {
+            return Ok(());
+        };
+        let Some(first) = samples.first() else {
             return Ok(());
         };
         let has_duration = first.duration.is_some();
@@ -644,7 +651,7 @@ impl TrunBox {
         let has_composition_time_offset = first.composition_time_offset.is_some();
 
         // enumerate() の index は samples 全体（先頭を含む）を基準とする
-        for (index, sample) in self.samples.iter().enumerate().skip(1) {
+        for (index, sample) in samples.iter().enumerate().skip(1) {
             // どのフィールドで最初に不整合を見つけたかを（先頭側 / 当該サンプル側の Some/None つきで）報告する
             let mismatch = if sample.duration.is_some() != has_duration {
                 Some(("duration", has_duration, sample.duration.is_some()))
@@ -681,9 +688,13 @@ impl TrunBox {
     /// 負値と `> i32::MAX` の値が同一 `TrunBox` に混在した場合は
     /// どちらのバージョンでも表現できないため、encode 時にエラーとして扱う。
     fn uses_version_1(&self) -> bool {
-        self.samples
-            .iter()
-            .any(|s| s.composition_time_offset.is_some_and(|offset| offset < 0))
+        match &self.samples {
+            // 件数だけの run は composition_time_offset を持たないため、version 0 で表現できる
+            TrunSamples::CountOnly(_) => false,
+            TrunSamples::PerSample(samples) => samples
+                .iter()
+                .any(|s| s.composition_time_offset.is_some_and(|offset| offset < 0)),
+        }
     }
 }
 
@@ -700,8 +711,15 @@ impl Encode for TrunBox {
         let flags = self.compute_flags();
 
         // sample_count
-        let sample_count = u32::try_from(self.samples.len())
-            .map_err(|_| crate::Error::invalid_data("TrunBox sample count exceeds u32::MAX"))?;
+        let (sample_count, samples) = match &self.samples {
+            // 件数だけの run はサンプル行を書かない（各行にフィールドがないため）
+            TrunSamples::CountOnly(sample_count) => (*sample_count, &[][..]),
+            TrunSamples::PerSample(samples) => {
+                let sample_count = u32::try_from(samples.len())
+                    .map_err(|_| Error::invalid_data("TrunBox sample count exceeds u32::MAX"))?;
+                (sample_count, samples.as_slice())
+            }
+        };
         offset += sample_count.encode(&mut buf[offset..])?;
 
         if let Some(v) = self.data_offset {
@@ -713,7 +731,7 @@ impl Encode for TrunBox {
 
         let version = self.full_box_version();
 
-        for sample in &self.samples {
+        for sample in samples {
             if flags & Self::FLAG_SAMPLE_DURATION_PRESENT != 0 {
                 offset += sample.duration.unwrap_or(0).encode(&mut buf[offset..])?;
             }
@@ -779,7 +797,8 @@ impl Decode for TrunBox {
                 None
             };
 
-            // サンプルあたりのバイト数を計算してオーバーフローチェック
+            // サンプル行 1 つあたりのバイト数。0 なら件数だけの形式にし、
+            // そうでなければサンプル行が残りのペイロードに収まるかの確認に使う
             let bytes_per_sample = {
                 let mut size = 0usize;
                 if flags & Self::FLAG_SAMPLE_DURATION_PRESENT != 0 {
@@ -797,66 +816,76 @@ impl Decode for TrunBox {
                 size
             };
 
-            let remaining = payload.len().saturating_sub(offset);
-            if let Some(max_samples) = remaining.checked_div(bytes_per_sample) {
-                if sample_count as usize > max_samples {
-                    return Err(Error::invalid_data(
-                        "TrunBox sample_count exceeds available payload",
-                    ));
-                }
-            } else {
-                // bytes_per_sample = 0 の場合、サンプルデータなしで sample_count 個のサンプルを許容
-                // ただし、極端に大きな sample_count による OOM を防ぐ
-                // TrunSample 構造体のサイズが約 32 バイトとして、512MB (= 16M サンプル) を上限とする
-                const MAX_SAMPLES_WITHOUT_DATA: usize = 16_777_216;
-                if sample_count as usize > MAX_SAMPLES_WITHOUT_DATA {
+            let samples = if bytes_per_sample == 0 || sample_count == 0 {
+                // 各サンプル行にフィールドがない場合と、行が 0 個の場合は、サンプル数だけを保持する。
+                // 行を実体化しないので、ボックスのメモリはサンプル数に比例しない。
+                // ISO/IEC 14496-12:2015 の 8.8.8 では行の内容が tr_flags だけで決まるため、
+                // 行にフィールドがない場合のサンプル数は trun や moof のバイト長からは制約されない。
+                // なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+                //
+                // 上限の値は、行を実体化していたときの受理範囲を変えないために残しているもので、
+                // 仕様から決まる値ではない。trun 1 つあたりの上限であり、デマルチプレクサーが出力する
+                // サンプル全体に対する資源の制限ではない
+                const MAX_SAMPLES_WITHOUT_DATA: u32 = 16_777_216;
+                if sample_count > MAX_SAMPLES_WITHOUT_DATA {
                     return Err(Error::invalid_data(
                         "TrunBox sample_count exceeds maximum allowed when no per-sample data is present",
                     ));
                 }
-            }
+                TrunSamples::CountOnly(sample_count)
+            } else {
+                // 行が残りのペイロードに収まることを先に確認する。
+                // この分岐では bytes_per_sample が 4 以上なので、0 除算にならない
+                let remaining = payload.len().saturating_sub(offset);
+                if sample_count as usize > remaining / bytes_per_sample {
+                    return Err(Error::invalid_data(
+                        "TrunBox sample_count exceeds available payload",
+                    ));
+                }
 
-            let mut samples = Vec::new();
-            for _ in 0..sample_count {
-                let duration = if flags & Self::FLAG_SAMPLE_DURATION_PRESENT != 0 {
-                    Some(u32::decode_at(payload, &mut offset)?)
-                } else {
-                    None
-                };
-
-                let size = if flags & Self::FLAG_SAMPLE_SIZE_PRESENT != 0 {
-                    Some(u32::decode_at(payload, &mut offset)?)
-                } else {
-                    None
-                };
-
-                let sample_flags = if flags & Self::FLAG_SAMPLE_FLAGS_PRESENT != 0 {
-                    Some(SampleFlags::decode_at(payload, &mut offset)?)
-                } else {
-                    None
-                };
-
-                // ISO/IEC 14496-12 8.8.8 では version 0 の sample_composition_time_offset は
-                // unsigned 32-bit（`0..=u32::MAX`）、version 1 は signed 32-bit（`i32::MIN..=i32::MAX`）。
-                // どちらの版も同じ Rust 型で表現できるよう、内部保持は i64 とする。
-                let composition_time_offset =
-                    if flags & Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT != 0 {
-                        if version == 1 {
-                            Some(i64::from(i32::decode_at(payload, &mut offset)?))
-                        } else {
-                            Some(i64::from(u32::decode_at(payload, &mut offset)?))
-                        }
+                let mut samples = Vec::new();
+                for _ in 0..sample_count {
+                    let duration = if flags & Self::FLAG_SAMPLE_DURATION_PRESENT != 0 {
+                        Some(u32::decode_at(payload, &mut offset)?)
                     } else {
                         None
                     };
 
-                samples.push(TrunSample {
-                    duration,
-                    size,
-                    flags: sample_flags,
-                    composition_time_offset,
-                });
-            }
+                    let size = if flags & Self::FLAG_SAMPLE_SIZE_PRESENT != 0 {
+                        Some(u32::decode_at(payload, &mut offset)?)
+                    } else {
+                        None
+                    };
+
+                    let sample_flags = if flags & Self::FLAG_SAMPLE_FLAGS_PRESENT != 0 {
+                        Some(SampleFlags::decode_at(payload, &mut offset)?)
+                    } else {
+                        None
+                    };
+
+                    // ISO/IEC 14496-12 8.8.8 では version 0 の sample_composition_time_offset は
+                    // unsigned 32-bit（`0..=u32::MAX`）、version 1 は signed 32-bit（`i32::MIN..=i32::MAX`）。
+                    // どちらの版も同じ Rust 型で表現できるよう、内部保持は i64 とする。
+                    let composition_time_offset =
+                        if flags & Self::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT != 0 {
+                            if version == 1 {
+                                Some(i64::from(i32::decode_at(payload, &mut offset)?))
+                            } else {
+                                Some(i64::from(u32::decode_at(payload, &mut offset)?))
+                            }
+                        } else {
+                            None
+                        };
+
+                    samples.push(TrunSample {
+                        duration,
+                        size,
+                        flags: sample_flags,
+                        composition_time_offset,
+                    });
+                }
+                TrunSamples::PerSample(samples)
+            };
 
             Ok((
                 Self {
@@ -890,7 +919,48 @@ impl FullBox for TrunBox {
     }
 }
 
-/// [`TrunBox`] のサンプル情報
+/// [`TrunBox`] に含まれるサンプル情報
+///
+/// ISO/IEC 14496-12:2015 の 8.8.8 では、`trun` の各サンプル行に含まれるフィールドは
+/// run 全体に共通の `tr_flags` で決まり、行にフィールドが 1 つもないこともある。
+/// その場合は行の値を持たず、サンプル数だけを [`TrunSamples::CountOnly`] で保持する。
+/// なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+///
+/// # エンコードとデコード
+///
+/// - 全フィールドが `None` の [`TrunSamples::PerSample`]（空の配列を含む）は、同じ件数の
+///   [`TrunSamples::CountOnly`] と同じバイト列にエンコードされる。そのため、そのような
+///   [`TrunSamples::PerSample`] はエンコードしてデコードすると [`TrunSamples::CountOnly`] になり、
+///   元の値とは等しくならない
+/// - デコードは、`tr_flags` にサンプルごとのフィールドのフラグが 1 つも立っていない `trun` と、
+///   `sample_count` が 0 の `trun` に対して [`TrunSamples::CountOnly`] を返し、
+///   それ以外の `trun` に対して [`TrunSamples::PerSample`] を返す
+/// - デコードは、サンプルごとのフィールドのフラグが 1 つも立っていない `trun` の `sample_count` が
+///   16,777,216 を超える場合に
+///   [`crate::ErrorKind::InvalidData`] を返す。エンコードはこの上限を検査しないため、上限を超える件数の
+///   [`TrunSamples::CountOnly`] をエンコードしたバイト列は、このクレートではデコードできない
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TrunSamples {
+    /// サンプルごとのフィールドを持たない run のサンプル数
+    ///
+    /// エンコードでは [`TrunBox::FLAG_SAMPLE_DURATION_PRESENT`]、[`TrunBox::FLAG_SAMPLE_SIZE_PRESENT`]、
+    /// [`TrunBox::FLAG_SAMPLE_FLAGS_PRESENT`]、[`TrunBox::FLAG_SAMPLE_COMPOSITION_TIME_OFFSETS_PRESENT`] を
+    /// いずれも立てず、サンプル行を書かない。
+    /// 各サンプルの尺・サイズ・フラグは [`TfhdBox`]、次いで [`crate::boxes::TrexBox`] の既定値を使い、
+    /// 先頭サンプルのフラグは [`TrunBox::first_sample_flags`] があればそれを使う。
+    /// `composition_time_offset` には既定値がないため、各サンプルは `composition_time_offset` を持たない。
+    ///
+    /// デコードは `sample_count` が 0 の `trun` もこの形で返す。この場合、`tr_flags` に立っていた
+    /// サンプルごとのフィールドのフラグは保持しない
+    CountOnly(u32),
+
+    /// サンプル行の値の列
+    ///
+    /// 各要素の per-sample フィールドの [`Option`] の有無は揃える必要がある（[`TrunBox`] の「事前条件」を参照）
+    PerSample(Vec<TrunSample>),
+}
+
+/// [`TrunSamples::PerSample`] の 1 サンプル分のサンプル情報
 ///
 /// per-sample フィールドの [`Option`] 有無は run 全体で一致していなければならない
 /// （詳細は [`TrunBox`] の「事前条件」を参照）。

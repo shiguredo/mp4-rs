@@ -25,6 +25,8 @@
 //! - `moof` より前のボックスの後ろで、次のボックスのヘッダーが途中で切れているデータ
 //! - `moov` に存在しない track_id の `traf` を含むデータ
 //! - 読み飛ばすトラックに `trex` がなく、その `traf` のサンプルサイズを `trun` と `tfhd` のどちらからも決められないデータ
+//!   （サンプル行を持つ `trun` と、1 件以上の `TrunSamples::CountOnly` の `trun` の両方）
+//! - 読み飛ばすトラックの `TrunSamples::CountOnly` の `trun` で、データ末尾が `usize` に収まらないデータ
 //!
 //! `moof` の前後にあるボックスを読み飛ばせる正常系は PBT で検証する。
 //! 意図的なエラーパスは固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
@@ -37,7 +39,8 @@ use std::num::NonZeroU32;
 use shiguredo_mp4::{
     Decode, Encode, Error, ErrorKind, TrackKind, Uint,
     boxes::{
-        Avc1Box, AvccBox, FtypBox, MoofBox, MoovBox, SampleEntry, SidxBox, VisualSampleEntryFields,
+        Avc1Box, AvccBox, FtypBox, MoofBox, MoovBox, SampleEntry, SidxBox, TrunSamples,
+        VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4SegmentDemuxer},
     mux::{Fmp4SegmentMuxer, Sample},
@@ -743,6 +746,25 @@ const TRACK_SAMPLE_SIZE: usize = 8;
 /// 32 ビットの `mdat` のヘッダーのサイズ
 const MDAT_HEADER_SIZE: usize = 8;
 
+/// 読み飛ばすトラックの各 `trun` のサンプルの持ち方
+#[derive(Debug, Clone, Copy)]
+enum SkippedRun {
+    /// サイズを書かないサンプル行を 1 つ持つ（尺とフラグは書く）
+    OneRowWithoutSize,
+    /// サンプルごとのフィールドを持たない、件数だけの形式
+    CountOnly(u32),
+}
+
+impl SkippedRun {
+    /// この `trun` 1 つに含まれるサンプル数
+    fn sample_count(self) -> usize {
+        match self {
+            Self::OneRowWithoutSize => 1,
+            Self::CountOnly(sample_count) => sample_count as usize,
+        }
+    }
+}
+
 /// 読み飛ばすトラックの `traf` を含む init セグメントとメディアセグメントを組み立てる
 ///
 /// 読み飛ばすトラックは track_id を 2、ハンドラー種別を `meta` にしたトラックで、`moof` の先頭の `traf` に置く。
@@ -755,15 +777,17 @@ const MDAT_HEADER_SIZE: usize = 8;
 /// すべての `traf` の `tfhd` を `default_base_is_moof = false` にしてあるため、
 /// 対応しているトラックの基準位置は読み飛ばすトラックのデータ末尾になる。
 ///
-/// `skipped_run_count` は読み飛ばすトラックの `traf` の `trun` の数である。1 より大きい場合は
-/// サンプル 1 つずつの `trun` に分け、2 つ目以降の `data_offset` を省く（直前の `trun` の
-/// データ末尾から始まる）。`mdat` の payload に読み飛ばすトラックのデータが `skipped_run_count` 個分入る
+/// `skipped_run_count` は読み飛ばすトラックの `traf` の `trun` の数で、各 `trun` のサンプルの持ち方は
+/// `skipped_run` で決める。`skipped_run_count` が 1 より大きい場合は 2 つ目以降の `data_offset` を省く
+/// （直前の `trun` のデータ末尾から始まる）。`mdat` の payload には、読み飛ばすトラックのデータが
+/// `skipped_run_count` × `skipped_run` のサンプル数の分だけ入る
 ///
 /// 戻り値は (init セグメント, メディアセグメント, 書き換えた `moof` のサイズ)
 fn build_skipped_track_segment(
     tfhd_default_sample_size: Option<u32>,
     trex_default_sample_size: Option<u32>,
     skipped_run_count: usize,
+    skipped_run: SkippedRun,
 ) -> (Vec<u8>, Vec<u8>, usize) {
     let payload = [0u8; TRACK_SAMPLE_SIZE];
     let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
@@ -805,14 +829,23 @@ fn build_skipped_track_segment(
     skipped_traf_box.tfhd_box.track_id = 2;
     skipped_traf_box.tfhd_box.default_base_is_moof = false;
     skipped_traf_box.tfhd_box.default_sample_size = tfhd_default_sample_size;
-    // 読み飛ばすトラックの `trun` を `skipped_run_count` 個に分ける。
+    // 読み飛ばすトラックに、`skipped_run` で決めた `trun` を `skipped_run_count` 個並べる。
     // 2 つ目以降は `data_offset` を省く（`moof` のサイズが確定してから最初の `trun` にだけ設定する）
     let base_trun_box = skipped_traf_box.trun_boxes[0].clone();
     skipped_traf_box.trun_boxes = (0..skipped_run_count)
         .map(|index| {
             let mut trun_box = base_trun_box.clone();
-            trun_box.samples.truncate(1);
-            trun_box.samples[0].size = None;
+            trun_box.samples = match skipped_run {
+                SkippedRun::OneRowWithoutSize => {
+                    let TrunSamples::PerSample(samples) = &base_trun_box.samples else {
+                        panic!("muxer は trun にサンプルごとの値を書く");
+                    };
+                    let mut sample = samples[0].clone();
+                    sample.size = None;
+                    TrunSamples::PerSample(vec![sample])
+                }
+                SkippedRun::CountOnly(sample_count) => TrunSamples::CountOnly(sample_count),
+            };
             // 最初の `trun` は `moof` のサイズが確定してから値を入れる。
             // フィールドの有無で `moof` のサイズが変わらないよう、ここでは仮の値を入れておく
             trun_box.data_offset = (index == 0).then_some(0);
@@ -835,7 +868,8 @@ fn build_skipped_track_segment(
     moof_box.traf_boxes[1].trun_boxes[0].data_offset = Some(0);
 
     // `mdat` の payload の先頭に、読み飛ばすトラックのデータを挿し込む
-    let skipped_data_size = SKIPPED_SAMPLE_SIZE as usize * skipped_run_count;
+    let skipped_data_size =
+        SKIPPED_SAMPLE_SIZE as usize * skipped_run_count * skipped_run.sample_count();
     let mut mdat = media_segment[original_moof_size..].to_vec();
     let mdat_size = u32::from_be_bytes(mdat[0..4].try_into().expect("mdat のサイズは 4 バイト"));
     mdat[0..4].copy_from_slice(
@@ -860,10 +894,13 @@ fn build_skipped_track_segment(
 
 /// [`build_skipped_track_segment`] が作る入力で、対応しているトラックのサンプルがある位置
 ///
-/// `mdat` の payload の先頭に読み飛ばすトラックのデータがあり、その直後に対応しているトラックのサンプルがある
-fn expected_sample_data_offset(moof_size: usize, skipped_run_count: usize) -> u64 {
-    u64::try_from(moof_size + MDAT_HEADER_SIZE + SKIPPED_SAMPLE_SIZE as usize * skipped_run_count)
-        .expect("u64 に収まる")
+/// `mdat` の payload の先頭に読み飛ばすトラックのデータ（`skipped_sample_count` 個分）があり、
+/// その直後に対応しているトラックのサンプルがある
+fn expected_sample_data_offset(moof_size: usize, skipped_sample_count: usize) -> u64 {
+    u64::try_from(
+        moof_size + MDAT_HEADER_SIZE + SKIPPED_SAMPLE_SIZE as usize * skipped_sample_count,
+    )
+    .expect("u64 に収まる")
 }
 
 /// `moov` に存在しない track_id の `traf` を含むメディアセグメントは `InvalidData` の `DecodeError` になること
@@ -895,41 +932,108 @@ fn decode_error_unknown_track_id_in_media_segment() {
 ///
 /// 読み飛ばすトラックの `traf` はサンプルを返さないが、`default_base_is_moof` の値によらずデータ末尾を計算する
 /// （`false` の場合は次の `traf` の基準位置になる）。サンプルサイズを `trun` と `tfhd` の
-/// どちらからも決められない場合は `trex` の既定値が要る
+/// どちらからも決められない場合は `trex` の既定値が要る。
+/// サイズを書かないサンプル行を持つ `trun` と、1 件以上の `TrunSamples::CountOnly` の `trun` の両方で確認する
 #[test]
 fn decode_error_skipped_track_without_trex() {
-    let (init_segment, data, _moof_size) = build_skipped_track_segment(None, None, 1);
+    for skipped_run in [SkippedRun::OneRowWithoutSize, SkippedRun::CountOnly(2)] {
+        let (init_segment, data, _moof_size) =
+            build_skipped_track_segment(None, None, 1, skipped_run);
 
-    let mut demuxer = Fmp4SegmentDemuxer::new();
-    demuxer
-        .handle_init_segment(&init_segment)
-        .expect("読み飛ばすトラックに trex がなくても init セグメントの処理は成功する");
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_segment)
+            .expect("読み飛ばすトラックに trex がなくても init セグメントの処理は成功する");
+        assert_eq!(
+            demuxer.tracks().expect("tracks の取得に失敗した").len(),
+            1,
+            "未対応のハンドラー種別のトラックはトラック情報に登録されない"
+        );
+
+        let state_before_error = format!("{demuxer:?}");
+        let result = demuxer
+            .handle_media_segment(&data)
+            .map(|samples| samples.len());
+        let Err(DemuxError::DecodeError(error)) = &result else {
+            panic!("{skipped_run:?}: DecodeError を期待したが {result:?} だった");
+        };
+        assert_eq!(
+            error.kind,
+            ErrorKind::InvalidData,
+            "{skipped_run:?}: trex がない読み飛ばすトラックでは InvalidData を期待した"
+        );
+        assert_eq!(
+            error.reason, "trex not found for skipped track_id=2",
+            "{skipped_run:?}: trex がないことを示すエラー理由を期待した"
+        );
+        assert_eq!(
+            format!("{demuxer:?}"),
+            state_before_error,
+            "{skipped_run:?}: エラーを返した後に内部状態が変わった"
+        );
+    }
+}
+
+/// 読み飛ばすトラックの `TrunSamples::CountOnly` の `trun` で、データ末尾の計算が溢れると
+/// `InvalidData` の `DecodeError` になること
+///
+/// 読み飛ばすトラックの `tfhd` の `base_data_offset` を、既定サイズ 8 バイトのサンプル 2 個分（16 バイト）を
+/// 足すとちょうど 1 バイトだけ `usize` に収まらない位置にし、`trun` の `data_offset` を省く。
+/// サンプル 1 個分（8 バイト）だけなら収まるため、件数を掛けずに求める誤りも検出できる。
+/// `usize` の上限から値を決めるため、32 ビット環境でも同じエラーになる。
+/// 対応しているトラックの `traf` は `default_base_is_moof = true` にして、読み飛ばすトラックのデータ末尾を
+/// 基準位置に使わないようにする。エラーが読み飛ばすトラックの計算からしか出ないようにするためである
+#[test]
+fn decode_error_skipped_track_count_only_run_data_end_overflow() {
+    let skipped_run = SkippedRun::CountOnly(2);
+    let (init_segment, data, _moof_size) =
+        build_skipped_track_segment(Some(SKIPPED_SAMPLE_SIZE), None, 1, skipped_run);
+    let (mut moof_box, original_moof_size) =
+        MoofBox::decode(&data).expect("media セグメントからの moof デコードに失敗した");
+    let skipped_traf_box = &mut moof_box.traf_boxes[0];
     assert_eq!(
-        demuxer.tracks().expect("tracks の取得に失敗した").len(),
-        1,
-        "未対応のハンドラー種別のトラックはトラック情報に登録されない"
+        skipped_traf_box.tfhd_box.track_id, 2,
+        "moof の先頭の traf は読み飛ばすトラックのもの"
     );
+    let skipped_data_size = SKIPPED_SAMPLE_SIZE as usize * skipped_run.sample_count();
+    skipped_traf_box.tfhd_box.base_data_offset =
+        Some(u64::try_from(usize::MAX - (skipped_data_size - 1)).expect("usize は u64 に収まる"));
+    skipped_traf_box.trun_boxes[0].data_offset = None;
+    moof_box.traf_boxes[1].tfhd_box.default_base_is_moof = true;
 
-    let state_before_error = format!("{demuxer:?}");
-    let result = demuxer
-        .handle_media_segment(&data)
-        .map(|samples| samples.len());
-    let Err(DemuxError::DecodeError(error)) = &result else {
-        panic!("DecodeError を期待したが {result:?} だった");
-    };
+    // 対応しているトラックのサンプルは、mdat の payload の先頭にある読み飛ばすトラックのデータの直後にある。
+    // `moof` の先頭からの位置で指すため、書き換えた後の `moof` のサイズを先に確定させる
+    let moof_size = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した")
+        .len();
+    moof_box.traf_boxes[1].trun_boxes[0].data_offset = Some(
+        i32::try_from(
+            moof_size
+                + MDAT_HEADER_SIZE
+                + SKIPPED_SAMPLE_SIZE as usize * skipped_run.sample_count(),
+        )
+        .expect("i32 に収まる"),
+    );
+    let mut rewritten = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    assert_eq!(
+        rewritten.len(),
+        moof_size,
+        "data_offset の値の変更で moof のサイズは変わらない"
+    );
+    rewritten.extend_from_slice(&data[original_moof_size..]);
+
+    let error = expect_media_segment_decode_error(&init_segment, &rewritten);
     assert_eq!(
         error.kind,
         ErrorKind::InvalidData,
-        "trex がない読み飛ばすトラックでは InvalidData を期待した"
+        "データ末尾の計算が溢れる場合は InvalidData を期待した"
     );
     assert_eq!(
-        error.reason, "trex not found for skipped track_id=2",
-        "trex がないことを示すエラー理由を期待した"
-    );
-    assert_eq!(
-        format!("{demuxer:?}"),
-        state_before_error,
-        "エラーを返した後に内部状態が変わった"
+        error.reason, "sample data offset overflow",
+        "データ末尾の計算が溢れたことを示すエラー理由を期待した"
     );
 }
 
@@ -940,8 +1044,12 @@ fn decode_error_skipped_track_without_trex() {
 /// どちらにもない場合は `trex` の `default_sample_size` を使う
 #[test]
 fn skipped_track_data_end_uses_trex_default_sample_size() {
-    let (init_segment, data, moof_size) =
-        build_skipped_track_segment(None, Some(SKIPPED_SAMPLE_SIZE), 1);
+    let (init_segment, data, moof_size) = build_skipped_track_segment(
+        None,
+        Some(SKIPPED_SAMPLE_SIZE),
+        1,
+        SkippedRun::OneRowWithoutSize,
+    );
 
     let mut demuxer = Fmp4SegmentDemuxer::new();
     demuxer
@@ -972,8 +1080,12 @@ fn skipped_track_data_end_uses_trex_default_sample_size() {
 /// `tfhd` に既定値があれば `trex` がなくてもエラーにならない
 #[test]
 fn skipped_track_data_end_uses_tfhd_default_sample_size() {
-    let (init_segment, data, moof_size) =
-        build_skipped_track_segment(Some(SKIPPED_SAMPLE_SIZE), None, 1);
+    let (init_segment, data, moof_size) = build_skipped_track_segment(
+        Some(SKIPPED_SAMPLE_SIZE),
+        None,
+        1,
+        SkippedRun::OneRowWithoutSize,
+    );
 
     let mut demuxer = Fmp4SegmentDemuxer::new();
     demuxer
@@ -1001,8 +1113,12 @@ fn skipped_track_data_end_uses_tfhd_default_sample_size() {
 /// 規則が古いままだと、読み飛ばす `traf` のデータ末尾が短くなり、次のトラックの基準位置がずれる
 #[test]
 fn skipped_track_data_end_uses_previous_run() {
-    let (init_segment, data, moof_size) =
-        build_skipped_track_segment(None, Some(SKIPPED_SAMPLE_SIZE), 2);
+    let (init_segment, data, moof_size) = build_skipped_track_segment(
+        None,
+        Some(SKIPPED_SAMPLE_SIZE),
+        2,
+        SkippedRun::OneRowWithoutSize,
+    );
 
     let mut demuxer = Fmp4SegmentDemuxer::new();
     demuxer
@@ -1020,5 +1136,66 @@ fn skipped_track_data_end_uses_previous_run() {
         samples[0].data_offset,
         expected_sample_data_offset(moof_size, 2),
         "読み飛ばすトラックの 2 つの run のデータの分だけ data_offset がずれる"
+    );
+}
+
+/// 読み飛ばすトラックの `TrunSamples::CountOnly` の `trun` から、既定のサンプルサイズと件数の積で
+/// データ末尾を計算すること
+///
+/// `TrunSamples::CountOnly` の `trun` は全サンプルが同じ既定サイズになる。ここでは `trex` の
+/// `default_sample_size` を使う。`data_offset` のない 2 つ目の `trun` は、1 つ目の `trun` のデータの直後から始まる。
+/// PBT のヘルパー（`rewrite_media_segment_default_base_is_moof_false`）はすべての `trun` が `data_offset` を
+/// 持つことを前提にしており、`data_offset` のない 2 つ目の `trun` と `trex` の既定値の組み合わせを作れないため、
+/// 固定入力で確認する
+#[test]
+fn skipped_track_data_end_uses_count_only_runs() {
+    let skipped_run = SkippedRun::CountOnly(3);
+    let (init_segment, data, moof_size) =
+        build_skipped_track_segment(None, Some(SKIPPED_SAMPLE_SIZE), 2, skipped_run);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&data)
+        .expect("media セグメントの処理に失敗した");
+    assert_eq!(
+        samples.len(),
+        1,
+        "対応しているトラックのサンプルが 1 つ返る"
+    );
+    assert_eq!(
+        samples[0].data_offset,
+        expected_sample_data_offset(moof_size, 2 * skipped_run.sample_count()),
+        "読み飛ばすトラックのデータ（3 サンプルの trun が 2 つ）の分だけ data_offset がずれる"
+    );
+}
+
+/// 読み飛ばすトラックの `TrunSamples::CountOnly(0)` の `trun` では、既定のサンプルサイズを決めないこと
+///
+/// データがないため既定サイズは要らない。読み飛ばすトラックに `trex` がなく、`tfhd` にも既定値がなくても
+/// エラーにならず、読み飛ばすトラックのデータ末尾は `trun` のデータの開始位置になる
+#[test]
+fn skipped_track_count_only_run_without_samples_does_not_need_trex() {
+    let (init_segment, data, moof_size) =
+        build_skipped_track_segment(None, None, 1, SkippedRun::CountOnly(0));
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("読み飛ばすトラックに trex がなくても init セグメントの処理は成功する");
+    let samples = demuxer
+        .handle_media_segment(&data)
+        .expect("件数 0 の trun だけなら trex がなくても media セグメントの処理は成功する");
+    assert_eq!(
+        samples.len(),
+        1,
+        "対応しているトラックのサンプルが 1 つ返る"
+    );
+    assert_eq!(
+        samples[0].data_offset,
+        expected_sample_data_offset(moof_size, 0),
+        "読み飛ばすトラックのデータがないので、対応しているトラックのサンプルは mdat の payload の先頭にある"
     );
 }

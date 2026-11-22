@@ -1,63 +1,27 @@
-# `build_av01_box` が `chroma_sample_position == 3` と構文に現れない `twelve_bit` を av1C に書き出す
+# `build_av01_box` で予約された色差サンプル位置と不整合な `twelve_bit` を拒否する
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-av1-build-reserved-fields
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-23
 
 ## 目的
 
-`build_av01_box` が、`parse_sequence_header` の検証結果と矛盾しない `av1C` だけを生成するようにする。
+`build_av01_box` で `chroma_sample_position` の予約値と、Sequence Header の構文に現れない条件で真になっている `twelve_bit` を拒否する。対象はこの 2 項目の生成時の検査に限る。
 
 ## 現状
 
-`src/bitstream/av1.rs` の `parse_sequence_header` は `chroma_sample_position == 3` (CSP_RESERVED) を `InvalidData` として拒否する。一方 `build_av01_box` は `chroma_sample_position > 3` だけを拒否するため、3 を受理して `av1C` に書き出す。
+[AV1 の 6.4.2 Color config semantics](https://aomediacodec.github.io/av1-spec/#color-config-semantics) は色差サンプル位置の 3 を `CSP_RESERVED` とする。[5.5.2 Color config syntax](https://aomediacodec.github.io/av1-spec/#color-config-syntax) では `twelve_bit` は `seq_profile == 2` かつ `high_bitdepth == true` の場合だけ現れる。[AV1 ISOBMFF Binding v1.3.0 の 2.3.4](https://aomediacodec.github.io/av1-isobmff/v1.3.0.html#av1codecconfigurationbox-semantics) は、Sequence Header OBU に `twelve_bit` がない場合、`av1C` の値を 0 とする。
 
-また `twelve_bit` は AV1 の構文上、`seq_profile == 2` かつ `high_bitdepth == 1` のときだけ現れる。`build_av01_box` はこの組み合わせを検査せず、`Av1SequenceHeader` の `twelve_bit` をそのまま `av1C` に写す。
-
-再現:
-
-```rust
-let seq = Av1SequenceHeader {
-    seq_profile: 0,
-    operating_points_cnt_minus_1: 0,
-    operating_point_idc_0: 0,
-    seq_level_idx_0: 0,
-    seq_tier_0: 0,
-    high_bitdepth: true,
-    twelve_bit: true,
-    monochrome: false,
-    chroma_subsampling_x: 1,
-    chroma_subsampling_y: 1,
-    chroma_sample_position: 3,
-    max_frame_width: 320,
-    max_frame_height: 240,
-    reduced_still_picture_header: false,
-};
-let config = Av1SampleEntryConfig {
-    initial_presentation_delay_minus_one: None,
-};
-let av01 = build_av01_box(&seq, &[], &config).unwrap();
-```
-
-確認結果:
-
-```text
-built av1C: profile=0, high=1, twelve=1, csp=3
-```
+`src/bitstream/av1.rs` の `parse_sequence_header` は、`read_color_config` で `CSP_RESERVED` を `ErrorKind::InvalidInput` として拒否し、構文に現れない `twelve_bit` は `false` とする。`build_av01_box` は `config_obus` に Sequence Header OBU があれば解析して引数の `seq` と照合するが、公開型 `Av1SequenceHeader` は Sequence Header OBU がなくても渡せる。`seq` に対する検査では `chroma_sample_position` をビット幅だけで判定し、予約値を除外しない。また `twelve_bit` の構文条件も検査しない。
 
 ## 設計方針
 
-- `build_av01_box` で `chroma_sample_position > 2` を拒否する
-- `seq_profile == 2 && high_bitdepth` 以外で `twelve_bit == true` のときは拒否する。`Av1SequenceHeader` は公開フィールドを持つため、parse を通らない構築でも panic せず `InvalidInput` を返す
-- `Av1cBox` のフィールドは `Av1SequenceHeader` と一致させる現状の写像を維持する
-- parse 側の検証は変えない
-- 不整合な `Av1SequenceHeader` のテストを追加する
+- `build_av01_box` では `chroma_sample_position` が `0..=2` に収まらない入力を `ErrorKind::InvalidInput` とする。`twelve_bit` が真の場合は、`seq_profile == 2` かつ `high_bitdepth == true` を満たさなければ同じエラーを返す。どちらも `Av1cBox` の構築前に検査し、`build_av01_box` の公開ドキュメントのエラー条件に記載する
+- 入力を丸めたり 0 に置き換えたりせず、正常値の写像は維持する。`parse_sequence_header` と `config_obus` の照合、`Av1cBox` の直接のエンコード・デコード、およびそれ以外の項目の検査は変更しない
 
 ## 完了条件
 
-- `chroma_sample_position == 3` の `Av1SequenceHeader` を `build_av01_box` に渡すと `InvalidInput` になる
-- `seq_profile == 0` / `high_bitdepth == true` / `twelve_bit == true` の組み合わせで `InvalidInput` になる
-- `seq_profile == 2` / `high_bitdepth == true` / `twelve_bit == true` の正当な組み合わせは引き続き成功する
-- `tests/test_bitstream_av1.rs` に上記のテストが追加されている
+- `tests/test_bitstream_av1.rs` の公開 API のテストで、正常な設定から片方ずつ条件を外し、予約された色差サンプル位置と、構文に現れない `twelve_bit` がそれぞれ `ErrorKind::InvalidInput` になることを確認する。`twelve_bit` の検査は、プロファイルと `high_bitdepth` の各条件が欠ける場合を別々に確認する。`config_obus` に Sequence Header OBU を含めず、引数の `Av1SequenceHeader` 自体が検査されることを確認する
+- 既存の正常系 `build_av01_box_matches_sequence_header` PBT に、色差サンプル位置が非ゼロの正常値となる 4:2:0 の profile 2・12 ビットの生成を追加する。`Av01Box` を構築でき、`av1C` の `high_bitdepth`、`twelve_bit`、`chroma_sample_position` が解析結果と一致することを確認する
 - `cargo test --workspace` が成功する

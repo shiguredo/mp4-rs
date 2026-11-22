@@ -1,47 +1,29 @@
-# `EsDescriptor` / `DecoderConfigDescriptor` が宣言された size を境界として使わない
+# `EsDescriptor` と子記述子の読み取りを宣言されたペイロード内に制限する
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-descriptor-size-boundary
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-ディスクリプターの decode で、親が宣言した size をペイロードの境界として使い、宣言より後ろのバイトを子ディスクリプターとして読まないようにする。
+各記述子を宣言されたペイロードの範囲内でデコードし、隣接する記述子のバイトを固定フィールド、URL 文字列、または子記述子として読まないようにする。
 
 ## 現状
 
-`src/descriptors.rs` の `EsDescriptor::decode` と `DecoderConfigDescriptor::decode` は、`decode_tag_and_size` が返した size を `_size` として捨て、入れ子の `decode_at` をバッファ全体に対して行う。URL 文字列の長さ検査も、親の size ではなくバッファの残量と比較している。
+`src/descriptors.rs` の `EsDescriptor::decode`、`DecoderConfigDescriptor::decode`、`SlConfigDescriptor::decode` は、`decode_tag_and_size` が返す宣言サイズを使わない。`EsDescriptor` は URL 文字列の長さを入力スライスの残量と比較し、`DecoderConfigDescriptor` はその残りに子のタグが現れるかを調べる。`DecoderSpecificInfo::decode` は自身の宣言サイズを検査するが、親から宣言範囲外のデータを渡されると、親の境界までは判断できない。
 
-`DecoderSpecificInfo::decode` だけは自身の size を境界に使うが、その外側のディスクリプターは size を境界にしない。
-
-再現:
-
-- 最小の `EsDescriptor` を encode すると 23 バイト、size フィールドは 21 になる
-- size フィールドだけを 0 に書き換えて `EsDescriptor::decode` に渡す
-- `Ok` で `es_id=1`、`object_type_indication=0x40`、消費 23 バイトになる
-
-確認結果:
-
-```text
-encoded len=23, size byte=21
-decoded ok: es_id=1, oti=64, consumed=23
-```
-
-size 0 のディスクリプターはペイロードを持たないはずだが、後続のバイトを子ディスクリプターとして読んで成功している。破損した `esds` が別の設定として静かに受理される。
+`DecoderConfigDescriptor::decode` に記載されているプロファイル・レベルの子記述子は未実装。`EsdsBox::decode` は外箱のペイロードから `EsDescriptor` を読むが、その消費長と箱の残量が一致するかは検査しない。
 
 ## 設計方針
 
-- `decode_tag_and_size` の戻り値から size を受け取り、そのディスクリプターのペイロードを `buf[offset..offset + size]` で切り出す
-- 入れ子のディスクリプターは、切り出したペイロードに対してだけ decode する
-- 子ディスクリプターの decode 後に、消費バイト数が親の size と一致することを検査する
-- URL 文字列の長さ検査も、親の size で切り出したペイロードに対して行う
-- 既存の正常な `EsDescriptor` / `DecoderConfigDescriptor` の roundtrip は変えない
+- `decode_tag_and_size` が 0127 で宣言サイズを正確に復号することを前提とする。ここでは返されたヘッダー長と宣言サイズから、実際の入力内に収まるペイロードだけを取り出す。範囲の計算とスライス化に検査付きの操作を使い、算術オーバーフローや範囲外アクセスを起こさない
+- `EsDescriptor`、`DecoderConfigDescriptor`、`SlConfigDescriptor` の固定フィールド、任意フィールド、子は、それぞれの宣言範囲に収めたスライスだけから読む。子のヘッダーと宣言ペイロードも、親が渡した残りのペイロードからはみ出してはならない。`DecoderSpecificInfo` の既存の境界検査は維持する
+- 入力スライス自体がヘッダーや宣言ペイロードの終端に達しない場合、上記 3 型を単体でデコードするときは `ErrorKind::InsufficientBuffer` を返す。宣言範囲を確保できた記述子の中で、読み取るフィールドや子のヘッダー・宣言ペイロードがその境界を越える場合は、当該記述子から `ErrorKind::InvalidData` を返す。既存の未対応値に対する `ErrorKind::Unsupported` は維持する
+- 既知の構文を読み終えた後に同じ記述子の宣言範囲内に残ったデータは、解釈せずに読み飛ばす。未対応要素の解析、保持、再エンコードは対象外。成功時に返す消費バイト数はヘッダー長と宣言ペイロード長の合計とする。宣言内に未解釈の末尾がある場合は、その分も消費バイト数に含めるため、従来の戻り値と異なることがある。`EsdsBox` 自体の境界や残余の扱いは変えない
 
 ## 完了条件
 
-- 上記の size を 0 に改変した `EsDescriptor` が `InvalidData` になる
-- 子ディスクリプターが親の size を超える入力が `InvalidData` になる
-- 正常な `EsDescriptor` / `DecoderConfigDescriptor` の roundtrip テストが引き続き成功する
-- `tests/test_descriptors.rs` に size 改変のテストが追加されている
-- `cargo test --workspace` が成功する
+- 公開の `Decode` の PBT で、正常な記述子を順に読めて、成功時の消費バイト数が次の記述子の先頭を指すことを確認する。宣言範囲内の未解釈部分を読み飛ばす場合も同じ消費長の規則を確認する
+- 実入力の不足と、親の宣言範囲内に必須フィールドや子が収まらない場合を区別して、公開デコードのエラーパスのテストでそれぞれのエラー種別を確認する。任意の子の有無の判定も親の外を参照しないことを確認する
+- 既存の記述子と `esds` を含むファイルのラウンドトリップが引き続き成功し、`cargo test --workspace` が通る

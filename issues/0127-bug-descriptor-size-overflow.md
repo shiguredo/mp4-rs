@@ -1,45 +1,26 @@
-# `decode_tag_and_size` のディスクリプター size が 64 ビットでラップし、オーバーフロー検査をすり抜ける
+# ディスクリプターのサイズの復号で `usize` に収まらない値を拒否する
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-descriptor-size-overflow
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-ディスクリプターの size フィールドを 7 ビットずつ連結するときに桁溢れを検出し、巨大な size を小さな値として受理しないようにする。
+ディスクリプターのサイズを正確に復号する。宣言された値が実行ターゲットの `usize` に収まらない場合は、切り詰めずエラーにする。
 
 ## 現状
 
-`src/descriptors.rs` の `decode_tag_and_size` は、size の更新に `size.checked_shl(7)` を使っている。`checked_shl` はシフト量がビット幅以上かどうかしか検査しないため、`usize` (64 ビット) を超える桁溢れは検出できず、上位ビットが黙って切り捨てられる。
+`src/descriptors.rs` の `decode_tag_and_size` は、サイズを復号するたびに `usize::checked_shl` で 7 ビット左へシフトする。[Rust の契約](https://doc.rust-lang.org/std/primitive.usize.html#method.checked_shl) では、これはシフト量が型のビット幅以上かどうかを検査するだけで、結果から上位ビットが失われても `None` にはならない。影響は 64 ビットに限らず、`usize` の幅に依存する。
 
-再現入力:
-
-```text
-05 81 80 80 80 80 80 80 80 80 80 00
-```
-
-これは `tag=5`、size フィールド 11 バイトで、先頭の 7 ビットが 1、残りが 0 である。数学的な宣言値は `128^10 = 2^70` だが、64 ビットでラップして 0 になる。
-
-確認結果:
-
-```text
-decoded ok: payload_len=0, consumed=12
-```
-
-本来は size の桁溢れとして `InvalidData` を返すべき入力が、空の `DecoderSpecificInfo` として受理される。
+この関数はタグ、宣言サイズ、ヘッダーの消費バイト数を返す。ペイロードは解析せず、既存の `tag_and_size` テストもヘッダー解析をペイロードの検証と切り離して確認している。
 
 ## 設計方針
 
-- `checked_shl` ではなく、`checked_mul(128)` と `checked_add` で桁溢れを検査する
-- size が入力の残りバイト数を超える場合は、その時点で `InvalidData` を返す
-- 既存の正常なディスクリプターの decode 結果は変えない
-- 10 バイト以上の size フィールドを持つ入力のテストを追加する
+- `decode_tag_and_size` の数値の組み立てをチェック付きの乗算と加算に置き換え、各桁の更新時点で `usize` に収まらなければ `ErrorKind::InvalidData` を返す。そこまでの更新が範囲内で、次の桁を読む際に入力が尽きた場合は、従来どおり `ErrorKind::InsufficientBuffer` を返す
+- 宣言サイズとペイロードの残量の比較はこの関数に追加しない。`DecoderSpecificInfo::decode` の既存の境界検査は維持し、外側の記述子の宣言境界は 0128 で扱う。エンコードと、サイズ欄のバイト数に関する受理方針は変えない
 
 ## 完了条件
 
-- 上記の 11 バイトの size フィールドを持つ入力が `InvalidData` になる
-- size が `usize` の範囲を超える入力で、ラップした値として受理されない
-- 2 バイト以内の通常の size フィールドを持つ既存のテストが引き続き成功する
-- `tests/test_descriptors.rs` に上記の再現テストが追加されている
-- `cargo test --workspace` が成功する
+- 内部のサイズ更新を対象とする単体テストで、通常の値が正しく計算され、`usize` に収まらない更新が `ErrorKind::InvalidData` になることを確認する。テストを対象の `usize` 幅に依存させない
+- 既存の `tag_and_size` テストで、タグ、サイズ、ヘッダーの消費バイト数が変わらない。既存の公開 API のラウンドトリップとエラーパス、4 バイトのサイズ欄を含む既存の AAC ファイルのラウンドトリップを含め、`cargo test --workspace` が成功する

@@ -1,49 +1,31 @@
-# `TfdtBox` / `TfraBox` が version 2 を受理し、version 2 の full box を書き出す
+# `TfdtBox` と `TfraBox` で未対応のバージョンを既知の構文として扱わない
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-tfdt-tfra-invalid-version
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-`tfdt` と `tfra` の full box の version を 0 か 1 に限定し、仕様外の version 2 を受理・出力しないようにする。
+このライブラリが対応する `tfdt` と `tfra` のバージョンを 0 と 1 に限定する。未対応のバージョンを既知の構文としてデコードせず、エンコードでも出力しない。
 
 ## 現状
 
-ISO/IEC 14496-12 の `TrackFragmentBaseMediaDecodeTimeBox` (`tfdt`) と `TrackFragmentRandomAccessBox` (`tfra`) の version は 0 か 1 である。`TfdtBox` は decode した version を公開フィールドとして保持し、`FullBox::full_box_version` が値の範囲内なら保存値を返す。`TfraBox` も同じ構造である。
+ISO/IEC 14496-12:2015 の 8.8.12.2 と 8.8.12.3 は `tfdt` のバージョン 0 と 1 を定義する。`tfra` は同規格の 8.8.10.2 でバージョン 1 とそれ以外に構文を分けているが、ここでは規格が 2 以上を禁止すると断定せず、ライブラリの対応範囲を 0 と 1 とする。同規格の 4.2 は未認識バージョンのボックスを読み飛ばすとしている。
 
-そのため `TfdtBox { version: 2, .. }` を encode すると、32 ビットの `base_media_decode_time` を持つ version 2 のボックスを書き出す。decode 側も `version == 1` 以外をすべて 32 ビットとして読むため、version 2 の入力を version 0 のレイアウトとして受理する。
+`src/boxes_fmp4.rs` の `TfdtBox::decode` と `TfraBox::decode` は、バージョン 1 以外を 32 ビットの時刻・位置の構文として読み、バージョンを公開フィールドに保持する。エンコード時は `full_box_version` が、時刻や位置が 32 ビットに収まらなければ 1 を返し、収まれば保持値を返す。そのため、保持値が範囲外でも、値によってはそのままヘッダーに書かれるか、バージョン 1 に置き換わる。
 
-再現:
-
-```rust
-let tfdt = TfdtBox {
-    version: 2,
-    base_media_decode_time: 1000,
-};
-let bytes = tfdt.encode_to_vec().unwrap();
-assert_eq!(bytes[8], 2);
-```
-
-確認結果:
-
-```text
-tfdt len=16, version_byte=2
-decoded version=2, time=1000
-```
+親の `TrafBox::decode` と `MfraBox::decode` は現在、各子のデコードエラーを伝播させる。単体のデコーダーで未対応バージョンを拒否するだけでは、親が読み飛ばすことにはならない。
 
 ## 設計方針
 
-- `TfdtBox::decode` と `TfraBox::decode` で、version が 2 以上のとき `InvalidData` を返す
-- `TfdtBox::encode` と `TfraBox::encode` で、保存された version が 0 か 1 であることを検査し、範囲外なら `InvalidInput` を返す
-- `CttsBox` と `CslgBox` は既に version 2 以上を拒否しているため、同じ方針に揃える
-- version 0 / 1 の roundtrip と、version 2 の拒否テストを追加する
+- `TfdtBox::decode` と `TfraBox::decode` を単体で呼んだ場合、FullBox ヘッダーに 0・1 以外があれば、バージョン別フィールドを読む前に `ErrorKind::InvalidData` を返す
+- `TrafBox::decode` と `MfraBox::decode` は、入力範囲に収まる子ヘッダーと FullBox ヘッダーを読めた場合に限り、未対応バージョンの `tfdt` または `tfra` を、その子の検証済みの範囲の末尾まで読み進めて捨てる。子の外形の検査でエラーになった場合や、子を通常どおり型付きでデコードしてエラーになった場合は、そのエラーを返す。`tfdt` は重複判定より先に未対応バージョンを除外する。それ以外の重複は変更せず、最初の `tfdt` を採用済みで、重複した子の FullBox ヘッダーを読めない場合も、外形が正しければ従来どおり `UnknownBox` として扱う。この読み飛ばしの分岐では、親の残り全体を子の範囲とはみなさず、子の `size` が 0 なら `ErrorKind::InvalidData` を返す。対応バージョンと既存の重複処理のサイズ契約は変えない。未対応バージョンの本文やフラグの意味は解釈しない。`tfdt` がないときのデマルチプレクサーの時刻計算は 0110 の対象とする。`mfra` を再エンコードする際の `mfro.size` は 0125 で扱うため、0125 を先に実装する
+- `TfdtBox::encode` と `TfraBox::encode` は、ヘッダーの書き込み前に、算出後のバージョンではなく `self.version` を検査する。0・1 以外を `ErrorKind::InvalidInput` とし、有効な 0 を 64 ビットが必要なときに 1 へ昇格する既存の挙動は維持する
 
 ## 完了条件
 
-- version 2 の `tfdt` を decode すると `InvalidData` になる
-- `TfdtBox { version: 2, .. }.encode_to_vec()` が `InvalidInput` になる
-- version 2 の `tfra` でも decode / encode が同様にエラーになる
-- version 0 / 1 の `tfdt` / `tfra` は従来どおり roundtrip する
+- 単体デコードで未対応バージョンを `ErrorKind::InvalidData` とし、エンコードでは 32 ビットに収まる値かどうかに関係なく、範囲外の保持値を `ErrorKind::InvalidInput` とする
+- 親をデコードすると未対応バージョンの子は結果に含まれず、後続の対応バージョンの子を読める。未対応の `tfdt` は、対応バージョンの `tfdt` の後にあっても `UnknownBox` として保持されない。対応バージョンの子のデコードエラーは引き続き親から返る
+- 既存の往復 PBT で、バージョン 0 と、時刻・位置が 32 ビットに収まる場合も含むバージョン 1 が保持されることを確認する。既存の生成器は、32 ビットに収まる値で 0 と 1 をそれぞれ明示的に生成できるようにし、`tfdt_box_roundtrip` にはデコード後のバージョンの比較を加える。有効なバージョン 0 の指定で 64 ビットが必要な場合は、出力がバージョン 1 になることを両型で確認する
 - `cargo test --workspace` が成功する

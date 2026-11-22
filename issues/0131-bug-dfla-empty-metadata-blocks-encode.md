@@ -1,13 +1,15 @@
-# `DflaBox` が空のメタデータブロック列を encode でき、自身の decode で拒否される
+# `DflaBox::encode` で先頭に STREAMINFO がないメタデータ列を拒否する
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-dfla-empty-metadata-blocks-encode
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-`DflaBox` の encode が、自身の decode で受理されるボックスだけを生成するようにする。
+`DflaBox::encode` で、メタデータ列が空の場合と先頭が STREAMINFO でない場合を拒否する。
+
+[Xiph.Org の Encapsulation of FLAC in ISO Base Media File Format 0.0.4](https://raw.githubusercontent.com/xiph/flac/1.5.0/doc/isoflac.txt) の 3.3.2 は、`dfLa` に最低 1 個のメタデータブロックが必要で、先頭は STREAMINFO であることを定めている。
 
 ## 現状
 
@@ -19,7 +21,7 @@
 
 ```rust
 let b = DflaBox { metadata_blocks: vec![] };
-let bytes = b.encode_to_vec().unwrap();
+let bytes = b.encode_to_vec().expect("現行のエンコーダーは空の列を書き出す");
 assert!(DflaBox::decode(&bytes).is_err());
 ```
 
@@ -32,15 +34,13 @@ decode result is_ok=false
 
 ## 設計方針
 
-- `DflaBox::encode` の先頭で、decode と同じ不変条件を検査する。すなわち、ブロック列が空でないこと、先頭の `block_type` が `FlacMetadataBlock::BLOCK_TYPE_STREAMINFO` であることを確認し、違反なら `InvalidInput` を返す
-- 構築時に不変条件を保証する `DflaBox::new` のような API を追加する場合は、この issue の範囲に含めてよい
-- decode の受理条件は変えない
-- 正常な `DflaBox` の roundtrip テストは維持する
+- `DflaBox::encode` は、ヘッダーを書き込む前に先頭ブロックを確認する。先頭が存在しない場合と、その `block_type` が `FlacMetadataBlock::BLOCK_TYPE_STREAMINFO` でない場合は `ErrorKind::InvalidInput` を返す
+- 対象はこの 2 条件のエンコード時の検査に限る。公開フィールドと API は変更せず、`DflaBox::decode` の受理条件、各ブロックの内部データ、最終ブロックフラグの扱いは変えない
 
 ## 完了条件
 
 - `DflaBox { metadata_blocks: vec![] }.encode_to_vec()` が `InvalidInput` を返す
 - 先頭が STREAMINFO でない `DflaBox` の encode が `InvalidInput` を返す
-- STREAMINFO を先頭に持つ正常な `DflaBox` は従来どおり roundtrip する
+- 正常系は既存の `dfla_box_roundtrip` PBT と、FLAC を含む MP4 ファイルのラウンドトリップが引き続き成功する
 - `tests/test_boxes_sample_entry.rs` に空の列と先頭種別のテストが追加されている
 - `cargo test --workspace` が成功する

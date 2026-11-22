@@ -1,50 +1,33 @@
-# `TrunBox::decode` が per-sample データを持たない `trun` で入力長と無関係に約 640 MiB を確保する
+# `TrunBox` でサンプルごとのフィールドがないランの件数をコンパクトに保持する
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-trun-no-sample-data-memory-amplification
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-信頼できない MP4 を解析したときに、小さな `trun` ボックスから巨大なメモリ確保が発生しないようにする。
-
-`trun` の per-sample フィールドは `tfhd` / `trex` の既定値で補えるため、`sample_count` はペイロード長に比例しない。しかし現在の `TrunBox::decode` は、per-sample フィールドがすべて無い場合でも `sample_count` 個の `TrunSample` を `Vec` に確保する。
+サンプルごとのフィールドを持たない `trun` の符号化・復号で、サンプル数に比例するメモリ確保やループを行わず、論理サンプル数を維持する。
 
 ## 現状
 
-`src/boxes_fmp4.rs` の `TrunBox::decode` は、per-sample フィールドのフラグがすべて 0 のとき `bytes_per_sample == 0` となり、payload の残量と無関係に `sample_count` 個のサンプルを push する。上限は定数 `MAX_SAMPLES_WITHOUT_DATA = 16_777_216` で、コメントでは「`TrunSample` 約 32 バイト × 16M = 512MB」と見積もっている。
+ISO/IEC 14496-12:2015 の 8.8.8.1〜8.8.8.3 では、`trun` の各サンプル行に含まれるフィールドはラン全体に共通のフラグで決まり、行にはフィールドがなくてもよい。したがって `sample_count` の妥当性は `trun` や親の `moof` の長さだけからは判定できない。
 
-この環境の `size_of::<TrunSample>()` は 40 バイトであり、実際の確保量は約 640 MiB になる。
+`src/boxes_fmp4.rs` の `TrunBox::decode` は、サンプルごとのフィールドがない場合にも個々の `TrunSample` を `Vec` に格納する。`TrunBox::encode` はこの `Vec` の長さを件数として書く。単に空の `Vec` にすると、本来の件数が失われる。
 
-再現入力 (16 バイト):
-
-```text
-00 00 00 10 74 72 75 6e 00 00 00 00 01 00 00 00
-```
-
-これは `size=16`, `trun`, `version=0`, `flags=0`, `sample_count=0x01000000` (16,777,216) を表す。
-
-確認結果:
-
-```text
-samples=16777216, consumed=16, size_of_trun_sample=40,
-hwm_before_kb=3376, hwm_after_kb=658532
-```
-
-`/usr/bin/time -v` でも最大 RSS 658,532 KiB、経過 0.33 秒だった。
+`Fmp4SegmentDemuxer` は、省略された duration・size・flags に `tfhd`、次いで `trex` の既定値を使う。`first_sample_flags` があれば先頭サンプルのフラグにのみ優先し、省略された `composition_time_offset` は `None` のまま返す。対応トラックではサンプルごとの結果を返し、読み飛ばすトラックでは `skipped_traf_data_end` がデータ末尾だけを求める。
 
 ## 設計方針
 
-- per-sample データが無い `trun` では、`sample_count` 個の `TrunSample` を実体化しない。サンプル数を保持するだけの表現にするか、必要になった時点で既定値を使って展開する
-- 実体化を続ける場合は、`sample_count` の上限を入力長や親 `moof` のサイズから決める。単純に上限値を小さくするだけでは、大きな `sample_count` を持つ正当なファイルを拒否し得るため、呼び出し側が入力全体のサイズを知れる経路と組み合わせる
-- いずれの方式でも、16 バイトの入力から数百 MiB を確保しないことをテストで固定する
-- `trun` の per-sample データがある場合の上限検査は現状を維持する
+- `TrunBox::samples` は、件数だけの形式と、サンプルごとの値を持つ形式を区別する列挙型に変更する。公開 Rust API の型変更として扱い、ボックスの公開エクスポート、`Fmp4SegmentMuxer::build_moof`、`Fmp4SegmentDemuxer` と既存のテストを新しい型に合わせる
+- デコードは各行の `duration`、`size`、`flags`、`composition_time_offset` がすべて省略されている場合に限り、件数だけを保持する。ラン単位の `data_offset` と `first_sample_flags` の有無はこの判定に含めない。エンコードはその件数を直接使い、両フィールドを保持する。サンプルごとのフラグとバージョンの計算も個別行を走査せずに行う。サンプルごとの値を持つ形式では、エンコード時の既存の有無の整合性検査と、デコード時のペイロード境界検査を維持する。従来の全フィールドが `None` の配列は、同じ論理件数の件数だけの形式に置き換える
+- サンプルごとのフィールドがないランの復号では、受理範囲を変えないため既存の件数上限を維持する。この形式の件数上限の根拠に `trun` や `moof` のバイト長は使わない
+- 対応トラックでは、件数だけのランを処理する際に既定値を使い、空の `TrunSample` の配列は作らない。読み飛ばすトラックでは、件数が 0 なら既定サイズを解決せず、そうでなければ既定サイズと件数の積からチェック付き算術でデータ末尾を求める。後続ランと `traf` の基準位置の規則は変えない
+- この課題はボックスの空行の実体化をなくすことに限定する。デマルチプレクサーの一括出力の契約や、出力全体に対する資源制限は変更しない
 
 ## 完了条件
 
-- 上記 16 バイトの入力で `TrunBox::decode` が成功する場合でも、確保量が入力長に対して十分小さい (目安として 16 MiB 以下) ことをテストで確認できる
-- または、上記の入力が `InvalidData` として拒否される
-- per-sample データを持たない正当な `trun` で、`sample_count` が小さい入力は今どおり decode できる
-- PBT または fuzz の入力に、per-sample データ無しで巨大な `sample_count` を持つケースが追加されている
-- `cargo test --workspace` が成功する
+- 少数のサンプルを持つ通常のボックスを用いた PBT で、サンプルごとのフィールドがないランは件数だけの形式になり、論理件数、`data_offset`、`first_sample_flags` が再エンコードと再デコードを経ても維持されることを確認する
+- 対応トラックでは、件数だけのランと等価な値を各サンプル行に明示したランを比較する。サンプルの尺、サイズ、キーフレーム判定が一致し、`composition_time_offset` が両方とも `None` であることを確認する。先頭には残りのサンプルと異なるキーフレーム判定になるフラグを用い、行にフラグを明示する比較側では `first_sample_flags` を併用しない。直後の `data_offset` を持たないランのサンプル位置も比較する
+- 読み飛ばすトラックでは、件数だけのランから求めたデータ末尾を、`base_data_offset` がなく `default_base_is_moof` が false の次の `traf` が使うケースを確認する。どちらのテストも、`moof` の長さの違いを考慮し、各セグメントの `mdat` のペイロード内で同じ範囲を指すことを確認する
+- サンプルごとの値を持つランの検証と `Fmp4SegmentMuxer` の既存出力は変わらず、`cargo test --workspace` が成功する

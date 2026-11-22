@@ -1,57 +1,31 @@
-# `BoxSize::U32(1..=7)` と `with_payload_size(u64::MAX)` が不正なヘッダーを生成する
+# ボックスヘッダーのサイズと未知ボックスのペイロード長を検査する
 
 - Created: 2026-11-22
 - Completed: {YYYY-MM-DD}
 - Branch: feature/fix-box-size-invalid-encoding
-- Polished: {YYYY-MM-DD}
+- Polished: 2026-11-22
 
 ## 目的
 
-`BoxSize` と `BoxHeader` の encode が、自身で decode できないヘッダーや panic を発生させないようにする。
+`BoxHeader::encode` で符号化形式と両立しないサイズを拒否し、`UnknownBox::encode` では固定長の宣言と実際のペイロード長を一致させる。`BoxSize::with_payload_size` は、総サイズを表現できないとき、パニックや切り詰めではなくエラーを返す。
 
 ## 現状
 
-`BoxSize` は公開 enum で任意の値を作れる。`BoxHeader::encode` は `BoxSize::U32(v)` をそのまま 32 ビットの size フィールドに書く。
+`src/basic_types.rs` の `BoxHeader::encode` は、公開の `BoxSize` の値に合わせてサイズ欄を書き出すが、予約値と符号化形式の整合や、固定長の下限は検査しない。`BoxSize::with_payload_size` は、ペイロードに通常ヘッダー分を足す計算と、拡張サイズ欄の 8 バイトを後から足す計算を検査していない。
 
-`BoxSize::U32(1)` は「size=1 で largesize が続く」形式を意味するが、`encode` は largesize を書かない。そのため出力は自身の `BoxHeader` でも解釈できない。`U32(2..=7)` もヘッダー幅未満のサイズとなり、decode の最小サイズ検査で拒否される。
+ISO/IEC 14496-12:2015 の 4.2 では、サイズはヘッダーを含むボックス全体のバイト数で、32 ビットのサイズ欄の 1 は拡張サイズ、0 はファイルの末尾までを表す。UUID 型は 16 バイトの `usertype` を追加する。通常型のヘッダー長は 32 ビット形式で 8 バイト、拡張形式で 16 バイト。UUID 型ではそれぞれ 24 バイトと 32 バイトになる。
 
-また `BoxSize::with_payload_size(BoxType::Normal(*b"test"), u64::MAX)` は、`4 + external_size + payload` の加算が debug ビルドで panic する。
-
-再現:
-
-```rust
-let b = UnknownBox {
-    box_type: BoxType::Normal(*b"test"),
-    box_size: BoxSize::U32(1),
-    payload: vec![0; 8],
-};
-let bytes = b.encode_to_vec().unwrap();
-assert!(UnknownBox::decode(&bytes).is_err());
-
-let _ = BoxSize::with_payload_size(BoxType::Normal(*b"test"), u64::MAX);
-```
-
-確認結果:
-
-```text
-encoded len=16, head=[00, 00, 00, 01, 74, 65, 73, 74, 00, 00, 00, 00]
-decode result is_ok=false
-
-box size payload overflow:
-      panicked: attempt to add with overflow
-```
+`src/boxes.rs` の `UnknownBox::encode` は保持したサイズ欄とペイロードを書くだけで、両者が一致するかを検査しない。
 
 ## 設計方針
 
-- `BoxHeader::encode` で `BoxSize::U32(1..=7)` を拒否する。`U32(0)` は可変長として許容し、`U32(8..)` と `U64` は現状どおりとする
-- `BoxSize::with_payload_size` の加算を `checked_add` にし、オーバーフロー時は `Result` を返すか、呼び出し側が検出できる形にする。関数のシグネチャ変更が大きい場合は、飽和させたうえで `U64` を返すなどの明示的な方針を決める
-- `UnknownBox::encode` は保持している `box_size` をそのまま使わず、`finalize_box_size` などで実際のペイロードからサイズを再計算する
-- 既存の正常な `BoxSize` の roundtrip は変えない
+- `BoxHeader::encode` は書き込み前に、拡張サイズ欄を伴わない 32 ビットの拡張用予約値と、実際のヘッダー幅に満たない固定長を `ErrorKind::InvalidInput` として拒否する。種別とサイズ形式の両方から下限を求める。`BoxSize::VARIABLE_SIZE` と、`Mp4FileMuxer` が `mdat` 用に予約し後で確定する `BoxSize::LARGE_VARIABLE_SIZE` は、ヘッダー単体では種別を問わず従来どおり書き込めるようにする。後者を完成したボックスのサイズとしては扱わない
+- `BoxSize::with_payload_size` の戻り値を `Result<Self>` に変更する。種別に応じた `U32` 形式のヘッダーを加えた総サイズが `u32` に収まる場合のみ `U32` を選び、収まらなければ拡張サイズ欄の分も足して `U64` を返す。どちらの加算も検査し、表現できない総サイズには `ErrorKind::InvalidInput` を返す。飽和・ラップは行わない。この戻り値の変更は公開 Rust API の破壊的変更となる。コアの `BoxHeader::finalize_box_size`、`FreeBox::encode`、`MdatBox::encode`、WASM バインディングとトランスコード例、およびテストの呼び出し箇所を更新する
+- `UnknownBox::encode` は固定長の場合、保持する形式のヘッダー幅と `payload.len()` の検査付きの合計が宣言サイズに一致するときだけ書き込む。不一致、または完成済みボックスに `BoxSize::LARGE_VARIABLE_SIZE` を指定した場合は、書き込み前に `ErrorKind::InvalidInput` を返す。有効な固定長の形式を選び直さず、`BoxSize::VARIABLE_SIZE` によるトップレベル末尾の既存表現も保持する。デコード側と既存のボックス配置ルールは変更しない。UUID ヘッダー内のフィールド順序は 0095 の対象とする
 
 ## 完了条件
 
-- `BoxSize::U32(1..=7)` の `BoxHeader::encode` が `InvalidInput` を返す
-- `BoxSize::with_payload_size` に `u64::MAX` を渡しても panic せず、エラーまたは明示的に定義した飽和値になる
-- `UnknownBox` の `box_size` と `payload` が食い違う入力でも、encode が整合したヘッダーを書くかエラーを返す
-- 正常な `U32(8..)` / `U32(0)` / `U64` の roundtrip テストが引き続き成功する
+- 公開エンコードのエラーパスで、通常型と UUID 型のヘッダー下限、および未知ボックスの固定長とペイロード長の不一致を検査する
+- ペイロードを確保せず、通常型と UUID 型のそれぞれについて、`U32` に収まる最大の総サイズ、`U64` への切り替え直後、表現可能な最大の総サイズをサイズ計算 API で確認する。二段の加算はそれぞれ表現不能な場合に `ErrorKind::InvalidInput` となることを確認する。大きなペイロードを生成する既存の正常系 PBT は、成功を期待する範囲を表現可能な値に限定する
+- 正常系の PBT で、通常型と UUID 型の `U32`・`U64` ヘッダーが従来の幅で往復し、未知ボックスは短いペイロードに対しても `U32` と `U64` の両方を明示的に構成し、符号化されたヘッダーの幅と、デコード後のサイズ形式・サイズ値・ペイロードが元の指定と一致することを確認する。既存のトップレベル末尾の可変長表現と、マルチプレクサーの `mdat` ヘッダー予約・確定も維持する
 - `cargo test --workspace` が成功する

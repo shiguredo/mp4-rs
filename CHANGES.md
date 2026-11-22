@@ -124,6 +124,13 @@
   - `compatible_brands` の `iso5` / `iso6` / `mp41` と、サンプルエントリーに応じた `hev1` / `hvc1` / `av01` は変わらない
   - このため init セグメントの `ftyp` のバイト列が変わる
   - @voluntas
+- [FIX] `MfraBox::encode` が `mfro.size` に `mfra` の実サイズと異なる値を書き出すことがあったのを修正する
+  - これまでは `mfro_box.size` の値をそのまま書き出していた
+  - `MfraBox::decode` は `tfra` と `mfro` 以外の子ボックスを読み飛ばすため、そのような子ボックスを含む `mfra` を decode して encode し直すと、出力は短くなるのに `mfro.size` は入力の値のまま残っていた
+  - ISO/IEC 14496-12:2015 の 8.8.11.3 に合わせ、`mfro.size` にはエンコード後の `mfra` 全体のバイト数を書き出す
+  - このため `mfro_box.size` に実サイズと異なる値を入れて encode していた場合、出力の `mfro.size` が変わる。decode ではこれまでどおり入力の値を `mfro_box.size` に保持する
+  - `Fmp4SegmentMuxer::mfra_bytes` の出力は変わらない
+  - @voluntas
 
 ### misc
 

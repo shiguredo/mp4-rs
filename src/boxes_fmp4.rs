@@ -1123,7 +1123,13 @@ pub struct MfraBox {
     /// トラックごとに 1 個の `tfra` ボックス（ランダムアクセスエントリー列）
     pub tfra_boxes: Vec<TfraBox>,
 
-    /// 末尾に配置される必須の `mfro` ボックス（この `mfra` のサイズを保持する）
+    /// 末尾に配置される必須の `mfro` ボックス（仕様上は親の `mfra` 全体のバイト数を持つ）
+    ///
+    /// デコード時は入力の `mfro.size` の値をそのまま保持する。
+    /// エンコード時は `mfro_box.size` の値を使わず、エンコード後の `mfra` 全体のバイト数を
+    /// `mfro.size` に書き込む。
+    /// このため入力の `mfro.size` が実サイズと異なる場合、decode → encode → decode で
+    /// `mfro_box.size` の値は変わる。
     pub mfro_box: MfroBox,
 }
 
@@ -1139,8 +1145,25 @@ impl Encode for MfraBox {
         for b in &self.tfra_boxes {
             offset += b.encode(&mut buf[offset..])?;
         }
-        offset += self.mfro_box.encode(&mut buf[offset..])?;
+
+        // ISO/IEC 14496-12:2015 8.8.11.3 では、mfro.size は親の mfra ボックス全体のバイト数を表す。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+        //
+        // self.mfro_box.size はデコード元の値や利用者が設定した値であり、エンコード後の実サイズと
+        // 一致する保証がない（decode で読み飛ばした未知の子ボックスや、64 ビットサイズのヘッダーの
+        // 32 ビット化で出力が短くなる）ため使わない。
+        // mfra のサイズは書き終えるまで確定しないので、size = 0 で mfro を書いてから上書きする。
+        offset += MfroBox { size: 0 }.encode(&mut buf[offset..])?;
         header.finalize_box_size(&mut buf[..offset])?;
+
+        // finalize_box_size は mfra 全体のサイズが通常ヘッダー（32 ビットの size）に収まる場合だけ成功する
+        let mfra_size = u32::try_from(offset)
+            .expect("mfra box size must fit in u32 after finalize_box_size succeeds");
+
+        // mfro のペイロードは FullBox ヘッダー（4 バイト）の後に 32 ビットの size が続く固定長なので、
+        // mfra の末尾 4 バイトが mfro.size フィールドにあたる
+        let mfro_size_offset = offset - size_of::<u32>();
+        mfra_size.encode(&mut buf[mfro_size_offset..offset])?;
         Ok(offset)
     }
 }
@@ -1434,6 +1457,9 @@ pub struct TfraEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MfroBox {
     /// mfra ボックスのサイズ
+    ///
+    /// [`MfraBox`] の子としてエンコードする場合、この値は使われず、
+    /// エンコード後の `mfra` 全体のバイト数が書き込まれる（[`MfraBox::mfro_box`] 参照）。
     pub size: u32,
 }
 

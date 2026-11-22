@@ -1,14 +1,14 @@
 //! Fragmented MP4 (fMP4) ボックスの Property-Based Testing
 //!
 //! MoofBox, MfhdBox, TrafBox, TfhdBox, TrunBox, TfdtBox, SidxBox,
-//! MvexBox, TrexBox, MehdBox のテスト
+//! MvexBox, TrexBox, MehdBox, TfraBox, MfraBox のテスト
 
 use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, SampleFlags,
     boxes::{
-        MehdBox, MfhdBox, MoofBox, MvexBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
-        TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
+        FreeBox, MehdBox, MfhdBox, MfraBox, MfroBox, MoofBox, MvexBox, SidxBox, SidxReference,
+        TfdtBox, TfhdBox, TfraBox, TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample,
     },
 };
 
@@ -713,6 +713,129 @@ fn tfra_box_roundtrip() -> noprop::TestResult {
 
         assert_eq!(size, encoded.len());
         assert_eq!(decoded, tfra);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== MfraBox のテスト =====
+
+/// MfraBox の decode → encode で、mfro.size が再エンコード後の mfra 全体のバイト数になる
+///
+/// 入力の mfra は通常ヘッダー、tfra 列、任意の位置に挟んだ free（0 個または 1 個）、末尾の mfro からなる。
+/// free は MfraBox が保持しない未知の子ボックスなので、decode で読み飛ばされ再エンコードで消える。
+/// 入力の mfro.size には、再エンコード後の実サイズと必ず食い違う値を入れる。
+#[test]
+fn mfra_box_decode_encode_rewrites_mfro_size() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let tfra_boxes = sample_vec(ctx, 0..3, arb_tfra_box);
+        let tfra_bytes: Vec<Vec<u8>> = tfra_boxes
+            .iter()
+            .map(|b| b.encode_to_vec().expect("Vec への書き込みは失敗しない"))
+            .collect();
+
+        // free を挟む場合は、tfra 列の先頭・間・末尾（mfro の直前）のいずれかに置く
+        let mut children = tfra_bytes.clone();
+        let free_size = if noprop::sample_bool(ctx) {
+            let payload_len = noprop::sample_usize_in(ctx, 0..16);
+            let free = FreeBox {
+                payload: noprop::sample_bytes_vec(ctx, payload_len),
+            };
+            let free_bytes = free.encode_to_vec().expect("Vec への書き込みは失敗しない");
+            let size = free_bytes.len();
+            let position = noprop::sample_usize_in(ctx, 0..=children.len());
+            children.insert(position, free_bytes);
+            Some(size)
+        } else {
+            None
+        };
+
+        // mfro は通常ヘッダー（8 バイト）、FullBox ヘッダー（4 バイト）、32 ビットの size からなる
+        // 固定長 16 バイトのボックス
+        let mfro_box_size = 16;
+        let input_size = 8 + children.iter().map(Vec::len).sum::<usize>() + mfro_box_size;
+        let input_size_u32 = u32::try_from(input_size).expect("入力の mfra は u32 に収まる大きさ");
+        let stale_mfro_size = match free_size {
+            // 入力の mfra 全体のバイト数（入力の mfra としては正しい値）を入れる。
+            // free が消えた後の実サイズとは free のバイト数だけ食い違う
+            Some(_) => input_size_u32,
+            // 未知の子ボックスがない場合、実サイズは入力と同じなので、それに 0 以外の値を足して食い違わせる
+            None => input_size_u32
+                .wrapping_add(noprop::sample_u64_in(ctx, 1..=u64::from(u32::MAX)) as u32),
+        };
+
+        // 通常ヘッダー（32 ビットの size + 種別）の後に子ボックス列と mfro を並べて入力を組み立てる
+        let mut input = Vec::new();
+        input.extend_from_slice(&input_size_u32.to_be_bytes());
+        input.extend_from_slice(b"mfra");
+        for child in &children {
+            input.extend_from_slice(child);
+        }
+        let mfro_bytes = MfroBox {
+            size: stale_mfro_size,
+        }
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない");
+        assert_eq!(mfro_bytes.len(), mfro_box_size, "mfro は固定長 16 バイト");
+        input.extend_from_slice(&mfro_bytes);
+        assert_eq!(input.len(), input_size);
+
+        let (decoded, consumed) =
+            MfraBox::decode(&input).expect("組み立てた有効な mfra は必ずデコードできる");
+        assert_eq!(consumed, input.len());
+        assert_eq!(decoded.tfra_boxes, tfra_boxes);
+        // デコード時は入力の mfro.size をそのまま保持する
+        assert_eq!(decoded.mfro_box.size, stale_mfro_size);
+
+        let encoded = decoded
+            .encode_to_vec()
+            .expect("デコードした MfraBox は必ずエンコードできる");
+        // free は再エンコードで消えるため、出力は free のバイト数だけ短くなる
+        assert_eq!(encoded.len(), input.len() - free_size.unwrap_or(0));
+
+        // 出力は、free を除いた入力の mfra ヘッダーの size と mfro.size の 2 か所だけを
+        // 出力のバイト数に直したバイト列と完全に一致する
+        let encoded_size_u32 =
+            u32::try_from(encoded.len()).expect("出力の mfra は u32 に収まる大きさ");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&encoded_size_u32.to_be_bytes());
+        expected.extend_from_slice(b"mfra");
+        for tfra in &tfra_bytes {
+            expected.extend_from_slice(tfra);
+        }
+        expected.extend_from_slice(
+            &MfroBox {
+                size: encoded_size_u32,
+            }
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない"),
+        );
+        assert_eq!(encoded, expected);
+
+        let (redecoded, reconsumed) =
+            MfraBox::decode(&encoded).expect("エンコードした MfraBox は必ずデコードできる");
+        assert_eq!(reconsumed, encoded.len());
+        assert_eq!(redecoded.tfra_boxes, tfra_boxes);
+        // mfro.size は入力の値ではなく、再エンコード後の mfra 全体のバイト数と一致する
+        assert_eq!(
+            redecoded.mfro_box.size, encoded_size_u32,
+            "mfro.size が再エンコード後の mfra の実サイズと一致しない"
+        );
+
+        // 出力とちょうど同じ長さのバッファにも同じバイト列を書き込め、1 バイト足りないバッファでは
+        // InsufficientBuffer になる
+        let mut exact = vec![0; encoded.len()];
+        let written = decoded
+            .encode(&mut exact)
+            .expect("出力と同じ長さのバッファには必ずエンコードできる");
+        assert_eq!(written, encoded.len());
+        assert_eq!(exact, encoded);
+        let mut short = vec![0; encoded.len() - 1];
+        let err = decoded
+            .encode(&mut short)
+            .expect_err("出力より 1 バイト短いバッファへのエンコードは必ず失敗する");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
         Ok(())
     })?;
     Ok(())

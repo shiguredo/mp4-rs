@@ -577,19 +577,12 @@ impl Fmp4SegmentMuxer {
             });
         }
 
-        // mfro.size は mfra 全体のサイズ。まず 0 でエンコードしてサイズを確定させる
-        let mut mfra_box = MfraBox {
+        // mfro.size には MfraBox::encode がエンコード後の mfra 全体のバイト数を書き込むため、
+        // ここで入れる値は出力に使われない
+        let mfra_box = MfraBox {
             tfra_boxes,
             mfro_box: MfroBox { size: 0 },
         };
-        let placeholder = mfra_box.encode_to_vec()?;
-        let mfra_size = u32::try_from(placeholder.len()).map_err(|_| {
-            MuxError::EncodeError(Error::invalid_data(
-                "mfra box size overflow: size exceeds u32 max",
-            ))
-        })?;
-        mfra_box.mfro_box.size = mfra_size;
-
         Ok(mfra_box.encode_to_vec()?)
     }
 

@@ -213,6 +213,12 @@
   - 時刻の求め方、`next_sample` が同じ時刻のサンプルを選ぶ規則、`seek` 自体の挙動は変えない。`seek` の後は、上記の 2 つの関係を保証しない
   - wasm の `Mp4FileDemuxer.prevSample()` にも同じ変更が及ぶ
   - @voluntas
+- [FIX] `bitstream::av1::build_av01_box` で、予約値の `chroma_sample_position` と、Sequence Header の構文に現れない条件で真になっている `twelve_bit` を `av1C` に書き出していたのを修正する
+  - `seq.chroma_sample_position` が 3（`CSP_RESERVED`）の場合は `ErrorKind::InvalidInput` を返す。これまでは、`seq` に対する検査では 2 ビットに収まる `0..=3` を受け付けていた
+  - `seq.twelve_bit` が真で、`seq.seq_profile` が 2 でないか `seq.high_bitdepth` が偽の場合は `ErrorKind::InvalidInput` を返す。これまでは、`seq` に対する検査ではこの条件を見ていなかった
+  - 挙動が変わるのは `config_obus` に Sequence Header OBU がない場合だけである。Sequence Header OBU がある場合は、これまでも `config_obus` の検査、その Sequence Header の解析、`seq` との照合のいずれかで、これらの値を拒否していた
+  - `bitstream::av1::build_av01_box_from_config_obus` は `parse_sequence_header` の結果を渡すため、挙動は変わらない
+  - @voluntas
 
 ### misc
 

@@ -161,7 +161,8 @@ pub struct Av1SequenceHeader {
     pub seq_tier_0: u8,
     /// `high_bitdepth`
     pub high_bitdepth: bool,
-    /// `twelve_bit`。構文に現れないときは 0
+    /// `twelve_bit`。構文に現れないとき (`seq_profile` が 2 でないか、`high_bitdepth` が偽のとき) は false。
+    /// [`build_av01_box`] はこの条件で真になっている `twelve_bit` を拒否する
     pub twelve_bit: bool,
     /// `mono_chrome`
     pub monochrome: bool,
@@ -170,7 +171,7 @@ pub struct Av1SequenceHeader {
     /// `subsampling_y` (0 または 1)
     pub chroma_subsampling_y: u8,
     /// `chroma_sample_position` (0..=2)。構文に現れないときは 0。
-    /// 予約値 3 (`CSP_RESERVED`) は [`parse_sequence_header`] が拒否する
+    /// 予約値 3 (`CSP_RESERVED`) は [`parse_sequence_header`] と [`build_av01_box`] が拒否する
     pub chroma_sample_position: u8,
     /// `max_frame_width_minus_1 + 1` (1..=65536)
     pub max_frame_width: u32,
@@ -773,10 +774,18 @@ pub fn parse_frame_header_prefix(
 ///
 /// - `config_obus` が ConfigObus 規則に違反する
 /// - Sequence Header OBU が 2 個以上、または先頭以外にある
+/// - `config_obus` 内の Sequence Header の解析に失敗する
 /// - `config_obus` 内の Sequence Header が `seq` と一致しない
 /// - `max_frame_width` / `max_frame_height` が 1..=65535 の範囲外 (0 または 65536 以上。Visual Sample Entry の `u16` に入らない)
 /// - `initial_presentation_delay_minus_one` が 16 以上
 /// - `seq` の欄が `Av1cBox` のビット幅に収まらない
+/// - `seq.seq_profile` が 0..=2 の範囲外 (3..=7 は予約)
+/// - `seq.chroma_sample_position` が 0..=2 の範囲外 (予約値 3 = `CSP_RESERVED` を含む)
+/// - `seq.twelve_bit` が真なのに、`seq.seq_profile` が 2 でないか `seq.high_bitdepth` が偽である
+///   (`twelve_bit` が Sequence Header の構文に現れない条件)
+///
+/// いずれの場合も [`crate::ErrorKind::InvalidInput`] のエラーを返す。
+/// `config_obus` に Sequence Header OBU がない場合も、`seq` に対する上記の条件を検査する
 pub fn build_av01_box(
     seq: &Av1SequenceHeader,
     config_obus: &[u8],
@@ -830,9 +839,24 @@ pub fn build_av01_box(
             "AV1 chroma_subsampling_x / chroma_subsampling_y must be 0 or 1",
         ));
     }
-    if seq.chroma_sample_position > 3 {
+    // AV1 spec §6.4.2 は chroma_sample_position の 3 を CSP_RESERVED とする。
+    // parse_sequence_header も予約値を拒否するため、config_obus に Sequence Header OBU がない場合も
+    // 同じ範囲に揃え、予約値を av1C に書き出さない。
+    // なお、ここでの扱いは AV1 spec に基づくものであり、将来の改訂で変わる可能性がある
+    if seq.chroma_sample_position > 2 {
         return Err(Error::invalid_input(
-            "AV1 chroma_sample_position must be 0..=3",
+            "AV1 chroma_sample_position must be 0..=2 (3 is CSP_RESERVED)",
+        ));
+    }
+    // AV1 spec §5.5.2 では twelve_bit は seq_profile == 2 かつ high_bitdepth == 1 のときだけ現れる。
+    // Binding §2.3.4 は、Sequence Header OBU に twelve_bit がない場合の av1C の値を 0 とする。
+    // parse_sequence_header は、twelve_bit が構文に現れない場合に false とする。
+    // そのため、構文に現れない条件で twelve_bit が真になっているのは、呼び出し側の構築誤りである。
+    // 黙って 0 に置き換えると誤りを隠すことになるため、置き換えずに拒否する。
+    // なお、ここでの扱いは AV1 spec と Binding v1.3.0 に基づくものであり、将来の改訂で変わる可能性がある
+    if seq.twelve_bit && !(seq.seq_profile == 2 && seq.high_bitdepth) {
+        return Err(Error::invalid_input(
+            "AV1 twelve_bit must be false unless seq_profile is 2 and high_bitdepth is true",
         ));
     }
 

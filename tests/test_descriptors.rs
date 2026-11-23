@@ -206,20 +206,6 @@ mod descriptor_error_tests {
         assert!(result.is_err());
     }
 
-    /// DecoderConfigDescriptor: buffer_size_db がバッファ境界を超過
-    #[test]
-    fn decoder_config_descriptor_buffer_size_exceeds_boundary() {
-        let data = [
-            0x04, // tag = 4
-            0x02, // size = 2 (小さすぎ)
-            0x40, // object_type_indication
-            0x15, // stream_type + up_stream
-                  // buffer_size_db の 3 バイトがない
-        ];
-        let result = DecoderConfigDescriptor::decode(&data);
-        assert!(result.is_err());
-    }
-
     // ===== DecoderSpecificInfo のエラーパス =====
 
     /// DecoderSpecificInfo: 不正なタグでのデコードエラー
@@ -259,8 +245,8 @@ mod descriptor_error_tests {
             // サイズ欄 2〜9 バイト目: 継続ビットあり、値 0
             0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
             0x02, // サイズ欄 10 バイト目: 継続ビットなし、値 2
-            0xAA,
-            0xBB, // 上位ビットを切り捨てたサイズ 2 と一致するペイロード
+            // 上位ビットを切り捨てたサイズ 2 と一致するペイロード
+            0xAA, 0xBB,
         ];
         let err = DecoderSpecificInfo::decode(&data)
             .expect_err("usize に収まらない宣言サイズはエラーになる");
@@ -321,8 +307,10 @@ mod descriptor_error_tests {
             0x01, // size = 1
             0x00, // predefined = 0 (未サポート、2 のみ対応)
         ];
-        let result = SlConfigDescriptor::decode(&data);
-        assert!(result.is_err());
+        let err =
+            SlConfigDescriptor::decode(&data).expect_err("未サポートの predefined はエラーになる");
+        // 宣言されたペイロードの中で読めた値が未サポートの場合は、`InvalidData` に置き換えず `Unsupported` を返す
+        assert_eq!(err.kind, ErrorKind::Unsupported);
     }
 
     /// SlConfigDescriptor: predefined = 1 (未サポート)
@@ -347,5 +335,303 @@ mod descriptor_error_tests {
         ];
         let result = SlConfigDescriptor::decode(&data);
         assert!(result.is_err());
+    }
+}
+
+// ===== 宣言されたペイロードの範囲に関するテスト =====
+
+mod descriptor_declared_payload_tests {
+    use shiguredo_mp4::{
+        Decode, ErrorKind,
+        descriptors::{DecoderConfigDescriptor, EsDescriptor, SlConfigDescriptor},
+    };
+
+    /// SlConfigDescriptor: 入力が宣言されたペイロードの終端に達しない
+    ///
+    /// ペイロードの中を読む前にエラーにするため、中身が読める場合も読めない場合も `InsufficientBuffer` を返す
+    #[test]
+    fn sl_config_descriptor_payload_exceeds_input() {
+        // 中身だけなら読める入力（足りない入力でも中身が読めれば成功にする実装を検出する）
+        let decodable = [
+            0x06, // tag = 6
+            0x02, // size = 2 (入力にはペイロードが 1 バイトしかない)
+            0x02, // predefined = 2
+        ];
+        let err = SlConfigDescriptor::decode(&decodable)
+            .expect_err("入力が宣言されたペイロードの終端に達しない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+
+        // 中身を読むと `Unsupported` になる入力（終端を確かめる前に中身を読む実装を検出する）
+        let unsupported = [
+            0x06, // tag = 6
+            0x02, // size = 2 (入力にはペイロードが 1 バイトしかない)
+            0x00, // predefined = 0 (未サポート)
+        ];
+        let err = SlConfigDescriptor::decode(&unsupported)
+            .expect_err("入力が宣言されたペイロードの終端に達しない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+    }
+
+    /// SlConfigDescriptor: 宣言されたペイロードに predefined が収まらない
+    ///
+    /// 入力には続きのバイトがあるが、宣言されたペイロードの外なので predefined として読まない
+    #[test]
+    fn sl_config_descriptor_predefined_outside_declared_payload() {
+        let data = [
+            0x06, // tag = 6
+            0x00, // size = 0
+            // ここから後ろは宣言されたペイロードの外
+            0x02, // predefined = 2
+        ];
+        let err = SlConfigDescriptor::decode(&data)
+            .expect_err("宣言されたペイロードに predefined が収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("SlConfigDescriptor"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+    }
+
+    /// DecoderConfigDescriptor: 入力が宣言されたペイロードの終端に達しない
+    ///
+    /// ペイロードの中を読む前にエラーにするため、中身が読める場合も読めない場合も `InsufficientBuffer` を返す
+    #[test]
+    fn decoder_config_descriptor_payload_exceeds_input() {
+        // 中身だけなら読める入力（足りない入力でも中身が読めれば成功にする実装を検出する）
+        let decodable = [
+            0x04, // tag = 4
+            0x0E, // size = 14 (入力にはペイロードが 13 バイトしかない)
+            0x40, // object_type_indication
+            0x15, // stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+        ];
+        let err = DecoderConfigDescriptor::decode(&decodable)
+            .expect_err("入力が宣言されたペイロードの終端に達しない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+
+        // 中身を読むと子の DecoderSpecificInfo が `InvalidData` になる入力
+        // （終端を確かめる前に中身を読む実装を検出する）
+        let broken = [
+            0x04, // tag = 4
+            0x20, // size = 32 (入力にはペイロードが 16 バイトしかない)
+            0x40, // object_type_indication
+            0x15, // stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+            0x05, 0x10, // DecoderSpecificInfo の tag と size = 16
+            0x11, // DecoderSpecificInfo の payload の 1 バイト目
+        ];
+        let err = DecoderConfigDescriptor::decode(&broken)
+            .expect_err("入力が宣言されたペイロードの終端に達しない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+    }
+
+    /// DecoderConfigDescriptor: 宣言されたペイロードに buffer_size_db が収まらない
+    ///
+    /// 入力には buffer_size_db の 3 バイトがあるが、宣言されたペイロードの外なので読まない
+    #[test]
+    fn decoder_config_descriptor_buffer_size_db_outside_declared_payload() {
+        let data = [
+            0x04, // tag = 4
+            0x02, // size = 2 (stream_type + up_stream まで)
+            0x40, // object_type_indication
+            0x15, // stream_type + up_stream
+            // ここから後ろは宣言されたペイロードの外
+            0x00, 0x00, 0x00, // buffer_size_db
+        ];
+        let err = DecoderConfigDescriptor::decode(&data)
+            .expect_err("宣言されたペイロードに buffer_size_db が収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("buffer_size_db"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+    }
+
+    /// DecoderConfigDescriptor: 宣言されたペイロードに固定フィールドが収まらない
+    ///
+    /// 入力には max_bitrate 以降のバイトがあるが、宣言されたペイロードの外なので読まない
+    #[test]
+    fn decoder_config_descriptor_fields_outside_declared_payload() {
+        let data = [
+            0x04, // tag = 4
+            0x05, // size = 5 (buffer_size_db まで)
+            0x40, // object_type_indication
+            0x15, // stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            // ここから後ろは宣言されたペイロードの外
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+        ];
+        let err = DecoderConfigDescriptor::decode(&data)
+            .expect_err("宣言されたペイロードに固定フィールドが収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("DecoderConfigDescriptor"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+    }
+
+    /// DecoderConfigDescriptor: 子の DecoderSpecificInfo が宣言されたペイロードを超える
+    ///
+    /// どちらの入力にも子の続きのバイトがあるが、宣言されたペイロードの外なので子として読まない
+    #[test]
+    fn decoder_config_descriptor_child_exceeds_declared_payload() {
+        // 子のヘッダーのうちタグだけが宣言されたペイロードに入っている
+        let header_cut = [
+            0x04, // tag = 4
+            0x0E, // size = 14 (DecoderSpecificInfo の tag まで)
+            0x40, // object_type_indication
+            0x15, // stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+            0x05, // DecoderSpecificInfo の tag
+            // ここから後ろは宣言されたペイロードの外
+            0x02, // DecoderSpecificInfo の size = 2
+            0x11, 0x90, // DecoderSpecificInfo の payload
+        ];
+        let err = DecoderConfigDescriptor::decode(&header_cut)
+            .expect_err("子のヘッダーが宣言されたペイロードに収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+
+        // 子の宣言されたペイロードが親の宣言されたペイロードを超える
+        let payload_cut = [
+            0x04, // tag = 4
+            0x10, // size = 16 (DecoderSpecificInfo の payload の 1 バイト目まで)
+            0x40, // object_type_indication
+            0x15, // stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+            0x05, 0x02, // DecoderSpecificInfo の tag と size = 2
+            0x11, // DecoderSpecificInfo の payload の 1 バイト目
+            // ここから後ろは宣言されたペイロードの外
+            0x90, // DecoderSpecificInfo の payload の 2 バイト目
+        ];
+        let err = DecoderConfigDescriptor::decode(&payload_cut)
+            .expect_err("子のペイロードが親の宣言されたペイロードに収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+    }
+
+    /// EsDescriptor: 入力が宣言されたペイロードの終端に達しない
+    ///
+    /// ペイロードの中を読む前にエラーにするため、中身が読める場合も読めない場合も `InsufficientBuffer` を返す
+    #[test]
+    fn es_descriptor_payload_exceeds_input() {
+        // 中身だけなら読める入力（足りない入力でも中身が読めれば成功にする実装を検出する）
+        let decodable = [
+            0x03, // tag = 3
+            0x16, // size = 22 (入力にはペイロードが 21 バイトしかない)
+            0x00, 0x01, // es_id = 1
+            0x00, // flags
+            0x04, 0x0D, // DecoderConfigDescriptor の tag と size = 13
+            0x40, 0x15, // object_type_indication、stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+            0x06, 0x01, 0x02, // SlConfigDescriptor
+        ];
+        let err = EsDescriptor::decode(&decodable)
+            .expect_err("入力が宣言されたペイロードの終端に達しない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+
+        // 中身を読むと子のサイズ欄の値が `usize` に収まらず `InvalidData` になる入力
+        // （終端を確かめる前に中身を読む実装を検出する）。
+        // サイズ欄は 32 ビット環境でも 64 ビット環境でも `usize` に収まらない長さにしている
+        let broken = [
+            0x03, // tag = 3
+            0x40, // size = 64 (入力にはペイロードが 14 バイトしかない)
+            0x00, 0x01, // es_id = 1
+            0x00, // flags
+            0x04, // DecoderConfigDescriptor の tag
+            // DecoderConfigDescriptor のサイズ欄: 継続ビットあり、値 0x7F が 10 バイト
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        let err = EsDescriptor::decode(&broken)
+            .expect_err("入力が宣言されたペイロードの終端に達しない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+    }
+
+    /// EsDescriptor: URL 文字列が宣言されたペイロードを超える
+    ///
+    /// 入力には URL の 3〜4 バイト目があるが、宣言されたペイロードの外なので URL 文字列として読まない
+    #[test]
+    fn es_descriptor_url_exceeds_declared_payload() {
+        let data = [
+            0x03, // tag = 3
+            0x06, // size = 6 (URL の 2 バイト目まで)
+            0x00, 0x01, // es_id = 1
+            0x40, // flags (URL_Flag = 1)
+            0x04, // URL の長さ = 4
+            0x61, 0x62, // URL の 1〜2 バイト目
+            // ここから後ろは宣言されたペイロードの外
+            0x63, 0x64, // URL の 3〜4 バイト目
+        ];
+        let err = EsDescriptor::decode(&data)
+            .expect_err("宣言されたペイロードに URL 文字列が収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("URL string"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+    }
+
+    /// EsDescriptor: 子の DecoderConfigDescriptor の宣言されたペイロードが親の宣言されたペイロードを超える
+    ///
+    /// 入力には子の続きのバイトがあるが、宣言されたペイロードの外なので子として読まない
+    #[test]
+    fn es_descriptor_child_exceeds_declared_payload() {
+        let data = [
+            0x03, // tag = 3
+            0x0A, // size = 10 (DecoderConfigDescriptor の buffer_size_db まで)
+            0x00, 0x01, // es_id = 1
+            0x00, // flags
+            0x04, 0x0D, // DecoderConfigDescriptor の tag と size = 13
+            0x40, 0x15, // object_type_indication、stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            // ここから後ろは宣言されたペイロードの外
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+            0x06, 0x01, 0x02, // SlConfigDescriptor
+        ];
+        let err = EsDescriptor::decode(&data)
+            .expect_err("子のペイロードが親の宣言されたペイロードに収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+    }
+
+    /// EsDescriptor: 宣言されたペイロードに SlConfigDescriptor が収まらない
+    ///
+    /// 入力には続きのバイトがあるが、宣言されたペイロードの外なので子として読まない
+    #[test]
+    fn es_descriptor_sl_config_outside_declared_payload() {
+        let data = [
+            0x03, // tag = 3
+            0x12, // size = 18 (DecoderConfigDescriptor まで)
+            0x00, 0x01, // es_id = 1
+            0x00, // flags
+            0x04, 0x0D, // DecoderConfigDescriptor の tag と size = 13
+            0x40, 0x15, // object_type_indication、stream_type + up_stream
+            0x00, 0x00, 0x00, // buffer_size_db
+            0x00, 0x00, 0x00, 0x00, // max_bitrate
+            0x00, 0x00, 0x00, 0x00, // avg_bitrate
+            // ここから後ろは宣言されたペイロードの外
+            0x06, 0x01, 0x02, // SlConfigDescriptor
+        ];
+        let err = EsDescriptor::decode(&data)
+            .expect_err("宣言されたペイロードに SlConfigDescriptor が収まらない場合はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("EsDescriptor"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
     }
 }

@@ -94,6 +94,11 @@ pub struct BoxHeader {
     pub box_type: BoxType,
 
     /// ボックスのサイズ
+    ///
+    /// 0 以外の値が、このヘッダー自身のバイト数（[`BoxHeader::external_size`]）に満たない場合、
+    /// [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
+    /// 32-bit の `size` フィールドの 1（`BoxSize::U32(1)`）もこれに当たる。
+    /// 0（[`BoxSize::VARIABLE_SIZE`] / [`BoxSize::LARGE_VARIABLE_SIZE`]）は種別を問わず書き込める。
     pub box_size: BoxSize,
 }
 
@@ -125,7 +130,7 @@ impl BoxHeader {
 
         // NOTE: もし `box_bytes.len() < self.external_size()` の場合は後続の `self.encode()` でエラーになる
         let payload_size = box_bytes.len().saturating_sub(self.external_size());
-        self.box_size = BoxSize::with_payload_size(self.box_type, payload_size as u64);
+        self.box_size = BoxSize::with_payload_size(self.box_type, payload_size as u64)?;
         if !matches!(self.box_size, BoxSize::U32(_)) {
             // ヘッダーのサイズに変更があると box_bytes 全体のレイアウトが変わってしまうのでエラーにする
             return Err(Error::invalid_input(
@@ -188,6 +193,21 @@ impl BoxHeader {
 
 impl Encode for BoxHeader {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // ISO/IEC 14496-12:2015 の 4.2 では、size はヘッダーを含むボックス全体のバイト数で、
+        // 32-bit の size の 1 は largesize フィールドを使うことを、0 はボックスがファイルの末尾まで続くことを表す。
+        // 0 以外でヘッダー自身の幅に満たない値（32-bit の size の 1 を含む）は正しいボックスのサイズにならないため、拒否する。
+        // 検査は、バッファの長さによってエラー種別が変わらないよう、書き込む前に行う。
+        // 0（`BoxSize::VARIABLE_SIZE` / `BoxSize::LARGE_VARIABLE_SIZE`）は、ファイル末尾の可変長のボックスや、
+        // 後でサイズを確定するヘッダーのために、種別を問わず書き込めるようにする。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+        let box_size = self.box_size.get();
+        let header_size = self.external_size() as u64;
+        if box_size != 0 && box_size < header_size {
+            return Err(Error::invalid_input(format!(
+                "Too small box size: actual={box_size}, expected={header_size} or more"
+            )));
+        }
+
         let mut offset = 0;
 
         let large_size = match self.box_size {
@@ -393,19 +413,45 @@ impl BoxSize {
 
     /// エンコード用の特別な値（`size==1` + `largesize==0`）。64-bit サイズ符号化でヘッダー幅を確保する
     ///
+    /// 後でサイズを確定するヘッダーとして [`BoxHeader`] の encode で書き込むための値であり、
+    /// 完成したボックスのサイズではない。[`UnknownBox`][crate::boxes::UnknownBox] の `box_size` に指定すると、
+    /// [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
+    ///
     /// デコードでは [`BoxHeader::decode_header_and_payload`] が可変長としては扱わずエラーにする
     /// （詳細は同関数のドキュメントを参照）。
     pub const LARGE_VARIABLE_SIZE: Self = Self::U64(0);
 
     /// ボックス種別とペイロードサイズを受け取って、対応する [`BoxSize`] インスタンスを作成する
-    pub fn with_payload_size(box_type: BoxType, payload_size: u64) -> Self {
-        let mut size = 4 + box_type.external_size() as u64 + payload_size;
+    ///
+    /// 32-bit の `size` フィールドを使うヘッダーを加えた総サイズが `u32` に収まる場合は [`BoxSize::U32`] を返す。
+    /// 収まらない場合は、64-bit の `largesize` フィールドの 8 バイトも加えた総サイズを [`BoxSize::U64`] で返す。
+    ///
+    /// 総サイズが `u64` に収まらない場合は [`crate::ErrorKind::InvalidInput`] を返す。
+    pub fn with_payload_size(box_type: BoxType, payload_size: u64) -> Result<Self> {
+        // ISO/IEC 14496-12:2015 の 4.2 では、size はヘッダーを含むボックス全体のバイト数で、
+        // size が 1 のときは実際のサイズを 64-bit の largesize フィールドに置く。
+        // どちらの加算も、飽和やラップで別のサイズを返さないよう検査する。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+        let compact_header_size = 4 + box_type.external_size() as u64;
+        let size = payload_size
+            .checked_add(compact_header_size)
+            .ok_or_else(|| {
+                Error::invalid_input(format!(
+                    "Box size overflows u64: payload_size={payload_size}, header_size={compact_header_size}"
+                ))
+            })?;
         if let Ok(size) = u32::try_from(size) {
-            Self::U32(size)
-        } else {
-            size += 8; // もともとのサイズフィールドには 1 が設定されて、ヘッダーの末尾に 8 バイトのサイズが格納される
-            Self::U64(size)
+            return Ok(Self::U32(size));
         }
+
+        // largesize フィールドの 8 バイトの分だけヘッダーが増えるため、総サイズに 8 を足す
+        let size = size.checked_add(8).ok_or_else(|| {
+            Error::invalid_input(format!(
+                "Box size overflows u64 with largesize: payload_size={payload_size}, header_size={}",
+                compact_header_size + 8
+            ))
+        })?;
+        Ok(Self::U64(size))
     }
 
     /// ボックスのサイズの値を取得する

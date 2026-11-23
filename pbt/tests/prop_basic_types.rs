@@ -328,103 +328,151 @@ fn box_size_u64_properties() -> noprop::TestResult {
     Ok(())
 }
 
-// BoxSize::with_payload_size が正しいサイズを返す
+/// BoxSize::with_payload_size が、総サイズを表現できるペイロード長に対して、
+/// 総サイズが u32 に収まれば U32、収まらなければ largesize の 8 バイトを含めた U64 を返す
+///
+/// 通常型と UUID 型のそれぞれで、32-bit の size に収まる範囲と largesize が必要な範囲を半々に生成する。
+/// 境界値（ペイロード長 0、U32 に収まる最大の総サイズ、U64 への切り替え直後、表現可能な最大の総サイズ）も混ぜる。
+/// 総サイズが u64 に収まらない範囲のエラーは `tests/test_basic_types.rs` の単体テストが担う
 #[test]
 fn box_size_with_payload_size() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let payload = noprop::sample_u64_in(ctx, 0..=(u32::MAX as u64 - 8));
-        let box_type = BoxType::Normal(*b"test");
-        let box_size = BoxSize::with_payload_size(box_type, payload);
+        // 32-bit の size を使うヘッダーと largesize を使うヘッダーのバイト数
+        let (box_type, compact_header_size, large_header_size) = if noprop::sample_bool(ctx) {
+            (BoxType::Normal(arb_box_type_normal(ctx)), 8u64, 16u64)
+        } else {
+            (BoxType::Uuid(arb_box_type_uuid(ctx)), 24u64, 32u64)
+        };
+        let max_compact_payload = u32::MAX as u64 - compact_header_size;
+        let max_payload = u64::MAX - large_header_size;
+        let payload = if noprop::sample_bool(ctx) {
+            noprop::sample_with_boundaries(
+                ctx,
+                &[0, max_compact_payload],
+                noprop::Ratio::new(1, 4),
+                |ctx| noprop::sample_u64_in(ctx, 0..=max_compact_payload),
+            )
+        } else {
+            noprop::sample_with_boundaries(
+                ctx,
+                &[max_compact_payload + 1, max_payload],
+                noprop::Ratio::new(1, 4),
+                |ctx| noprop::sample_u64_in(ctx, (max_compact_payload + 1)..=max_payload),
+            )
+        };
 
-        // サイズフィールド (4) + ボックス種別 (4) + ペイロード
-        let expected = 4 + 4 + payload;
-        assert_eq!(box_size.get(), expected);
-        assert!(matches!(box_size, BoxSize::U32(_)));
+        let box_size = BoxSize::with_payload_size(box_type, payload)
+            .expect("総サイズが u64 に収まるペイロード長は必ず成功する");
+        if payload <= max_compact_payload {
+            let expected =
+                u32::try_from(payload + compact_header_size).expect("U32 の範囲で生成している");
+            assert_eq!(
+                box_size,
+                BoxSize::U32(expected),
+                "総サイズが u32 に収まるのに期待した BoxSize::U32 と異なる: payload={payload}"
+            );
+        } else {
+            assert_eq!(
+                box_size,
+                BoxSize::U64(payload + large_header_size),
+                "総サイズが u32 に収まらないのに期待した BoxSize::U64 と異なる: payload={payload}"
+            );
+        }
         Ok(())
     })?;
     Ok(())
 }
 
-// BoxHeader の Roundtrip (Normal タイプ、U32 サイズ)
+/// BoxHeader をエンコードすると形式と種別から決まる幅で書き出され、同じ種別とサイズにデコードされることを確認する
+///
+/// `expected_len` には形式と種別から決まるヘッダーの幅（8 / 16 / 24 / 32）を直接渡し、
+/// `BoxHeader::external_size` の計算に頼らずに幅を確かめる
+fn assert_box_header_roundtrip(header: BoxHeader, expected_len: usize) {
+    let encoded = header
+        .encode_to_vec()
+        .expect("0 またはヘッダー幅以上のサイズを持つヘッダーは必ずエンコードできる");
+    assert_eq!(
+        encoded.len(),
+        expected_len,
+        "ヘッダーの幅が形式と種別から決まる幅と異なる: {header:?}"
+    );
+
+    let (decoded, decode_size) = BoxHeader::decode(&encoded)
+        .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
+    assert_eq!(decode_size, expected_len);
+    assert_eq!(decoded, header);
+}
+
+/// 0、またはヘッダー幅 `header_size` 以上 `max` 以下のボックスサイズを生成する
+///
+/// 境界値として、0（`BoxSize::VARIABLE_SIZE` / `BoxSize::LARGE_VARIABLE_SIZE`）、エンコードで
+/// 拒否されない 0 以外の最小値であるヘッダー幅、`max` を混ぜる。0 は種別を問わずエンコードでき、
+/// `BoxHeader::decode` も値として受理するため、往復の性質が成り立つ
+fn arb_box_size_from_header_size(ctx: &mut TestCaseContext, header_size: u64, max: u64) -> u64 {
+    noprop::sample_with_boundaries(
+        ctx,
+        &[0, header_size, max],
+        noprop::Ratio::new(1, 4),
+        |ctx| noprop::sample_u64_in(ctx, header_size..=max),
+    )
+}
+
+/// BoxHeader の Roundtrip（Normal タイプ、U32 サイズ）
 #[test]
 fn box_header_normal_u32_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let ty = arb_box_type_normal(ctx);
-        let size = noprop::sample_u64_in(ctx, 8..=1_000_000) as u32;
         let header = BoxHeader {
-            box_type: BoxType::Normal(ty),
-            box_size: BoxSize::U32(size),
+            box_type: BoxType::Normal(arb_box_type_normal(ctx)),
+            box_size: BoxSize::U32(arb_box_size_from_header_size(ctx, 8, u32::MAX as u64) as u32),
         };
-        let encoded = header
-            .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
-
-        assert_eq!(encoded.len(), header.external_size());
-
-        let (decoded, decode_size) = BoxHeader::decode(&encoded)
-            .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
-        assert_eq!(decode_size, header.external_size());
-        assert_eq!(decoded.box_type, header.box_type);
-        assert_eq!(decoded.box_size, header.box_size);
+        assert_box_header_roundtrip(header, 8);
         Ok(())
     })?;
     Ok(())
 }
 
-// BoxHeader の Roundtrip (Uuid タイプ、U32 サイズ)
+/// BoxHeader の Roundtrip（Uuid タイプ、U32 サイズ）
 #[test]
 fn box_header_uuid_u32_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let ty = arb_box_type_uuid(ctx);
-        let size = noprop::sample_u64_in(ctx, 24..=1_000_000) as u32;
         let header = BoxHeader {
-            box_type: BoxType::Uuid(ty),
-            box_size: BoxSize::U32(size),
+            box_type: BoxType::Uuid(arb_box_type_uuid(ctx)),
+            box_size: BoxSize::U32(arb_box_size_from_header_size(ctx, 24, u32::MAX as u64) as u32),
         };
-        let encoded = header
-            .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
-
-        assert_eq!(encoded.len(), header.external_size());
-
-        let (decoded, decode_size) = BoxHeader::decode(&encoded)
-            .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
-        assert_eq!(decode_size, header.external_size());
-        assert_eq!(decoded.box_type, header.box_type);
-        assert_eq!(decoded.box_size, header.box_size);
+        assert_box_header_roundtrip(header, 24);
         Ok(())
     })?;
     Ok(())
 }
 
-// BoxHeader の Roundtrip (Normal タイプ、U64 サイズ)
+/// BoxHeader の Roundtrip（Normal タイプ、U64 サイズ）
 #[test]
 fn box_header_normal_u64_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let ty = arb_box_type_normal(ctx);
-        let size = noprop::sample_u64_in(
-            ctx,
-            ((u32::MAX as u64) + 1)..=((u32::MAX as u64) + 1_000_000),
-        );
         let header = BoxHeader {
-            box_type: BoxType::Normal(ty),
-            box_size: BoxSize::U64(size),
+            box_type: BoxType::Normal(arb_box_type_normal(ctx)),
+            box_size: BoxSize::U64(arb_box_size_from_header_size(ctx, 16, u64::MAX)),
         };
-        let encoded = header
-            .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
+        assert_box_header_roundtrip(header, 16);
+        Ok(())
+    })?;
+    Ok(())
+}
 
-        assert_eq!(encoded.len(), header.external_size());
-
-        let (decoded, decode_size) = BoxHeader::decode(&encoded)
-            .expect("直前にエンコードした有効なヘッダーは必ずデコードできる");
-        assert_eq!(decode_size, header.external_size());
-        assert_eq!(decoded.box_type, header.box_type);
-        assert_eq!(decoded.box_size, header.box_size);
+/// BoxHeader の Roundtrip（Uuid タイプ、U64 サイズ）
+#[test]
+fn box_header_uuid_u64_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let header = BoxHeader {
+            box_type: BoxType::Uuid(arb_box_type_uuid(ctx)),
+            box_size: BoxSize::U64(arb_box_size_from_header_size(ctx, 32, u64::MAX)),
+        };
+        assert_box_header_roundtrip(header, 32);
         Ok(())
     })?;
     Ok(())
@@ -847,52 +895,6 @@ mod error_cases {
             let _ = FixedPointNumber::<u8, u8>::decode(&data);
             let _ = FixedPointNumber::<i16, u16>::decode(&data);
             let _ = FixedPointNumber::<i32, u32>::decode(&data);
-            Ok(())
-        })?;
-        Ok(())
-    }
-}
-
-/// 境界値テスト
-mod boundary_tests {
-    use super::*;
-
-    /// このモジュールの PBT ケース数（旧 `with_cases(100)` を維持）
-    const CASES: usize = 100;
-
-    // BoxSize::with_payload_size が U64 になる境界
-    #[test]
-    fn box_size_u64_boundary() -> noprop::TestResult {
-        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-        noprop::Runner::new(seed).run(CASES, |ctx| {
-            let payload =
-                noprop::sample_u64_in(ctx, (u32::MAX as u64 - 7)..=(u32::MAX as u64 + 100));
-            let box_type = BoxType::Normal(*b"test");
-            let box_size = BoxSize::with_payload_size(box_type, payload);
-
-            // 4 + 4 + payload > u32::MAX の場合は U64
-            let total = 8u64.saturating_add(payload);
-            if total > u32::MAX as u64 {
-                assert!(matches!(box_size, BoxSize::U64(_)));
-            } else {
-                assert!(matches!(box_size, BoxSize::U32(_)));
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
-
-    // 大きなペイロードサイズ
-    #[test]
-    fn box_size_large_payload() -> noprop::TestResult {
-        let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-        noprop::Runner::new(seed).run(CASES, |ctx| {
-            let payload = noprop::sample_u64_in(ctx, (u32::MAX as u64)..=u64::MAX);
-            let box_type = BoxType::Normal(*b"test");
-            let box_size = BoxSize::with_payload_size(box_type, payload);
-
-            // 常に U64 になるはず
-            assert!(matches!(box_size, BoxSize::U64(_)));
             Ok(())
         })?;
         Ok(())

@@ -5,7 +5,10 @@
 //! （`BoxSize::VARIABLE_SIZE`）の扱いを以下の 3 経路で固定する:
 //! - `UnknownBox::decode` への直接入力（可変長サイズはエラーになる）
 //! - コンテナボックス（`stpp`）内部の未知ボックスループ（可変長サイズでエラーになる）
-//! - `RootBox` の未知型 top-level ボックス（可変長サイズを従来どおり受理する）
+//! - `RootBox` の未知型 top-level ボックス（可変長サイズを従来どおり受理し、size=0 のまま再エンコードする）
+//!
+//! あわせて、`UnknownBox::encode` が宣言サイズとヘッダー・ペイロードの長さの不一致を拒否する
+//! エラーパスを固定する。
 
 mod unknown_box_size_zero {
     use shiguredo_mp4::{BoxSize, BoxType, Decode, ErrorKind, boxes::UnknownBox};
@@ -125,9 +128,11 @@ mod stpp_box_trailing_zero_padding {
 }
 
 mod root_box_unknown_size_zero {
-    use shiguredo_mp4::{BoxSize, Decode, boxes::RootBox};
+    use shiguredo_mp4::{BoxSize, Decode, Encode, boxes::RootBox};
 
     /// `RootBox::decode` の未知型分岐は、size=0 の未知型 top-level ボックスを従来どおり受理すること
+    ///
+    /// また、デコードした結果を再エンコードすると size=0 の表現のまま書き出されること
     #[test]
     fn unknown_type_size_zero_succeeds() {
         // size=0 (4) + type "test" (4) + ペイロード 4 バイト
@@ -149,6 +154,15 @@ mod root_box_unknown_size_zero {
             &buf[8..],
             "ペイロードはヘッダー直後からバッファ末尾までであること"
         );
+
+        // 可変長サイズの未知ボックスは、サイズの一致の検査の対象外として従来どおり size=0 で書き出す
+        let encoded = unknown
+            .encode_to_vec()
+            .expect("可変長サイズの未知ボックスはエンコードできる");
+        assert_eq!(
+            encoded, buf,
+            "可変長サイズの表現のまま再エンコードされること"
+        );
     }
 
     /// `RootBox::decode` の既知型分岐（`mdat`）は、size=0 を従来どおり受理すること
@@ -164,6 +178,77 @@ mod root_box_unknown_size_zero {
             RootBox::decode(&buf).expect("既知型 mdat の size=0 は従来どおり成功する");
         assert!(matches!(decoded, RootBox::Mdat(_)));
         assert_eq!(size, buf.len());
+    }
+}
+
+mod unknown_box_encode_size_mismatch {
+    use shiguredo_mp4::{BoxSize, BoxType, Encode, ErrorKind, boxes::UnknownBox};
+
+    /// 書き込む前に `InvalidInput` で拒否されることを、`encode_to_vec` と空のバッファへの `encode` で確認する
+    #[track_caller]
+    fn assert_encode_rejected(unknown: &UnknownBox) {
+        let err = unknown
+            .encode_to_vec()
+            .expect_err(&format!("encode_to_vec が Ok を返した: {unknown:?}"));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "encode_to_vec のエラー種別が `InvalidInput` ではない: {unknown:?} (reason={})",
+            err.reason
+        );
+
+        // 空のバッファでも `InvalidInput` になることで、書き込む前に検査していることを確かめる
+        let err = unknown.encode(&mut []).expect_err(&format!(
+            "空のバッファへの encode が Ok を返した: {unknown:?}"
+        ));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "空のバッファへの encode のエラー種別が `InvalidInput` ではない: {unknown:?} (reason={})",
+            err.reason
+        );
+    }
+
+    /// 固定長の宣言サイズが、その形式のヘッダーの幅とペイロード長の合計から 1 だけずれると拒否されること
+    ///
+    /// 通常型と UUID 型、32-bit の size と largesize の全組み合わせで確かめる。
+    /// 以前は宣言サイズをそのまま書き出し、ペイロードの範囲と食い違うボックスを出力していた
+    #[test]
+    fn rejects_size_off_by_one_from_header_and_payload() {
+        let payload = vec![0xAA, 0xBB, 0xCC];
+        for (box_type, compact_header_size, large_header_size) in [
+            (BoxType::Normal(*b"test"), 8u32, 16u64),
+            (BoxType::Uuid([0x11; 16]), 24, 32),
+        ] {
+            let compact_size = compact_header_size + payload.len() as u32;
+            let large_size = large_header_size + payload.len() as u64;
+            for box_size in [
+                BoxSize::U32(compact_size - 1),
+                BoxSize::U32(compact_size + 1),
+                BoxSize::U64(large_size - 1),
+                BoxSize::U64(large_size + 1),
+            ] {
+                assert_encode_rejected(&UnknownBox {
+                    box_type,
+                    box_size,
+                    payload: payload.clone(),
+                });
+            }
+        }
+    }
+
+    /// `BoxSize::LARGE_VARIABLE_SIZE` は完成したボックスのサイズではないため拒否されること
+    #[test]
+    fn rejects_large_variable_size() {
+        for box_type in [BoxType::Normal(*b"test"), BoxType::Uuid([0x11; 16])] {
+            for payload in [vec![], vec![0xAA, 0xBB, 0xCC]] {
+                assert_encode_rejected(&UnknownBox {
+                    box_type,
+                    box_size: BoxSize::LARGE_VARIABLE_SIZE,
+                    payload,
+                });
+            }
+        }
     }
 }
 
@@ -221,7 +306,8 @@ mod root_box_tests {
     fn root_box_unknown_roundtrip() {
         let unknown = UnknownBox {
             box_type: BoxType::Normal(*b"test"),
-            box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 10),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 10)
+                .expect("テスト用のペイロード長は総サイズが u64 に収まる"),
             payload: vec![0u8; 10],
         };
         let root = RootBox::Unknown(unknown);
@@ -300,7 +386,8 @@ mod additional_boxes_boundary_tests {
     fn unknown_box_empty_payload() {
         let unknown = UnknownBox {
             box_type: BoxType::Normal(*b"test"),
-            box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 0),
+            box_size: BoxSize::with_payload_size(BoxType::Normal(*b"test"), 0)
+                .expect("テスト用のペイロード長は総サイズが u64 に収まる"),
             payload: vec![],
         };
         let encoded = unknown

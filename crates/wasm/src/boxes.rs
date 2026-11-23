@@ -270,8 +270,10 @@ pub(crate) fn parse_unknown_boxes(
             return Err(type_value
                 .invalid("typed boxes must be specified with their own key, not unknownBoxes"));
         }
-        let payload: Vec<u8> = entry.to_member("data")?.required()?.try_into()?;
-        let box_size = BoxSize::with_payload_size(box_type, payload.len() as u64);
+        let data_value = entry.to_member("data")?.required()?;
+        let payload: Vec<u8> = data_value.try_into()?;
+        let box_size = BoxSize::with_payload_size(box_type, payload.len() as u64)
+            .map_err(|e| data_value.invalid(e))?;
         unknown_boxes.push(UnknownBox {
             box_type,
             box_size,

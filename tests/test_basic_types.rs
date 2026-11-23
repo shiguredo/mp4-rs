@@ -2,7 +2,8 @@
 //!
 //! 正常系のラウンドトリップは `pbt/tests/prop_basic_types.rs` が担う。
 //! 本ファイルは PBT で安定して狙いにくい `decode_header_and_payload` の
-//! size=0 / largesize=0 / サイズ下限 / バッファ不足の挙動、および
+//! size=0 / largesize=0 / サイズ下限 / バッファ不足の挙動、`BoxHeader::encode` のサイズ下限と
+//! `BoxSize::with_payload_size` の総サイズのオーバーフローのエラーパス、および
 //! `LanguageCode` / `Utf8String::Default` の境界値を固定する。
 
 mod decode_header_and_payload_size_zero {
@@ -210,6 +211,101 @@ mod utf8_string_default {
     fn default_equals_empty() {
         assert_eq!(Utf8String::default(), Utf8String::EMPTY);
         assert_eq!(Utf8String::default().get(), "");
+    }
+}
+
+mod box_header_encode_size_limits {
+    use shiguredo_mp4::{BoxHeader, BoxSize, BoxType, Encode, ErrorKind};
+
+    const NORMAL_TYPE: BoxType = BoxType::Normal(*b"test");
+    const UUID_TYPE: BoxType = BoxType::Uuid([0x11; 16]);
+
+    /// 書き込む前に `InvalidInput` で拒否されることを、`encode_to_vec` と空のバッファへの `encode` で確認する
+    #[track_caller]
+    fn assert_encode_rejected(header: BoxHeader) {
+        let err = header
+            .encode_to_vec()
+            .expect_err(&format!("encode_to_vec が Ok を返した: {header:?}"));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "encode_to_vec のエラー種別が `InvalidInput` ではない: {header:?} (reason={})",
+            err.reason
+        );
+
+        // 空のバッファでも `InvalidInput` になることで、書き込む前に検査していることを確かめる
+        let err = header.encode(&mut []).expect_err(&format!(
+            "空のバッファへの encode が Ok を返した: {header:?}"
+        ));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "空のバッファへの encode のエラー種別が `InvalidInput` ではない: {header:?} (reason={})",
+            err.reason
+        );
+    }
+
+    /// 0 以外でヘッダー自身の幅に満たないサイズは、種別と形式の組み合わせごとに拒否されること
+    ///
+    /// ヘッダーの幅は、通常型で 8 バイト（32-bit の size）と 16 バイト（largesize）、
+    /// UUID 型で 24 バイトと 32 バイト。32-bit の size の 1（largesize を使う印）もここに含まれる。
+    /// 以前は検査せず、その値のまま書き出していた（32-bit の size の 1 では、largesize を伴わないヘッダーになっていた）
+    #[test]
+    fn rejects_nonzero_size_smaller_than_header() {
+        for (box_type, header_size) in [(NORMAL_TYPE, 8u32), (UUID_TYPE, 24)] {
+            for size in 1..header_size {
+                assert_encode_rejected(BoxHeader {
+                    box_type,
+                    box_size: BoxSize::U32(size),
+                });
+            }
+        }
+        for (box_type, header_size) in [(NORMAL_TYPE, 16u64), (UUID_TYPE, 32)] {
+            for size in 1..header_size {
+                assert_encode_rejected(BoxHeader {
+                    box_type,
+                    box_size: BoxSize::U64(size),
+                });
+            }
+        }
+    }
+}
+
+mod box_size_with_payload_size_overflow {
+    use shiguredo_mp4::{BoxSize, BoxType, ErrorKind};
+
+    /// 総サイズが u64 に収まらないペイロード長は、二段の加算のどちらで溢れても `InvalidInput` になること
+    ///
+    /// 1 段目は 32-bit の size を使うヘッダー（通常型 8 バイト・UUID 型 24 バイト）の加算、
+    /// 2 段目は largesize の 8 バイトの加算。各段で溢れる範囲の両端を確かめる。
+    /// 表現できる最大の総サイズ（`u64::MAX`）までの成功は `pbt/tests/prop_basic_types.rs` の PBT が担う。
+    /// 以前は加算を検査しておらず、オーバーフロー検査が有効なビルドでは panic していた
+    #[test]
+    fn rejects_total_size_overflowing_u64() {
+        for (box_type, compact_header_size, large_header_size) in [
+            (BoxType::Normal(*b"test"), 8u64, 16u64),
+            (BoxType::Uuid([0x11; 16]), 24, 32),
+        ] {
+            let max_payload = u64::MAX - large_header_size;
+
+            // 2 段目（largesize の 8 バイト）の加算で溢れる範囲と、1 段目の加算で溢れる範囲の両端
+            for payload in [
+                max_payload + 1,
+                u64::MAX - compact_header_size,
+                u64::MAX - compact_header_size + 1,
+                u64::MAX,
+            ] {
+                let err = BoxSize::with_payload_size(box_type, payload).expect_err(&format!(
+                    "総サイズが u64 に収まらないのに Ok が返った: {box_type:?}, payload={payload}"
+                ));
+                assert_eq!(
+                    err.kind,
+                    ErrorKind::InvalidInput,
+                    "エラー種別が `InvalidInput` ではない: {box_type:?}, payload={payload} (reason={})",
+                    err.reason
+                );
+            }
+        }
     }
 }
 

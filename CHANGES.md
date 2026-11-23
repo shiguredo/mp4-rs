@@ -57,6 +57,22 @@
   - サンプルごとのフィールドがない `trun` で受け付けるサンプル数の上限（16,777,216）は変えない
   - `Fmp4SegmentMuxer` の出力と、`Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` が返すサンプルは変わらない
   - @voluntas
+- [CHANGE] `BoxSize::with_payload_size` の戻り値を `Result<BoxSize>` に変更し、`BoxHeader::encode` / `UnknownBox::encode` で正しく符号化できないサイズを拒否する
+  - `BoxSize::with_payload_size` は、ヘッダーを含む総サイズが `u64` に収まらない場合に `ErrorKind::InvalidInput` を返す。これまでは、オーバーフロー検査が有効なビルドでは panic し、無効なビルドではラップした誤ったサイズを返していた
+    - 呼び出し側は `?` などで `Result` を扱う必要がある
+    - 総サイズが `u64` に収まる場合は、これまでの戻り値と同じ `BoxSize` を `Ok` で返す
+  - `BoxHeader::encode` は、`box_size` が 0 以外で、そのヘッダー自身のバイト数に満たない場合（`BoxSize::U32(1)` を含む）に、バッファの長さにかかわらず `ErrorKind::InvalidInput` を返す。これまでは、バッファの長さが足りる場合、その値のまま書き出していた
+    - `BoxSize::VARIABLE_SIZE` と `BoxSize::LARGE_VARIABLE_SIZE` は、これまでどおり `box_type` を問わず書き込める
+  - `UnknownBox::encode` は、`box_size` が `BoxSize::VARIABLE_SIZE` 以外で、その形式と `box_type` から決まるヘッダーのバイト数と `payload` の長さの合計に一致しない場合（`BoxSize::LARGE_VARIABLE_SIZE` を含む）に、バッファの長さにかかわらず `ErrorKind::InvalidInput` を返す。これまでは、バッファの長さが足りる場合、宣言サイズがヘッダーとペイロードの長さの合計と食い違うボックスを書き出していた
+    - `box_size` の形式（`BoxSize::U32` / `BoxSize::U64`）は選び直さない
+    - `payload` を変更した `UnknownBox` を encode する場合は、`BoxSize::with_payload_size` などで `box_size` も設定し直す必要がある
+    - decode した `UnknownBox` の `box_size` は、常に `BoxSize::VARIABLE_SIZE` か、ヘッダーのバイト数と `payload` の長さの合計に一致するため、そのまま encode し直す場合の出力は変わらない
+    - `unknown_boxes` を持つボックスと `SampleEntry::Unknown` / `RootBox::Unknown`、およびそれらを含むボックスと `Mp4File` の encode にも同じ変更が及ぶ。ただし、その `UnknownBox` より前の部分を書き込めない長さのバッファでは、サイズを検査する前に `ErrorKind::InsufficientBuffer` を返す
+  - `Mp4FileMuxer::finalize` / `Fmp4SegmentMuxer::init_segment_bytes` は、`UnknownBox::encode` が拒否する `UnknownBox` を含むサンプルエントリーを渡されていた場合に `MuxError::EncodeError` を返す。これまでは、宣言サイズがヘッダーとペイロードの長さの合計と食い違うボックスを含む出力を返していた
+    - `Fmp4SegmentMuxer::mfra_bytes` も内部で初期化セグメントを構築するため、同じ場合に `MuxError::EncodeError` を返す
+  - `FreeBox` / `MdatBox` の encode と、muxer が書き出す `mdat` / `free` のヘッダーは変わらない
+  - wasm の `unknownBoxes` は `data` の長さから `box_size` を決めるため、挙動は変わらない
+  - @voluntas
 - [ADD] demux した編集リスト（`edts` / `elst`）を mux で保持できるようにする
   - `TrackInfo.edit_list` に `elst` の内容を、`TrackInfo.movie_timescale` に `mvhd` の timescale を入れる
   - `EditList` 型を追加し、`TrackMetadata.edit_list` で mux に渡せるようにする

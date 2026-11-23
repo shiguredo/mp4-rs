@@ -70,6 +70,17 @@ pub struct UnknownBox {
     pub box_type: BoxType,
 
     /// ボックスサイズ
+    ///
+    /// [`BoxSize::VARIABLE_SIZE`] 以外の値は、その形式（[`BoxSize::U32`] / [`BoxSize::U64`]）と
+    /// `box_type` から決まるヘッダーのバイト数に `payload` の長さを足した値と一致している必要がある。
+    /// 一致しない場合（[`BoxSize::LARGE_VARIABLE_SIZE`] を含む）、
+    /// [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
+    /// `payload` を変更した場合は、[`BoxSize::with_payload_size`] などでこの値を設定し直すこと。
+    ///
+    /// [`BoxSize::VARIABLE_SIZE`] は検査せず size=0 のまま書き出す。size=0 はボックスがファイルの末尾まで
+    /// 続くことを表し、末尾以外に置くと、仕様どおりに読む読み手は後続のボックスまでペイロードとして読む。
+    /// また、[`UnknownBox::decode`] は受理しない（受理するのは [`UnknownBox::decode_top_level`]）。
+    /// このため、ファイル末尾のトップレベルのボックスに限って使うこと。
     pub box_size: BoxSize,
 
     /// ペイロード
@@ -97,7 +108,35 @@ impl UnknownBox {
 
 impl Encode for UnknownBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let mut offset = BoxHeader::new(self.box_type, self.box_size).encode(buf)?;
+        let header = BoxHeader::new(self.box_type, self.box_size);
+
+        // ISO/IEC 14496-12:2015 の 4.2 では、size はヘッダーを含むボックス全体のバイト数で、
+        // 0 はボックスがファイルの末尾まで続くことを表す。
+        // 宣言サイズがヘッダーとペイロードの長さの合計と食い違ったまま書き出すと、読み手がペイロードの範囲と
+        // 後続のボックスの位置を誤るため、一致を検査する。
+        // 検査は、バッファの長さによってエラー種別が変わらないよう、書き込む前に行う。
+        // decode した結果をそのまま encode し直したときに同じ幅のヘッダーで書き戻せるよう、
+        // 指定された形式（U32 / U64）は選び直さない。
+        // `BoxSize::VARIABLE_SIZE` は、ファイル末尾のトップレベルにある可変長のボックスを decode した結果を同じ表現で
+        // 書き戻せるよう、検査の対象外とし size=0 のまま書き出す。
+        // `BoxSize::LARGE_VARIABLE_SIZE`（値は 0）は、ヘッダーとペイロードの長さの合計（`actual_size`）が
+        // 常にヘッダー幅以上で 0 と一致しないため、専用の分岐を置かずにこの検査で拒否される。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+        if self.box_size != BoxSize::VARIABLE_SIZE {
+            let header_size = header.external_size() as u64;
+            let actual_size = u64::try_from(self.payload.len())
+                .ok()
+                .and_then(|payload_len| payload_len.checked_add(header_size));
+            if actual_size != Some(self.box_size.get()) {
+                return Err(Error::invalid_input(format!(
+                    "UnknownBox size mismatch: box_size={:?}, header_size={header_size}, payload_len={}",
+                    self.box_size,
+                    self.payload.len()
+                )));
+            }
+        }
+
+        let mut offset = header.encode(buf)?;
         offset += self.payload.encode(&mut buf[offset..])?;
         Ok(offset)
     }
@@ -390,7 +429,7 @@ impl FreeBox {
 
 impl Encode for FreeBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let box_size = BoxSize::with_payload_size(Self::TYPE, self.payload.len() as u64);
+        let box_size = BoxSize::with_payload_size(Self::TYPE, self.payload.len() as u64)?;
         let mut offset = BoxHeader::new(Self::TYPE, box_size).encode(buf)?;
         offset += self.payload.encode(&mut buf[offset..])?;
         Ok(offset)
@@ -441,7 +480,7 @@ impl MdatBox {
 
 impl Encode for MdatBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
-        let box_size = BoxSize::with_payload_size(Self::TYPE, self.payload.len() as u64);
+        let box_size = BoxSize::with_payload_size(Self::TYPE, self.payload.len() as u64)?;
         let mut offset = BoxHeader::new(Self::TYPE, box_size).encode(buf)?;
         offset += self.payload.encode(&mut buf[offset..])?;
         Ok(offset)

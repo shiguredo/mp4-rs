@@ -273,7 +273,8 @@ fn arb_unknown_box(ctx: &mut TestCaseContext) -> UnknownBox {
     let payload = noprop::sample_bytes_vec(ctx, payload_len);
     UnknownBox {
         box_type: BoxType::Normal(box_type),
-        box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
+        box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64)
+            .expect("テスト用のペイロード長は総サイズが u64 に収まる"),
         payload,
     }
 }
@@ -415,28 +416,55 @@ fn arb_tx3g_box(ctx: &mut TestCaseContext) -> Tx3gBox {
 // ===== 単純な Box のテスト =====
 
 /// UnknownBox の encode/decode roundtrip
+///
+/// 通常型と UUID 型のそれぞれで、短いペイロードに対しても 32-bit の size（U32）と
+/// largesize（U64）の両方の形式を明示的に指定する。encode が形式を選び直さず指定どおりの幅の
+/// ヘッダーを書き出すこと、decode 後のサイズの形式と値、ペイロードが元の指定と一致することを確かめる
 #[test]
 fn unknown_box_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let box_type = noprop::sample_bytes::<4>(ctx);
+        // 32-bit の size を使うヘッダーと largesize を使うヘッダーのバイト数
+        let (box_type, compact_header_size, large_header_size) = if noprop::sample_bool(ctx) {
+            (BoxType::Normal(noprop::sample_bytes::<4>(ctx)), 8, 16)
+        } else {
+            (BoxType::Uuid(noprop::sample_bytes::<16>(ctx)), 24, 32)
+        };
         let payload = {
             let n = noprop::sample_usize_in(ctx, 0..100);
             noprop::sample_bytes_vec(ctx, n)
         };
-        let unknown = UnknownBox {
-            box_type: BoxType::Normal(box_type),
-            box_size: BoxSize::with_payload_size(BoxType::Normal(box_type), payload.len() as u64),
-            payload: payload.clone(),
+        let use_large_size = noprop::sample_bool(ctx);
+        let header_size: usize = if use_large_size {
+            large_header_size
+        } else {
+            compact_header_size
         };
+        let total_size = (header_size + payload.len()) as u64;
+        let box_size = if use_large_size {
+            BoxSize::U64(total_size)
+        } else {
+            BoxSize::U32(total_size as u32)
+        };
+        let unknown = UnknownBox {
+            box_type,
+            box_size,
+            payload,
+        };
+
         let encoded = unknown
             .encode_to_vec()
-            .expect("Vec への書き込みは失敗しない");
+            .expect("ヘッダーとペイロードの長さの合計に一致するサイズは必ずエンコードできる");
+        assert_eq!(
+            encoded.len(),
+            header_size + unknown.payload.len(),
+            "指定した形式のヘッダー幅で書き出されていない: {box_size:?}"
+        );
+
         let (decoded, size) = UnknownBox::decode(&encoded)
             .expect("直前にエンコードした有効な UnknownBox は必ずデコードできる");
-
         assert_eq!(size, encoded.len());
-        assert_eq!(decoded.payload, payload);
+        assert_eq!(decoded, unknown);
         Ok(())
     })?;
     Ok(())

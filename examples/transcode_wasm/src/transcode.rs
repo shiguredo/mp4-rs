@@ -447,7 +447,8 @@ impl TrackTranscoder {
             .ok_or_else(|| Error::new("no description in sample"))?;
         let header = BoxHeader {
             box_type,
-            box_size: BoxSize::with_payload_size(box_type, description.len() as u64),
+            box_size: BoxSize::with_payload_size(box_type, description.len() as u64)
+                .map_err(|e| Error::new(e.to_string()))?,
         };
         let mut data = Vec::new();
         header

@@ -1786,7 +1786,12 @@ impl BaseBox for FlacBox {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DflaBox {
     /// FLAC メタデータブロックのリスト
-    /// 最初のブロックは必ず STREAMINFO (block_type=0) でなければならない
+    ///
+    /// 最初のブロックは必ず STREAMINFO (block_type=0) でなければならない。
+    /// 空の場合と、最初のブロックが STREAMINFO でない場合、
+    /// [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
+    /// 仕様上、最終ブロックフラグは末尾のブロックだけに立てるが、
+    /// [`Encode::encode`] はフラグの位置を検査せず、指定された値のまま書き出す。
     pub metadata_blocks: Vec<FlacMetadataBlock>,
 }
 
@@ -1799,6 +1804,26 @@ impl DflaBox {
 
 impl Encode for DflaBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // Encapsulation of FLAC in ISO Base Media File Format（バージョン 0.0.4）の 3.3.2 は、
+        // `dfLa` に最低 1 個のメタデータブロックがあり、先頭が STREAMINFO であることを求める。
+        // `DflaBox::decode` が列を拒否する条件のうち、この 2 つを検査する。
+        // 同節は最終ブロックフラグを末尾のブロックだけに立てることも定めているが、フラグの位置は検査せず、
+        // 指定された値のまま書き出す（途中のブロックにフラグが立った列は decode が拒否し、
+        // どのブロックにもフラグが立っていない列は decode も受理する）。
+        // バッファの長さによってエラー種別が変わらないよう、ヘッダーを書き込む前に検査する。
+        // なお、ここでの扱いはこの文書のバージョン 0.0.4 に基づくものであり、将来の改訂で変わる可能性がある。
+        let Some(first_block) = self.metadata_blocks.first() else {
+            return Err(Error::invalid_input(
+                "dfLa box must contain at least one metadata block (STREAMINFO)",
+            ));
+        };
+        if first_block.block_type != FlacMetadataBlock::BLOCK_TYPE_STREAMINFO {
+            return Err(Error::invalid_input(format!(
+                "First metadata block in dfLa must be STREAMINFO (block_type=0), got {}",
+                first_block.block_type.get()
+            )));
+        }
+
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;

@@ -2557,7 +2557,83 @@ mod hvcc_error_tests {
 // ===== DflaBox のエラーパステスト =====
 
 mod dfla_error_tests {
-    use shiguredo_mp4::{Decode, boxes::DflaBox};
+    use shiguredo_mp4::{
+        Decode, Encode, ErrorKind, Uint,
+        boxes::{DflaBox, FlacMetadataBlock},
+    };
+
+    /// `block_type` と最終ブロックフラグを指定したメタデータブロックを組み立てる
+    ///
+    /// ブロックデータは STREAMINFO の固定長に合わせた 34 バイトにする
+    fn make_metadata_block(block_type: u8, is_last: bool) -> FlacMetadataBlock {
+        FlacMetadataBlock {
+            last_metadata_block_flag: Uint::from(is_last),
+            block_type: Uint::new(block_type),
+            block_data: vec![0; 34],
+        }
+    }
+
+    /// `encode_to_vec` と空のバッファへの `encode` の両方が `InvalidInput` を返すことを確認する
+    ///
+    /// 空のバッファでも `InvalidInput` になることで、ヘッダーを書き込む前に検査していることを確かめる
+    #[track_caller]
+    fn assert_encode_rejected(dfla: &DflaBox, ctx: &str) {
+        let err = dfla
+            .encode_to_vec()
+            .expect_err(&format!("encode_to_vec が Ok を返した: {ctx}"));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "encode_to_vec のエラー種別が `InvalidInput` ではない: {ctx} (reason={})",
+            err.reason
+        );
+
+        let err = dfla
+            .encode(&mut [])
+            .expect_err(&format!("空のバッファへの encode が Ok を返した: {ctx}"));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "空のバッファへの encode のエラー種別が `InvalidInput` ではない: {ctx} (reason={})",
+            err.reason
+        );
+    }
+
+    /// DflaBox: メタデータブロックが 1 個もない列の encode は `InvalidInput` になる
+    ///
+    /// 以前は 12 バイトの `dfLa` を書き出しており、その出力は `DflaBox::decode` で拒否されていた
+    #[test]
+    fn dfla_box_encode_rejects_empty_metadata_blocks() {
+        let dfla = DflaBox {
+            metadata_blocks: vec![],
+        };
+        assert_encode_rejected(&dfla, "メタデータブロックなし");
+    }
+
+    /// DflaBox: 先頭が STREAMINFO でない列の encode は `InvalidInput` になる
+    ///
+    /// STREAMINFO 以外の `block_type` の全値（1〜127）を先頭に置く。STREAMINFO が 2 個目にあっても、
+    /// 先頭でなければ拒否されることも確かめる
+    #[test]
+    fn dfla_box_encode_rejects_non_streaminfo_first_block() {
+        for block_type in 1..=127 {
+            let dfla = DflaBox {
+                metadata_blocks: vec![make_metadata_block(block_type, true)],
+            };
+            assert_encode_rejected(&dfla, &format!("先頭の block_type={block_type}"));
+
+            let dfla = DflaBox {
+                metadata_blocks: vec![
+                    make_metadata_block(block_type, false),
+                    make_metadata_block(FlacMetadataBlock::BLOCK_TYPE_STREAMINFO.get(), true),
+                ],
+            };
+            assert_encode_rejected(
+                &dfla,
+                &format!("先頭の block_type={block_type} の後に STREAMINFO"),
+            );
+        }
+    }
 
     /// DflaBox: 不正なバージョンでのデコードエラー
     #[test]

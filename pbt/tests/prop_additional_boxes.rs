@@ -117,22 +117,36 @@ fn arb_esds_box(ctx: &mut TestCaseContext) -> EsdsBox {
     }
 }
 
-/// FlacMetadataBlock (STREAMINFO) を生成する
-fn arb_flac_streaminfo_block(ctx: &mut TestCaseContext) -> FlacMetadataBlock {
+/// 最終ブロックフラグを `is_last` にした STREAMINFO のメタデータブロックを生成する
+fn arb_flac_streaminfo_block(ctx: &mut TestCaseContext, is_last: bool) -> FlacMetadataBlock {
     // STREAMINFO は 34 バイト固定
     let block_data = noprop::sample_bytes_vec(ctx, 34);
     FlacMetadataBlock {
-        last_metadata_block_flag: Uint::new(1),
+        last_metadata_block_flag: Uint::from(is_last),
         block_type: FlacMetadataBlock::BLOCK_TYPE_STREAMINFO,
         block_data,
     }
 }
 
 /// DflaBox を生成する
+///
+/// 先頭は STREAMINFO にし、その後に STREAMINFO 以外の種別のブロックを 0-3 個続ける。
+/// encode は先頭のブロックの種別だけを検査し、後続のブロックの種別では拒否しないことを確かめるため。
+/// 最終ブロックフラグは末尾のブロックだけに立てる。途中のブロックに立てると、decode がそこで列を打ち切り、
+/// 残りのデータがあるとして `InvalidData` を返すため
 fn arb_dfla_box(ctx: &mut TestCaseContext) -> DflaBox {
-    DflaBox {
-        metadata_blocks: vec![arb_flac_streaminfo_block(ctx)],
+    let following_count = noprop::sample_usize_in(ctx, 0..4);
+    let mut metadata_blocks = vec![arb_flac_streaminfo_block(ctx, following_count == 0)];
+    for index in 0..following_count {
+        let block_type = noprop::sample_u64_in(ctx, 1..=127) as u8;
+        let len = noprop::sample_usize_in(ctx, 0..64);
+        metadata_blocks.push(FlacMetadataBlock {
+            last_metadata_block_flag: Uint::from(index + 1 == following_count),
+            block_type: Uint::new(block_type),
+            block_data: noprop::sample_bytes_vec(ctx, len),
+        });
     }
+    DflaBox { metadata_blocks }
 }
 
 /// AvccBox (Baseline) を生成する
@@ -540,8 +554,7 @@ fn flac_box_roundtrip() -> noprop::TestResult {
             .expect("直前にエンコードした有効な FlacBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
-        assert_eq!(decoded.audio.channelcount, flac.audio.channelcount);
-        assert_eq!(decoded.dfla_box.metadata_blocks.len(), 1);
+        assert_eq!(decoded, flac);
         Ok(())
     })?;
     Ok(())
@@ -558,8 +571,7 @@ fn dfla_box_roundtrip() -> noprop::TestResult {
             .expect("直前にエンコードした有効な DflaBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
-        assert_eq!(decoded.metadata_blocks.len(), dfla.metadata_blocks.len());
-        assert_eq!(decoded.metadata_blocks[0].block_type.get(), 0);
+        assert_eq!(decoded, dfla);
         Ok(())
     })?;
     Ok(())

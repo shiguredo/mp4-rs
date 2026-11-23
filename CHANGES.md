@@ -183,6 +183,12 @@
   - `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` は、未対応バージョンの `tfdt` の値を使わなくなる。同じ `traf` に対応バージョンの `tfdt` があればその値を使い、なければ `tfdt` がない場合と同じく扱う。未対応バージョンの `tfdt` のサイズが 0 の場合はエラーを返す。これまでは、本文がバージョン 0 の構文より短い未対応バージョンの `tfdt` が `traf` で最初に現れる場合はエラーを返していた
   - `Fmp4SegmentMuxer` はバージョンを常に 0 か 1 で決めるため、出力は変わらない
   - @voluntas
+- [FIX] `DflaBox::encode` で、`metadata_blocks` が空の場合と先頭のブロックが STREAMINFO でない場合に、`DflaBox::decode` が拒否する `dfLa` を書き出していたのを修正する
+  - どちらの場合も、バッファの長さにかかわらず `ErrorKind::InvalidInput` を返す。これまでは、この 2 条件を検査せず、ほかの理由でエラーにならない場合はそのまま書き出していた。その出力は `DflaBox::decode` が `ErrorKind::InvalidData` で拒否する
+  - `FlacBox` / `SampleEntry::Flac` と、それらを含むボックスの encode にも同じ変更が及ぶ。ただし、`dfLa` より前の部分を書き込めない長さのバッファでは、`metadata_blocks` を検査する前に `ErrorKind::InsufficientBuffer` を返す
+  - `Mp4FileMuxer::finalize` / `Fmp4SegmentMuxer::init_segment_bytes` は、そうした `dfLa` を持つサンプルエントリーを渡されていた場合に `MuxError::EncodeError` を返す。これまでは、このライブラリの decode で読めない出力を返していた
+  - wasm のマルチプレクサーは、JSON の `metadataBlocks` を受け取る時点で同じ条件を検査し、`metadataBlocks` がない場合は STREAMINFO 1 個の列を組み立てるため、挙動は変わらない
+  - @voluntas
 
 ### misc
 

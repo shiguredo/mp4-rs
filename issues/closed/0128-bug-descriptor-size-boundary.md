@@ -1,7 +1,7 @@
 # `EsDescriptor` と子記述子の読み取りを宣言されたペイロード内に制限する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-23
 - Branch: feature/fix-descriptor-size-boundary
 - Polished: 2026-11-22
 
@@ -27,3 +27,20 @@
 - 公開の `Decode` の PBT で、正常な記述子を順に読めて、成功時の消費バイト数が次の記述子の先頭を指すことを確認する。宣言範囲内の未解釈部分を読み飛ばす場合も同じ消費長の規則を確認する
 - 実入力の不足と、親の宣言範囲内に必須フィールドや子が収まらない場合を区別して、公開デコードのエラーパスのテストでそれぞれのエラー種別を確認する。任意の子の有無の判定も親の外を参照しないことを確認する
 - 既存の記述子と `esds` を含むファイルのラウンドトリップが引き続き成功し、`cargo test --workspace` が通る
+
+## 解決方法
+
+- `src/descriptors.rs` に private な共通関数を 2 つ追加した
+  - `decode_descriptor_payload`: タグを検査してから、宣言されたペイロードを切り出す。ヘッダー長と宣言サイズの和は `checked_add` で求め、和がオーバーフローする場合や入力に収まらない場合は `ErrorKind::InsufficientBuffer` を返す。ペイロードの中身はこの時点では読まない
+  - `within_declared_payload`: 宣言されたペイロードの中を読む処理で出た `ErrorKind::InsufficientBuffer` だけを `ErrorKind::InvalidData`（理由 `"<型名> contents exceed declared descriptor size"`）に置き換える。`location` は読み取りに失敗した位置のまま残す
+- `EsDescriptor`、`DecoderConfigDescriptor`、`SlConfigDescriptor` に private な `decode_payload` を追加した。固定フィールド、任意フィールド、子のディスクリプター、`DecoderSpecificInfo` の有無の判定は、すべて宣言されたペイロードのスライスだけから行う。成功時の消費バイト数はヘッダー長と宣言サイズの合計で、読み終えた後にペイロードに残ったデータは読み飛ばす。URL 文字列と `buffer_size_db` の明示的な検査の文言は `... exceeds declared descriptor size` に変えた
+- `DecoderSpecificInfo::decode` の既存の境界検査と `EsdsBox` は変更していない。`DecoderSpecificInfo` が共通関数を使わない理由はコメントに残した
+- テスト
+  - `tests/test_descriptors.rs` に mod `descriptor_declared_payload_tests` を追加した
+    - 3 型それぞれの `*_payload_exceeds_input`: 入力が宣言されたペイロードの終端に達しない場合に `InsufficientBuffer` を返すことを、中身だけなら読める入力と、中身を読むとエラーになる入力の 2 ケースで確認する
+    - `*_outside_declared_payload` と `*_exceeds_declared_payload`: フィールド・URL 文字列・子のヘッダーや宣言されたペイロードが親の宣言されたペイロードに収まらない場合に `InvalidData` を返すことを確認する。どの入力にも宣言されたペイロードの外に続きのバイトを置き、それを読まないことも確かめる
+  - 既存の `sl_config_descriptor_unsupported_predefined` は `Unsupported` のまま返ることを確認するようにした。`buffer_size_db` の既存テストは新しい mod に移して改名した
+  - `src/descriptors.rs` の `mod tests` に、宣言サイズが `usize::MAX` の 3 型が `InsufficientBuffer` を返すテストを追加した。fuzz 由来の回帰テストは `esds_fuzz_input_with_short_decoder_config_descriptor` に改名し、理由文字列も確認するようにした
+  - `pbt/tests/prop_descriptors.rs`: 型ごとの roundtrip 3 本を `descriptors_decode_sequentially` に統合した。連結したディスクリプターを順に decode して値と消費バイト数を確認する。自身や子の宣言されたペイロードの末尾に解釈しないバイト列を足す場合と、サイズ欄を冗長な長さにする場合を含む。ケースのおよそ半分では、`DecoderSpecificInfo` を持たない `DecoderConfigDescriptor` の直後に `DecoderSpecificInfo` を並べ、それを子として読まないことも確認する
+- `cargo test --workspace` が esds を含む既存ファイルのラウンドトリップを含めて成功することと、wasm32-wasip1 を対象にしたビルドで追加したテストが通ることを確認した
+- `CHANGES.md` の `## develop` に [FIX] を追記した

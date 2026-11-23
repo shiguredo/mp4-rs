@@ -146,6 +146,20 @@
   - `EsDescriptor` / `DecoderConfigDescriptor` / `DecoderSpecificInfo` / `SlConfigDescriptor` と、`EsdsBox` およびそれを含むボックスの decode は、宣言サイズが `usize` に収まらない場合に `ErrorKind::InvalidData` を返す
   - このため、これまで `ErrorKind::InsufficientBuffer` や `ErrorKind::Unsupported` を返していた入力も、宣言サイズが `usize` に収まらなければ `ErrorKind::InvalidData` になる。サイズ欄の値が `usize` に収まらなくなった後で入力が終わる場合などが該当する
   - @voluntas
+- [FIX] `EsDescriptor` / `DecoderConfigDescriptor` / `SlConfigDescriptor` の decode で、宣言されたペイロードの外にある隣のバイトをフィールドや子のディスクリプターとして読んでいたのを修正する
+  - 入力が宣言されたペイロードの終端に達しない場合は、ペイロードの中を読む前に `ErrorKind::InsufficientBuffer` を返す。このとき、ペイロードの中にある子のサイズ欄の値が `usize` に収まらなくても、それを読まないため `ErrorKind::InvalidData` ではなく `ErrorKind::InsufficientBuffer` を返す
+  - 各フィールドと子のディスクリプターは、宣言されたペイロードの中だけから読む。収まらない場合は `ErrorKind::InvalidData` を返す
+    - `DecoderConfigDescriptor` は、`DecoderSpecificInfo` の有無も宣言されたペイロードの中だけで判定する
+  - 宣言されたペイロードの中に解釈しないデータが残る場合は読み飛ばす
+    - 成功時に返す消費バイト数は、ヘッダー長と宣言サイズの合計になる。このため、宣言されたペイロードの中に解釈しないデータが残る入力では、decode が返す消費バイト数がこれまでと変わる
+    - 読み飛ばしたデータは保持しないため、encode し直した出力には含まれない
+  - これらの規則により、decode の結果がこれまでと変わる入力がある
+    - これまで decode できていた入力が、エラーになることがある。たとえば、宣言されたペイロードの外にある `SlConfigDescriptor` を読んでいた `EsDescriptor` は `ErrorKind::InvalidData` を返し、入力が宣言されたペイロードの終端に達しない `SlConfigDescriptor` は `ErrorKind::InsufficientBuffer` を返す
+    - これまでエラーになっていた入力が、decode できることがある。たとえば、`DecoderConfigDescriptor` の宣言されたペイロードに `profileLevelIndicationIndexDescriptor` などの未対応の子を含む `EsDescriptor` は decode できるようになる
+    - decode できる入力でも、返す値が変わることがある。たとえば、`DecoderSpecificInfo` を持たない `DecoderConfigDescriptor` の直後に `DecoderSpecificInfo` が続く入力を `DecoderConfigDescriptor` として単体で decode すると、`dec_specific_info` が `None` になる
+    - エラーになる入力でも、返すエラー種別が `ErrorKind::InsufficientBuffer` / `ErrorKind::InvalidData` / `ErrorKind::Unsupported` の間で変わることがある
+  - `EsdsBox` およびそれを含むボックスの decode にも同じ変更が及ぶ。ただし、ボックスの decode が返す消費バイト数は変わらない。`EsDescriptor` の宣言サイズが `esds` のペイロードを超える場合は、これまで decode できていた入力でも `ErrorKind::InsufficientBuffer` を返す
+  - @voluntas
 
 ### misc
 

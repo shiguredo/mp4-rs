@@ -205,6 +205,14 @@
   - `Mp4FileMuxer::finalize` / `Fmp4SegmentMuxer::init_segment_bytes` は、そうした `dfLa` を持つサンプルエントリーを渡されていた場合に `MuxError::EncodeError` を返す。これまでは、このライブラリの decode で読めない出力を返していた
   - wasm のマルチプレクサーは、JSON の `metadataBlocks` を受け取る時点で同じ条件を検査し、`metadataBlocks` がない場合は STREAMINFO 1 個の列を組み立てるため、挙動は変わらない
   - @voluntas
+- [FIX] `Mp4FileDemuxer::prev_sample` で、同じ時刻のサンプルが複数のトラックにあるときに、`next_sample` で進んだ順序の逆順にならないことがあったのを修正する
+  - 最も遅い時刻のサンプルが複数のトラックにある場合は、`next_sample` とは逆に、`tracks` の並びで最も後ろにあるトラックのサンプルを返す。これまでは、`next_sample` と同じく最も前にあるトラックのサンプルを返していた
+    - 同じ時刻かどうかは、デコード時刻を秒に換算してナノ秒未満を切り捨てた値で判定する
+  - これにより、ファイル先頭から `seek` を挟まずに走査した場合、`prev_sample` は `next_sample` が返した順序の逆順でサンプルを返し、`prev_sample` で戻した直後の `next_sample` は同じサンプルを返す
+    - どのトラックも先頭のサンプルは時刻 0 になるため、これまでは、たとえばトラックの並びが「映像 → 音声」の場合、`next_sample` で「映像 → 音声」の順に進めた後に `prev_sample` を 2 回呼ぶと、逆順の「音声 → 映像」ではなく「映像 → 音声」の順に返していた。また、その直後の `next_sample` は、直前に `prev_sample` が返した音声の先頭のサンプルではなく、映像の先頭のサンプルを返していた
+  - 時刻の求め方、`next_sample` が同じ時刻のサンプルを選ぶ規則、`seek` 自体の挙動は変えない。`seek` の後は、上記の 2 つの関係を保証しない
+  - wasm の `Mp4FileDemuxer.prevSample()` にも同じ変更が及ぶ
+  - @voluntas
 
 ### misc
 

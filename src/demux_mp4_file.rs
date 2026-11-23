@@ -588,8 +588,11 @@ impl Mp4FileDemuxer {
 
     /// 時系列順に次のサンプルを取得する
     ///
-    /// すべてのトラックから、まだ取得していないものの中で、
-    /// 最も早いタイムスタンプを持つサンプルを返す。
+    /// 各トラックの現在位置以降にあるサンプルから、最も早い時刻のサンプルを返す。
+    /// ここでの時刻は、[`Sample::timestamp`]（デコード時刻）をトラックのタイムスケールで秒に換算し、
+    /// ナノ秒未満を切り捨てた値である。
+    /// 最も早い時刻のサンプルが複数のトラックにある場合は、
+    /// [`Mp4FileDemuxer::tracks()`] の並びで最も前にあるトラックのサンプルを返す。
     /// サンプルが存在しない場合は `None` が返される。
     ///
     /// なお、次のサンプルの情報を取得するために I/O 操作が必要な場合は [`DemuxError::InputRequired`] が返される。
@@ -600,13 +603,15 @@ impl Mp4FileDemuxer {
 
         let mut earliest_sample: Option<(Duration, usize)> = None;
 
-        // 全トラックの中で最も早いタイムスタンプを持つサンプルを探す
+        // 全トラックの中で最も早い時刻のサンプルを探す
         for (track_index, track) in self.tracks.iter().enumerate() {
             let Some(sample_accessor) = track.table.get_sample(track.next_sample_index) else {
                 continue;
             };
             let timestamp =
                 Duration::from_secs(sample_accessor.timestamp()) / track.timescale.get();
+            // 同じ時刻ではトラック添字の小さい方（先に見つかった方）を選ぶ。
+            // `prev_sample()` はこの逆順で選ぶため、比較を変える場合は両方を合わせる
             if earliest_sample.as_ref().is_some_and(|s| timestamp >= s.0) {
                 continue;
             }
@@ -633,10 +638,17 @@ impl Mp4FileDemuxer {
 
     /// 時系列順に前のサンプルを取得する
     ///
-    /// すべてのトラックのうち、現在位置より前にあるサンプルから、
-    /// 最も遅いタイムスタンプのものを返す。
-    /// 同一タイムスタンプのサンプルが複数ある場合は、シーク後の [`Mp4FileDemuxer::next_sample()`] の走査対象に含まれる。
+    /// 各トラックの現在位置より前にあるサンプルから、最も遅い時刻のサンプルを返す。
+    /// 時刻の求め方は [`Mp4FileDemuxer::next_sample()`] と同じである。
+    /// 最も遅い時刻のサンプルが複数のトラックにある場合は、[`Mp4FileDemuxer::next_sample()`] とは逆に、
+    /// [`Mp4FileDemuxer::tracks()`] の並びで最も後ろにあるトラックのサンプルを返す。
     /// サンプルが存在しない場合は `None` が返される。
+    ///
+    /// ファイル先頭から [`Mp4FileDemuxer::seek()`] を挟まずに [`Mp4FileDemuxer::next_sample()`] とこのメソッドを
+    /// 呼ぶ場合、このメソッドは `next_sample()` で進めた位置を 1 つずつ戻し、
+    /// `next_sample()` が返した順序の逆順でサンプルを返す。
+    /// また、このメソッドで戻した直後の `next_sample()` は同じサンプルを返す。
+    /// `seek()` は各トラックの位置を個別に決めるため、`seek()` の後はこれらの関係を保証しない。
     ///
     /// なお、前のサンプルの情報を取得するために I/O 操作が必要な場合は [`DemuxError::InputRequired`] が返される。
     /// その場合、呼び出し元は指定された位置とサイズのファイルデータを読み込み、
@@ -646,7 +658,7 @@ impl Mp4FileDemuxer {
 
         let mut latest_sample: Option<(Duration, usize, NonZeroU32)> = None;
 
-        // 全トラックの中で最も遅いタイムスタンプを持つサンプルを探す
+        // 全トラックの中で最も遅い時刻のサンプルを探す
         for (track_index, track) in self.tracks.iter().enumerate() {
             let Some(prev_sample_index) = track
                 .next_sample_index
@@ -661,7 +673,9 @@ impl Mp4FileDemuxer {
             };
             let timestamp =
                 Duration::from_secs(sample_accessor.timestamp()) / track.timescale.get();
-            if latest_sample.as_ref().is_some_and(|s| timestamp <= s.0) {
+            // `next_sample()` は同じ時刻ではトラック添字の小さい方を先に返すため、
+            // その逆順になるよう、同じ時刻ではトラック添字の大きい方（後から見つかった方）を選ぶ
+            if latest_sample.as_ref().is_some_and(|s| timestamp < s.0) {
                 continue;
             }
             latest_sample = Some((timestamp, track_index, prev_sample_index));

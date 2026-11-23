@@ -1182,6 +1182,250 @@ fn mux_demux_video_audio_subtitle_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
+/// `prev_sample_reverses_next_sample_across_tracks` の PBT ケース数
+///
+/// 1 ケースの mux と demux は軽いため、途中のサンプルが同時刻になるケースを多く通すよう、
+/// `CASES_MAIN` より多くする
+const CASES_PREV_SAMPLE: usize = 200;
+
+/// demux したサンプルを区別する値（トラック ID・タイムスタンプ・データ位置・データサイズ）を返す
+///
+/// 別のトラックの同時刻のサンプルを取り違えたことを検出できるよう、タイムスタンプだけで区別しない
+fn demux_sample_key(sample: &shiguredo_mp4::demux::Sample<'_>) -> (u32, u64, u64, usize) {
+    (
+        sample.track.track_id,
+        sample.timestamp,
+        sample.data_offset,
+        sample.data_size,
+    )
+}
+
+/// 複数トラックで、`prev_sample` が `next_sample` で進んだ順序の逆順でサンプルを返す
+///
+/// 映像と音声のトラックに、半数のケースでは字幕のトラックを加えた MP4 を mux し、
+/// ファイル先頭から `seek` を挟まずに走査する。各トラックの先頭サンプルは時刻 0 で必ず同時刻になる。
+/// これとは独立に、半数のケースでは全トラックの timescale を 1000 に揃え、各サンプルの尺を 10・20・30 のいずれかにして、
+/// 途中のサンプルも別のトラックと同時刻になりやすくする。
+///
+/// 次のことを確かめる。
+/// - 順方向に 1 つ進めるたびに、直後の `prev_sample` と続く `next_sample` が、どちらも直前に進めたサンプルを返す
+/// - 同時刻のサンプルを、`next_sample` が `tracks()` の並びの順に返す（時刻 0 の各トラックの先頭サンプルと、
+///   timescale を揃えたケースの途中のサンプル）
+/// - 最後まで進めた後の `prev_sample` の連続呼び出しが、順方向で返した順序の逆順でサンプルを返し、最後に `None` になる
+/// - 先頭まで戻した後の `next_sample` が、順方向の先頭のサンプルを返す
+#[test]
+fn prev_sample_reverses_next_sample_across_tracks() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES_PREV_SAMPLE, |ctx| {
+        let mut video_samples = sample_vec(ctx, 1..10, arb_video_sample_info);
+        let mut audio_samples = sample_vec(ctx, 1..15, arb_audio_sample_info);
+        let mut subtitle_samples = if noprop::sample_bool(ctx) {
+            sample_vec(ctx, 1..10, arb_subtitle_sample_info)
+        } else {
+            Vec::new()
+        };
+
+        // 最初の映像サンプルは必ず keyframe にする
+        if let Some(first) = video_samples.first_mut() {
+            first.keyframe = true;
+        }
+
+        // 半数のケースで timescale を 1000 に揃え、各サンプルの尺を 10・20・30 のいずれかにして、
+        // 途中のサンプルもトラック間で同時刻になりやすくする
+        let align_timestamps = noprop::sample_bool(ctx);
+        let (video_timescale, audio_timescale, subtitle_timescale) = if align_timestamps {
+            for sample in &mut video_samples {
+                sample.duration = noprop::sample_choice(ctx, &[10, 20, 30]);
+            }
+            for sample in &mut audio_samples {
+                sample.duration = noprop::sample_choice(ctx, &[10, 20, 30]);
+            }
+            for sample in &mut subtitle_samples {
+                sample.duration = noprop::sample_choice(ctx, &[10, 20, 30]);
+            }
+            (1000, 1000, 1000)
+        } else {
+            (30, 48000, 1000)
+        };
+
+        // トラックは append_sample() の呼び出し順（映像 → 音声 → 字幕）で並ぶ
+        let tracks = [
+            (
+                TrackKind::Video,
+                create_avc1_sample_entry(320, 240),
+                video_timescale,
+                video_samples
+                    .iter()
+                    .map(|s| (s.keyframe, s.duration, s.data_size))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                TrackKind::Audio,
+                create_opus_sample_entry(2),
+                audio_timescale,
+                audio_samples
+                    .iter()
+                    .map(|s| (true, s.duration, s.data_size))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                TrackKind::Subtitle,
+                create_stpp_sample_entry(),
+                subtitle_timescale,
+                subtitle_samples
+                    .iter()
+                    .map(|s| (true, s.duration, s.data_size))
+                    .collect::<Vec<_>>(),
+            ),
+        ];
+
+        let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
+        let mut data_offset = muxer.initial_boxes_bytes().len() as u64;
+        let mut total_data_size = 0usize;
+        for (track_kind, sample_entry, timescale, samples) in tracks {
+            let timescale =
+                NonZeroU32::new(timescale).expect("timescale は非ゼロの値で指定している");
+            let mut sample_entry = Some(sample_entry);
+            for (keyframe, duration, data_size) in samples {
+                let sample = Sample {
+                    track_kind,
+                    sample_entry: sample_entry.take(),
+                    keyframe,
+                    timescale,
+                    duration,
+                    composition_time_offset: None,
+                    data_offset,
+                    data_size,
+                };
+                muxer
+                    .append_sample(&sample)
+                    .expect("sample の追加に失敗した");
+                data_offset += data_size as u64;
+                total_data_size += data_size;
+            }
+        }
+        let initial_bytes = muxer.initial_boxes_bytes().to_vec();
+        let finalized = muxer.finalize().expect("finalize に失敗した");
+        let file_data = build_file_data(&initial_bytes, finalized, total_data_size);
+
+        let mut demuxer = Mp4FileDemuxer::new();
+        demuxer.handle_input(Input {
+            position: 0,
+            data: &file_data,
+        });
+        let track_ids = demuxer
+            .tracks()
+            .expect("tracks の取得に失敗した")
+            .iter()
+            .map(|track| track.track_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            track_ids.len(),
+            if subtitle_samples.is_empty() { 2 } else { 3 },
+            "demux したトラック数が mux したトラック数と一致しない"
+        );
+
+        // 順方向に 1 つ進めるたびに、直後の prev_sample と続く next_sample が、
+        // どちらも直前に進めたサンプルを返すことを確かめる
+        let mut forward = Vec::new();
+        while let Some(key) = demuxer
+            .next_sample()
+            .expect("次の sample の読み取りに失敗した")
+            .map(|s| demux_sample_key(&s))
+        {
+            let back = demuxer
+                .prev_sample()
+                .expect("前の sample の読み取りに失敗した")
+                .map(|s| demux_sample_key(&s));
+            assert_eq!(
+                back,
+                Some(key),
+                "{} 個目のサンプルへ進めた直後の prev_sample が、そのサンプルを返さない",
+                forward.len() + 1
+            );
+            let again = demuxer
+                .next_sample()
+                .expect("次の sample の読み取りに失敗した")
+                .map(|s| demux_sample_key(&s));
+            assert_eq!(
+                again,
+                Some(key),
+                "{} 個目のサンプルへ戻した直後の next_sample が、同じサンプルを返さない",
+                forward.len() + 1
+            );
+            forward.push(key);
+        }
+        assert_eq!(
+            forward.len(),
+            video_samples.len() + audio_samples.len() + subtitle_samples.len(),
+            "順方向で取得したサンプル数が mux したサンプル数と一致しない"
+        );
+        // 各トラックの先頭サンプルは時刻 0 で同時刻になり、2 個目以降は尺が 1 以上なので時刻 0 より後になる。
+        // このため先頭のトラック数分は各トラックの時刻 0 のサンプルになり、next_sample は同時刻では
+        // tracks() の並びで最も前にあるトラックから返すので、その並びの順になる
+        let leading_track_ids = forward[..track_ids.len()]
+            .iter()
+            .map(|key| key.0)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            leading_track_ids, track_ids,
+            "時刻 0 で同時刻の先頭サンプルが tracks() の並びの順に返されていない"
+        );
+        // timescale を揃えたケースでは、タイムスタンプの値が等しいサンプルは同時刻になる。
+        // 時刻 0 以外の同時刻のサンプルも、tracks() の並びの順で返されることを確かめる
+        if align_timestamps {
+            let track_position = |track_id: u32| {
+                track_ids
+                    .iter()
+                    .position(|id| *id == track_id)
+                    .expect("demux したサンプルのトラック ID が tracks() にない")
+            };
+            for (index, pair) in forward.windows(2).enumerate() {
+                if pair[0].1 == pair[1].1 {
+                    assert!(
+                        track_position(pair[0].0) < track_position(pair[1].0),
+                        "{} 個目と {} 個目の同時刻のサンプルが tracks() の並びの順に返されていない",
+                        index + 1,
+                        index + 2
+                    );
+                }
+            }
+        }
+
+        // 最後まで進めた後は、順方向で返した順序の逆順で戻り、先頭の前で None になる
+        for (index, expected) in forward.iter().enumerate().rev() {
+            let back = demuxer
+                .prev_sample()
+                .expect("前の sample の読み取りに失敗した")
+                .map(|s| demux_sample_key(&s));
+            assert_eq!(
+                back,
+                Some(*expected),
+                "prev_sample が順方向の {} 個目のサンプルを返さない",
+                index + 1
+            );
+        }
+        assert_eq!(
+            demuxer
+                .prev_sample()
+                .expect("前の sample の読み取りに失敗した")
+                .map(|s| demux_sample_key(&s)),
+            None,
+            "先頭まで戻した後の prev_sample が None を返さない"
+        );
+        assert_eq!(
+            demuxer
+                .next_sample()
+                .expect("次の sample の読み取りに失敗した")
+                .map(|s| demux_sample_key(&s)),
+            forward.first().copied(),
+            "先頭まで戻した後の next_sample が順方向の先頭のサンプルを返さない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// 使用した SampleEntry に応じて ftyp compatible brands が更新される
 #[test]
 fn compatible_brands_follow_used_sample_entries() -> noprop::TestResult {

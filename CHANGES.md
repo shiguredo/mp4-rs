@@ -168,6 +168,21 @@
   - `MfraBox::encode` と `RootBox::Mfra` の encode にも同じ変更が及ぶ。ただし、`mfra` のヘッダーや、範囲外の値を持つ `tfra` より前の `tfra` を書き込めない長さのバッファでは、範囲外の値を検査する前に `ErrorKind::InsufficientBuffer` を返す
   - `Fmp4SegmentMuxer::mfra_bytes` は長さフィールドを常に `0..=3` で決めるため、出力は変わらない
   - @voluntas
+- [FIX] `TfdtBox` / `TfraBox` で、このライブラリが対応しないバージョン（0 と 1 以外）を、バージョン 0 と同じ構文として扱っていたのを修正する
+  - 単体で decode した場合は、バージョン別のフィールドを読む前に `ErrorKind::InvalidData` を返す。これまでは、バージョン 0 の構文として読める場合は、未対応バージョンの値を `version` にそのまま保持していた
+  - `TrafBox` / `MfraBox` の decode は、未対応バージョンの `tfdt` / `tfra` を読み飛ばし、結果に含めない
+    - 未対応バージョンの `tfdt` は、対応バージョンの `tfdt` の後にあっても `TrafBox::unknown_boxes` に残さない
+    - 最初の `tfdt` が未対応バージョンで、その後に対応バージョンの `tfdt` がある場合は、後者を `TrafBox::tfdt_box` に入れる。これまでは、前者がバージョン 0 の構文として読める場合はそれを採用し、後者を `TrafBox::unknown_boxes` に残していた
+    - 未対応バージョンの子のサイズが 0 の場合は `ErrorKind::InvalidData` を返す
+    - 読み飛ばした子は保持しないため、encode し直した出力には含まれない
+    - 未対応バージョンの子の本文は解釈しないため、本文がバージョン 0 の構文より短い未対応バージョンの子を含む入力も decode できる。これまでは、そうした子が `tfra` か、`traf` で最初に現れる `tfdt` の場合はエラーにしていた
+  - `MoofBox` / `RootBox` の decode にも、`TrafBox` / `MfraBox` の decode と同じ変更が及ぶ
+  - encode では、`version` に 0 と 1 以外を設定すると、値が 32 ビットに収まるかどうかにかかわらず `ErrorKind::InvalidInput` を返す。バージョン 0 で 64 ビットが必要な値をバージョン 1 で出力する挙動は変えない
+    - これまでは、`version` が範囲外でも、値が 32 ビットに収まればそのバージョンのまま書き出し、収まらなければバージョン 1 に置き換えていた
+  - `TrafBox` / `MoofBox` / `MfraBox` / `RootBox::Moof` / `RootBox::Mfra` の encode にも同じ変更が及ぶ。ただし、範囲外のバージョンを持つ `tfdt` / `tfra` より前の部分を書き込めない長さのバッファでは、バージョンを検査する前に `ErrorKind::InsufficientBuffer` を返す
+  - `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` は、未対応バージョンの `tfdt` の値を使わなくなる。同じ `traf` に対応バージョンの `tfdt` があればその値を使い、なければ `tfdt` がない場合と同じく扱う。未対応バージョンの `tfdt` のサイズが 0 の場合はエラーを返す。これまでは、本文がバージョン 0 の構文より短い未対応バージョンの `tfdt` が `traf` で最初に現れる場合はエラーを返していた
+  - `Fmp4SegmentMuxer` はバージョンを常に 0 か 1 で決めるため、出力は変わらない
+  - @voluntas
 
 ### misc
 

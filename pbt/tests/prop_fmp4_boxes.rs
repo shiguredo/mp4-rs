@@ -77,14 +77,17 @@ fn arb_mfhd_box(ctx: &mut TestCaseContext) -> MfhdBox {
 }
 
 /// TfdtBox を生成する
+///
+/// バージョン 0 と 32 ビットに収まる値、バージョン 1 と 32 ビットに収まる値、
+/// バージョン 1 と 64 ビットが必要な値の 3 通りを明示的に生成する
 fn arb_tfdt_box(ctx: &mut TestCaseContext) -> TfdtBox {
-    let base_media_decode_time = noprop::sample_u64(ctx);
-    let version_hint = noprop::sample_u64_in(ctx, 0..=1) as u8;
-    // 値が 32-bit に収まらない場合は version=1 が必須
-    let version = if base_media_decode_time > u32::MAX as u64 {
-        1
-    } else {
-        version_hint
+    let (version, base_media_decode_time) = match noprop::sample_usize_in(ctx, 0..3) {
+        0 => (0, noprop::sample_u64_in(ctx, 0..=u64::from(u32::MAX))),
+        1 => (1, noprop::sample_u64_in(ctx, 0..=u64::from(u32::MAX))),
+        _ => (
+            1,
+            noprop::sample_u64_in(ctx, u64::from(u32::MAX) + 1..=u64::MAX),
+        ),
     };
     TfdtBox {
         version,
@@ -345,9 +348,16 @@ fn arb_tfra_entry(
 /// TfraBox を生成する
 ///
 /// version と `length_size_*` を先に決めたうえで、対応する上限に絞った `TfraEntry` を生成する。
+///
+/// バージョン 0 と 32 ビットに収まる値、バージョン 1 と 32 ビットに収まる値、
+/// バージョン 1 と 64 ビットまでの値の 3 通りを明示的に生成する
 fn arb_tfra_box(ctx: &mut TestCaseContext) -> TfraBox {
     let track_id = noprop::sample_u32(ctx);
-    let version = noprop::sample_u64_in(ctx, 0..=1) as u8;
+    let (version, max_time_and_moof_offset) = match noprop::sample_usize_in(ctx, 0..3) {
+        0 => (0, u64::from(u32::MAX)),
+        1 => (1, u64::from(u32::MAX)),
+        _ => (1, u64::MAX),
+    };
     let l_traf = noprop::sample_u64_in(ctx, 0..=3) as u8;
     let l_trun = noprop::sample_u64_in(ctx, 0..=3) as u8;
     let l_sample = noprop::sample_u64_in(ctx, 0..=3) as u8;
@@ -363,12 +373,6 @@ fn arb_tfra_box(ctx: &mut TestCaseContext) -> TfraBox {
     let max_traf = max_value_for_length_size(l_traf);
     let max_trun = max_value_for_length_size(l_trun);
     let max_sample = max_value_for_length_size(l_sample);
-    // time と moof_offset は同じ制約に従う
-    let max_time_and_moof_offset = if version == 0 {
-        u32::MAX as u64
-    } else {
-        u64::MAX
-    };
 
     let n = noprop::sample_usize_in(ctx, 0..3);
     let mut entries = Vec::new();
@@ -391,6 +395,55 @@ fn arb_tfra_box(ctx: &mut TestCaseContext) -> TfraBox {
         length_size_of_sample_num: l_sample,
         entries,
     }
+}
+
+/// バージョンが 2〜255 の FullBox のバイト列を生成する
+///
+/// `tfdt` / `tfra` では、このライブラリが対応しないバージョンにあたる。
+/// フラグと本文はランダムなバイト列にする。読み飛ばす子も `unknown_boxes` に保持する子も本文を解釈しないため、
+/// 本文が構文に従う必要はない。
+/// ヘッダーは 32 ビットの size と 64 ビットの largesize のどちらかをランダムに選ぶ。
+/// largesize を混ぜるのは、読み飛ばす子では読み飛ばす長さに実際のヘッダー長（largesize では 16 バイト）が使われること、
+/// `unknown_boxes` に保持する子では再エンコードしてもヘッダーの形式が変わらないことを確かめるため
+fn arb_unsupported_version_full_box(ctx: &mut TestCaseContext, box_type: &[u8; 4]) -> Vec<u8> {
+    let version = noprop::sample_u64_in(ctx, 2..=255) as u8;
+    let flags = noprop::sample_bytes_vec(ctx, 3);
+    let body_len = noprop::sample_usize_in(ctx, 0..16);
+    let body = noprop::sample_bytes_vec(ctx, body_len);
+
+    let mut payload = vec![version];
+    payload.extend_from_slice(&flags);
+    payload.extend_from_slice(&body);
+    if noprop::sample_bool(ctx) {
+        wrap_box(box_type, &[payload])
+    } else {
+        wrap_box_with_largesize(box_type, &payload)
+    }
+}
+
+/// ペイロードを、size=1 と 64 ビットの largesize を持つヘッダーで包む
+fn wrap_box_with_largesize(box_type: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let largesize =
+        u64::try_from(16 + payload.len()).expect("テスト用のボックスは u64 に収まる大きさ");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1u32.to_be_bytes());
+    bytes.extend_from_slice(box_type);
+    bytes.extend_from_slice(&largesize.to_be_bytes());
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// ペイロードのバイト列（子ボックス列など）を連結し、通常ヘッダー（32 ビットの size と種別）で包む
+fn wrap_box(box_type: &[u8; 4], children: &[Vec<u8>]) -> Vec<u8> {
+    let payload_len: usize = children.iter().map(Vec::len).sum();
+    let size = u32::try_from(8 + payload_len).expect("テスト用のボックスは u32 に収まる大きさ");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&size.to_be_bytes());
+    bytes.extend_from_slice(box_type);
+    for child in children {
+        bytes.extend_from_slice(child);
+    }
+    bytes
 }
 
 // ===== SampleFlags のテスト =====
@@ -553,7 +606,31 @@ fn tfdt_box_roundtrip() -> noprop::TestResult {
             .expect("直前にエンコードした有効な TfdtBox は必ずデコードできる");
 
         assert_eq!(size, encoded.len());
-        assert_eq!(decoded.base_media_decode_time, tfdt.base_media_decode_time);
+        // バージョンも含めて保持されることを確認する
+        assert_eq!(decoded, tfdt);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// バージョン 0 を指定した TfdtBox で 64 ビットが必要な値を持つ場合、バージョン 1 として出力されること
+#[test]
+fn tfdt_box_version0_with_64bit_value_is_encoded_as_version1() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let tfdt = TfdtBox {
+            version: 0,
+            base_media_decode_time: noprop::sample_u64_in(ctx, u64::from(u32::MAX) + 1..=u64::MAX),
+        };
+        let encoded = tfdt.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TfdtBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfdtBox は必ずデコードできる");
+
+        let expected = TfdtBox {
+            version: 1,
+            base_media_decode_time: tfdt.base_media_decode_time,
+        };
+        assert_eq!(decoded, expected);
         Ok(())
     })?;
     Ok(())
@@ -800,6 +877,173 @@ fn tfra_box_roundtrip() -> noprop::TestResult {
 
         assert_eq!(size, encoded.len());
         assert_eq!(decoded, tfra);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// バージョン 0 を指定した TfraBox で 64 ビットが必要な値を持つ場合、バージョン 1 として出力されること
+///
+/// 64 ビットが必要な time または moof_offset を持つエントリーを、任意の位置に 1 つ差し込む
+#[test]
+fn tfra_box_version0_with_64bit_value_is_encoded_as_version1() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let mut tfra = arb_tfra_box(ctx);
+        tfra.version = 0;
+        let large = noprop::sample_u64_in(ctx, u64::from(u32::MAX) + 1..=u64::MAX);
+        let (time, moof_offset) = if noprop::sample_bool(ctx) {
+            (large, 0)
+        } else {
+            (0, large)
+        };
+        let position = noprop::sample_usize_in(ctx, 0..=tfra.entries.len());
+        tfra.entries.insert(
+            position,
+            TfraEntry {
+                time,
+                moof_offset,
+                traf_number: 0,
+                trun_number: 0,
+                sample_number: 0,
+            },
+        );
+
+        let encoded = tfra.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, _) = TfraBox::decode(&encoded)
+            .expect("直前にエンコードした有効な TfraBox は必ずデコードできる");
+
+        let mut expected = tfra.clone();
+        expected.version = 1;
+        assert_eq!(decoded, expected);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== 未対応バージョンの子ボックスの扱いのテスト =====
+
+/// TrafBox の子に未対応バージョンの tfdt を差し込んでも、デコード結果が元の TrafBox と等しいこと
+///
+/// 未対応バージョンの tfdt は読み飛ばされ、`tfdt_box` にも `unknown_boxes` にも入らない。
+/// 採用済みの tfdt がある場合はその直後に必ず 1 つ差し込み、さらに任意の位置に 0〜2 個差し込む。
+/// 採用済みの tfdt がない場合は、任意の位置に 1〜2 個差し込む
+#[test]
+fn traf_box_skips_unsupported_version_tfdt() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let traf = arb_traf_box(ctx);
+
+        let mut children = vec![
+            traf.tfhd_box
+                .encode_to_vec()
+                .expect("Vec への書き込みは失敗しない"),
+        ];
+        if let Some(tfdt_box) = &traf.tfdt_box {
+            children.push(
+                tfdt_box
+                    .encode_to_vec()
+                    .expect("Vec への書き込みは失敗しない"),
+            );
+            // 採用済みの tfdt の直後に置いても、重複した tfdt として UnknownBox に残らないことを確かめる
+            children.push(arb_unsupported_version_full_box(ctx, b"tfdt"));
+        }
+        for trun_box in &traf.trun_boxes {
+            children.push(
+                trun_box
+                    .encode_to_vec()
+                    .expect("Vec への書き込みは失敗しない"),
+            );
+        }
+        // 採用済みの tfdt がない場合も、未対応バージョンの tfdt を少なくとも 1 つ差し込む
+        let min_extra = if traf.tfdt_box.is_some() { 0 } else { 1 };
+        for _ in 0..noprop::sample_usize_in(ctx, min_extra..3) {
+            let position = noprop::sample_usize_in(ctx, 0..=children.len());
+            children.insert(position, arb_unsupported_version_full_box(ctx, b"tfdt"));
+        }
+        let input = wrap_box(b"traf", &children);
+
+        let (decoded, consumed) =
+            TrafBox::decode(&input).expect("未対応バージョンの tfdt を含む traf はデコードできる");
+        assert_eq!(consumed, input.len());
+        assert_eq!(decoded, traf);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// tfdt 以外の子は、FullBox のバージョンが 2 以上でも読み飛ばさず、`unknown_boxes` として保持されること
+///
+/// traf の末尾（`TrafBox::encode` が `unknown_boxes` を書き出す位置）に、バージョンが 2 以上の FullBox 形式の
+/// sgpd を 1〜2 個置く。未対応バージョンの判定を子の種別によらず行うと、sgpd が捨てられて再エンコードした出力が変わる
+#[test]
+fn traf_box_keeps_non_tfdt_child_with_unsupported_version() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let traf = arb_traf_box(ctx);
+        let mut traf_bytes = traf.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        // traf のヘッダーを外してペイロードだけにし、末尾に sgpd を足してから包み直す
+        let mut children = vec![traf_bytes.split_off(8)];
+        let sgpd_count = noprop::sample_usize_in(ctx, 1..3);
+        for _ in 0..sgpd_count {
+            children.push(arb_unsupported_version_full_box(ctx, b"sgpd"));
+        }
+        let input = wrap_box(b"traf", &children);
+
+        let (decoded, consumed) = TrafBox::decode(&input)
+            .expect("バージョンが 2 以上の sgpd を含む traf はデコードできる");
+        assert_eq!(consumed, input.len());
+        assert_eq!(decoded.unknown_boxes.len(), sgpd_count);
+        assert!(
+            decoded
+                .unknown_boxes
+                .iter()
+                .all(|b| b.box_type.as_bytes() == b"sgpd"),
+            "unknown_boxes に sgpd 以外が入っている"
+        );
+        let encoded = decoded
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        assert_eq!(encoded, input, "再エンコードした出力が入力と一致しない");
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// MfraBox の子に未対応バージョンの tfra を差し込んでも、`tfra_boxes` が元と等しいこと
+///
+/// 未対応バージョンの tfra は読み飛ばされ、`tfra_boxes` に入らない。tfra 列の先頭・間・末尾（mfro の直前）の
+/// いずれかに 1〜2 個差し込む
+#[test]
+fn mfra_box_skips_unsupported_version_tfra() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let tfra_boxes = sample_vec(ctx, 0..3, arb_tfra_box);
+        let mut children: Vec<Vec<u8>> = tfra_boxes
+            .iter()
+            .map(|b| b.encode_to_vec().expect("Vec への書き込みは失敗しない"))
+            .collect();
+        for _ in 0..noprop::sample_usize_in(ctx, 1..3) {
+            let position = noprop::sample_usize_in(ctx, 0..=children.len());
+            children.insert(position, arb_unsupported_version_full_box(ctx, b"tfra"));
+        }
+
+        // mfro は固定長 16 バイトで、size には入力の mfra 全体のバイト数を入れる
+        let input_size = 8 + children.iter().map(Vec::len).sum::<usize>() + 16;
+        let mfro_size = u32::try_from(input_size).expect("入力の mfra は u32 に収まる大きさ");
+        children.push(
+            MfroBox { size: mfro_size }
+                .encode_to_vec()
+                .expect("Vec への書き込みは失敗しない"),
+        );
+        let input = wrap_box(b"mfra", &children);
+        assert_eq!(input.len(), input_size);
+
+        let (decoded, consumed) =
+            MfraBox::decode(&input).expect("未対応バージョンの tfra を含む mfra はデコードできる");
+        assert_eq!(consumed, input.len());
+        assert_eq!(decoded.tfra_boxes, tfra_boxes);
+        assert_eq!(decoded.mfro_box.size, mfro_size);
         Ok(())
     })?;
     Ok(())

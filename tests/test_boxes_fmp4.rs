@@ -244,6 +244,303 @@ mod tfra_length_size_out_of_range {
     }
 }
 
+/// `tfdt` と `tfra` の未対応バージョン（0 と 1 以外）の扱いに関する回帰テスト
+///
+/// ISO/IEC 14496-12:2015 の 8.8.12.2 と 8.8.12.3 は `tfdt` のバージョン 0 と 1 を定義し、
+/// このライブラリは `tfra` も 0 と 1 に対応する。
+/// 同規格の 4.2 は、認識できないバージョンのボックスを無視して読み飛ばすことを求めている。
+/// 以前は未対応バージョンをバージョン 0 と同じ 32 ビットの構文として読んでいた。エンコードでは、
+/// 値が 32 ビットに収まればそのバージョンのまま書き出し、収まらなければバージョン 1 に置き換えていた。
+///
+/// 親の `traf` / `mfra` が未対応バージョンの子を読み飛ばすことは、PBT
+/// （`pbt/tests/prop_fmp4_boxes.rs` の `traf_box_skips_unsupported_version_tfdt` など）で確認する
+mod tfdt_tfra_unsupported_version {
+    use shiguredo_mp4::{
+        Decode, Encode, ErrorKind,
+        boxes::{MfraBox, MfroBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TrafBox},
+    };
+
+    /// 本文を指定した FullBox（flags は 0）のバイト列を、通常ヘッダー（32 ビットの size と種別）付きで組み立てる
+    fn full_box_bytes(box_type: &[u8; 4], version: u8, body: &[u8]) -> Vec<u8> {
+        wrap_box(box_type, &[&[version, 0, 0, 0], body])
+    }
+
+    /// ペイロードのバイト列（子ボックス列など）を連結し、通常ヘッダー（32 ビットの size と種別）で包む
+    fn wrap_box(box_type: &[u8; 4], children: &[&[u8]]) -> Vec<u8> {
+        let payload_len: usize = children.iter().map(|c| c.len()).sum();
+        let size = u32::try_from(8 + payload_len).expect("テスト用のボックスは u32 に収まる大きさ");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&size.to_be_bytes());
+        bytes.extend_from_slice(box_type);
+        for child in children {
+            bytes.extend_from_slice(child);
+        }
+        bytes
+    }
+
+    /// traf の先頭に置く tfhd のバイト列
+    fn tfhd_bytes() -> Vec<u8> {
+        TfhdBox {
+            track_id: 1,
+            base_data_offset: None,
+            sample_description_index: None,
+            default_sample_duration: None,
+            default_sample_size: None,
+            default_sample_flags: None,
+            duration_is_empty: false,
+            default_base_is_moof: false,
+        }
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない")
+    }
+
+    /// 未対応バージョンの tfdt / tfra を単体でデコードすると、バージョン別のフィールドを読む前に `InvalidData` になること
+    ///
+    /// FullBox ヘッダーの後にバイトを置かないため、フィールドを先に読むと `InsufficientBuffer` になる
+    #[test]
+    fn standalone_decode_rejects_unsupported_version() {
+        for version in [2, u8::MAX] {
+            let ctx = format!("version={version}");
+
+            let err = TfdtBox::decode(&full_box_bytes(b"tfdt", version, &[])).expect_err(&format!(
+                "未対応バージョンの tfdt なのに Ok が返った: {ctx}"
+            ));
+            assert_eq!(
+                err.kind,
+                ErrorKind::InvalidData,
+                "tfdt のエラー種別が `InvalidData` ではない: {ctx} (reason={})",
+                err.reason
+            );
+
+            let err = TfraBox::decode(&full_box_bytes(b"tfra", version, &[])).expect_err(&format!(
+                "未対応バージョンの tfra なのに Ok が返った: {ctx}"
+            ));
+            assert_eq!(
+                err.kind,
+                ErrorKind::InvalidData,
+                "tfra のエラー種別が `InvalidData` ではない: {ctx} (reason={})",
+                err.reason
+            );
+        }
+    }
+
+    /// 保持するバージョンが範囲外の tfdt / tfra をエンコードすると、値が 32 ビットに収まるかどうかにかかわらず
+    /// `InvalidInput` になること
+    ///
+    /// 空のバッファでも `InvalidInput` になることで、検査がヘッダーの書き込みより前にあることも確かめる
+    #[test]
+    fn encode_rejects_unsupported_version() {
+        for version in [2, u8::MAX] {
+            for value in [0, u64::from(u32::MAX) + 1] {
+                let ctx = format!("version={version} value={value}");
+
+                let tfdt = TfdtBox {
+                    version,
+                    base_media_decode_time: value,
+                };
+                let tfra = TfraBox {
+                    version,
+                    track_id: 1,
+                    length_size_of_traf_num: 0,
+                    length_size_of_trun_num: 0,
+                    length_size_of_sample_num: 0,
+                    entries: vec![TfraEntry {
+                        time: value,
+                        moof_offset: 0,
+                        traf_number: 1,
+                        trun_number: 1,
+                        sample_number: 1,
+                    }],
+                };
+
+                for (name, result) in [
+                    ("tfdt", tfdt.encode_to_vec().map(|_| ())),
+                    ("tfdt (空のバッファ)", tfdt.encode(&mut []).map(|_| ())),
+                    ("tfra", tfra.encode_to_vec().map(|_| ())),
+                    ("tfra (空のバッファ)", tfra.encode(&mut []).map(|_| ())),
+                ] {
+                    let err = result.expect_err(&format!(
+                        "範囲外のバージョンなのに Ok が返った: {name} {ctx}"
+                    ));
+                    assert_eq!(
+                        err.kind,
+                        ErrorKind::InvalidInput,
+                        "エラー種別が `InvalidInput` ではない: {name} {ctx} (reason={})",
+                        err.reason
+                    );
+                }
+            }
+        }
+    }
+
+    /// サイズが 0 の未対応バージョンの子は、親の残り全体を子の範囲とはみなさず `InvalidData` になること
+    ///
+    /// エラーの `box_type` は、traf / mfra のどちらでも親ではなく子（tfdt / tfra）になる。
+    /// traf では、対応バージョンの tfdt を採用済みかどうかにかかわらず確かめる。
+    /// mfra では mfro を先に置くため、誤って残り全体を読み飛ばすと Ok になる
+    #[test]
+    fn parent_rejects_unsupported_version_child_with_size_zero() {
+        let mut tfdt = full_box_bytes(b"tfdt", 2, &[0, 0, 0, 0]);
+        // size フィールドを 0（ファイルの末尾まで）に書き換える
+        tfdt[..4].copy_from_slice(&0u32.to_be_bytes());
+        let adopted_tfdt = TfdtBox {
+            version: 0,
+            base_media_decode_time: 1,
+        }
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない");
+        for (name, traf) in [
+            ("tfdt なし", wrap_box(b"traf", &[&tfhd_bytes(), &tfdt])),
+            (
+                "tfdt を採用済み",
+                wrap_box(b"traf", &[&tfhd_bytes(), &adopted_tfdt, &tfdt]),
+            ),
+        ] {
+            let err = TrafBox::decode(&traf).expect_err(&format!(
+                "サイズ 0 の未対応バージョンの tfdt を含む traf なのに Ok が返った: {name}"
+            ));
+            assert_eq!(
+                err.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が `InvalidData` ではない: {name}"
+            );
+            assert_eq!(
+                err.box_type,
+                Some(TfdtBox::TYPE),
+                "エラーの box_type が tfdt ではない: {name}"
+            );
+        }
+
+        let mut tfra = full_box_bytes(b"tfra", 2, &[0, 0, 0, 0]);
+        // size フィールドを 0（ファイルの末尾まで）に書き換える
+        tfra[..4].copy_from_slice(&0u32.to_be_bytes());
+        let mfro = MfroBox { size: 0 }
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        let mfra = wrap_box(b"mfra", &[&mfro, &tfra]);
+        let err = MfraBox::decode(&mfra)
+            .expect_err("サイズ 0 の未対応バージョンの tfra を含む mfra なのに Ok が返った");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が `InvalidData` ではない: mfra"
+        );
+        assert_eq!(
+            err.box_type,
+            Some(TfraBox::TYPE),
+            "エラーの box_type が tfra ではない: mfra"
+        );
+    }
+
+    /// 子の外形の検査でエラーになる tfdt / tfra は、バージョンにかかわらず読み飛ばさず、
+    /// 従来どおり子の `box_type` を設定したエラーを返すこと
+    ///
+    /// 子のサイズが親の残りより 1 バイト大きい。mfra では mfro を先に置くため、誤って読み飛ばすと Ok になる
+    #[test]
+    fn parent_returns_error_for_child_exceeding_parent() {
+        for version in [0, 2] {
+            // 本文はバージョン 0 の base_media_decode_time（4 バイト）にし、エラーの原因を親の範囲の超過だけにする
+            let mut tfdt = full_box_bytes(b"tfdt", version, &[0, 0, 0, 0]);
+            let oversized =
+                u32::try_from(tfdt.len() + 1).expect("テスト用のボックスは u32 に収まる大きさ");
+            tfdt[..4].copy_from_slice(&oversized.to_be_bytes());
+            let traf = wrap_box(b"traf", &[&tfhd_bytes(), &tfdt]);
+            let err = TrafBox::decode(&traf).expect_err(&format!(
+                "親の範囲を超える tfdt を含む traf なのに Ok が返った: version={version}"
+            ));
+            assert_eq!(
+                err.kind,
+                ErrorKind::InsufficientBuffer,
+                "エラー種別が `InsufficientBuffer` ではない: tfdt version={version}"
+            );
+            assert_eq!(
+                err.box_type,
+                Some(TfdtBox::TYPE),
+                "エラーの box_type が tfdt ではない: version={version}"
+            );
+
+            // 本文はエントリー数 0 のバージョン 0 の構文（track_id、長さフィールド、エントリー数の 12 バイト）にし、
+            // エラーの原因を親の範囲の超過だけにする
+            let mut tfra = full_box_bytes(b"tfra", version, &[0; 12]);
+            let oversized =
+                u32::try_from(tfra.len() + 1).expect("テスト用のボックスは u32 に収まる大きさ");
+            tfra[..4].copy_from_slice(&oversized.to_be_bytes());
+            let mfro = MfroBox { size: 0 }
+                .encode_to_vec()
+                .expect("Vec への書き込みは失敗しない");
+            let mfra = wrap_box(b"mfra", &[&mfro, &tfra]);
+            let err = MfraBox::decode(&mfra).expect_err(&format!(
+                "親の範囲を超える tfra を含む mfra なのに Ok が返った: version={version}"
+            ));
+            assert_eq!(
+                err.kind,
+                ErrorKind::InsufficientBuffer,
+                "エラー種別が `InsufficientBuffer` ではない: tfra version={version}"
+            );
+            assert_eq!(
+                err.box_type,
+                Some(TfraBox::TYPE),
+                "エラーの box_type が tfra ではない: version={version}"
+            );
+        }
+    }
+
+    /// 対応バージョンの子のデコードエラーは、引き続き親から返ること
+    ///
+    /// バージョン 0 の tfdt / tfra で、FullBox ヘッダーの後に必要なフィールドがない
+    #[test]
+    fn parent_returns_error_for_supported_version_child() {
+        let tfdt = full_box_bytes(b"tfdt", 0, &[]);
+        let traf = wrap_box(b"traf", &[&tfhd_bytes(), &tfdt]);
+        let err = TrafBox::decode(&traf)
+            .expect_err("壊れたバージョン 0 の tfdt を含む traf はエラーになる");
+        assert_eq!(err.box_type, Some(TfdtBox::TYPE));
+
+        let tfra = full_box_bytes(b"tfra", 0, &[]);
+        let mfro = MfroBox { size: 0 }
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない");
+        let mfra = wrap_box(b"mfra", &[&tfra, &mfro]);
+        let err = MfraBox::decode(&mfra)
+            .expect_err("壊れたバージョン 0 の tfra を含む mfra はエラーになる");
+        assert_eq!(err.box_type, Some(TfraBox::TYPE));
+    }
+
+    /// 子の範囲内で FullBox ヘッダーを読めない tfdt は、読み飛ばさずに従来どおり扱うこと
+    ///
+    /// ペイロードが 2 バイト（0xFF 0xFF）しかない tfdt の後ろに trun を置く。FullBox ヘッダーを子の範囲の外まで読むと、
+    /// tfdt のペイロードと trun の先頭 2 バイトを FullBox ヘッダーとして読み、バージョンが 255（未対応）になって
+    /// tfdt を読み飛ばしてしまう。読み飛ばすと、前半では `unknown_boxes` が空になり、後半ではエラーにならない
+    #[test]
+    fn traf_does_not_skip_tfdt_without_full_box_header() {
+        let tfdt = TfdtBox {
+            version: 0,
+            base_media_decode_time: 1,
+        }
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない");
+        // ペイロードが 2 バイトしかなく、FullBox ヘッダー（4 バイト）を読めない tfdt
+        let short_tfdt = wrap_box(b"tfdt", &[&[0xFF, 0xFF]]);
+        let trun = full_box_bytes(b"trun", 0, &[0, 0, 0, 0]);
+
+        // 採用済みの tfdt の後にある場合は、重複した tfdt として UnknownBox に残る
+        let traf = wrap_box(b"traf", &[&tfhd_bytes(), &tfdt, &short_tfdt, &trun]);
+        let (decoded, _) =
+            TrafBox::decode(&traf).expect("外形が正しい重複した tfdt を含む traf はデコードできる");
+        assert_eq!(decoded.tfdt_box.map(|b| b.base_media_decode_time), Some(1));
+        assert_eq!(decoded.unknown_boxes.len(), 1);
+        assert_eq!(decoded.unknown_boxes[0].box_type, TfdtBox::TYPE);
+        assert_eq!(decoded.trun_boxes.len(), 1);
+
+        // 最初の tfdt の場合は、型付きのデコードでエラーになる
+        let traf = wrap_box(b"traf", &[&tfhd_bytes(), &short_tfdt, &trun]);
+        let err = TrafBox::decode(&traf)
+            .expect_err("FullBox ヘッダーを読めない最初の tfdt を含む traf はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+        assert_eq!(err.box_type, Some(TfdtBox::TYPE));
+    }
+}
+
 /// `TrunBox::encode` がサンプル間の per-sample `Option` 不整合を拒否することの回帰テスト
 ///
 /// ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の

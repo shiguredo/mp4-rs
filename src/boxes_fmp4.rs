@@ -4,8 +4,8 @@
 use alloc::{boxed::Box, format, vec::Vec};
 
 use crate::{
-    BaseBox, BoxHeader, BoxType, Decode, Encode, Error, FullBox, FullBoxFlags, FullBoxHeader,
-    Result, SampleFlags,
+    BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, FullBox, FullBoxFlags,
+    FullBoxHeader, Result, SampleFlags,
     basic_types::as_box_object,
     boxes::{UnknownBox, with_box_type},
 };
@@ -168,6 +168,10 @@ impl FullBox for MfhdBox {
 /// [ISO/IEC 14496-12] TrackFragmentBox class (親: [`MoofBox`])
 ///
 /// トラックフラグメントのコンテナボックス。
+///
+/// デコード時、このライブラリが対応しないバージョン（0 と 1 以外）の `tfdt` は読み飛ばし、
+/// [`TrafBox::tfdt_box`] にも [`TrafBox::unknown_boxes`] にも含めない。
+/// ただし、そうした `tfdt` のサイズが 0 の場合は [`crate::ErrorKind::InvalidData`] を返す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TrafBox {
     /// このトラックフラグメントの `tfhd` ボックス（デフォルト値やトラック識別を保持する）
@@ -221,6 +225,14 @@ impl Decode for TrafBox {
 
             while offset < payload.len() {
                 let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                // 未対応バージョンの tfdt は、採用済みの tfdt の後にあっても `UnknownBox` として残さないよう、
+                // 重複の判定より先に読み飛ばす
+                if child_header.box_type == TfdtBox::TYPE
+                    && let Some(child_size) = unsupported_version_child_size(&payload[offset..])?
+                {
+                    offset += child_size;
+                    continue;
+                }
                 match child_header.box_type {
                     TfhdBox::TYPE if tfhd_box.is_none() => {
                         tfhd_box = Some(TfhdBox::decode_at(payload, &mut offset)?);
@@ -467,7 +479,12 @@ pub struct TfdtBox {
     ///
     /// version=1 の場合は base_media_decode_time が 64-bit、
     /// version=0 の場合は 32-bit でエンコードされる。
+    /// ただし、base_media_decode_time が 32-bit に収まらない場合は、version=0 でも version=1 でエンコードされる。
     /// ラウンドトリップ時に元のバージョンを保持するために使用される。
+    ///
+    /// 0 と 1 以外の値を設定すると [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
+    /// [`TfdtBox::decode`] で 0 と 1 以外のバージョンを読むと [`crate::ErrorKind::InvalidData`] を返す
+    /// （[`TrafBox`] のデコードでは読み飛ばす）。
     pub version: u8,
 
     /// このトラックフラグメントの最初のサンプルの DTS
@@ -482,6 +499,11 @@ impl TfdtBox {
 
 impl Encode for TfdtBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // バージョンは、64 ビットが必要なときに 1 を返す `full_box_version` ではなく `self.version` を検査し、
+        // 値の大きさによらず範囲外のバージョンを拒否する。
+        // バッファの長さによってエラー種別が変わらないよう、ヘッダーを書き込む前に検査する。
+        check_encode_version("TfdtBox", self.version)?;
+
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
@@ -508,6 +530,7 @@ impl Decode for TfdtBox {
 
             let mut offset = 0;
             let full_header = FullBoxHeader::decode_at(payload, &mut offset)?;
+            check_decode_version("TfdtBox", full_header.version)?;
 
             let base_media_decode_time = if full_header.version == 1 {
                 u64::decode_at(payload, &mut offset)?
@@ -1188,6 +1211,10 @@ pub struct SidxReference {
 ///
 /// ムービーフラグメントのランダムアクセス情報を格納するボックス。
 /// ファイルの末尾に配置される。
+///
+/// デコード時、このライブラリが対応しないバージョン（0 と 1 以外）の `tfra` は読み飛ばし、
+/// [`MfraBox::tfra_boxes`] に含めない。
+/// ただし、そうした `tfra` のサイズが 0 の場合は [`crate::ErrorKind::InvalidData`] を返す。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MfraBox {
     /// トラックごとに 1 個の `tfra` ボックス（ランダムアクセスエントリー列）
@@ -1250,6 +1277,13 @@ impl Decode for MfraBox {
 
             while offset < payload.len() {
                 let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                // 未対応バージョンの tfra は `TfraBox::decode` がエラーにするため、その前に読み飛ばす
+                if child_header.box_type == TfraBox::TYPE
+                    && let Some(child_size) = unsupported_version_child_size(&payload[offset..])?
+                {
+                    offset += child_size;
+                    continue;
+                }
                 match child_header.box_type {
                     TfraBox::TYPE => {
                         let (b, n) = TfraBox::decode(&payload[offset..])?;
@@ -1309,7 +1343,13 @@ pub struct TfraBox {
     ///
     /// version=1 の場合は time と moof_offset が 64-bit、
     /// version=0 の場合は 32-bit でエンコードされる。
+    /// ただし、いずれかのエントリーの time または moof_offset が 32-bit に収まらない場合は、
+    /// version=0 でも version=1 でエンコードされる。
     /// ラウンドトリップ時に元のバージョンを保持するために使用される。
+    ///
+    /// 0 と 1 以外の値を設定すると [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
+    /// [`TfraBox::decode`] で 0 と 1 以外のバージョンを読むと [`crate::ErrorKind::InvalidData`] を返す
+    /// （[`MfraBox`] のデコードでは読み飛ばす）。
     pub version: u8,
 
     /// このエントリーが対応する [`crate::boxes::TkhdBox::track_id`]
@@ -1339,6 +1379,11 @@ impl TfraBox {
 
 impl Encode for TfraBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // バージョンは、64 ビットが必要なときに 1 を返す `full_box_version` ではなく `self.version` を検査し、
+        // 値の大きさによらず範囲外のバージョンを拒否する。
+        // 下の長さフィールドと同じく、バッファの長さによってエラー種別が変わらないよう、ヘッダーを書き込む前に検査する。
+        check_encode_version("TfraBox", self.version)?;
+
         // ISO/IEC 14496-12:2015 の 8.8.10.2 と 8.8.10.3 では、3 つの長さフィールドはそれぞれ 2 ビットで、
         // 対応する番号のバイト数から 1 を引いた値（0..=3）を持つ。
         // 範囲外の値は 2 ビットで表せず、バイト数を求める `+ 1` も `u8` で溢れうるため、
@@ -1425,6 +1470,7 @@ impl Decode for TfraBox {
             let mut offset = 0;
             let full_box_header = FullBoxHeader::decode_at(payload, &mut offset)?;
             let version = full_box_header.version;
+            check_decode_version("TfraBox", version)?;
 
             let track_id = u32::decode_at(payload, &mut offset)?;
             let lengths = u32::decode_at(payload, &mut offset)?;
@@ -1608,6 +1654,72 @@ impl FullBox for MfroBox {
     fn full_box_flags(&self) -> FullBoxFlags {
         FullBoxFlags::new(0)
     }
+}
+
+// `tfdt` は ISO/IEC 14496-12:2015 の 8.8.12.2 と 8.8.12.3 でバージョン 0 と 1 が定義されている。
+// `tfra` は同規格の 8.8.10.2 でバージョン 1 とそれ以外に構文を分けているが、このライブラリの対応範囲は 0 と 1 とする。
+// 同規格の 4.2 は、認識できないバージョンのボックスを無視して読み飛ばすことを求めている。
+// なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+
+/// このライブラリが対応する `tfdt` と `tfra` のバージョンの最大値
+const MAX_SUPPORTED_TFDT_TFRA_VERSION: u8 = 1;
+
+/// エンコードする `tfdt` / `tfra` が保持するバージョンが、このライブラリの対応範囲（0 と 1）にあるかを検査する
+///
+/// 範囲外なら [`crate::ErrorKind::InvalidInput`] を返す
+#[track_caller]
+fn check_encode_version(box_name: &str, version: u8) -> Result<()> {
+    if version > MAX_SUPPORTED_TFDT_TFRA_VERSION {
+        return Err(Error::invalid_input(format!(
+            "{box_name} version must be 0..={MAX_SUPPORTED_TFDT_TFRA_VERSION}, got {version}"
+        )));
+    }
+    Ok(())
+}
+
+/// デコードした `tfdt` / `tfra` の FullBox ヘッダーのバージョンが、このライブラリの対応範囲（0 と 1）にあるかを検査する
+///
+/// 範囲外なら [`crate::ErrorKind::InvalidData`] を返す
+#[track_caller]
+fn check_decode_version(box_name: &str, version: u8) -> Result<()> {
+    if version > MAX_SUPPORTED_TFDT_TFRA_VERSION {
+        return Err(Error::invalid_data(format!(
+            "Unsupported {box_name} version: {version}"
+        )));
+    }
+    Ok(())
+}
+
+/// 親ボックスのペイロードのうち `buf` の先頭にある `tfdt` / `tfra` の子ボックスが、
+/// このライブラリの対応範囲（0 と 1）にないバージョンなら、読み飛ばすバイト数（子のヘッダー長とペイロード長の合計）を返す
+///
+/// 宣言サイズが `buf` を超えるなど子の外形の検査でエラーになる場合、子の範囲内で FullBox ヘッダーを読めない場合、
+/// 対応範囲のバージョンの場合は `None` を返し、呼び出し側の通常のデコードに任せる。
+/// 対応範囲外のバージョンでサイズが 0 の子は、親の残り全体を子の範囲とはみなさず、
+/// [`crate::ErrorKind::InvalidData`] を返す。
+#[track_caller]
+fn unsupported_version_child_size(buf: &[u8]) -> Result<Option<usize>> {
+    let Ok((header, payload)) = BoxHeader::decode_header_and_payload(buf) else {
+        return Ok(None);
+    };
+    let Ok((full_header, _)) = FullBoxHeader::decode(payload) else {
+        return Ok(None);
+    };
+    if full_header.version <= MAX_SUPPORTED_TFDT_TFRA_VERSION {
+        return Ok(None);
+    }
+    // サイズ 0 はファイルの末尾までを意味する（ISO/IEC 14496-12:2015 の 4.2）。コンテナの中で読み飛ばすと
+    // 後続の兄弟ボックスまで飲み込んでしまうため、読み飛ばさずにエラーにする
+    if header.box_size == BoxSize::VARIABLE_SIZE {
+        let version = full_header.version;
+        let mut error = Error::invalid_data(format!(
+            "Cannot skip box with unsupported version {version} because its size is 0"
+        ));
+        // 親の `with_box_type` は未設定のときだけ親の種別を入れるため、ここで子の種別を入れておく
+        error.box_type = Some(header.box_type);
+        return Err(error);
+    }
+    Ok(Some(header.external_size() + payload.len()))
 }
 
 /// 可変長の符号なし整数をエンコード

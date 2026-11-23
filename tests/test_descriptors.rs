@@ -143,7 +143,7 @@ mod descriptors_boundary_tests {
 
 mod descriptor_error_tests {
     use shiguredo_mp4::{
-        Decode, Encode, Uint,
+        Decode, Encode, ErrorKind, Uint,
         descriptors::{
             DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor,
         },
@@ -239,11 +239,64 @@ mod descriptor_error_tests {
     fn decoder_specific_info_payload_exceeds_boundary() {
         let data = [
             0x05, // tag = 5
-            0xFF, 0x01, // size = 129 (境界超過)
+            0xFF, 0x01, // size = 16257 (境界超過)
             0x11, 0x90, // 2 バイトしかない
         ];
         let result = DecoderSpecificInfo::decode(&data);
         assert!(result.is_err());
+    }
+
+    /// DecoderSpecificInfo: サイズ欄の値が `usize` に収まらない
+    ///
+    /// 宣言サイズは 2 の 64 乗 + 2 で、64 ビット環境ではサイズ欄の 10 バイト目、32 ビット環境では 6 バイト目で
+    /// `usize` に収まらなくなる。
+    /// 上位ビットを切り捨てた 2 バイトのペイロードとして受け入れず、サイズ欄の時点で `InvalidData` を返す
+    #[test]
+    fn decoder_specific_info_size_exceeds_usize_max() {
+        let data = [
+            0x05, // tag = 5
+            0x82, // サイズ欄 1 バイト目: 継続ビットあり、値 2
+            // サイズ欄 2〜9 バイト目: 継続ビットあり、値 0
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+            0x02, // サイズ欄 10 バイト目: 継続ビットなし、値 2
+            0xAA,
+            0xBB, // 上位ビットを切り捨てたサイズ 2 と一致するペイロード
+        ];
+        let err = DecoderSpecificInfo::decode(&data)
+            .expect_err("usize に収まらない宣言サイズはエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason.contains("Descriptor size exceeds usize::MAX"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+    }
+
+    /// DecoderSpecificInfo: サイズ欄の途中で入力が尽きる
+    ///
+    /// サイズ欄の値が `usize` に収まらなくなった時点で、次のバイトを読まずに `InvalidData` を返す。
+    /// サイズ欄の値が `usize` に収まる範囲で入力が尽きた場合は `InsufficientBuffer` を返す
+    #[test]
+    fn decoder_specific_info_size_field_truncated() {
+        // 10 バイト目にも継続ビットがあるが、続きのバイトがない
+        let overflowed = [
+            0x05, // tag = 5
+            0x82, // サイズ欄 1 バイト目: 継続ビットあり、値 2
+            // サイズ欄 2〜10 バイト目: 継続ビットあり、値 0
+            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        ];
+        let err = DecoderSpecificInfo::decode(&overflowed)
+            .expect_err("値が usize に収まらなくなったサイズ欄はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+
+        // 2 バイト目にも継続ビットがあるが、続きのバイトがない
+        let in_range = [
+            0x05, // tag = 5
+            0x80, 0x80, // サイズ欄 1〜2 バイト目: 継続ビットあり、値 0
+        ];
+        let err = DecoderSpecificInfo::decode(&in_range)
+            .expect_err("サイズ欄の途中で入力が尽きるとエラーになる");
+        assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
     }
 
     // ===== SlConfigDescriptor のエラーパス =====

@@ -341,14 +341,30 @@ fn decode_tag_and_size(buf: &[u8]) -> Result<(u8, usize, usize)> {
     while has_next_byte {
         let b = u8::decode_at(buf, &mut offset)?;
         has_next_byte = Uint::<u8, 1, 7>::from_bits(b).get() == 1;
-
-        let new_size_base = size
-            .checked_shl(7)
-            .ok_or_else(|| Error::invalid_data("Descriptor size overflow"))?;
-        size = new_size_base | Uint::<u8, 7>::from_bits(b).get() as usize
+        size = shift_in_size_bits(size, Uint::<u8, 7>::from_bits(b).get())?;
     }
 
     Ok((tag, size, offset))
+}
+
+/// それまでにデコードしたサイズを 7 ビット上位へずらし、サイズ欄 1 バイト分の下位 7 ビットを加えた値を返す
+///
+/// `bits` は `0..=0x7F` に収まっていること。
+/// 結果が `usize` に収まらない場合は [`crate::ErrorKind::InvalidData`] を返す
+fn shift_in_size_bits(size: usize, bits: u8) -> Result<usize> {
+    // ディスクリプターのサイズ（sizeOfInstance）は、ISO/IEC 14496-34:2025 の 7.5 Expandable classes の規則に従い、
+    // 上位から 7 ビットずつ並べて表される。
+    // この規則は、ISO/IEC 14496-1:2010 では 8 章 Syntactic Description Language で定義されていた。
+    // なお、ここでの扱いは ISO/IEC 14496-34:2025 に基づくものであり、将来の改訂で変わる可能性がある。
+    //
+    // `usize::checked_shl` はシフト量しか検査せず、上位ビットが失われても失敗しないため、
+    // チェック付きの乗算で 7 ビット上位へずらす。
+    // 乗算が成功すれば結果は `usize::MAX - 0x7F` 以下なので、7 ビットに収まる `bits` を足してもオーバーフローしない。
+    // それでも加算をチェック付きにするのは、`bits` の前提が破られた場合にも、
+    // パニックや値の回り込みを起こさず同じエラーにするためである
+    size.checked_mul(1 << 7)
+        .and_then(|shifted| shifted.checked_add(usize::from(bits)))
+        .ok_or_else(|| Error::invalid_data("Descriptor size exceeds usize::MAX"))
 }
 
 // buf の先頭にペイロードが格納されている前提
@@ -389,7 +405,7 @@ fn encode_tag_and_size(buf: &mut [u8], tag: u8, mut size: usize) -> Result<usize
 mod tests {
     use super::*;
 
-    use crate::boxes::EsdsBox;
+    use crate::{ErrorKind, boxes::EsdsBox};
 
     #[test]
     fn tag_and_size() {
@@ -404,7 +420,73 @@ mod tests {
         assert_eq!(consumed, encoded_size);
     }
 
-    // 過去に見つかったバグのリグレッションテスト
+    /// サイズ欄の 1 バイト分の更新で、通常の値が正しく計算されること
+    ///
+    /// 0x12 を 7 ビット上位へずらした 0x900 に 0x34 を加えて 0x934 になる。
+    /// シフトが抜ければ 0x46、加算が抜ければ 0x900 になるため、どちらの欠落も検出できる
+    #[test]
+    fn shift_in_size_bits_computes_size() {
+        assert_eq!(
+            shift_in_size_bits(0x12, 0x34).expect("小さい値の更新はオーバーフローしない"),
+            0x934
+        );
+    }
+
+    /// サイズ欄の 1 バイト分の更新で、結果が `usize::MAX` ちょうどなら成功し、`usize` に収まらない場合に
+    /// `InvalidData` になること
+    ///
+    /// 値は `usize::MAX` から求めるため、`usize` の幅によらず同じ境界を確認できる
+    #[test]
+    fn shift_in_size_bits_overflow_boundary() {
+        // `usize::MAX >> 7` を 7 ビット上位へずらして 7 ビットの最大値を加えると `usize::MAX` ちょうどになる
+        assert_eq!(
+            shift_in_size_bits(usize::MAX >> 7, 0x7F)
+                .expect("結果が usize::MAX ちょうどになる更新はオーバーフローしない"),
+            usize::MAX
+        );
+
+        // `(usize::MAX >> 7) + 1` はオーバーフローする最小の値で、上位ビットを切り捨てると 0 になる。
+        // `usize::MAX` は最大の値で、上位 7 ビットが失われる
+        for size in [(usize::MAX >> 7) + 1, usize::MAX] {
+            let err = shift_in_size_bits(size, 0)
+                .expect_err("7 ビット上位へずらすと usize に収まらない更新はエラーになる");
+            assert_eq!(
+                err.kind,
+                ErrorKind::InvalidData,
+                "size={size:#X} からの更新は InvalidData になる"
+            );
+        }
+    }
+
+    /// 宣言サイズが `usize::MAX` の DecoderSpecificInfo でも、境界検査がオーバーフローせずに `InvalidData` を返すこと
+    ///
+    /// 境界検査が加算（`offset + size`）の形に戻った場合のオーバーフローは、このテストで検出する。
+    /// サイズ欄を `usize` の幅に依存せずに作るため、private の `encode_tag_and_size` を使う
+    #[test]
+    fn decoder_specific_info_payload_exceeds_boundary_with_usize_max_size() {
+        let mut buf = [0; 32];
+        let header_size = encode_tag_and_size(&mut buf, DecoderSpecificInfo::TAG, usize::MAX)
+            .expect("32 バイトのバッファは usize::MAX のサイズ欄を必ず収められる");
+
+        // ペイロードは 2 バイトしかないため、宣言サイズを満たせない
+        let mut input = buf[..header_size].to_vec();
+        input.extend_from_slice(&[0x11, 0x90]);
+
+        let err = DecoderSpecificInfo::decode(&input)
+            .expect_err("宣言サイズが入力の残りより大きい DecoderSpecificInfo はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
+        assert!(
+            err.reason
+                .contains("DecoderSpecificInfo payload exceeds buffer boundary"),
+            "理由文字列が期待と違う: {}",
+            err.reason
+        );
+    }
+
+    /// fuzzing で見つかった入力で、パニックせずに `InvalidData` を返すこと
+    ///
+    /// DecoderSpecificInfo の境界検査の加算がオーバーフローしてパニックした入力である。
+    /// DecoderSpecificInfo のサイズ欄の値が `usize` に収まらない時点で `InvalidData` になる
     #[test]
     fn decoder_specific_info_size_overflow() {
         let crash_input: &[u8] = &[
@@ -422,7 +504,8 @@ mod tests {
             145, 145, 145, 145, 145, 145, 145, 145, 145, 145,
         ];
 
-        // オーバーフローでパニックせずにエラーを返すべき
-        assert!(EsdsBox::decode(crash_input).is_err());
+        let err =
+            EsdsBox::decode(crash_input).expect_err("ディスクリプターが壊れた esds はエラーになる");
+        assert_eq!(err.kind, ErrorKind::InvalidData);
     }
 }

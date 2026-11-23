@@ -141,6 +141,11 @@
   - このため `mfro_box.size` に実サイズと異なる値を入れて encode していた場合、出力の `mfro.size` が変わる。decode ではこれまでどおり入力の値を `mfro_box.size` に保持する
   - `Fmp4SegmentMuxer::mfra_bytes` の出力は変わらない
   - @voluntas
+- [FIX] ディスクリプターの decode で、`usize` に収まらない宣言サイズを、上位ビットを切り捨てた値として扱っていたのを修正する
+  - これまでは、たとえば 64 ビット環境でサイズに 2 の 64 乗 + 2 を宣言した `DecoderSpecificInfo` を、2 バイトのペイロードとして decode していた。宣言サイズを読み捨てていた `EsDescriptor` / `DecoderConfigDescriptor` / `SlConfigDescriptor` は、こうした入力もエラーにせず decode していた
+  - `EsDescriptor` / `DecoderConfigDescriptor` / `DecoderSpecificInfo` / `SlConfigDescriptor` と、`EsdsBox` およびそれを含むボックスの decode は、宣言サイズが `usize` に収まらない場合に `ErrorKind::InvalidData` を返す
+  - このため、これまで `ErrorKind::InsufficientBuffer` や `ErrorKind::Unsupported` を返していた入力も、宣言サイズが `usize` に収まらなければ `ErrorKind::InvalidData` になる。サイズ欄の値が `usize` に収まらなくなった後で入力が終わる場合などが該当する
+  - @voluntas
 
 ### misc
 

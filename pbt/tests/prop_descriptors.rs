@@ -9,20 +9,6 @@ use shiguredo_mp4::{
 /// このファイルの PBT ケース数（旧 `with_cases(200)` を維持）
 const CASES: usize = 200;
 
-/// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
-fn sample_vec<T>(
-    ctx: &mut TestCaseContext,
-    range: std::ops::Range<usize>,
-    mut elem: impl FnMut(&mut TestCaseContext) -> T,
-) -> Vec<T> {
-    let len = noprop::sample_usize_in(ctx, range);
-    let mut result = Vec::new();
-    for _ in 0..len {
-        result.push(elem(ctx));
-    }
-    result
-}
-
 /// ASCII 英数字（`[a-zA-Z0-9]`）を最大 `max_len` 文字まで生成する
 fn arb_ascii_alphanumeric(ctx: &mut TestCaseContext, max_len: usize) -> String {
     let len = noprop::sample_usize_in(ctx, 0..=max_len);
@@ -43,8 +29,10 @@ fn arb_ascii_alphanumeric(ctx: &mut TestCaseContext, max_len: usize) -> String {
 }
 
 /// DecoderSpecificInfo を生成する
+///
+/// ペイロード長は、サイズ欄が 1 バイトになる 127 以下と 2 バイトになる 128 以上の両方を含む `0..300` から選ぶ
 fn arb_decoder_specific_info(ctx: &mut TestCaseContext) -> DecoderSpecificInfo {
-    let len = noprop::sample_usize_in(ctx, 0..50);
+    let len = noprop::sample_usize_in(ctx, 0..300);
     let payload = noprop::sample_bytes_vec(ctx, len);
     DecoderSpecificInfo { payload }
 }
@@ -111,15 +99,12 @@ fn arb_es_descriptor(ctx: &mut TestCaseContext) -> EsDescriptor {
 fn decoder_specific_info_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        let payload = sample_vec(ctx, 0..100, noprop::sample_u8);
-        let info = DecoderSpecificInfo {
-            payload: payload.clone(),
-        };
+        let info = arb_decoder_specific_info(ctx);
         let encoded = info.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, _) = DecoderSpecificInfo::decode(&encoded)
             .expect("直前にエンコードした有効な DecoderSpecificInfo は必ずデコードできる");
 
-        assert_eq!(decoded.payload, payload);
+        assert_eq!(decoded, info);
         Ok(())
     })?;
     Ok(())

@@ -1021,6 +1021,150 @@ mod build {
         );
     }
 
+    /// `build_av01_box` が `seq` を拒否し、それが想定した検査によるものであることを、エラー種別と理由で確かめる
+    #[track_caller]
+    fn assert_build_rejected(
+        seq: &Av1SequenceHeader,
+        config_obus: &[u8],
+        expected_reason: &str,
+        ctx: &str,
+    ) {
+        let err = build_av01_box(
+            seq,
+            config_obus,
+            &Av1SampleEntryConfig {
+                initial_presentation_delay_minus_one: None,
+            },
+        )
+        .expect_err(&format!("拒否されるはずの入力なのに構築できた: {ctx}"));
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が `InvalidInput` ではない: {ctx} (reason={})",
+            err.reason
+        );
+        assert_eq!(
+            err.reason, expected_reason,
+            "想定した検査とは別の理由で拒否された: {ctx}"
+        );
+    }
+
+    /// `build_av01_box` が 0..=2 の範囲外 (予約値 3 = `CSP_RESERVED` を含む) の
+    /// `chroma_sample_position` を拒否するときの理由
+    const CHROMA_SAMPLE_POSITION_OUT_OF_RANGE_REASON: &str =
+        "AV1 chroma_sample_position must be 0..=2 (3 is CSP_RESERVED)";
+
+    /// `build_av01_box` が、Sequence Header の構文に現れない条件で真になっている `twelve_bit` を拒否するときの理由
+    const TWELVE_BIT_OUTSIDE_SYNTAX_REASON: &str =
+        "AV1 twelve_bit must be false unless seq_profile is 2 and high_bitdepth is true";
+
+    /// Sequence Header OBU を含まない `config_obus` の 2 通り (空と、Metadata OBU だけ)
+    ///
+    /// 空の場合だけでなく、Sequence Header 以外の OBU を含む場合にも、`config_obus` 内の
+    /// Sequence Header との照合を経ずに引数の `Av1SequenceHeader` 自体が検査されることを確かめるため、2 通りを返す
+    fn config_obus_without_sequence_header() -> [(&'static str, Vec<u8>); 2] {
+        [
+            ("空の configOBUs", Vec::new()),
+            (
+                "Metadata OBU だけの configOBUs",
+                wrap_obu(OBU_METADATA, &[0x01], true),
+            ),
+        ]
+    }
+
+    /// 0..=2 の範囲外の色差サンプル位置 (予約値 3 = `CSP_RESERVED` を含む) は拒否する
+    ///
+    /// `config_obus` に Sequence Header OBU を含めず、引数の `Av1SequenceHeader` 自体が検査されることを確かめる。
+    /// 対照として、正常値の上限 (2) は構築できることも確かめる
+    #[test]
+    fn out_of_range_chroma_sample_position_rejected() {
+        for (label, config_obus) in config_obus_without_sequence_header() {
+            let mut seq = seq_320x240();
+            seq.chroma_sample_position = 2;
+            let box_ = build_av01_box(
+                &seq,
+                &config_obus,
+                &Av1SampleEntryConfig {
+                    initial_presentation_delay_minus_one: None,
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!("正常値の上限の chroma_sample_position = 2 は構築できる: {label}: {e:?}")
+            });
+            assert_eq!(
+                box_.av1c_box.chroma_sample_position.get(),
+                2,
+                "av1C に chroma_sample_position = 2 が写っていない: {label}"
+            );
+
+            for chroma_sample_position in [3, 4, u8::MAX] {
+                seq.chroma_sample_position = chroma_sample_position;
+                assert_build_rejected(
+                    &seq,
+                    &config_obus,
+                    CHROMA_SAMPLE_POSITION_OUT_OF_RANGE_REASON,
+                    &format!("chroma_sample_position = {chroma_sample_position}, {label}"),
+                );
+            }
+        }
+    }
+
+    /// Sequence Header の構文に現れない条件で真になっている `twelve_bit` は拒否する
+    ///
+    /// `twelve_bit` は `seq_profile == 2` かつ `high_bitdepth == true` のときだけ構文に現れる。
+    /// 正常な設定 (profile 2、`high_bitdepth`、`twelve_bit`) から、プロファイルの条件と
+    /// `high_bitdepth` の条件を片方ずつ外す。外した後の設定は 4:2:0 のままで別の不整合も抱えうるため、
+    /// 理由まで照合して `twelve_bit` の検査で拒否されたことを確かめる。
+    /// `config_obus` に Sequence Header OBU を含めず、引数の `Av1SequenceHeader` 自体が検査されることを確かめる
+    #[test]
+    fn twelve_bit_outside_syntax_rejected() {
+        for (label, config_obus) in config_obus_without_sequence_header() {
+            let mut valid = seq_320x240();
+            valid.seq_profile = 2;
+            valid.high_bitdepth = true;
+            valid.twelve_bit = true;
+            let box_ = build_av01_box(
+                &valid,
+                &config_obus,
+                &Av1SampleEntryConfig {
+                    initial_presentation_delay_minus_one: None,
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "profile 2 かつ high_bitdepth のときは twelve_bit が真でも構築できる: {label}: {e:?}"
+                )
+            });
+            assert_eq!(
+                box_.av1c_box.twelve_bit.get(),
+                1,
+                "av1C に twelve_bit = 1 が写っていない: {label}"
+            );
+
+            // プロファイルの条件だけを外す
+            for seq_profile in [0, 1] {
+                let mut seq = valid;
+                seq.seq_profile = seq_profile;
+                assert_build_rejected(
+                    &seq,
+                    &config_obus,
+                    TWELVE_BIT_OUTSIDE_SYNTAX_REASON,
+                    &format!("seq_profile = {seq_profile}, {label}"),
+                );
+            }
+
+            // high_bitdepth の条件だけを外す
+            let mut seq = valid;
+            seq.high_bitdepth = false;
+            assert_build_rejected(
+                &seq,
+                &config_obus,
+                TWELVE_BIT_OUTSIDE_SYNTAX_REASON,
+                &format!("high_bitdepth = false, {label}"),
+            );
+        }
+    }
+
     /// 65536 は Visual Sample Entry に入らない
     #[test]
     fn dimension_overflow() {

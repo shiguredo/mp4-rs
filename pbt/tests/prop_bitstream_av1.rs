@@ -83,29 +83,65 @@ fn wrap_obu(obu_type: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-fn reduced_still_sequence_header(width: u32, height: u32) -> Vec<u8> {
+/// `reduced_still_sequence_header` で組み立てる `seq_profile` と色の設定
+/// (AV1 spec §5.5.1 の `seq_profile` と §5.5.2 の `color_config()`)
+#[derive(Debug, Clone, Copy)]
+enum ReducedStillColor {
+    /// profile 0、8 ビット、4:2:0。`chroma_sample_position` は 0 (`CSP_UNKNOWN`)
+    Profile0EightBit420,
+    /// profile 2、12 ビット (`high_bitdepth` と `twelve_bit` が 1)、4:2:0。
+    /// `chroma_sample_position` は指定値 (0..=2)
+    Profile2TwelveBit420 { chroma_sample_position: u8 },
+}
+
+/// `reduced_still_picture_header = 1` の Sequence Header OBU のペイロードを組み立てる
+///
+/// ビットの並びは AV1 spec §5.5.1 General sequence header OBU syntax と §5.5.2 Color config syntax に従う
+fn reduced_still_sequence_header(width: u32, height: u32, color: ReducedStillColor) -> Vec<u8> {
     let mut w = BitWriter::new();
-    w.push_bits(0, 3);
-    w.push_bit(1);
-    w.push_bit(1);
-    w.push_bits(0, 5);
-    w.push_bits(15, 4);
-    w.push_bits(15, 4);
-    w.push_bits(width - 1, 16);
-    w.push_bits(height - 1, 16);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bit(0);
-    w.push_bits(0, 2);
-    w.push_bit(0);
-    w.push_bit(0);
+    let seq_profile = match color {
+        ReducedStillColor::Profile0EightBit420 => 0,
+        ReducedStillColor::Profile2TwelveBit420 { .. } => 2,
+    };
+    w.push_bits(seq_profile, 3);
+    w.push_bit(1); // still_picture
+    w.push_bit(1); // reduced_still_picture_header
+    w.push_bits(0, 5); // seq_level_idx[0]
+    w.push_bits(15, 4); // frame_width_bits_minus_1
+    w.push_bits(15, 4); // frame_height_bits_minus_1
+    w.push_bits(width - 1, 16); // max_frame_width_minus_1 (frame_width_bits_minus_1 + 1 = 16 ビット)
+    w.push_bits(height - 1, 16); // max_frame_height_minus_1 (frame_height_bits_minus_1 + 1 = 16 ビット)
+    w.push_bit(0); // use_128x128_superblock
+    w.push_bit(0); // enable_filter_intra
+    w.push_bit(0); // enable_intra_edge_filter
+    w.push_bit(0); // enable_superres
+    w.push_bit(0); // enable_cdef
+    w.push_bit(0); // enable_restoration
+    match color {
+        ReducedStillColor::Profile0EightBit420 => {
+            w.push_bit(0); // high_bitdepth
+            w.push_bit(0); // mono_chrome
+            w.push_bit(0); // color_description_present_flag
+            w.push_bit(0); // color_range
+            // color_description_present_flag = 0 なので color_config() は color_range を読む側の分岐に入り、
+            // seq_profile == 0 では subsampling_x / subsampling_y は構文に現れず、どちらも 1 (4:2:0) になる
+            w.push_bits(0, 2); // chroma_sample_position
+        }
+        ReducedStillColor::Profile2TwelveBit420 {
+            chroma_sample_position,
+        } => {
+            w.push_bit(1); // high_bitdepth
+            w.push_bit(1); // twelve_bit (seq_profile == 2 かつ high_bitdepth のときだけ現れる)
+            w.push_bit(0); // mono_chrome
+            w.push_bit(0); // color_description_present_flag
+            w.push_bit(0); // color_range
+            w.push_bit(1); // subsampling_x (BitDepth == 12 のときだけ現れる)
+            w.push_bit(1); // subsampling_y (subsampling_x == 1 のときだけ現れる)
+            w.push_bits(u32::from(chroma_sample_position), 2); // chroma_sample_position
+        }
+    }
+    w.push_bit(0); // separate_uv_delta_q
+    w.push_bit(0); // film_grain_params_present
     w.into_bytes()
 }
 
@@ -219,11 +255,20 @@ fn obu_covers_input_without_overlap() -> noprop::TestResult {
     Ok(())
 }
 
-/// 正当な Sequence Header から構築した `Av01Box` の幅高さと av1C 欄が一致すること
+/// 正当な Sequence Header から構築した `Av01Box` について、次がすべて成り立つこと
+///
+/// - 幅・高さが、Sequence Header の生成に使った値と一致する
+/// - av1C の `seq_profile`、`high_bitdepth`、`twelve_bit`、`chroma_sample_position` が、Sequence Header の解析結果と一致する
+/// - av1C の configOBUs が、`build_av01_box` に渡した configOBUs と一致する
+///
+/// 色の設定は、profile 0 の 8 ビット 4:2:0 と、色差サンプル位置が非ゼロの正常値 (1 または 2) となる
+/// profile 2 の 12 ビット 4:2:0 を半々に生成する。後者で `high_bitdepth`、`twelve_bit`、
+/// `chroma_sample_position` が av1C に写ることを確かめる
 #[test]
 fn build_av01_box_matches_sequence_header() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     let saw_delay = Cell::new(0usize);
+    let saw_twelve_bit = Cell::new(0usize);
     let mut runner = noprop::Runner::new(seed);
     runner.run(CASES, |ctx| {
         let width =
@@ -234,7 +279,14 @@ fn build_av01_box_matches_sequence_header() -> noprop::TestResult {
             noprop::sample_with_boundaries(ctx, &[1u32, 65535], noprop::Ratio::one_nth(4), |ctx| {
                 noprop::sample_u64_in(ctx, 1..=65535) as u32
             });
-        let payload = reduced_still_sequence_header(width, height);
+        let color = if noprop::sample_bool(ctx) {
+            ReducedStillColor::Profile0EightBit420
+        } else {
+            ReducedStillColor::Profile2TwelveBit420 {
+                chroma_sample_position: noprop::sample_choice(ctx, &[1u8, 2]),
+            }
+        };
+        let payload = reduced_still_sequence_header(width, height, color);
         let seq = parse_sequence_header(&payload).expect("合法 SH は成功する");
         let config_obus = wrap_obu(1, &payload);
         let delay = if noprop::sample_bool(ctx) {
@@ -253,7 +305,31 @@ fn build_av01_box_matches_sequence_header() -> noprop::TestResult {
         assert_eq!(u32::from(box_.visual.width), width);
         assert_eq!(u32::from(box_.visual.height), height);
         assert_eq!(box_.av1c_box.seq_profile.get(), seq.seq_profile);
+        assert_eq!(
+            box_.av1c_box.high_bitdepth.get(),
+            u8::from(seq.high_bitdepth)
+        );
+        assert_eq!(box_.av1c_box.twelve_bit.get(), u8::from(seq.twelve_bit));
+        assert_eq!(
+            box_.av1c_box.chroma_sample_position.get(),
+            seq.chroma_sample_position
+        );
         assert_eq!(box_.av1c_box.config_obus, config_obus);
+        if let ReducedStillColor::Profile2TwelveBit420 {
+            chroma_sample_position,
+        } = color
+        {
+            // 生成した値が解析結果にもそのまま現れていること (生成器の誤りを検出する)
+            assert!(
+                seq.high_bitdepth && seq.twelve_bit,
+                "profile 2 の 12 ビットとして生成した SH の解析結果が 12 ビットではない"
+            );
+            assert_eq!(
+                seq.chroma_sample_position, chroma_sample_position,
+                "生成した chroma_sample_position が解析結果と一致しない"
+            );
+            saw_twelve_bit.set(saw_twelve_bit.get() + 1);
+        }
         if delay.is_some() {
             saw_delay.set(saw_delay.get() + 1);
         }
@@ -262,6 +338,10 @@ fn build_av01_box_matches_sequence_header() -> noprop::TestResult {
     assert!(
         saw_delay.get() > 0,
         "initial_presentation_delay 指定を一度も見ていない\n{runner}"
+    );
+    assert!(
+        saw_twelve_bit.get() > 0,
+        "profile 2 の 12 ビット 4:2:0 を一度も見ていない\n{runner}"
     );
     Ok(())
 }

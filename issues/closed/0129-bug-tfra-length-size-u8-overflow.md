@@ -1,7 +1,7 @@
 # `TfraBox::encode` で範囲外の長さフィールドを拒否する
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-23
 - Branch: feature/fix-tfra-length-size-u8-overflow
 - Polished: 2026-11-22
 
@@ -27,3 +27,15 @@ ISO/IEC 14496-12:2015 の 8.8.10.2 と 8.8.10.3 では、3 つの長さフィー
 
 - 3 つの長さフィールドはいずれも、範囲外ならエントリーの有無を問わず `ErrorKind::InvalidInput` になる。`tests/test_boxes_fmp4.rs` では、各フィールドを単独で変更し、境界直後の値と `u8::MAX` をエントリーがある場合とない場合の両方で検証する
 - 既存の `tfra_box_roundtrip` PBT で、範囲内の長さフィールドとその幅に収まる番号が従来どおり往復する。既存の短いバッファのテストでも `ErrorKind::InsufficientBuffer` が維持され、`cargo test --workspace` が成功する
+
+## 解決方法
+
+- `src/boxes_fmp4.rs` の `TfraBox::encode` の冒頭で、ヘッダーを書き込む前に 3 つの長さフィールド（`length_size_of_traf_num` / `length_size_of_trun_num` / `length_size_of_sample_num`）がすべて `0..=3` に収まるかを検査するようにした。範囲外なら、エントリーの有無やバッファの長さにかかわらず `ErrorKind::InvalidInput`（理由 `"TfraBox <フィールド名> must be 0..=3, got <値>"`）を返す
+- 検査済みの値に `+ 1` して `encode_variable_uint` に渡す。lengths フィールドの組み立てでは、検査済みのため `& 0x3` のマスクを外した。`encode_variable_uint` の幅・バッファ長の検査と、decode 側の 2 ビットの読み取りは変えていない
+- 3 つのフィールドの doc に、範囲外の値では `Encode::encode` が `InvalidInput` を返すことを追記した。仕様の根拠（ISO/IEC 14496-12:2015 の 8.8.10.2 / 8.8.10.3）はコードコメントに残した
+- テスト
+  - `tests/test_boxes_fmp4.rs` に mod `tfra_length_size_out_of_range` を追加した。3 つのフィールドを 1 つずつ境界直後の 4 と `u8::MAX` にし、version 0 / 1、エントリーの有無の全組み合わせで、`encode_to_vec` と空のバッファへの `encode` の両方が `InvalidInput` を返し、理由に対象のフィールド名が含まれることを確認する
+  - 同じファイルの既存 2 モジュールの doc を、モジュール内の `//!` から `mod` の前の `///` に変えた（`//!` はファイル先頭以外で使わない規約のため）
+  - 既存の短いバッファのテストと PBT `tfra_box_roundtrip` は変更せずに通ることを確認した
+- 番号自体が宣言された幅に収まるかの検査は 0117 の対象として変更していない
+- `CHANGES.md` の `## develop` に [FIX] を追記した

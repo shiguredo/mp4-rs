@@ -3,16 +3,15 @@
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_boxes.rs` が担う。
 //! 本ファイルは PBT で安定して狙いにくい境界・不整合入力のエラーパスを固定する。
 
+/// `TfraBox::encode` のバッファ境界検査に関する回帰テスト
+///
+/// `encode_variable_uint`（`src/boxes_fmp4.rs` 内の private 関数）は
+/// `byte_count` 1〜3 のとき `buf.len()` を検査せず `buf[i]` へ直接代入していたため、
+/// 短いバッファで `TfraBox::encode` を呼ぶとインデックス範囲外パニックに至っていた。
+/// 本テストは、修正後に `ErrorKind::InsufficientBuffer` エラーが正しく返ることを、
+/// 3 呼び出し位置（`traf_number` / `trun_number` / `sample_number`）× `byte_count`
+/// 1〜3 の全 9 通りと、`byte_count = 4` を 1 ケース加えた計 10 ケースで検証する。
 mod encode_variable_uint_insufficient_buffer {
-    //! `TfraBox::encode` のバッファ境界検査に関する回帰テスト
-    //!
-    //! `encode_variable_uint`（`src/boxes_fmp4.rs` 内の private 関数）は
-    //! `byte_count` 1〜3 のとき `buf.len()` を検査せず `buf[i]` へ直接代入していたため、
-    //! 短いバッファで `TfraBox::encode` を呼ぶとインデックス範囲外パニックに至っていた。
-    //! 本テストは、修正後に `ErrorKind::InsufficientBuffer` エラーが正しく返ることを、
-    //! 3 呼び出し位置（`traf_number` / `trun_number` / `sample_number`）× `byte_count`
-    //! 1〜3 の全 9 通りと、`byte_count = 4` を 1 ケース加えた計 10 ケースで検証する。
-
     use shiguredo_mp4::{
         Encode, ErrorKind,
         boxes::{TfraBox, TfraEntry},
@@ -152,17 +151,109 @@ mod encode_variable_uint_insufficient_buffer {
     }
 }
 
-mod trun_sample_option_consistency {
-    //! `TrunBox::encode` がサンプル間の per-sample `Option` 不整合を拒否することの回帰テスト
-    //!
-    //! ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の
-    //! 有無フラグ (`tr_flags`) が run 全体共通のため、サンプルごとに `Some` / `None` が混在する
-    //! 入力は表現できない。以前は先頭サンプルだけでフラグを決め、後続の値を黙って落としていた
-    //! （先頭 `Some`・後続 `None` の逆方向は `unwrap_or(0)` で 0 を書き込んでいた）。
-    //!
-    //! PBT (`pbt/tests/prop_fmp4_boxes.rs::arb_trun_box`) は一貫性のあるサンプルだけを生成する
-    //! ため、このエラーパスは本ファイルで固定する。
+/// `TfraBox::encode` が 0..=3 の範囲外の長さフィールドを拒否することの回帰テスト
+///
+/// ISO/IEC 14496-12:2015 の 8.8.10.2 と 8.8.10.3 では、3 つの長さフィールドはそれぞれ 2 ビットで 0..=3 を取る。
+/// 以前は、バッファの長さが足りる場合、範囲外の値を渡すと次のように振る舞っていた。
+///
+/// - エントリーがある場合は `InvalidData` を返していた。ただし、オーバーフロー検査が有効なビルドでの 255 では、
+///   バイト数を求める `+ 1` が `u8` で溢れてパニックしていた
+/// - エントリーがない場合はエラーにせず、下位 2 ビットに切り詰めて書き出していた
+mod tfra_length_size_out_of_range {
+    use shiguredo_mp4::{
+        Encode, ErrorKind,
+        boxes::{TfraBox, TfraEntry},
+    };
 
+    /// version、長さフィールド、エントリーの有無を指定した `TfraBox` を組み立てる（エントリーありの場合は 1 件）
+    fn make_tfra(
+        version: u8,
+        length_size_of_traf_num: u8,
+        length_size_of_trun_num: u8,
+        length_size_of_sample_num: u8,
+        with_entry: bool,
+    ) -> TfraBox {
+        let entries = if with_entry {
+            vec![TfraEntry {
+                time: 0,
+                moof_offset: 0,
+                traf_number: 1,
+                trun_number: 1,
+                sample_number: 1,
+            }]
+        } else {
+            Vec::new()
+        };
+        TfraBox {
+            version,
+            track_id: 1,
+            length_size_of_traf_num,
+            length_size_of_trun_num,
+            length_size_of_sample_num,
+            entries,
+        }
+    }
+
+    /// 長さフィールドを 1 つずつ、境界直後の 4 と `u8::MAX` にしてエンコードすると、
+    /// version、エントリーの有無、バッファの長さにかかわらず `InvalidInput` になること
+    #[test]
+    fn length_size_out_of_range_is_invalid_input() {
+        for value in [4, u8::MAX] {
+            // 対象のフィールドだけを範囲外にし、残りは 0 にする
+            for (name, (traf, trun, sample)) in [
+                ("length_size_of_traf_num", (value, 0, 0)),
+                ("length_size_of_trun_num", (0, value, 0)),
+                ("length_size_of_sample_num", (0, 0, value)),
+            ] {
+                for version in [0, 1] {
+                    for with_entry in [false, true] {
+                        let tfra = make_tfra(version, traf, trun, sample, with_entry);
+                        let ctx = format!(
+                            "{name}={value} (version={version}, エントリーあり={with_entry})"
+                        );
+
+                        let err = tfra.encode_to_vec().expect_err(&format!(
+                            "範囲外の長さフィールドなのに Ok が返った: {ctx}"
+                        ));
+                        assert_eq!(
+                            err.kind,
+                            ErrorKind::InvalidInput,
+                            "エラー種別が `InvalidInput` ではない: {ctx} (reason={})",
+                            err.reason
+                        );
+                        assert!(
+                            err.reason.contains(name),
+                            "理由文字列が対象のフィールド名を含まない: {ctx} (reason={})",
+                            err.reason
+                        );
+
+                        // 検査がヘッダーの書き込みより前にあることを、空のバッファでも `InvalidInput` になることで確かめる
+                        let err = tfra.encode(&mut []).expect_err(&format!(
+                            "空のバッファに encode したのに Ok が返った: {ctx}"
+                        ));
+                        assert_eq!(
+                            err.kind,
+                            ErrorKind::InvalidInput,
+                            "空のバッファでのエラー種別が `InvalidInput` ではない: {ctx} (reason={})",
+                            err.reason
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `TrunBox::encode` がサンプル間の per-sample `Option` 不整合を拒否することの回帰テスト
+///
+/// ISO/IEC 14496-12 8.8.8 の trun では duration / size / flags / composition_time_offset の
+/// 有無フラグ (`tr_flags`) が run 全体共通のため、サンプルごとに `Some` / `None` が混在する
+/// 入力は表現できない。以前は先頭サンプルだけでフラグを決め、後続の値を黙って落としていた
+/// （先頭 `Some`・後続 `None` の逆方向は `unwrap_or(0)` で 0 を書き込んでいた）。
+///
+/// PBT (`pbt/tests/prop_fmp4_boxes.rs::arb_trun_box`) は一貫性のあるサンプルだけを生成する
+/// ため、このエラーパスは本ファイルで固定する。
+mod trun_sample_option_consistency {
     use shiguredo_mp4::{
         Encode, ErrorKind, SampleFlags,
         boxes::{TrunBox, TrunSample, TrunSamples},

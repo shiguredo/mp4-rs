@@ -1316,10 +1316,16 @@ pub struct TfraBox {
     pub track_id: u32,
 
     /// traf_number のバイト数 - 1 (0-3)
+    ///
+    /// 範囲外の値を設定すると [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
     pub length_size_of_traf_num: u8,
     /// trun_number のバイト数 - 1 (0-3)
+    ///
+    /// 範囲外の値を設定すると [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
     pub length_size_of_trun_num: u8,
     /// sample_number のバイト数 - 1 (0-3)
+    ///
+    /// 範囲外の値を設定すると [`Encode::encode`] は [`crate::ErrorKind::InvalidInput`] を返す。
     pub length_size_of_sample_num: u8,
 
     /// ランダムアクセスエントリー列（各エントリーが 1 個の同期サンプルの位置を指す）
@@ -1333,6 +1339,24 @@ impl TfraBox {
 
 impl Encode for TfraBox {
     fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // ISO/IEC 14496-12:2015 の 8.8.10.2 と 8.8.10.3 では、3 つの長さフィールドはそれぞれ 2 ビットで、
+        // 対応する番号のバイト数から 1 を引いた値（0..=3）を持つ。
+        // 範囲外の値は 2 ビットで表せず、バイト数を求める `+ 1` も `u8` で溢れうるため、
+        // エントリーの有無にかかわらず拒否する。
+        // バッファの長さによってエラー種別が変わらないよう、ヘッダーを書き込む前に検査する。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2015 に基づくものであり、将来の改訂で変わる可能性がある。
+        for (name, length_size) in [
+            ("length_size_of_traf_num", self.length_size_of_traf_num),
+            ("length_size_of_trun_num", self.length_size_of_trun_num),
+            ("length_size_of_sample_num", self.length_size_of_sample_num),
+        ] {
+            if length_size > 3 {
+                return Err(Error::invalid_input(format!(
+                    "TfraBox {name} must be 0..=3, got {length_size}"
+                )));
+            }
+        }
+
         let header = BoxHeader::new_variable_size(Self::TYPE);
         let mut offset = header.encode(buf)?;
         offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
@@ -1340,9 +1364,10 @@ impl Encode for TfraBox {
         offset += self.track_id.encode(&mut buf[offset..])?;
 
         // reserved (26 bits) + length_size_of_traf_num (2 bits) + length_size_of_trun_num (2 bits) + length_size_of_sample_num (2 bits)
-        let lengths: u32 = ((self.length_size_of_traf_num as u32 & 0x3) << 4)
-            | ((self.length_size_of_trun_num as u32 & 0x3) << 2)
-            | (self.length_size_of_sample_num as u32 & 0x3);
+        // 各長さフィールドは冒頭で 0..=3 を確認済みなので、マスクしなくても隣の長さフィールドや reserved のビットにはみ出さない
+        let lengths: u32 = (u32::from(self.length_size_of_traf_num) << 4)
+            | (u32::from(self.length_size_of_trun_num) << 2)
+            | u32::from(self.length_size_of_sample_num);
         offset += lengths.encode(&mut buf[offset..])?;
 
         let number_of_entry = u32::try_from(self.entries.len())
@@ -1367,7 +1392,8 @@ impl Encode for TfraBox {
                 offset += mo.encode(&mut buf[offset..])?;
             }
 
-            // traf_number, trun_number, sample_number は可変長
+            // traf_number, trun_number, sample_number は可変長。
+            // 長さフィールドは冒頭で 0..=3 に収まることを確認済みなので、`+ 1` は 1..=4 になり溢れない。
             offset += encode_variable_uint(
                 entry.traf_number,
                 self.length_size_of_traf_num + 1,

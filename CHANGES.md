@@ -160,6 +160,14 @@
     - エラーになる入力でも、返すエラー種別が `ErrorKind::InsufficientBuffer` / `ErrorKind::InvalidData` / `ErrorKind::Unsupported` の間で変わることがある
   - `EsdsBox` およびそれを含むボックスの decode にも同じ変更が及ぶ。ただし、ボックスの decode が返す消費バイト数は変わらない。`EsDescriptor` の宣言サイズが `esds` のペイロードを超える場合は、これまで decode できていた入力でも `ErrorKind::InsufficientBuffer` を返す
   - @voluntas
+- [FIX] `TfraBox::encode` で `length_size_of_traf_num` / `length_size_of_trun_num` / `length_size_of_sample_num` が `0..=3` の範囲外のときに、panic したり下位 2 ビットに切り詰めて書き出したりしていたのを修正する
+  - 範囲外の値を指定した場合は、エントリーの有無やバッファの長さにかかわらず `ErrorKind::InvalidInput` を返す
+  - これまでは、バッファの長さが足りる場合、範囲外の値に対して次のように振る舞っていた
+    - エントリーがある場合は `ErrorKind::InvalidData` を返していた。ただし、オーバーフロー検査が有効なビルドでの 255 では panic していた
+    - エントリーがない場合はエラーにせず、下位 2 ビットに切り詰めて書き出していた
+  - `MfraBox::encode` と `RootBox::Mfra` の encode にも同じ変更が及ぶ。ただし、`mfra` のヘッダーや、範囲外の値を持つ `tfra` より前の `tfra` を書き込めない長さのバッファでは、範囲外の値を検査する前に `ErrorKind::InsufficientBuffer` を返す
+  - `Fmp4SegmentMuxer::mfra_bytes` は長さフィールドを常に `0..=3` で決めるため、出力は変わらない
+  - @voluntas
 
 ### misc
 

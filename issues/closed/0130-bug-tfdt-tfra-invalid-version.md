@@ -1,7 +1,7 @@
 # `TfdtBox` と `TfraBox` で未対応のバージョンを既知の構文として扱わない
 
 - Created: 2026-11-22
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-23
 - Branch: feature/fix-tfdt-tfra-invalid-version
 - Polished: 2026-11-22
 
@@ -29,3 +29,19 @@ ISO/IEC 14496-12:2015 の 8.8.12.2 と 8.8.12.3 は `tfdt` のバージョン 0 
 - 親をデコードすると未対応バージョンの子は結果に含まれず、後続の対応バージョンの子を読める。未対応の `tfdt` は、対応バージョンの `tfdt` の後にあっても `UnknownBox` として保持されない。対応バージョンの子のデコードエラーは引き続き親から返る
 - 既存の往復 PBT で、バージョン 0 と、時刻・位置が 32 ビットに収まる場合も含むバージョン 1 が保持されることを確認する。既存の生成器は、32 ビットに収まる値で 0 と 1 をそれぞれ明示的に生成できるようにし、`tfdt_box_roundtrip` にはデコード後のバージョンの比較を加える。有効なバージョン 0 の指定で 64 ビットが必要な場合は、出力がバージョン 1 になることを両型で確認する
 - `cargo test --workspace` が成功する
+
+## 解決方法
+
+- `src/boxes_fmp4.rs` に、対応するバージョンの上限を表す定数 `MAX_SUPPORTED_TFDT_TFRA_VERSION`（1）と、3 つの補助関数を追加した。規格の根拠（ISO/IEC 14496-12:2015 の 8.8.12.2 / 8.8.12.3 / 8.8.10.2 / 4.2）と、将来の改訂で変わる可能性があることはコードコメントに残した
+  - `check_encode_version`: 範囲外のバージョンを `ErrorKind::InvalidInput` にする
+  - `check_decode_version`: 未対応バージョンを `ErrorKind::InvalidData` にする
+  - `unsupported_version_child_size`: 子ヘッダーと FullBox ヘッダーを読めて、かつ未対応バージョンの子なら、その子の範囲の長さを返す。子のサイズが 0 なら、子の `box_type` を設定した `ErrorKind::InvalidData` を返す。外形を読めない場合は `None` を返し、通常の処理に任せる
+- `TfdtBox::decode` / `TfraBox::decode` は FullBox ヘッダーを読んだ直後に `check_decode_version` を呼び、バージョン別のフィールドを読む前に `InvalidData` を返すようにした
+- `TfdtBox::encode` / `TfraBox::encode` は、ヘッダーを書き込む前に `self.version` を `check_encode_version` で検査するようにした。`TfraBox` では既存の長さフィールドの検査より前に置いた。有効なバージョン 0 で 64 ビットが必要な値をバージョン 1 で出力する挙動は変えていない
+- `TrafBox::decode` は、子の種別による分岐（重複判定を含む）より前に、未対応バージョンの `tfdt` を読み飛ばすようにした。`MfraBox::decode` も同様に、未対応バージョンの `tfra` を `TfraBox::decode` の前に読み飛ばす。読み飛ばした子は保持しない。`TrafBox` / `MfraBox` / `TfdtBox` / `TfraBox` の doc にこの挙動を追記した
+- テスト
+  - `tests/test_boxes_fmp4.rs` に mod `tfdt_tfra_unsupported_version` を追加した。単体 decode の `InvalidData`、単体 encode の `InvalidInput`（値の大きさと、`Vec` / 空のバッファの別を問わない）、サイズ 0 の未対応バージョンの子の `InvalidData`、親の範囲を超える子と壊れた対応バージョンの子のエラー、FullBox ヘッダーを読めない重複した `tfdt` が従来どおり `UnknownBox` になることを確認する
+  - `pbt/tests/prop_fmp4_boxes.rs` の `arb_tfdt_box` / `arb_tfra_box` を、32 ビットに収まる値のバージョン 0 と 1、64 ビットの値のバージョン 1 を明示的に生成するようにした。`tfdt_box_roundtrip` はデコード結果全体（バージョンを含む）を比較する
+  - PBT に、バージョン 0 で 64 ビットが必要な値がバージョン 1 で出力されることの確認（`tfdt` / `tfra`）と、未対応バージョンの子の扱いの確認（`traf` での読み飛ばし、`tfdt` 以外の子は `unknown_boxes` に残ること、`mfra` での読み飛ばし）を追加した。未対応バージョンの子は通常ヘッダーと largesize ヘッダーの両方で生成する
+- `tfdt` がないときのデマルチプレクサーの時刻計算（0110）と、`mfra` を再エンコードする際の `mfro.size`（0125）は変更していない
+- `CHANGES.md` の `## develop` に [FIX] を追記した

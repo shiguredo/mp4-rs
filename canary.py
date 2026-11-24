@@ -90,21 +90,27 @@ def update_version(file_path: str, dry_run: bool) -> Optional[str]:
 
 
 # cargo update shiguredo_mp4 を実行
+# fuzz はルートの workspace から exclude されて独自の Cargo.lock を持つため、fuzz でも実行する
 def run_cargo_update(dry_run: bool) -> None:
     if dry_run:
         print("Dry-run: Would run 'cargo update shiguredo_mp4'")
+        print("Dry-run: Would run 'cargo update shiguredo_mp4' in fuzz")
     else:
         subprocess.run(["cargo", "update", "shiguredo_mp4"], check=True)
         print("cargo update shiguredo_mp4 executed")
+        subprocess.run(["cargo", "update", "shiguredo_mp4"], check=True, cwd="fuzz")
+        print("cargo update shiguredo_mp4 executed in fuzz")
 
 
 # git コミット、タグ、プッシュを実行
 def git_commit_version(new_version: str, dry_run: bool) -> None:
     if dry_run:
-        print("Dry-run: Would run 'git add Cargo.toml Cargo.lock'")
+        print("Dry-run: Would run 'git add Cargo.toml Cargo.lock fuzz/Cargo.lock'")
         print(f"Dry-run: Would run '[canary] Bump version to {new_version}'")
     else:
-        subprocess.run(["git", "add", "Cargo.toml", "Cargo.lock"], check=True)
+        subprocess.run(
+            ["git", "add", "Cargo.toml", "Cargo.lock", "fuzz/Cargo.lock"], check=True
+        )
         subprocess.run(
             ["git", "commit", "-m", f"[canary] Bump version to {new_version}"],
             check=True,

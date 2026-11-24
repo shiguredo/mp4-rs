@@ -1,7 +1,7 @@
 # `fuzz/Cargo.lock` の `shiguredo_mp4` のバージョンを本体の `Cargo.toml` に合わせる
 
 - Created: 2026-11-24
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-24
 - Branch: feature/update-fuzz-cargo-lock
 - Polished: {YYYY-MM-DD}
 
@@ -37,3 +37,13 @@
 - `fuzz/Cargo.lock` の `shiguredo_mp4` の `version` が、本体の `Cargo.toml` の `version` と一致する
 - `fuzz/Cargo.lock` の差分が、`shiguredo_mp4` の `version` の 1 行だけである
 - `fuzz/` で `cargo check --locked --all-targets` が成功する
+
+## 解決方法
+
+- `fuzz/` で `cargo update -p shiguredo_mp4` を実行し、`fuzz/Cargo.lock` の `shiguredo_mp4` を `2026.6.0-canary.2` に更新した。差分は `version` の 1 行だけで、ほかの依存のバージョンは変えていない
+- `fuzz/` で `cargo check --locked --all-targets` が成功することを確認した
+- 設計方針で対象外としていた再発の防止のうち、`canary.py` は小さな変更で直せるため、あわせて直した
+  - `run_cargo_update` で、リポジトリ直下に加えて `fuzz/` でも `cargo update shiguredo_mp4` を実行する
+  - `git_commit_version` で、`Cargo.toml` と `Cargo.lock` に加えて `fuzz/Cargo.lock` もコミットする
+  - `CHANGES.md` の `### misc` に [UPDATE] を追記した
+- CI の `fuzz/` の cargo に `--locked` を付けることは見送った。ルートの cargo の手順も `--locked` を付けておらず、`fuzz/` だけに付けると揃わなくなるため

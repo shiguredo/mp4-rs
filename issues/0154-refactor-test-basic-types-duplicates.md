@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/refactor-test-basic-types-duplicates
 - Polished: {YYYY-MM-DD}
+- Refreshed: 2026-11-24
 
 ## 目的
 
@@ -35,7 +36,7 @@
 - `box_size_variable` / `box_size_variable_external_sizes`: `box_size_u32_properties` / `box_size_u64_properties` は 0 を境界値として生成するが、定数の `BoxSize::VARIABLE_SIZE` / `BoxSize::LARGE_VARIABLE_SIZE` を使わない
 - `utf8_string_empty`: `utf8_string_roundtrip` は長さを 0..=100 から一様に引くため、空文字列を毎回は引かない。`weird_values::utf8_string_weird_chars` は空文字列を候補に持つが、エンコード結果とデコードしたバイト数を確かめない
 - `utf8_string_invalid_utf8`: `weird_values::utf8_string_invalid_sequences` はエラーになることだけを確かめ、`ErrorKind::InvalidInput` であることは確かめない
-- `box_header_decode_extended_size`: 手で組み立てたバイト列をデコードする。`box_header_normal_u64_roundtrip` はエンコード結果をデコードし、`weird_values::box_header_extended_size_edge_cases` はパニックしないことだけを確かめる
+- `box_header_decode_extended_size`: 手で組み立てたバイト列をデコードする。`box_header_normal_u64_roundtrip` はエンコード結果をデコードするだけで、手で組み立てたバイト列は確かめない
 
 このモジュールのほかのテスト（`full_box_flags_zero` / `full_box_flags_max` / `mp4_file_time_unix_epoch` / `box_header_min_size` / `box_header_max_size`）と、ほかのモジュールのテストには、重複に当たるものはない。
 
@@ -45,7 +46,6 @@
 - 目印コメントを削除し、`boundary_tests_from_prop_basic_types` を中身を表す名前（例: `basic_type_boundaries`）に改める。モジュールは分割しない
 - ファイル先頭の `//!` に、このモジュールが固定する内容を加える
 - 残すテストの入力と断言は変えない。`pbt/tests/prop_basic_types.rs` は変更しない
-- `tests/test_boxes.rs` / `tests/test_boxes_fmp4.rs` / `tests/test_boxes_moov_tree.rs` / `tests/test_boxes_sample_entry.rs` にある同種の「から移動」の目印コメントは、本 issue の対象外とする
 
 ## 完了条件
 

@@ -245,6 +245,10 @@
   - コーデックごとに、デマルチプレックスしたサンプルエントリーをそのままマルチプレックス側へ戻せることを検証する
   - CI の `test-wasm` で実行する
   - @voluntas
+- [UPDATE] 任意のバイト列でパニックしないことだけを確かめる PBT を削除する
+  - パニック安全性は fuzzing の役割であり、削除した PBT が扱う型にはそれぞれ fuzz ターゲットがある
+  - `fuzz_basic_types` で、ボックスが使う `FixedPointNumber` の型の組み合わせをすべて decode / encode する
+  - @voluntas
 - [FIX] Release ワークフローが同一タグの重複実行で失敗するのを防ぐ
   - `concurrency` で重複実行をキャンセルし、リリース作成を冪等化する
   - アセットの `gh release upload` に `--clobber` を追加する

@@ -1,4 +1,4 @@
 [toolchain]
 # MSRV に固定する。Cargo.toml の rust-version と必ず一致させること
-channel = "1.93"
+channel = "1.95"
 components = ["rustfmt", "clippy", "llvm-tools"]

@@ -21,7 +21,7 @@ Sans I/O 設計に基づく MP4 (ISO Base Media File Format) の mux/demux ラ�
 - crate 名: `shiguredo_mp4`
 - バージョン: 2026.5.0
 - Rust Edition: 2024
-- 最小 Rust バージョン: 1.93
+- 最小 Rust バージョン: 1.95
 - ライセンス: Apache-2.0
 
 ## 基本概念

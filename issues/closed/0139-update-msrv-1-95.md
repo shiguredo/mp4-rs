@@ -1,7 +1,7 @@
 # 最小サポート Rust バージョンを 1.95 に上げる
 
 - Created: 2026-11-24
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-24
 - Branch: feature/update-msrv-1-95
 - Polished: {YYYY-MM-DD}
 
@@ -54,3 +54,9 @@ shiguredo_mp4 の最小サポート Rust バージョン (MSRV) と、開発・C
 - `Cargo.toml`、`rust-toolchain.toml`、`.github/workflows/`、`Makefile`、`skills/shiguredo-mp4/SKILL.md` に、1.93 の指定が残っていない
 - CI の全ジョブが成功する
 - `CHANGES.md` の `## develop` に MSRV を 1.95 に上げる `[CHANGE]` があり、`### misc` のツールチェーンの固定の `[UPDATE]` が 1.95 になっている
+
+## 解決方法
+
+- `rust-version` と `channel` を 1.95 にそろえ、CI の `ci` / `test-wasm` / `build-wasm` のキャッシュ指定も 1.95 に変更した。Miri と fuzzing の nightly 指定は維持した。
+- Makefile のコメント、`shiguredo-mp4` スキルの最小バージョン、未リリースの変更履歴を更新した。Rust コードと依存関係は変更していない。
+- Rust 1.95.0 で既存テスト、WebAssembly とデモのビルド、Node.js 向けとブラウザー向けのバインディング生成・最適化を確認した。GitHub Actions の CI では全 8 ジョブが成功した。

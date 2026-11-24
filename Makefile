@@ -33,8 +33,8 @@ fuzzing-list:
 # コードパスを Miri で実行し、未定義動作（align 契約違反 / uninit read / UAF 等）の
 # 混入を検出する。
 # nightly と miri component が必要（`rustup toolchain install nightly --component miri`）。
-# `cargo +nightly` は `rust-toolchain.toml` の MSRV 1.93 を rustup override で上書きするため、
-# リポジトリ規定の 1.93 と併存できる。
+# `cargo +nightly` は `rust-toolchain.toml` の MSRV 1.95 を rustup override で上書きするため、
+# リポジトリ規定の 1.95 と併存できる。
 #
 # miri 特有の失敗が出た場合の対処方針:
 # - 実 UB（不正なポインタ操作・契約違反等）: コードを直す（skip しない）

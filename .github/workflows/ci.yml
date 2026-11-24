@@ -29,7 +29,7 @@ jobs:
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ${{ matrix.os }}
-          toolchain: "1.93"
+          toolchain: "1.95"
 
       - run: cargo fmt --all --check
       # fuzz は root の [workspace] で exclude されており `cargo *` の対象外なので個別に検査する
@@ -65,7 +65,7 @@ jobs:
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ubuntu-24.04
-          toolchain: "1.93"
+          toolchain: "1.95"
 
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -146,7 +146,7 @@ jobs:
       - uses: shiguredo/github-actions/.github/actions/rust-cache@main
         with:
           os: ubuntu-24.04
-          toolchain: "1.93"
+          toolchain: "1.95"
 
       # wasm-bindgen の CLI は Cargo.lock に固定したクレートとバージョンを完全に一致させる必要がある
       - name: Install wasm-bindgen

@@ -73,6 +73,8 @@
   - `FreeBox` / `MdatBox` の encode と、muxer が書き出す `mdat` / `free` のヘッダーは変わらない
   - wasm の `unknownBoxes` は `data` の長さから `box_size` を決めるため、挙動は変わらない
   - @voluntas
+- [CHANGE] 最小サポート Rust バージョンを 1.95 に上げる
+  - @voluntas
 - [ADD] demux した編集リスト（`edts` / `elst`）を mux で保持できるようにする
   - `TrackInfo.edit_list` に `elst` の内容を、`TrackInfo.movie_timescale` に `mvhd` の timescale を入れる
   - `EditList` 型を追加し、`TrackMetadata.edit_list` で mux に渡せるようにする
@@ -230,7 +232,7 @@
 
 ### misc
 
-- [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.93 に固定する
+- [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.95 に固定する
   - CI は `rustup show` で MSRV のツールチェーンを導入し、rust-cache にも同じバージョンを指定する
   - @voluntas
 - [UPDATE] wasm のビルド手順に wasm-bindgen によるバインディング生成を追加する

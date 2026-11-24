@@ -5,11 +5,11 @@
 use alloc::{format, string::String};
 
 use crate::{
-    BoxType, Error, Result,
+    BoxType, Decode, Encode, Error, Result,
     bitstream::h264::H264ProfileLevelId,
     boxes::{
-        Av01Box, Av1cBox, Avc1Box, AvccBox, FlacBox, Hev1Box, Hvc1Box, HvccBox, Mp4aBox, OpusBox,
-        SampleEntry, StppBox, Tx3gBox, Vp08Box, Vp09Box, VpccBox, WvttBox,
+        Av01Box, Av1cBox, Avc1Box, AvccBox, EsdsBox, FlacBox, Hev1Box, Hvc1Box, HvccBox, Mp4aBox,
+        OpusBox, SampleEntry, StppBox, Tx3gBox, UnknownBox, Vp08Box, Vp09Box, VpccBox, WvttBox,
     },
     descriptors::DecoderConfigDescriptor,
 };
@@ -30,6 +30,8 @@ use crate::{
 ///   AudioSpecificConfig 先頭から audio object type を読む（例: `mp4a.40.2`）
 /// - `Opus` / `Flac` / `Stpp` / `Wvtt` / `Tx3g`: バインディングで追加パラメーターが不要なため、
 ///   サンプルエントリーの 4CC だけを返す（`Opus` / `fLaC` / `stpp` / `wvtt` / `tx3g`）
+/// - `Encv` / `Enca`: `frma` と `unknown_boxes` 内の設定ボックスから元のコーデックの文字列を生成する。
+///   対応する設定ボックスがない場合は [`ErrorKind::Unsupported`][crate::ErrorKind::Unsupported]
 ///
 /// # Examples
 ///
@@ -93,10 +95,79 @@ pub fn from_sample_entry(entry: &SampleEntry) -> Result<String> {
         SampleEntry::Stpp(_) => Ok(format!("{}", StppBox::TYPE)),
         SampleEntry::Wvtt(_) => Ok(format!("{}", WvttBox::TYPE)),
         SampleEntry::Tx3g(_) => Ok(format!("{}", Tx3gBox::TYPE)),
+        SampleEntry::Encv(b) => {
+            encrypted_codec_string(b.sinf_box.frma_box.data_format, &b.unknown_boxes)
+        }
+        SampleEntry::Enca(b) => {
+            encrypted_codec_string(b.sinf_box.frma_box.data_format, &b.unknown_boxes)
+        }
         SampleEntry::Unknown(b) => Err(Error::unsupported(format!(
             "codec string is unsupported for unknown sample entry type `{}`",
             b.box_type
         ))),
+    }
+}
+
+/// `unknown_boxes` から指定された種別のボックスを探す
+fn find_unknown_box(unknown_boxes: &[UnknownBox], box_type: BoxType) -> Option<&UnknownBox> {
+    unknown_boxes.iter().find(|b| b.box_type == box_type)
+}
+
+/// `UnknownBox` をヘッダー付きのバイト列に戻して、指定された型としてデコードする
+fn decode_unknown_box<T: Decode>(unknown: &UnknownBox) -> Result<T> {
+    let bytes = unknown.encode_to_vec()?;
+    let (value, _) = T::decode(&bytes)?;
+    Ok(value)
+}
+
+/// CENC で保護されたサンプルエントリーから `codecs` パラメーター文字列を生成する
+fn encrypted_codec_string(frma: [u8; 4], unknown_boxes: &[UnknownBox]) -> Result<String> {
+    let unsupported = || {
+        Error::unsupported(format!(
+            "codec string is unsupported for protected sample entry format `{}`",
+            BoxType::Normal(frma)
+        ))
+    };
+
+    match &frma {
+        b"avc1" => {
+            let unknown = find_unknown_box(unknown_boxes, AvccBox::TYPE).ok_or_else(unsupported)?;
+            let avcc = decode_unknown_box::<AvccBox>(unknown)?;
+            Ok(avc1_codec_string(&avcc))
+        }
+        b"hev1" => {
+            let unknown = find_unknown_box(unknown_boxes, HvccBox::TYPE).ok_or_else(unsupported)?;
+            let hvcc = decode_unknown_box::<HvccBox>(unknown)?;
+            Ok(hevc_codec_string(Hev1Box::TYPE, &hvcc))
+        }
+        b"hvc1" => {
+            let unknown = find_unknown_box(unknown_boxes, HvccBox::TYPE).ok_or_else(unsupported)?;
+            let hvcc = decode_unknown_box::<HvccBox>(unknown)?;
+            Ok(hevc_codec_string(Hvc1Box::TYPE, &hvcc))
+        }
+        b"vp08" => {
+            let unknown = find_unknown_box(unknown_boxes, VpccBox::TYPE).ok_or_else(unsupported)?;
+            let vpcc = decode_unknown_box::<VpccBox>(unknown)?;
+            Ok(vp_codec_string(Vp08Box::TYPE, &vpcc))
+        }
+        b"vp09" => {
+            let unknown = find_unknown_box(unknown_boxes, VpccBox::TYPE).ok_or_else(unsupported)?;
+            let vpcc = decode_unknown_box::<VpccBox>(unknown)?;
+            Ok(vp_codec_string(Vp09Box::TYPE, &vpcc))
+        }
+        b"av01" => {
+            let unknown = find_unknown_box(unknown_boxes, Av1cBox::TYPE).ok_or_else(unsupported)?;
+            let av1c = decode_unknown_box::<Av1cBox>(unknown)?;
+            Ok(av01_codec_string(&av1c))
+        }
+        b"mp4a" => {
+            let unknown = find_unknown_box(unknown_boxes, EsdsBox::TYPE).ok_or_else(unsupported)?;
+            let esds = decode_unknown_box::<EsdsBox>(unknown)?;
+            mp4a_codec_string(&esds.es.dec_config_descr)
+        }
+        b"Opus" => Ok(format!("{}", OpusBox::TYPE)),
+        b"fLaC" => Ok(format!("{}", FlacBox::TYPE)),
+        _ => Err(unsupported()),
     }
 }
 

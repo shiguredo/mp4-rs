@@ -8,6 +8,7 @@ mod auxiliary;
 mod basic_types;
 pub mod bitstream;
 pub mod boxes;
+mod boxes_cenc;
 mod boxes_fmp4;
 mod boxes_moov_tree;
 mod boxes_sample_entry;

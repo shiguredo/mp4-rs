@@ -1728,7 +1728,7 @@ mod sample_entry_tests {
     }
 }
 
-// ===== pbt/tests/prop_basic_types.rs の codec_box_boundary_tests から移動 =====
+// ===== HvccBox / VpccBox の長さフィールドの境界値テスト =====
 
 /// コーデックボックスの境界値テスト (feature/fix-infinite-loop で修正された問題)
 mod codec_box_boundary_tests {
@@ -1943,7 +1943,7 @@ mod codec_box_boundary_tests {
     }
 }
 
-// ===== pbt/tests/prop_additional_boxes.rs の boundary_tests (SampleEntry) から移動 =====
+// ===== サンプルエントリーの境界値テスト =====
 
 mod additional_sample_entry_boundary_tests {
     use std::num::NonZeroU16;
@@ -2061,8 +2061,6 @@ mod additional_sample_entry_boundary_tests {
         assert_eq!(decoded.visual.height, 1080);
     }
 }
-
-// ===== pbt/tests/prop_codec_boxes.rs の単体テストから移動 =====
 
 // ===== 境界値テスト =====
 

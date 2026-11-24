@@ -252,8 +252,6 @@ mod unknown_box_encode_size_mismatch {
     }
 }
 
-// ===== pbt/tests/prop_additional_boxes.rs の root_box_tests から移動 =====
-
 // ===== RootBox のテスト =====
 
 mod root_box_tests {
@@ -373,7 +371,7 @@ mod root_box_tests {
     }
 }
 
-// ===== pbt/tests/prop_additional_boxes.rs の boundary_tests (Free/Mdat/Unknown) から移動 =====
+// ===== FreeBox / MdatBox / UnknownBox の境界値テスト =====
 
 mod additional_boxes_boundary_tests {
     use shiguredo_mp4::{

@@ -757,8 +757,6 @@ mod moov_tree_base_box_tests {
     }
 }
 
-// ===== pbt/tests/prop_boxes.rs の boundary_tests から移動 =====
-
 // ===== 境界値テスト =====
 
 mod prop_boxes_boundary_tests {
@@ -1127,7 +1125,7 @@ mod prop_boxes_boundary_tests {
     }
 }
 
-// ===== pbt/tests/prop_container_boxes.rs の boundary_tests から移動 =====
+// ===== コンテナボックスの境界値テスト =====
 
 mod prop_container_boundary_tests {
     use std::num::{NonZeroU16, NonZeroU32};

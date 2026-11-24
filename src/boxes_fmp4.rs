@@ -1480,7 +1480,7 @@ impl Decode for TfraBox {
 
             let number_of_entry = u32::decode_at(payload, &mut offset)?;
 
-            // エントリごとの最小バイト数を計算してペイロード残量と照合する
+            // エントリーごとの最小バイト数を計算してペイロード残量と照合する
             let time_moof_size: usize = if version == 1 { 16 } else { 8 };
             let variable_size: usize = (length_size_of_traf_num as usize + 1)
                 + (length_size_of_trun_num as usize + 1)
@@ -1572,7 +1572,7 @@ impl FullBox for TfraBox {
     }
 }
 
-/// [`TfraBox`] のエントリ
+/// [`TfraBox`] のエントリー
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TfraEntry {
     /// このエントリーが指すサンプルの presentation time

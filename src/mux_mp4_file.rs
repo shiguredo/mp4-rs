@@ -88,7 +88,7 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
     const PER_TRACK_OVERHEAD: usize = 1024;
 
     // サンプルあたりの概算バイト数：
-    // - stts_box（時間-サンプル）: エントリあたり ~8 バイト
+    // - stts_box（時間-サンプル）: エントリーあたり ~8 バイト
     // - stsc_box（サンプル-チャンク）: チャンクあたり ~12 バイト（通常はサンプルより少ない）
     // - stsz_box（サンプルサイズ）: サンプルあたり ~4 バイト
     // - stss_box（同期サンプル）: キーフレームあたり ~4 バイト
@@ -577,7 +577,7 @@ struct Chunk {
     samples: Vec<SampleMetadata>,
 }
 
-/// トラック種別ごとの [`Chunk`] 群とタイムスケールをまとめた内部エントリ
+/// トラック種別ごとの [`Chunk`] 群とタイムスケールをまとめた内部エントリー
 ///
 /// `mux_fmp4_segment` の同名 private 型と概念は同じだが、`Mp4FileMuxer` は
 /// フラグメント固有のフィールド（`decode_time` / `current_sample_entry_index`）を持たない。
@@ -1849,7 +1849,7 @@ mod tests {
     /// advance_position で次の書き込み位置を u64::MAX 付近まで進め、
     /// Overflow を起こしたあとに同じ data_offset かつ収まる data_size で再投入する。
     /// Overflow 直後に tracks / chunk / sample 数が増えていないことと、
-    /// finalize 後の stsz エントリ数が先行サンプル + 1 であることを確認し、二重登録が無いことを示す。
+    /// finalize 後の stsz エントリー数が先行サンプル + 1 であることを確認し、二重登録が無いことを示す。
     #[test]
     fn test_append_sample_overflow_keeps_muxer_state() {
         let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");

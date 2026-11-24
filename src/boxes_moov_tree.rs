@@ -2039,7 +2039,7 @@ impl SttsBox {
 
     /// 連続する同一 `sample_delta` を run-length 集約しながら 1 サンプル分を追加する
     ///
-    /// 末尾エントリの `sample_delta` が引数と一致する場合は末尾の `sample_count` を 1 加算し、
+    /// 末尾エントリーの `sample_delta` が引数と一致する場合は末尾の `sample_count` を 1 加算し、
     /// 一致しない場合は `sample_count = 1` の新規エントリーを追加する。
     /// `sample_count` が [`u32::MAX`] に達している状態でさらに加算しようとすると
     /// オーバーフローとして [`Err`] を返す。

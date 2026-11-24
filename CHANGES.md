@@ -250,6 +250,12 @@
 
 ### misc
 
+- [UPDATE] CI の runner image を最新のものに切り替える
+  - `ubuntu-24.04` / `ubuntu-24.04-arm` を `ubuntu-26.04` / `ubuntu-26.04-arm` にする
+  - `windows-2025` を Visual Studio 2026 のイメージである `windows-2025-vs2026` にする
+  - `macos-26` を Xcode のメジャーバージョンごとのイメージである `xcode-27` にする
+  - `test-wasm` / `build-wasm` / `miri` も Ubuntu 26.04 で回す
+  - @voluntas
 - [UPDATE] ツールチェーンを `rust-toolchain.toml` で MSRV の 1.95 に固定する
   - CI は `rustup show` で MSRV のツールチェーンを導入し、rust-cache にも同じバージョンを指定する
   - @voluntas

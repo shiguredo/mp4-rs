@@ -1,7 +1,7 @@
 # fMP4 の CENC (DRM) 向け初期化データのボックスに対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-cenc-init-boxes
 - Polished: 2026-11-25
 
@@ -107,22 +107,15 @@ CMSF (draft-ietf-moq-cmsf) は、保護された CMAF トラックの初期化�
 
 ## 解決方法
 
-- `src/boxes_cenc.rs` を追加し、`src/lib.rs` に `mod boxes_cenc;` を追加したうえで、`src/boxes.rs` から型を再エクスポートする
-- `src/boxes_sample_entry.rs` に `EncvBox` / `EncaBox` と `SampleEntry` のバリアントを追加する
-- `src/boxes_moov_tree.rs` の `MoovBox` に `pssh_boxes` を追加する
-- `src/mux_fmp4_segment.rs` に `SegmentMuxerOptions::pssh_boxes` と `Encv` / `Enca` の扱いを追加する
-- `src/demux_fmp4_segment.rs` に `pssh_boxes` の保持と accessor を追加し、`src/demux_fmp4_file.rs` から委譲する
-- `src/mux_mp4_file.rs` の `MoovBox` リテラルを更新する (ブランド判定は変更しない)
-- `src/codec_string.rs` に `Encv` / `Enca` のコーデック文字列生成を追加する
-- `crates/wasm/src/boxes.rs` の `fmt_json` に `Encv` / `Enca` の分岐を追加し、`crates/wasm/src/fmp4_segment_mux.rs` の `SegmentMuxerOptions` リテラルを更新する
-- `pbt/tests/prop_boxes_cenc.rs` を追加し、`PsshBox` / `FrmaBox` / `SchmBox` / `SchiBox` / `SinfBox` / `TencBox` のランダム値での往復を検証する。あわせて `pbt/tests/prop_container_boxes.rs` の `moov_box_roundtrip` に `pssh_boxes` を、`pbt/tests/prop_fmp4_segment_mux_demux.rs` に `pssh` と `encv` / `enca` の init segment の往復を、`pbt/tests/prop_additional_boxes.rs` に `EncvBox` / `EncaBox` の往復を追加する
-- `tests/test_boxes_cenc.rs` を追加し、`pssh` の version 0 / 1 (version 1 で `KID_count == 0` の場合を含む)、`tenc` の version 0 / 1 と constant IV、`sinf` の `schm` / `schi` の片方だけの decode が `InvalidData` になること、CENC 系 scheme の tenc 必須などの異常系・境界値を確認する
-- `tests/test_boxes_sample_entry.rs` に `EncvBox` / `EncaBox` の `sinf` 必須、CENC 情報必須、コーデック設定ボックスの保持のテストを追加する
-- `tests/test_mux_fmp4_segment.rs` と `tests/test_demux_fmp4_segment.rs` に、`pssh` と `encv` / `enca` を含む init segment の生成・解析のテストを追加する
-- `tests/test_codec_string.rs` に `Encv` / `Enca` のコーデック文字列のテストを追加する
-- `tests/test_boxes_moov_tree.rs`、`pbt/tests/prop_container_boxes.rs`、`examples/transcode_wasm/src/mp4.rs`、`src/mux_mp4_file.rs`、`src/mux_fmp4_segment.rs` の `MoovBox` リテラルを更新する
-- `issues/0071-other-position-timing-boxes-inventory.md` の `saio` / `saiz` の項を、初期化データ側の CENC 対応を始めた現状に合わせて更新する
-- `CHANGES.md` に `[ADD]` / `[CHANGE]` を追記し、`skills/shiguredo-mp4/SKILL.md` に新しいボックスと API を追記する
+- `src/boxes_cenc.rs` を追加し、`PsshBox` / `FrmaBox` / `SchmBox` / `SchiBox` / `SinfBox` / `TencBox` を実装した
+- `src/boxes_sample_entry.rs` に `EncvBox` / `EncaBox` と `SampleEntry::Encv` / `Enca` を追加した
+- `src/boxes_moov_tree.rs` の `MoovBox` に `pssh_boxes` を追加し、`Fmp4SegmentMuxer` の `SegmentMuxerOptions::pssh_boxes` から init segment に `pssh` を書き出せるようにした
+- `Fmp4SegmentDemuxer::pssh_boxes()` と `Fmp4FileDemuxer::pssh_boxes()` を追加した
+- `src/mux_fmp4_segment.rs` で `Encv` / `Enca` の解像度と ftyp ブランドを扱うようにした
+- `src/codec_string.rs` で `Encv` / `Enca` のコーデック文字列を生成できるようにした
+- `crates/wasm` は `fmt_json` の `Encv` / `Enca` 分岐と `SegmentMuxerOptions` リテラルを最小対応した
+- `tests/test_boxes_cenc.rs` / `pbt/tests/prop_boxes_cenc.rs` などを追加し、`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude dump_wasm --exclude transcode_wasm --exclude fuzz --no-deps` を確認した
+- `CHANGES.md`、`skills/shiguredo-mp4/SKILL.md`、`issues/0071-other-position-timing-boxes-inventory.md` を更新した
 
 ## 対象外
 

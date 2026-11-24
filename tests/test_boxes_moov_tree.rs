@@ -1125,7 +1125,7 @@ mod prop_boxes_boundary_tests {
     }
 }
 
-// ===== コンテナボックスの境界値テスト =====
+// ===== コンテナボックスの境界値テストと、字幕トラックの mux / demux のテスト =====
 
 mod prop_container_boundary_tests {
     use std::num::{NonZeroU16, NonZeroU32};

@@ -1730,7 +1730,7 @@ mod sample_entry_tests {
 
 // ===== HvccBox / VpccBox の長さフィールドの境界値テスト =====
 
-/// コーデックボックスの境界値テスト (feature/fix-infinite-loop で修正された問題)
+/// HvccBox / VpccBox で、長さフィールドがペイロードを超える入力をエラーにすることを確かめる
 mod codec_box_boundary_tests {
     use shiguredo_mp4::{Decode, boxes::HvccBox, boxes::VpccBox};
 
@@ -2062,7 +2062,7 @@ mod additional_sample_entry_boundary_tests {
     }
 }
 
-// ===== 境界値テスト =====
+// ===== コーデック設定ボックスの境界値テスト =====
 
 mod codec_boxes_boundary_tests {
     use shiguredo_mp4::{

@@ -252,7 +252,8 @@
   - @voluntas
 - [FIX] `mux::Sample::composition_time_offset` の doc で、`Fmp4SegmentMuxer` が書き出せる範囲を `i32` の範囲としていたのを修正する
   - 負値を含まない `trun` では `0 ..= u32::MAX`、負値を含む `trun` では `i32::MIN ..= i32::MAX` と書き直し、負値と `i32::MAX` を超える値をひとつの `trun` に混在させられないことを書き加える
-  - 挙動は変えていない
+  - `Mp4FileMuxer` についても、負値と `i32::MAX` を超える値を同じトラックに混在させられないことを書き加える
+  - 挙動は変わらない
   - @voluntas
 
 ## 2026.5.0

@@ -413,12 +413,14 @@ pub struct Sample {
     /// 実際に MP4 / fMP4 のボックスへ書ける範囲はより狭い。
     ///
     /// - [`Mp4FileMuxer`]:
-    ///   - 負値は `i32::MIN ..= -1`
-    ///   - 非負値は `0 ..= u32::MAX`
+    ///   - 負値を含まないトラックでは `0 ..= u32::MAX` (`ctts` version 0)
+    ///   - 負値を含むトラックでは `i32::MIN ..= i32::MAX` (`ctts` version 1)
+    ///   - 負値と `i32::MAX` を超える値は、同じトラックに混在させられない
     /// - [`crate::mux::Fmp4SegmentMuxer`]:
-    ///   - 負値を含まない `trun` では `0 ..= u32::MAX` (version 0)
-    ///   - 負値を含む `trun` では `i32::MIN ..= i32::MAX` (version 1)
+    ///   - 負値を含まない `trun` では `0 ..= u32::MAX` (`trun` version 0)
+    ///   - 負値を含む `trun` では `i32::MIN ..= i32::MAX` (`trun` version 1)
     ///   - 負値と `i32::MAX` を超える値は、ひとつの `trun` に混在させられない
+    ///   - `trun` は、1 回のメディアセグメントの生成に含まれる同じトラックのサンプルごとに作られる
     ///
     /// 上記の範囲を超える値を指定した場合、mux 時にエラーになる。
     pub composition_time_offset: Option<i64>,

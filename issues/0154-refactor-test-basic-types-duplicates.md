@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/refactor-test-basic-types-duplicates
 - Polished: {YYYY-MM-DD}
+- Refreshed: 2026-11-24
 
 ## 目的
 
@@ -45,7 +46,6 @@
 - 目印コメントを削除し、`boundary_tests_from_prop_basic_types` を中身を表す名前（例: `basic_type_boundaries`）に改める。モジュールは分割しない
 - ファイル先頭の `//!` に、このモジュールが固定する内容を加える
 - 残すテストの入力と断言は変えない。`pbt/tests/prop_basic_types.rs` は変更しない
-- `tests/test_boxes.rs` / `tests/test_boxes_fmp4.rs` / `tests/test_boxes_moov_tree.rs` / `tests/test_boxes_sample_entry.rs` にある同種の「から移動」の目印コメントは、本 issue の対象外とする
 
 ## 完了条件
 

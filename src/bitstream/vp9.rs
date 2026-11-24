@@ -10,7 +10,7 @@
 //!   <https://www.webmproject.org/vp9/> (uncompressed_header syntax は Section 6.2)
 //! - VP Codec ISO Media File Format Binding <https://www.webmproject.org/vp9/mp4/>
 
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 
 use crate::{
     Error, Result, Uint,
@@ -507,7 +507,7 @@ fn read_frame_sync_code(reader: &mut BitReader<'_>) -> Result<()> {
     Ok(())
 }
 
-/// VP9 spec Section 7.2.2 の `color_config` syntax を読む
+/// VP9 spec Section 6.2.2 の `color_config` syntax を読む
 ///
 /// profile 0/1 の bit_depth は構文上 8 固定、profile 0/2 の subsampling は
 /// 構文上 4:2:0 固定で、これらの組み合わせはエラーではなく代入で表現する
@@ -653,6 +653,12 @@ fn read_render_size(reader: &mut BitReader<'_>) -> Result<Option<(u32, u32)>> {
 /// - `header.subsampling_x` / `header.subsampling_y` が 0 / 1 以外
 ///   ([`Vp9FrameHeader`] は pub フィールドを持つので、parse を通さない手組み構築でも
 ///   panic ではなく Err で拒否する)
+/// - `header.profile` と `header.bit_depth`、`header.subsampling_x` / `header.subsampling_y` の
+///   組み合わせが、VP Codec ISO Media File Format Binding のプロファイルの表に合わない
+///   (profile 0 は 8 ビット 4:2:0、profile 1 は 8 ビット 4:2:2 / 4:4:4、
+///   profile 2 は 10 / 12 ビット 4:2:0、profile 3 は 10 / 12 ビット 4:2:2 / 4:4:4)
+///
+/// いずれの場合も [`crate::ErrorKind::InvalidInput`] のエラーを返す
 pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) -> Result<Vp09Box> {
     if header.bit_depth == 0 {
         // inter frame / show_existing_frame の header は色情報 (bit_depth 等) が
@@ -695,6 +701,50 @@ pub fn build_vp09_box(header: &Vp9FrameHeader, config: &Vp9SampleEntryConfig) ->
             ));
         }
     };
+
+    // VP Codec ISO Media File Format Binding v1.1 の VP Codec Configuration Box の
+    // semantics にあるプロファイルの表は、profile 0 を 8 ビット 4:2:0、
+    // profile 1 を 8 ビット 4:2:2 / 4:4:4、profile 2 を 10 / 12 ビット 4:2:0、
+    // profile 3 を 10 / 12 ビット 4:2:2 / 4:4:4 とする。
+    // VP9 spec Section 7.2 (Uncompressed header semantics) の Profile の表も、4:4:0 を除いて
+    // 同じ対応を定める (profile 1 / 3 の 4:4:0 は、Binding に対応値がないため上で拒否済み)。
+    // parse_frame_header は、Section 6.2.2 の color_config と、Section 6.2 の intra-only frame の
+    // profile 0 での代入 (8 ビット 4:2:0) で、この対応どおりの値を入れる。また、Section 7.2.2 の
+    // bitstream conformance に従い、profile 1 / 3 の 4:2:0 と profile 0 / 2 の sRGB を拒否する。
+    // このため parse_frame_header が返すキーフレームと intra-only frame の header は、
+    // 4:4:0 を除いて表に合う。
+    // しかし Vp9FrameHeader は pub フィールドを持つため、個々の値が範囲内でも
+    // 表に合わない組み合わせを渡せる。そうした組み合わせの vpcC を書き出さないよう、
+    // VpccBox の構築前に拒否する。
+    // なお、ここでの扱いは Binding v1.1 と VP9 spec に基づくものであり、将来の改訂で変わる可能性がある
+    let profile_requires_high_bit_depth = header.profile >= 2;
+    // 上で bit_depth を 8 / 10 / 12 に絞っているため、8 以外は 10 か 12 を表す
+    let is_high_bit_depth = header.bit_depth != 8;
+    if is_high_bit_depth != profile_requires_high_bit_depth {
+        let expected = if profile_requires_high_bit_depth {
+            "10 or 12"
+        } else {
+            "8"
+        };
+        return Err(Error::invalid_input(format!(
+            "VP9 profile {} requires bit_depth {expected}, got {}",
+            header.profile, header.bit_depth
+        )));
+    }
+    let profile_requires_420 = header.profile == 0 || header.profile == 2;
+    // chroma_subsampling_value の 1 は、上の変換で (1, 1) = 4:2:0 を表す
+    let is_420 = chroma_subsampling_value == 1;
+    if is_420 != profile_requires_420 {
+        let expected = if profile_requires_420 {
+            "4:2:0"
+        } else {
+            "4:2:2 or 4:4:4"
+        };
+        return Err(Error::invalid_input(format!(
+            "VP9 profile {} requires {expected} chroma subsampling, got subsampling {},{}",
+            header.profile, header.subsampling_x, header.subsampling_y
+        )));
+    }
 
     let vpcc_box = VpccBox {
         profile: header.profile,

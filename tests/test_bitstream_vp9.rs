@@ -7,7 +7,8 @@
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, Uint,
     bitstream::vp9::{
-        Vp9FrameSize, Vp9FrameType, Vp9SampleEntryConfig, build_vp09_box, parse_frame_header,
+        Vp9FrameHeader, Vp9FrameSize, Vp9FrameType, Vp9SampleEntryConfig, build_vp09_box,
+        parse_frame_header,
     },
     boxes::{VisualSampleEntryFields, Vp09Box},
 };
@@ -501,7 +502,7 @@ fn reject_truncated_header() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-// ===== build_vp09_box =====
+// ===== build_vp09_box: 受理系 =====
 
 /// デフォルト config + キーフレーム header で構築した Vp09Box が固定値と導出値を正しく持つ
 #[test]
@@ -563,24 +564,6 @@ fn build_vp09_box_chroma_subsampling_422() {
     let header = parse_frame_header(&bytes).expect("profile 1 4:2:2");
     let vp09 = build_vp09_box(&header, &default_config()).expect("有効な header は構築成功する");
     assert_eq!(vp09.vpcc_box.chroma_subsampling.get(), 2);
-}
-
-/// profile 1 の 4:4:0 header は Vp09Box に格納できないため Err を返す
-///
-/// VP9 spec では合法だが、VP Codec ISO Media File Format Binding の
-/// chroma_subsampling 3 ビット値に対応する値が存在しない
-#[test]
-fn build_vp09_box_rejects_440_subsampling() {
-    let bytes = build_keyframe_bytes(KeyframeParams {
-        profile: 1,
-        subsampling_x: 0,
-        subsampling_y: 1,
-        ..KeyframeParams::valid()
-    });
-    let header = parse_frame_header(&bytes).expect("profile 1 4:4:0 は解析成功する");
-    let err = build_vp09_box(&header, &default_config())
-        .expect_err("4:4:0 は Vp09Box に格納不能なので Err");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
 /// profile 1 の 4:4:4 header が chroma_subsampling = 3 (4:4:4) に写る
@@ -1066,6 +1049,83 @@ fn interframe_refresh_frame_flags_are_preserved() {
     assert_eq!(header.refresh_frame_flags, 0x3C);
 }
 
+/// inter frame の render_size が frame_size と異なるときにその値が復元される
+#[test]
+fn interframe_render_size_different_is_preserved() {
+    let bytes = build_interframe_bytes(InterframeParams {
+        render_and_frame_size_different: true,
+        render_width: 1920,
+        render_height: 1080,
+        ..InterframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("render_size 有り inter frame は解析成功");
+    assert_eq!(header.render_size, Some((1920, 1080)));
+}
+
+// ===== build_vp09_box: 拒否系 =====
+
+/// `build_vp09_box` が inter frame / `show_existing_frame` の header (`bit_depth == 0`) を拒否するときの理由
+const INTER_FRAME_HEADER_REASON: &str = "VP9 build_vp09_box requires a key or intra_only frame header \
+     (bit_depth == 0 indicates inter frame or show_existing_frame)";
+
+/// `build_vp09_box` が 0 でも 8 / 10 / 12 でもない `bit_depth` を拒否するときの理由
+/// (`bit_depth == 0` は `INTER_FRAME_HEADER_REASON` の理由で拒否する)
+const BIT_DEPTH_OUT_OF_RANGE_REASON: &str = "VP9 bit_depth must be 8, 10, or 12";
+
+/// `build_vp09_box` が 0 / 1 以外の `color_range` を拒否するときの理由
+const COLOR_RANGE_OUT_OF_RANGE_REASON: &str = "VP9 color_range must be 0 or 1";
+
+/// `build_vp09_box` が 0..=3 以外の `profile` を拒否するときの理由
+const PROFILE_OUT_OF_RANGE_REASON: &str = "VP9 profile must be 0..=3";
+
+/// `build_vp09_box` が 4:4:0 の header を拒否するときの理由
+const SUBSAMPLING_440_REASON: &str =
+    "VP9 4:4:0 (subsampling 0,1) cannot be represented in VpccBox::chroma_subsampling";
+
+/// `build_vp09_box` が 0 / 1 以外の `subsampling_x` / `subsampling_y` を拒否するときの理由
+const SUBSAMPLING_OUT_OF_RANGE_REASON: &str = "VP9 subsampling_x / subsampling_y must be 0 or 1";
+
+/// `build_vp09_box` が header を拒否し、それが想定した検査によるものであることを、
+/// エラー種別と理由で確かめる
+///
+/// 個別の検査に当てはまる header の多くは、プロファイルとの組み合わせの検査にも当てはまり、
+/// 同じ種別で拒否される。そのため種別だけでは、想定した検査が働いたことを確かめられない
+#[track_caller]
+fn assert_build_vp09_box_rejected(header: &Vp9FrameHeader, expected_reason: &str, ctx: &str) {
+    let err = build_vp09_box(header, &default_config())
+        .expect_err(&format!("拒否されるはずの header なのに構築できた: {ctx}"));
+    assert_eq!(
+        err.kind,
+        ErrorKind::InvalidInput,
+        "エラー種別が `InvalidInput` ではない: {ctx} (reason={})",
+        err.reason
+    );
+    assert_eq!(
+        err.reason, expected_reason,
+        "想定した検査とは別の理由で拒否された: {ctx}"
+    );
+}
+
+/// profile 1 の 4:4:0 header は Vp09Box に格納できないため Err を返す
+///
+/// VP9 spec では合法だが、VP Codec ISO Media File Format Binding の
+/// chroma_subsampling 3 ビット値に対応する値が存在しない
+#[test]
+fn build_vp09_box_rejects_440_subsampling() {
+    let bytes = build_keyframe_bytes(KeyframeParams {
+        profile: 1,
+        subsampling_x: 0,
+        subsampling_y: 1,
+        ..KeyframeParams::valid()
+    });
+    let header = parse_frame_header(&bytes).expect("profile 1 4:4:0 は解析成功する");
+    assert_build_vp09_box_rejected(
+        &header,
+        SUBSAMPLING_440_REASON,
+        "profile = 1, subsampling = (0, 1)",
+    );
+}
+
 /// inter frame の header (色情報が 0 プレースホルダ) を build_vp09_box に渡すと Err
 ///
 /// silent に 4:4:4 として書き出さないよう入り口で拒否する
@@ -1074,9 +1134,7 @@ fn build_vp09_box_rejects_inter_frame_header() {
     let bytes = build_interframe_bytes(InterframeParams::valid());
     let header = parse_frame_header(&bytes).expect("inter frame は解析成功する");
     assert_eq!(header.bit_depth, 0); // inter は 0 プレースホルダ
-    let err = build_vp09_box(&header, &default_config())
-        .expect_err("inter frame header は build_vp09_box で拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert_build_vp09_box_rejected(&header, INTER_FRAME_HEADER_REASON, "inter frame");
 }
 
 /// show_existing_frame の header (色情報なし) を build_vp09_box に渡すと Err
@@ -1092,9 +1150,7 @@ fn build_vp09_box_rejects_show_existing_frame_header() {
     let bytes = w.into_bytes();
     let header = parse_frame_header(&bytes).expect("show_existing_frame は解析成功する");
     assert_eq!(header.show_existing_frame, Some(0));
-    let err = build_vp09_box(&header, &default_config())
-        .expect_err("show_existing_frame header は build_vp09_box で拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert_build_vp09_box_rejected(&header, INTER_FRAME_HEADER_REASON, "show_existing_frame");
 }
 
 /// Vp9FrameHeader を手組みで subsampling_x/y に 2 以上を入れた場合、panic せず Err
@@ -1105,9 +1161,11 @@ fn build_vp09_box_rejects_out_of_range_subsampling() {
     let bytes = build_keyframe_bytes(KeyframeParams::valid());
     let mut header = parse_frame_header(&bytes).expect("キーフレーム");
     header.subsampling_x = 2; // 手組みで範囲外を入れる
-    let err = build_vp09_box(&header, &default_config())
-        .expect_err("範囲外 subsampling は panic ではなく Err で拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert_build_vp09_box_rejected(
+        &header,
+        SUBSAMPLING_OUT_OF_RANGE_REASON,
+        "subsampling_x = 2",
+    );
 }
 
 /// Vp9FrameHeader を手組みで bit_depth に 8/10/12 以外を入れた場合、panic せず Err
@@ -1117,10 +1175,11 @@ fn build_vp09_box_rejects_invalid_bit_depth() {
     for bit_depth in [9u8, 16, 255] {
         let mut header = parse_frame_header(&bytes).expect("キーフレーム");
         header.bit_depth = bit_depth;
-        let err = build_vp09_box(&header, &default_config()).expect_err(&format!(
-            "bit_depth={bit_depth} は panic ではなく Err で拒否される"
-        ));
-        assert_eq!(err.kind, ErrorKind::InvalidInput);
+        assert_build_vp09_box_rejected(
+            &header,
+            BIT_DEPTH_OUT_OF_RANGE_REASON,
+            &format!("bit_depth = {bit_depth}"),
+        );
     }
 }
 
@@ -1130,9 +1189,7 @@ fn build_vp09_box_rejects_invalid_color_range() {
     let bytes = build_keyframe_bytes(KeyframeParams::valid());
     let mut header = parse_frame_header(&bytes).expect("キーフレーム");
     header.color_range = 2;
-    let err = build_vp09_box(&header, &default_config())
-        .expect_err("範囲外 color_range は panic ではなく Err で拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert_build_vp09_box_rejected(&header, COLOR_RANGE_OUT_OF_RANGE_REASON, "color_range = 2");
 }
 
 /// Vp9FrameHeader を手組みで profile に 4 以上を入れた場合、panic せず Err
@@ -1141,20 +1198,177 @@ fn build_vp09_box_rejects_invalid_profile() {
     let bytes = build_keyframe_bytes(KeyframeParams::valid());
     let mut header = parse_frame_header(&bytes).expect("キーフレーム");
     header.profile = 4;
-    let err = build_vp09_box(&header, &default_config())
-        .expect_err("範囲外 profile は panic ではなく Err で拒否される");
-    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert_build_vp09_box_rejected(&header, PROFILE_OUT_OF_RANGE_REASON, "profile = 4");
 }
 
-/// inter frame の render_size が frame_size と異なるときにその値が復元される
+// ===== build_vp09_box: 拒否系 (プロファイルとビット深度・クロマの組み合わせ) =====
+
+/// 指定したプロファイルについて、表に合う設定のキーフレームを解析した header を返す
+///
+/// VP Codec ISO Media File Format Binding のプロファイルの表に合う設定
+/// (profile 0: 8 ビット 4:2:0、profile 1: 8 ビット 4:2:2、profile 2: 10 ビット 4:2:0、
+/// profile 3: 12 ビット 4:2:2) を、組み合わせの検査の基準として使う。
+/// 表に合う全 9 通りの組み合わせの受理とラウンドトリップは、PBT の `build_vp09_box_config_roundtrip` で確かめる
+fn valid_header_for_profile(profile: u8) -> Vp9FrameHeader {
+    let params = match profile {
+        0 => KeyframeParams::valid(),
+        1 => KeyframeParams {
+            profile: 1,
+            subsampling_x: 1,
+            subsampling_y: 0,
+            ..KeyframeParams::valid()
+        },
+        2 => KeyframeParams {
+            profile: 2,
+            bit_depth_10_or_12_bit: Some(false),
+            ..KeyframeParams::valid()
+        },
+        3 => KeyframeParams {
+            profile: 3,
+            bit_depth_10_or_12_bit: Some(true),
+            subsampling_x: 1,
+            subsampling_y: 0,
+            ..KeyframeParams::valid()
+        },
+        _ => unreachable!("profile は 0..=3 だけを渡す"),
+    };
+    parse_frame_header(&build_keyframe_bytes(params))
+        .expect("表に合う設定のキーフレームは解析成功する")
+}
+
+/// プロファイルに合わないビット深度だけを持つ header は拒否する
+///
+/// 各プロファイルで表に合う設定を基準に、ビット深度だけを、個別の検査 (8 / 10 / 12) は通るが
+/// プロファイルに合わない値に変える。profile 0 / 1 は 10 と 12、profile 2 / 3 は 8 にする
 #[test]
-fn interframe_render_size_different_is_preserved() {
-    let bytes = build_interframe_bytes(InterframeParams {
-        render_and_frame_size_different: true,
-        render_width: 1920,
-        render_height: 1080,
-        ..InterframeParams::valid()
-    });
-    let header = parse_frame_header(&bytes).expect("render_size 有り inter frame は解析成功");
-    assert_eq!(header.render_size, Some((1920, 1080)));
+fn build_vp09_box_rejects_bit_depth_not_matching_profile() {
+    for profile in 0..=3u8 {
+        let valid = valid_header_for_profile(profile);
+        let (mismatched_bit_depths, expected_bit_depth): (&[u8], &str) = if profile <= 1 {
+            (&[10, 12], "8")
+        } else {
+            (&[8], "10 or 12")
+        };
+        for &bit_depth in mismatched_bit_depths {
+            let mut header = valid.clone();
+            header.bit_depth = bit_depth;
+            assert_build_vp09_box_rejected(
+                &header,
+                &format!(
+                    "VP9 profile {profile} requires bit_depth {expected_bit_depth}, got {bit_depth}"
+                ),
+                &format!("profile = {profile}, bit_depth = {bit_depth}"),
+            );
+        }
+    }
+}
+
+/// プロファイルに合わないクロマサブサンプリングだけを持つ header は拒否する
+///
+/// 各プロファイルで表に合う設定を基準に、クロマだけを、`vpcC` の chroma_subsampling への変換
+/// (4:2:0 / 4:2:2 / 4:4:4) は通るがプロファイルに合わない値に変える。
+/// profile 0 / 2 は 4:2:2 と 4:4:4、profile 1 / 3 は 4:2:0 にする
+#[test]
+fn build_vp09_box_rejects_chroma_subsampling_not_matching_profile() {
+    for profile in 0..=3u8 {
+        let valid = valid_header_for_profile(profile);
+        let (mismatched_subsamplings, expected_chroma): (&[(u8, u8)], &str) =
+            if profile == 0 || profile == 2 {
+                (&[(1, 0), (0, 0)], "4:2:0")
+            } else {
+                (&[(1, 1)], "4:2:2 or 4:4:4")
+            };
+        for &(subsampling_x, subsampling_y) in mismatched_subsamplings {
+            let mut header = valid.clone();
+            header.subsampling_x = subsampling_x;
+            header.subsampling_y = subsampling_y;
+            assert_build_vp09_box_rejected(
+                &header,
+                &format!(
+                    "VP9 profile {profile} requires {expected_chroma} chroma subsampling, \
+                     got subsampling {subsampling_x},{subsampling_y}"
+                ),
+                &format!("profile = {profile}, subsampling = ({subsampling_x}, {subsampling_y})"),
+            );
+        }
+    }
+}
+
+/// 複数の検査に当てはまる header で、どの検査の理由で拒否されるかを固定する
+///
+/// - profile 0、10 ビット、4:4:4 (ビット深度とクロマの両方がプロファイルに合わない) は、ビット深度がプロファイルに合わないという理由になる
+/// - profile 0、10 ビット、4:4:0 は、4:4:0 の理由になる
+/// - profile 0、10 ビット、4:2:0、color_range 2 は、color_range の範囲の理由になる
+/// - profile 0 と profile 2 の、bit_depth 9、4:4:4 は、bit_depth の範囲の理由になる
+/// - profile 0、10 ビット、subsampling (2, 1) は、subsampling の範囲の理由になる
+/// - profile 4 の、8 ビット 4:4:4 と 10 ビット 4:2:0 は、profile の範囲の理由になる
+///   (profile 4 の 8 ビット 4:2:0 は `build_vp09_box_rejects_invalid_profile` が確かめる)
+#[test]
+fn build_vp09_box_combination_check_order() {
+    let mut header = valid_header_for_profile(0);
+    header.bit_depth = 10;
+    header.subsampling_x = 0;
+    header.subsampling_y = 0;
+    assert_build_vp09_box_rejected(
+        &header,
+        "VP9 profile 0 requires bit_depth 8, got 10",
+        "profile = 0, bit_depth = 10, subsampling = (0, 0)",
+    );
+
+    let mut header = valid_header_for_profile(0);
+    header.bit_depth = 10;
+    header.subsampling_x = 0;
+    header.subsampling_y = 1;
+    assert_build_vp09_box_rejected(
+        &header,
+        SUBSAMPLING_440_REASON,
+        "profile = 0, bit_depth = 10, subsampling = (0, 1)",
+    );
+
+    let mut header = valid_header_for_profile(0);
+    header.bit_depth = 10;
+    header.color_range = 2;
+    assert_build_vp09_box_rejected(
+        &header,
+        COLOR_RANGE_OUT_OF_RANGE_REASON,
+        "profile = 0, bit_depth = 10, color_range = 2",
+    );
+
+    for profile in [0u8, 2] {
+        let mut header = valid_header_for_profile(profile);
+        header.bit_depth = 9;
+        header.subsampling_x = 0;
+        header.subsampling_y = 0;
+        assert_build_vp09_box_rejected(
+            &header,
+            BIT_DEPTH_OUT_OF_RANGE_REASON,
+            &format!("profile = {profile}, bit_depth = 9, subsampling = (0, 0)"),
+        );
+    }
+
+    let mut header = valid_header_for_profile(0);
+    header.bit_depth = 10;
+    header.subsampling_x = 2;
+    header.subsampling_y = 1;
+    assert_build_vp09_box_rejected(
+        &header,
+        SUBSAMPLING_OUT_OF_RANGE_REASON,
+        "profile = 0, bit_depth = 10, subsampling = (2, 1)",
+    );
+
+    for (bit_depth, subsampling_x, subsampling_y) in [(8u8, 0u8, 0u8), (10, 1, 1)] {
+        let mut header = valid_header_for_profile(0);
+        header.profile = 4;
+        header.bit_depth = bit_depth;
+        header.subsampling_x = subsampling_x;
+        header.subsampling_y = subsampling_y;
+        assert_build_vp09_box_rejected(
+            &header,
+            PROFILE_OUT_OF_RANGE_REASON,
+            &format!(
+                "profile = 4, bit_depth = {bit_depth}, \
+                 subsampling = ({subsampling_x}, {subsampling_y})"
+            ),
+        );
+    }
 }

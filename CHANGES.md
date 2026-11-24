@@ -219,6 +219,14 @@
   - 挙動が変わるのは `config_obus` に Sequence Header OBU がない場合だけである。Sequence Header OBU がある場合は、これまでも `config_obus` の検査、その Sequence Header の解析、`seq` との照合のいずれかで、これらの値を拒否していた
   - `bitstream::av1::build_av01_box_from_config_obus` は `parse_sequence_header` の結果を渡すため、挙動は変わらない
   - @voluntas
+- [FIX] `bitstream::vp9::build_vp09_box` で、プロファイルに合わないビット深度やクロマサブサンプリングを持つ `vpcC` を書き出していたのを修正する
+  - `header.profile` と `header.bit_depth`、`header.subsampling_x` / `header.subsampling_y` の組み合わせが、VP Codec ISO Media File Format Binding のプロファイルの表に合わない場合は `ErrorKind::InvalidInput` を返す
+    - 表は、profile 0 を 8 ビット 4:2:0、profile 1 を 8 ビット 4:2:2 / 4:4:4、profile 2 を 10 / 12 ビット 4:2:0、profile 3 を 10 / 12 ビット 4:2:2 / 4:4:4 とする
+  - これまでは、プロファイル、ビット深度、クロマサブサンプリングを個別に検査していたが、組み合わせは検査していなかった
+  - `bitstream::vp9::parse_frame_header` の結果をそのまま渡す場合の挙動は変わらない
+    - `parse_frame_header` が返すキーフレームと intra-only frame の header は、この表に合うか、`build_vp09_box` がこれまでも拒否していた 4:4:0 のいずれかである
+    - 色情報を持たない inter frame / `show_existing_frame` の header は、これまでどおり拒否する。この拒否は組み合わせの検査より前に行うため、エラー理由も変わらない
+  - @voluntas
 
 ### misc
 

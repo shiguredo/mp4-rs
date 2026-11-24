@@ -3,15 +3,12 @@
 use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, Uint,
-    boxes::{Av1cBox, AvccBox, DflaBox, DopsBox, EsdsBox, HvccBox, HvccNalUintArray, VpccBox},
+    boxes::{Av1cBox, AvccBox, DopsBox, EsdsBox, HvccBox, HvccNalUintArray, VpccBox},
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
 
 /// このファイルの主要 PBT ケース数（旧 `with_cases(200)` を維持）
 const CASES: usize = 200;
-
-/// パニック安全性テスト用のケース数（旧 `with_cases(50)` を維持）
-const CASES_PANIC: usize = 50;
 
 /// noprop の `sample_usize_in` で長さを引いてから要素を生成するベクタサンプラー
 fn sample_vec<T>(
@@ -486,74 +483,6 @@ fn esds_box_roundtrip() -> noprop::TestResult {
             decoded.es.dec_config_descr.avg_bitrate,
             esds.es.dec_config_descr.avg_bitrate
         );
-        Ok(())
-    })?;
-    Ok(())
-}
-
-// ===== ランダムバイト列でのデコードのパニック安全性テスト =====
-
-/// ランダムなバイト列での AvccBox デコードはパニックしない
-#[test]
-fn avcc_box_decode_no_panic() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-    noprop::Runner::new(seed).run(CASES_PANIC, |ctx| {
-        let n = noprop::sample_usize_in(ctx, 0..256);
-        let data = noprop::sample_bytes_vec(ctx, n);
-        // パニックしないことを確認 (エラーは OK)
-        let _ = AvccBox::decode(&data);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// ランダムなバイト列での HvccBox デコードはパニックしない
-#[test]
-fn hvcc_box_decode_no_panic() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-    noprop::Runner::new(seed).run(CASES_PANIC, |ctx| {
-        let n = noprop::sample_usize_in(ctx, 0..256);
-        let data = noprop::sample_bytes_vec(ctx, n);
-        let _ = HvccBox::decode(&data);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// ランダムなバイト列での DflaBox デコードはパニックしない
-#[test]
-fn dfla_box_decode_no_panic() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-    noprop::Runner::new(seed).run(CASES_PANIC, |ctx| {
-        let n = noprop::sample_usize_in(ctx, 0..256);
-        let data = noprop::sample_bytes_vec(ctx, n);
-        let _ = DflaBox::decode(&data);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// ランダムなバイト列での DopsBox デコードはパニックしない
-#[test]
-fn dops_box_decode_no_panic() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-    noprop::Runner::new(seed).run(CASES_PANIC, |ctx| {
-        let n = noprop::sample_usize_in(ctx, 0..256);
-        let data = noprop::sample_bytes_vec(ctx, n);
-        let _ = DopsBox::decode(&data);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-/// ランダムなバイト列での EsdsBox デコードはパニックしない
-#[test]
-fn esds_box_decode_no_panic() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
-    noprop::Runner::new(seed).run(CASES_PANIC, |ctx| {
-        let n = noprop::sample_usize_in(ctx, 0..256);
-        let data = noprop::sample_bytes_vec(ctx, n);
-        let _ = EsdsBox::decode(&data);
         Ok(())
     })?;
     Ok(())

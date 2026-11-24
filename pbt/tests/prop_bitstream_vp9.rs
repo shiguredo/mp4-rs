@@ -231,92 +231,225 @@ fn show_existing_frame_map_idx_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
+/// VP Codec ISO Media File Format Binding のプロファイルの表に含まれる 1 つの組み合わせ
+struct ProfileCombination {
+    profile: u8,
+    bit_depth: u8,
+    subsampling_x: u8,
+    subsampling_y: u8,
+    /// `vpcC` の chroma_subsampling への変換結果 (1 = 4:2:0 colocated、2 = 4:2:2、3 = 4:4:4)
+    expected_vpcc_chroma: u8,
+}
+
+/// VP Codec ISO Media File Format Binding のプロファイルの表に含まれる全 9 通りの組み合わせ
+///
+/// profile 0 は 8 ビット 4:2:0、profile 1 は 8 ビット 4:2:2 / 4:4:4、
+/// profile 2 は 10 / 12 ビット 4:2:0、profile 3 は 10 / 12 ビット 4:2:2 / 4:4:4。
+/// 4:4:0 (VP9 spec では profile 1 / 3 で合法) は Binding に写せないため含めない。拒否は単体テストで確認する
+const PROFILE_TABLE: [ProfileCombination; 9] = [
+    ProfileCombination {
+        profile: 0,
+        bit_depth: 8,
+        subsampling_x: 1,
+        subsampling_y: 1,
+        expected_vpcc_chroma: 1,
+    },
+    ProfileCombination {
+        profile: 1,
+        bit_depth: 8,
+        subsampling_x: 1,
+        subsampling_y: 0,
+        expected_vpcc_chroma: 2,
+    },
+    ProfileCombination {
+        profile: 1,
+        bit_depth: 8,
+        subsampling_x: 0,
+        subsampling_y: 0,
+        expected_vpcc_chroma: 3,
+    },
+    ProfileCombination {
+        profile: 2,
+        bit_depth: 10,
+        subsampling_x: 1,
+        subsampling_y: 1,
+        expected_vpcc_chroma: 1,
+    },
+    ProfileCombination {
+        profile: 2,
+        bit_depth: 12,
+        subsampling_x: 1,
+        subsampling_y: 1,
+        expected_vpcc_chroma: 1,
+    },
+    ProfileCombination {
+        profile: 3,
+        bit_depth: 10,
+        subsampling_x: 1,
+        subsampling_y: 0,
+        expected_vpcc_chroma: 2,
+    },
+    ProfileCombination {
+        profile: 3,
+        bit_depth: 10,
+        subsampling_x: 0,
+        subsampling_y: 0,
+        expected_vpcc_chroma: 3,
+    },
+    ProfileCombination {
+        profile: 3,
+        bit_depth: 12,
+        subsampling_x: 1,
+        subsampling_y: 0,
+        expected_vpcc_chroma: 2,
+    },
+    ProfileCombination {
+        profile: 3,
+        bit_depth: 12,
+        subsampling_x: 0,
+        subsampling_y: 0,
+        expected_vpcc_chroma: 3,
+    },
+];
+
 /// `build_vp09_box` が config + キーフレーム header を反映し encode/decode ラウンドトリップする
+///
+/// 各ケースで、プロファイルの表に含まれる全 9 通りの組み合わせ ([`PROFILE_TABLE`]) を順に試す。
+/// どの組み合わせも構築に成功し、profile・ビット深度・クロマの変換結果が保たれ、
+/// encode/decode でラウンドトリップすることを確かめる。`color_range`・寸法・config は組み合わせごとにランダムに選ぶ
 #[test]
 fn build_vp09_box_config_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
-        // profile / subsampling を軽くランダム化。ヘッダーは常にキーフレームで固定条件
-        let profile = noprop::sample_u64_in(ctx, 0..=3) as u8;
-        let bit_depth_10_or_12_bit = noprop::sample_bool(ctx);
-        let (subsampling_x, subsampling_y) = if profile == 1 || profile == 3 {
-            match noprop::sample_u64_in(ctx, 0..=2) {
-                // build_vp09_box が Err にならない範囲 (4:2:2 / 4:4:4) に絞る。
-                // 4:4:0 は VP9 spec 上合法だが Binding に写せないため別テストで拒否を確認する
-                0 => (1u8, 0u8), // 4:2:2
-                _ => (0u8, 0u8), // 4:4:4
-            }
-        } else {
-            (1u8, 1u8)
-        };
+        for combination in &PROFILE_TABLE {
+            let ProfileCombination {
+                profile,
+                bit_depth,
+                subsampling_x,
+                subsampling_y,
+                expected_vpcc_chroma,
+            } = *combination;
+            let params = KeyframeBits {
+                profile,
+                show_frame: true,
+                error_resilient_mode: false,
+                // profile 2 / 3 でだけ書き込まれる (true = 12 ビット、false = 10 ビット)
+                bit_depth_10_or_12_bit: bit_depth == 12,
+                color_space: 1, // BT.601 (sRGB は固定レイアウトのため単体テストで確認する)
+                color_range: noprop::sample_u64_in(ctx, 0..=1) as u8,
+                subsampling_x,
+                subsampling_y,
+                frame_width: noprop::sample_u64_in(ctx, 1..=1920) as u32,
+                frame_height: noprop::sample_u64_in(ctx, 1..=1080) as u32,
+                render_and_frame_size_different: false,
+                render_width: 0,
+                render_height: 0,
+            };
+            let bytes = build_keyframe_bytes(&params);
+            let label = format!(
+                "profile = {profile}, bit_depth = {bit_depth}, \
+                 subsampling = ({subsampling_x}, {subsampling_y})"
+            );
+            let header = parse_frame_header(&bytes)
+                .unwrap_or_else(|e| panic!("キーフレームは解析成功する: {label}: {e:?}"));
+            // 生成器が意図どおりの header を作れていること (生成器の誤りを検出する)
+            assert_eq!(
+                (
+                    header.profile,
+                    header.bit_depth,
+                    header.subsampling_x,
+                    header.subsampling_y
+                ),
+                (profile, bit_depth, subsampling_x, subsampling_y),
+                "生成した header の解析結果が意図した組み合わせと一致しない: {label}"
+            );
 
-        let params = KeyframeBits {
-            profile,
-            show_frame: true,
-            error_resilient_mode: false,
-            bit_depth_10_or_12_bit,
-            color_space: 1, // BT.601 (sRGB は固定レイアウトのため単体テストで確認する)
-            color_range: noprop::sample_u64_in(ctx, 0..=1) as u8,
-            subsampling_x,
-            subsampling_y,
-            frame_width: noprop::sample_u64_in(ctx, 1..=1920) as u32,
-            frame_height: noprop::sample_u64_in(ctx, 1..=1080) as u32,
-            render_and_frame_size_different: false,
-            render_width: 0,
-            render_height: 0,
-        };
-        let bytes = build_keyframe_bytes(&params);
-        let header = parse_frame_header(&bytes).expect("キーフレーム解析");
+            let level = noprop::sample_u8(ctx);
+            let config = Vp9SampleEntryConfig {
+                level,
+                colour_primaries: noprop::sample_u8(ctx),
+                transfer_characteristics: noprop::sample_u8(ctx),
+                matrix_coefficients: noprop::sample_u8(ctx),
+                width: noprop::sample_u64_in(ctx, 1..=1920) as u16,
+                height: noprop::sample_u64_in(ctx, 1..=1080) as u16,
+            };
+            let vp09 = build_vp09_box(&header, &config).unwrap_or_else(|e| {
+                panic!("表に含まれる組み合わせは構築に成功する: {label}: {e:?}")
+            });
 
-        let level = noprop::sample_u8(ctx);
-        let config = Vp9SampleEntryConfig {
-            level,
-            colour_primaries: noprop::sample_u8(ctx),
-            transfer_characteristics: noprop::sample_u8(ctx),
-            matrix_coefficients: noprop::sample_u8(ctx),
-            width: noprop::sample_u64_in(ctx, 1..=1920) as u16,
-            height: noprop::sample_u64_in(ctx, 1..=1080) as u16,
-        };
-        let vp09 = build_vp09_box(&header, &config).expect("有効な header は構築成功する");
+            // ストリーム導出値の反映確認
+            assert_eq!(
+                vp09.vpcc_box.profile, profile,
+                "vpcC の profile が組み合わせと一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.vpcc_box.bit_depth.get(),
+                bit_depth,
+                "vpcC の bit_depth が組み合わせと一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.vpcc_box.chroma_subsampling.get(),
+                expected_vpcc_chroma,
+                "vpcC の chroma_subsampling が組み合わせの変換結果と一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.vpcc_box.video_full_range_flag.get(),
+                header.color_range,
+                "vpcC の video_full_range_flag が header の color_range と一致しない: {label}"
+            );
 
-        // ストリーム導出値の反映確認
-        assert_eq!(vp09.vpcc_box.profile, profile);
-        assert_eq!(vp09.vpcc_box.bit_depth.get(), header.bit_depth);
-        let expected_chroma = match (subsampling_x, subsampling_y) {
-            (1, 1) => 1,
-            (1, 0) => 2,
-            (0, 0) => 3,
-            _ => unreachable!(),
-        };
-        assert_eq!(vp09.vpcc_box.chroma_subsampling.get(), expected_chroma);
-        assert_eq!(
-            vp09.vpcc_box.video_full_range_flag.get(),
-            header.color_range
-        );
+            // config 反映
+            assert_eq!(
+                vp09.vpcc_box.level, level,
+                "vpcC の level が config と一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.vpcc_box.colour_primaries, config.colour_primaries,
+                "vpcC の colour_primaries が config と一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.vpcc_box.transfer_characteristics, config.transfer_characteristics,
+                "vpcC の transfer_characteristics が config と一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.vpcc_box.matrix_coefficients, config.matrix_coefficients,
+                "vpcC の matrix_coefficients が config と一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.visual.width, config.width,
+                "visual の width が config と一致しない: {label}"
+            );
+            assert_eq!(
+                vp09.visual.height, config.height,
+                "visual の height が config と一致しない: {label}"
+            );
 
-        // config 反映
-        assert_eq!(vp09.vpcc_box.level, level);
-        assert_eq!(vp09.vpcc_box.colour_primaries, config.colour_primaries);
-        assert_eq!(
-            vp09.vpcc_box.transfer_characteristics,
-            config.transfer_characteristics
-        );
-        assert_eq!(
-            vp09.vpcc_box.matrix_coefficients,
-            config.matrix_coefficients
-        );
-        assert_eq!(vp09.visual.width, config.width);
-        assert_eq!(vp09.visual.height, config.height);
+            // 固定値
+            assert!(
+                vp09.vpcc_box.codec_initialization_data.is_empty(),
+                "vpcC の codec_initialization_data が空ではない: {label}"
+            );
+            assert!(
+                vp09.unknown_boxes.is_empty(),
+                "unknown_boxes が空ではない: {label}"
+            );
 
-        // 固定値
-        assert!(vp09.vpcc_box.codec_initialization_data.is_empty());
-        assert!(vp09.unknown_boxes.is_empty());
-
-        // encode → decode でラウンドトリップ
-        let encoded = vp09.encode_to_vec().expect("encode 成功");
-        let (decoded, size) = Vp09Box::decode(&encoded).expect("decode 成功");
-        assert_eq!(size, encoded.len());
-        assert_eq!(decoded, vp09);
+            // encode → decode でラウンドトリップ
+            let encoded = vp09
+                .encode_to_vec()
+                .unwrap_or_else(|e| panic!("encode は成功する: {label}: {e:?}"));
+            let (decoded, size) = Vp09Box::decode(&encoded)
+                .unwrap_or_else(|e| panic!("decode は成功する: {label}: {e:?}"));
+            assert_eq!(
+                size,
+                encoded.len(),
+                "decode が消費したサイズが encode の長さと一致しない: {label}"
+            );
+            assert_eq!(
+                decoded, vp09,
+                "decode 結果が元の Vp09Box と一致しない: {label}"
+            );
+        }
         Ok(())
     })?;
     Ok(())

@@ -19,6 +19,19 @@ fuzz_target!(|data: &[u8]| {
     if let Ok((fixed, _)) = FixedPointNumber::<u16, u16>::decode(data) {
         let _ = fixed.encode_to_vec();
     }
+    // ボックスで使う他の整数部・小数部の型の組み合わせも、任意入力でパニックしないことを確かめる
+    if let Ok((fixed, _)) = FixedPointNumber::<u8, u8>::decode(data) {
+        let _ = fixed.encode_to_vec();
+    }
+    if let Ok((fixed, _)) = FixedPointNumber::<i16, u16>::decode(data) {
+        let _ = fixed.encode_to_vec();
+    }
+    if let Ok((fixed, _)) = FixedPointNumber::<i8, u8>::decode(data) {
+        let _ = fixed.encode_to_vec();
+    }
+    if let Ok((fixed, _)) = FixedPointNumber::<i16, i16>::decode(data) {
+        let _ = fixed.encode_to_vec();
+    }
     if let Ok((brand, _)) = Brand::decode(data) {
         let _ = brand.encode_to_vec();
     }

@@ -650,8 +650,6 @@ mod trun_sample_option_consistency {
     }
 }
 
-// ===== pbt/tests/prop_fmp4_boxes.rs の boundary_tests から移動 =====
-
 // ===== 境界値テスト =====
 
 mod fmp4_boxes_boundary_tests {

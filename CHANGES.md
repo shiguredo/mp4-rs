@@ -245,6 +245,9 @@
   - コーデックごとに、デマルチプレックスしたサンプルエントリーをそのままマルチプレックス側へ戻せることを検証する
   - CI の `test-wasm` で実行する
   - @voluntas
+- [UPDATE] `canary.py` で、ルートの `Cargo.lock` に加えて `fuzz/Cargo.lock` の `shiguredo_mp4` も更新してコミットする
+  - `fuzz` はルートの workspace から exclude されて独自の `Cargo.lock` を持つため、canary のバージョンを上げるたびに食い違っていた
+  - @voluntas
 - [FIX] Release ワークフローが同一タグの重複実行で失敗するのを防ぐ
   - `concurrency` で重複実行をキャンセルし、リリース作成を冪等化する
   - アセットの `gh release upload` に `--clobber` を追加する

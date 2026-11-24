@@ -115,6 +115,7 @@ while let Ok(Some(sample)) = demuxer.next_sample() {
 | `handle_init_segment(&[u8])` | 初期化セグメントを処理する (2 回目以降は `InvalidState`) |
 | `tracks()` | 初期化済みトラック情報 `&[TrackInfo]` を返す |
 | `handle_media_segment(&[u8])` | メディアセグメントを処理し `Vec<Sample>` を返す。`moof` より前、`moof` と `mdat` の間、`mdat` の後ろのトップレベルボックス (`styp` / `sidx` / `ssix` / `prft` / `free` 等) は読み飛ばす。1 回の呼び出しで 1 つの `moof` + `mdat` ペアのみ (`moof` の後ろで `mdat` より先に別の `moof` が出る場合や、`mdat` の後ろの `moof` はエラー)。エラー時は内部状態が変わらない (同じインスタンスを使い続けられる) |
+| `pssh_boxes()` | 初期化セグメントの `moov` に含まれる `pssh` ボックス群を `&[PsshBox]` で返す。処理前は空 |
 
 `Sample.data_offset` は `handle_media_segment()` に渡したバッファ先頭からの相対位置。
 
@@ -144,6 +145,7 @@ let samples = demuxer.handle_media_segment(&media_segment)?;
 | `handle_input(Input)` | ファイルデータを供給する |
 | `tracks()` | トラック情報を返す |
 | `next_sample()` | 次のサンプルを返す (全トラック時系列順) |
+| `pssh_boxes()` | 初期化セグメントの `pssh` ボックス群を `&[PsshBox]` で返す。処理前は空 |
 
 制限: `tfhd` の `base_data_offset` にファイル先頭からの絶対オフセットを記録した形式には非対応。
 
@@ -281,6 +283,7 @@ faststart 形式になる (`FinalizedBoxes::is_faststart_enabled()` で判定)�
 
 注意点:
 
+- 初期化セグメントの `moov` に `pssh` を書き出す場合は `SegmentMuxerOptions::pssh_boxes` に指定する
 - `Sample.data_offset` は「ファイル全体の絶対位置」ではなく「今回のセグメントの `mdat` payload 領域の先頭からの相対位置」
 - 同一セグメント内の同一トラックのサンプルは `data_offset` 昇順で連続配置する必要がある (1 track = 1 traf = 1 trun 前提)
 - `composition_time_offset` は `trun` に書くため `i32::MIN..=i32::MAX` の範囲に限られる。負値と `> i32::MAX` の値の混在はエラー
@@ -316,7 +319,7 @@ let mfra = muxer.mfra_bytes()?;
 
 | ボックス | 説明 |
 |---------|------|
-| `MoovBox` | movie ボックス (`mvhd_box` + `trak_boxes` + `mvex_box: Option` + `unknown_boxes`) |
+| `MoovBox` | movie ボックス (`mvhd_box` + `trak_boxes` + `mvex_box: Option` + `pssh_boxes` + `unknown_boxes`) |
 | `MvhdBox` | movie ヘッダー。`DEFAULT_RATE` / `DEFAULT_VOLUME` / `DEFAULT_MATRIX` 定数あり |
 | `TrakBox` | トラック (`tkhd_box` + `edts_box: Option` + `mdia_box`) |
 | `TkhdBox` | トラックヘッダー (`track_id` / `duration` / `width` / `height` 等) |
@@ -358,6 +361,22 @@ let mfra = muxer.mfra_bytes()?;
 `TrunBox` のフィールドに `Option` を渡すと、対応するフラグが立っていない場合はフィールドが省略される。
 サンプルごとのフィールドが 1 つもない `trun` と `sample_count` が 0 の `trun` は、decode すると `TrunSamples::CountOnly` で件数だけを持つ。各サンプルの尺・サイズ・フラグは `tfhd`、次いで `trex` の既定値を使い、先頭サンプルのフラグは `first_sample_flags` があればそれを使う。
 
+### CENC / DRM ボックス (`boxes_cenc`)
+
+| ボックス | 説明 |
+|---------|------|
+| `PsshBox` | DRM システム固有の初期化データ (`system_id` / `kids` / `data`)。`version` 0 / 1 |
+| `SinfBox` | 保護スキームの情報を保持するコンテナ (`frma` + `schm` + `schi`) |
+| `FrmaBox` | 保護される前のサンプルエントリーの 4CC (`data_format`) |
+| `SchmBox` | 保護スキームの種類とバージョン (`scheme_type` / `scheme_version` / `scheme_uri`) |
+| `SchiBox` | 保護スキーム固有の情報を保持するコンテナ (`tenc` + 未知ボックス) |
+| `TencBox` | トラック暗号化の既定値 (`default_is_protected` / `default_per_sample_iv_size` / `default_kid` / constant IV / パターン暗号化パラメーター) |
+
+`PsshBox` は `MoovBox::pssh_boxes` に保持され、`Fmp4SegmentMuxer` の `SegmentMuxerOptions::pssh_boxes` から init segment に書き出せる。
+`sinf` / `tenc` は `EncvBox` / `EncaBox` (`SampleEntry::Encv` / `SampleEntry::Enca`) の `sinf_box` から型付きで参照できる。
+`EncvBox` / `EncaBox` のエンコードには `schm` と `schi` 内の `tenc` が必要で、コーデック設定ボックスは `unknown_boxes` に保持される。
+`codec_string::from_sample_entry` は `Encv` / `Enca` でも `frma` と `unknown_boxes` から元のコーデック文字列を生成する。
+
 ### サンプルエントリー (`boxes_sample_entry`)
 
 `SampleEntry` は以下の enum:
@@ -376,6 +395,8 @@ let mfra = muxer.mfra_bytes()?;
 | `Stpp(StppBox)` | `stpp` | XML 字幕 (TTML / IMSC) |
 | `Wvtt(WvttBox)` | `wvtt` | WebVTT 字幕 |
 | `Tx3g(Tx3gBox)` | `tx3g` | 3GPP タイムドテキスト |
+| `Encv(EncvBox)` | `encv` | CENC で保護された映像 |
+| `Enca(EncaBox)` | `enca` | CENC で保護された音声 |
 | `Unknown(UnknownBox)` | - | 未知のサンプルエントリー |
 
 `SampleEntry` のヘルパー:

@@ -11,6 +11,24 @@
 
 ## develop
 
+- [ADD] fMP4 の CENC (DRM) 向け初期化データのボックスに対応する
+  - `PsshBox` / `FrmaBox` / `SchmBox` / `SchiBox` / `SinfBox` / `TencBox` を追加する
+  - `SampleEntry` に `Encv` / `Enca` を追加し、`sinf` / `tenc` を型付きで扱えるようにする
+  - `MoovBox` に `pssh_boxes` を追加し、`Fmp4SegmentMuxer` の `SegmentMuxerOptions::pssh_boxes` で init segment に `pssh` を書き出せるようにする
+  - `Fmp4SegmentDemuxer::pssh_boxes()` / `Fmp4FileDemuxer::pssh_boxes()` を追加する
+  - `codec_string::from_sample_entry` が `Encv` / `Enca` でも元のコーデック文字列を返すようにする
+  - wasm の DRM サンプルエントリーの JSON 対応と `pssh` 指定は対象外
+  - @voluntas
+- [CHANGE] `MoovBox` に `pssh_boxes` フィールドを追加する
+  - 構造体リテラルで `MoovBox` を構築している箇所は `pssh_boxes: Vec::new()` の追加が必要になる
+  - @voluntas
+- [CHANGE] `SampleEntry` に `Encv` / `Enca` を追加する
+  - `SampleEntry` を網羅 match している箇所は新しいバリアントの追加が必要になる
+  - コーデック設定ボックスは `EncvBox` / `EncaBox` の `unknown_boxes` に保持する
+  - @voluntas
+- [CHANGE] `SegmentMuxerOptions` に `pssh_boxes` フィールドを追加する
+  - `..Default::default()` を使わずに構造体リテラルを構築している箇所は修正が必要になる
+  - @voluntas
 - [CHANGE] `crates/c-api` を削除する
   - C ABI の維持コストが、C 言語から利用したい利用者に対して見合わないため削除する
   - Python は PyO3 + Maturin で直接 Rust を呼び、iOS / Android は Rust をそのまま組み込む方針にする

@@ -20,16 +20,20 @@
 //! 取り出し順と `traf` の並び順が入れ替わる入力の `sample_entry` の約束のように、
 //! `Fmp4SegmentMuxer` の出力を書き換えないと作れない入力も、
 //! `rewrite_init_segment` / `rewrite_media_segment_moof` で組み立てて単体テストとして置く。
+//!
+//! CENC (DRM) の初期化データについては、`pssh` を保持した init セグメントを含むファイルで
+//! `pssh_boxes()` が init セグメントの `pssh` を返すことを確認する。
 
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, TrackKind, Uint,
     boxes::{
-        Avc1Box, AvccBox, FtypBox, MoofBox, MoovBox, SampleEntry, TfdtBox, VisualSampleEntryFields,
+        Avc1Box, AvccBox, FtypBox, MoofBox, MoovBox, PsshBox, SampleEntry, TfdtBox,
+        VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Input},
-    mux::{Fmp4SegmentMuxer, Sample},
+    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
@@ -523,5 +527,85 @@ fn sample_entry_follows_retrieval_order_across_segments() {
     assert_eq!(
         samples, expected,
         "取り出し順でサンプルエントリーが変わるところにだけ sample_entry が付く"
+    );
+}
+
+// ===== CENC (DRM) の初期化データのテスト =====
+
+/// init セグメントに格納する `pssh` の組を組み立てる
+///
+/// version 0（KID 一覧なし）と version 1（KID 一覧あり）を 1 つずつ含め、
+/// 複数の `pssh` がそのままの順序で返ることを確認できるようにする。
+fn create_pssh_boxes() -> Vec<PsshBox> {
+    vec![
+        PsshBox {
+            version: 1,
+            system_id: [0x01; 16],
+            kids: vec![[0x11; 16], [0x22; 16]],
+            data: vec![0xAA, 0xBB, 0xCC],
+        },
+        PsshBox {
+            version: 0,
+            system_id: [0x02; 16],
+            kids: Vec::new(),
+            data: vec![0xDD],
+        },
+    ]
+}
+
+/// `pssh_boxes()` が init セグメントの `pssh` を返すこと
+///
+/// `ftyp` + `moov` + `moof` + `mdat` を連結したファイルを `Fmp4FileDemuxer` に与え、
+/// 初期化セグメントを処理する前は空、処理した後は init セグメントの `pssh` を返すことを確認する。
+/// `pssh_boxes()` は内部の `Fmp4SegmentDemuxer` に委譲しているため、その値がそのまま見える。
+#[test]
+fn pssh_boxes_returns_init_segment_pssh_boxes() {
+    let pssh_boxes = create_pssh_boxes();
+    let options = SegmentMuxerOptions {
+        pssh_boxes: pssh_boxes.clone(),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+    let payload = [0u8; 16];
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&[create_video_sample(payload.len())])
+        .expect("メディアセグメントの作成に失敗した");
+    media_segment.extend_from_slice(&payload);
+    let mut file_data = muxer
+        .init_segment_bytes()
+        .expect("pssh を含む init セグメントの作成に失敗した");
+    file_data.extend_from_slice(&media_segment);
+
+    let mut demuxer = Fmp4FileDemuxer::new();
+    assert!(
+        demuxer.pssh_boxes().is_empty(),
+        "init セグメントを処理する前の pssh_boxes は空であるべき"
+    );
+
+    feed_required_input(&mut demuxer, &file_data);
+    assert_eq!(
+        demuxer.pssh_boxes(),
+        pssh_boxes.as_slice(),
+        "Fmp4FileDemuxer::pssh_boxes が init セグメントの pssh と一致しない"
+    );
+
+    // init セグメントの後ろのメディアセグメントも通常どおり取り出せる。
+    // ファイル末尾の判定には追加の入力要求が発生するため、既存のテストと同じく
+    // `InputRequired` のたびに要求された範囲を供給する
+    let mut sample_sizes = Vec::new();
+    loop {
+        match demuxer.next_sample() {
+            Ok(Some(sample)) => sample_sizes.push(sample.data_size),
+            Ok(None) => break,
+            Err(DemuxError::InputRequired(_)) => feed_required_input(&mut demuxer, &file_data),
+            Err(error) => panic!("next_sample エラー: {error}"),
+        }
+    }
+    assert_eq!(
+        sample_sizes,
+        vec![payload.len()],
+        "メディアセグメントのサンプルが 1 個だけ取り出せるべき"
     );
 }

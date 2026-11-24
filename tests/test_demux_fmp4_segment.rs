@@ -33,20 +33,26 @@
 //!
 //! 読み飛ばすトラックのデータ末尾の計算のように、`Fmp4SegmentMuxer` の出力を書き換えないと作れない
 //! 正常系の入力も、`build_skipped_track_segment` で組み立てて単体テストとして置く。
+//!
+//! CENC (DRM) の初期化データについては、`pssh` を保持した init セグメントと `Encv` / `Enca` を
+//! 使ったメディアセグメントを組み立て、`pssh_boxes()` と各トラックの最初のサンプルの
+//! `sample_entry` を確認する。
 
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
-    Decode, Encode, Error, ErrorKind, TrackKind, Uint,
+    Decode, Encode, Error, ErrorKind, FixedPointNumber, TrackKind, Uint,
     boxes::{
-        Avc1Box, AvccBox, FtypBox, MoofBox, MoovBox, SampleEntry, SidxBox, TrunSamples,
+        AudioSampleEntryFields, Avc1Box, AvccBox, EncaBox, EncvBox, FrmaBox, FtypBox, MoofBox,
+        MoovBox, PsshBox, SampleEntry, SchiBox, SchmBox, SidxBox, SinfBox, TencBox, TrunSamples,
         VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4SegmentDemuxer},
-    mux::{Fmp4SegmentMuxer, Sample},
+    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
+const AUDIO_TIMESCALE: u32 = 48_000;
 
 /// 指定解像度の `SampleEntry::Avc1` を組み立てる
 fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
@@ -1197,5 +1203,300 @@ fn skipped_track_count_only_run_without_samples_does_not_need_trex() {
         samples[0].data_offset,
         expected_sample_data_offset(moof_size, 0),
         "読み飛ばすトラックのデータがないので、対応しているトラックのサンプルは mdat の payload の先頭にある"
+    );
+}
+
+// ===== CENC (DRM) の初期化データのテスト =====
+
+/// DRM テスト用の映像トラックの KID
+const VIDEO_KID: [u8; 16] = [0x11; 16];
+
+/// DRM テスト用の音声トラックの KID
+const AUDIO_KID: [u8; 16] = [0x22; 16];
+
+/// `frma=hev1` の `EncvBox` を持つ `SampleEntry::Encv` を組み立てる
+///
+/// CMSF 4.2 が要求する `schm` と `schi` / `tenc` を含める。`cbcs` はパターン暗号化を
+/// 使うスキームなので、`tenc` はパターン暗号化パラメーターを持つ version 1 にする。
+fn create_encv_sample_entry(width: u16, height: u16) -> SampleEntry {
+    SampleEntry::Encv(EncvBox {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"hev1",
+            },
+            schm_box: Some(SchmBox {
+                scheme_type: *b"cbcs",
+                // 保護スキームのバージョンは任意値
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected: 1,
+                    default_per_sample_iv_size: 16,
+                    default_kid: VIDEO_KID,
+                    default_constant_iv: None,
+                    default_crypt_byte_block: Some(Uint::new(1)),
+                    default_skip_byte_block: Some(Uint::new(9)),
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// `frma=mp4a` の `EncaBox` を持つ `SampleEntry::Enca` を組み立てる
+///
+/// `cenc` はパターン暗号化を使わないスキームなので、
+/// `tenc` はパターン暗号化パラメーターを持たない version 0 にする。
+fn create_enca_sample_entry() -> SampleEntry {
+    SampleEntry::Enca(EncaBox {
+        audio: AudioSampleEntryFields {
+            data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            channelcount: 2,
+            samplesize: AudioSampleEntryFields::DEFAULT_SAMPLESIZE,
+            samplerate: FixedPointNumber::new(48_000, 0),
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"mp4a",
+            },
+            schm_box: Some(SchmBox {
+                scheme_type: *b"cenc",
+                // 保護スキームのバージョンは任意値
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected: 1,
+                    default_per_sample_iv_size: 8,
+                    default_kid: AUDIO_KID,
+                    default_constant_iv: None,
+                    default_crypt_byte_block: None,
+                    default_skip_byte_block: None,
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// init セグメントに格納する `pssh` の組を組み立てる
+///
+/// version 0（KID 一覧なし）と version 1（KID 一覧あり）を 1 つずつ含め、
+/// 複数の `pssh` がそのままの順序で返ることを確認できるようにする。
+fn create_pssh_boxes() -> Vec<PsshBox> {
+    vec![
+        PsshBox {
+            version: 1,
+            system_id: [0x01; 16],
+            kids: vec![VIDEO_KID, AUDIO_KID],
+            data: vec![0xAA, 0xBB, 0xCC],
+        },
+        PsshBox {
+            version: 0,
+            system_id: [0x02; 16],
+            kids: Vec::new(),
+            data: vec![0xDD],
+        },
+    ]
+}
+
+/// DRM サンプルエントリーを持つ映像サンプルを組み立てる
+fn create_video_drm_sample(
+    sample_entry: SampleEntry,
+    data_offset: u64,
+    data_size: usize,
+) -> Sample {
+    Sample {
+        track_kind: TrackKind::Video,
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration: 3000,
+        keyframe: true,
+        composition_time_offset: None,
+        data_offset,
+        data_size,
+    }
+}
+
+/// DRM サンプルエントリーを持つ音声サンプルを組み立てる
+fn create_audio_drm_sample(
+    sample_entry: SampleEntry,
+    data_offset: u64,
+    data_size: usize,
+) -> Sample {
+    Sample {
+        track_kind: TrackKind::Audio,
+        timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration: 960,
+        keyframe: true,
+        composition_time_offset: None,
+        data_offset,
+        data_size,
+    }
+}
+
+/// `pssh` と `Encv` / `Enca` を demux できること
+///
+/// muxer が生成した init セグメントとメディアセグメントを `Fmp4SegmentDemuxer` に渡し、
+/// 次の 3 点を確認する。
+/// - init セグメントの処理前は `pssh_boxes()` が空であること
+/// - init セグメントの処理後は `pssh_boxes()` が入力の `pssh` をそのまま返すこと
+/// - 各トラックの最初のサンプルの `sample_entry` が `Encv` / `Enca` で、
+///   `sinf` / `schm` / `schi` / `tenc` を型付きで読めること
+#[test]
+fn pssh_and_drm_sample_entries_are_available_from_init_and_media_segments() {
+    let pssh_boxes = create_pssh_boxes();
+    let options = SegmentMuxerOptions {
+        pssh_boxes: pssh_boxes.clone(),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+    let video_size = 16usize;
+    let audio_size = 8usize;
+    // サンプルはトラックごとに data_offset の昇順で連続して配置する
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&[
+            create_video_drm_sample(create_encv_sample_entry(320, 240), 0, video_size),
+            create_audio_drm_sample(create_enca_sample_entry(), video_size as u64, audio_size),
+        ])
+        .expect("Encv / Enca のメディアセグメントの作成に失敗した");
+    let payload = vec![0u8; video_size + audio_size];
+    media_segment.extend_from_slice(&payload);
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("DRM の init セグメントの作成に失敗した");
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    assert!(
+        demuxer.pssh_boxes().is_empty(),
+        "init セグメントを処理する前の pssh_boxes は空であるべき"
+    );
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("DRM の init セグメントの処理に失敗した");
+    assert_eq!(
+        demuxer.pssh_boxes(),
+        pssh_boxes.as_slice(),
+        "pssh_boxes が init セグメントに含まれる pssh と一致しない"
+    );
+    assert_eq!(
+        demuxer
+            .tracks()
+            .expect("init セグメント処理後の tracks の取得に失敗した")
+            .len(),
+        2,
+        "映像・音声の 2 トラックが登録されるべき"
+    );
+
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("Encv / Enca のメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2, "2 トラック分のサンプルが返るべき");
+
+    let mut has_video = false;
+    let mut has_audio = false;
+    for sample in &samples {
+        let sample_entry = sample
+            .sample_entry
+            .expect("各トラックの最初のサンプルは sample_entry を持つ");
+        match (sample.track.kind, sample_entry) {
+            (TrackKind::Video, SampleEntry::Encv(encv_box)) => {
+                has_video = true;
+                assert_eq!(
+                    encv_box.sinf_box.frma_box.data_format, *b"hev1",
+                    "映像トラックの encv の frma が hev1 でない"
+                );
+                let schm_box = encv_box
+                    .sinf_box
+                    .schm_box
+                    .as_ref()
+                    .expect("encv の sinf に schm が含まれるべき");
+                assert_eq!(
+                    schm_box.scheme_type, *b"cbcs",
+                    "encv の schm の scheme_type が cbcs でない"
+                );
+                let tenc_box = encv_box
+                    .sinf_box
+                    .schi_box
+                    .as_ref()
+                    .expect("encv の sinf に schi が含まれるべき")
+                    .tenc_box
+                    .as_ref()
+                    .expect("encv の schi に tenc が含まれるべき");
+                assert_eq!(
+                    tenc_box.default_kid, VIDEO_KID,
+                    "encv の tenc の default_KID が入力と一致しない"
+                );
+                assert_eq!(
+                    tenc_box.default_crypt_byte_block,
+                    Some(Uint::new(1)),
+                    "encv の tenc の暗号化ブロック数が入力と一致しない"
+                );
+                assert_eq!(
+                    tenc_box.default_skip_byte_block,
+                    Some(Uint::new(9)),
+                    "encv の tenc のスキップブロック数が入力と一致しない"
+                );
+            }
+            (TrackKind::Audio, SampleEntry::Enca(enca_box)) => {
+                has_audio = true;
+                assert_eq!(
+                    enca_box.sinf_box.frma_box.data_format, *b"mp4a",
+                    "音声トラックの enca の frma が mp4a でない"
+                );
+                let schm_box = enca_box
+                    .sinf_box
+                    .schm_box
+                    .as_ref()
+                    .expect("enca の sinf に schm が含まれるべき");
+                assert_eq!(
+                    schm_box.scheme_type, *b"cenc",
+                    "enca の schm の scheme_type が cenc でない"
+                );
+                let tenc_box = enca_box
+                    .sinf_box
+                    .schi_box
+                    .as_ref()
+                    .expect("enca の sinf に schi が含まれるべき")
+                    .tenc_box
+                    .as_ref()
+                    .expect("enca の schi に tenc が含まれるべき");
+                assert_eq!(
+                    tenc_box.default_kid, AUDIO_KID,
+                    "enca の tenc の default_KID が入力と一致しない"
+                );
+                assert_eq!(
+                    tenc_box.default_crypt_byte_block, None,
+                    "cenc の tenc はパターン暗号化パラメーターを持たないべき"
+                );
+            }
+            (kind, entry) => panic!(
+                "DRM のサンプルエントリーとして解釈できないトラック: kind={kind:?}, entry={entry:?}"
+            ),
+        }
+    }
+    assert!(
+        has_video && has_audio,
+        "映像トラックの Encv と音声トラックの Enca の両方を確認できていない"
     );
 }

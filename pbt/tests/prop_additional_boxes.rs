@@ -9,9 +9,10 @@ use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Encode, FixedPointNumber, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox, DopsBox,
-        EsdsBox, FlacBox, FlacMetadataBlock, FontRecord, FreeBox, FtabBox, Hev1Box, Hvc1Box,
-        HvccBox, MdatBox, Mp4aBox, OpusBox, StppBox, StyleRecord, Tx3gBox, UnknownBox,
-        VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
+        EncaBox, EncvBox, EsdsBox, FlacBox, FlacMetadataBlock, FontRecord, FreeBox, FrmaBox,
+        FtabBox, Hev1Box, Hvc1Box, HvccBox, MdatBox, Mp4aBox, OpusBox, SchiBox, SchmBox, SinfBox,
+        StppBox, StyleRecord, TencBox, Tx3gBox, UnknownBox, VisualSampleEntryFields, Vp08Box,
+        Vp09Box, VpccBox, VttCBox, WvttBox,
     },
     descriptors::{DecoderConfigDescriptor, DecoderSpecificInfo, EsDescriptor, SlConfigDescriptor},
 };
@@ -410,6 +411,97 @@ fn arb_tx3g_box(ctx: &mut TestCaseContext) -> Tx3gBox {
         default_style,
         ftab_box,
         unknown_boxes,
+    }
+}
+
+// ===== CENC サンプルエントリー用のサンプラー =====
+
+/// 指定した保護スキームと整合する TencBox を生成する
+///
+/// `cenc` / `cbc1` はパターン暗号化を使わないためパターン暗号化パラメーターを持たせず、
+/// `cens` / `cbcs` は使うため必ず持たせる。constant IV は「保護あり」かつ
+/// 「サンプルごとの IV なし」の場合だけ必須で、それ以外で指定すると encode / decode が
+/// エラーになるため、条件を満たすときだけ生成する。
+fn arb_tenc_box(ctx: &mut TestCaseContext, scheme_type: [u8; 4]) -> TencBox {
+    let default_is_protected = noprop::sample_bool(ctx) as u8;
+    let default_per_sample_iv_size = noprop::sample_choice(ctx, &[0u8, 8, 16]);
+    let default_kid = noprop::sample_bytes::<16>(ctx);
+    let default_constant_iv = if default_is_protected == 1 && default_per_sample_iv_size == 0 {
+        let len = noprop::sample_choice(ctx, &[8usize, 16]);
+        Some(noprop::sample_bytes_vec(ctx, len))
+    } else {
+        None
+    };
+    let (default_crypt_byte_block, default_skip_byte_block) =
+        if matches!(&scheme_type, b"cens" | b"cbcs") {
+            (
+                Some(Uint::new(noprop::sample_u64_in(ctx, 0..=15) as u8)),
+                Some(Uint::new(noprop::sample_u64_in(ctx, 0..=15) as u8)),
+            )
+        } else {
+            (None, None)
+        };
+    TencBox {
+        default_is_protected,
+        default_per_sample_iv_size,
+        default_kid,
+        default_constant_iv,
+        default_crypt_byte_block,
+        default_skip_byte_block,
+    }
+}
+
+/// CENC の有効な組み合わせの SinfBox を生成する
+///
+/// `frma` は保護対象になり得るコーデックの 4CC から選び、`schm` / `schi` / `tenc` は
+/// 保護スキームと整合する値だけを生成する。`unknown_boxes` も生成して子ボックス処理を確認する。
+fn arb_cenc_sinf_box(ctx: &mut TestCaseContext) -> SinfBox {
+    let data_format = noprop::sample_choice(
+        ctx,
+        &[
+            *b"avc1", *b"hev1", *b"hvc1", *b"vp08", *b"vp09", *b"av01", *b"mp4a", *b"Opus",
+            *b"fLaC",
+        ],
+    );
+    let scheme_type = noprop::sample_choice(ctx, &[*b"cenc", *b"cbc1", *b"cens", *b"cbcs"]);
+    let scheme_version = noprop::sample_u32(ctx);
+    let scheme_uri = if noprop::sample_bool(ctx) {
+        Some(Utf8String::new(&arb_utf8_string(ctx)).expect("null 文字を含まない"))
+    } else {
+        None
+    };
+    let tenc_box = arb_tenc_box(ctx, scheme_type);
+    let schi_unknown_boxes = sample_vec(ctx, 0..3, arb_unknown_box);
+    SinfBox {
+        frma_box: FrmaBox { data_format },
+        schm_box: Some(SchmBox {
+            scheme_type,
+            scheme_version,
+            scheme_uri,
+        }),
+        schi_box: Some(SchiBox {
+            tenc_box: Some(tenc_box),
+            unknown_boxes: schi_unknown_boxes,
+        }),
+        unknown_boxes: sample_vec(ctx, 0..3, arb_unknown_box),
+    }
+}
+
+/// EncvBox を生成する
+fn arb_encv_box(ctx: &mut TestCaseContext) -> EncvBox {
+    EncvBox {
+        visual: arb_visual_sample_entry(ctx),
+        sinf_box: arb_cenc_sinf_box(ctx),
+        unknown_boxes: sample_vec(ctx, 0..3, arb_unknown_box),
+    }
+}
+
+/// EncaBox を生成する
+fn arb_enca_box(ctx: &mut TestCaseContext) -> EncaBox {
+    EncaBox {
+        audio: arb_audio_sample_entry(ctx),
+        sinf_box: arb_cenc_sinf_box(ctx),
+        unknown_boxes: sample_vec(ctx, 0..3, arb_unknown_box),
     }
 }
 
@@ -904,6 +996,52 @@ fn tx3g_box_roundtrip() -> noprop::TestResult {
         assert_eq!(decoded.default_style, tx3g.default_style);
         assert_eq!(&decoded.ftab_box, &tx3g.ftab_box);
         assert_eq!(&decoded.unknown_boxes, &tx3g.unknown_boxes);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== CENC サンプルエントリー Box のテスト =====
+
+/// EncvBox の encode/decode roundtrip
+///
+/// CENC の有効な `sinf` と任意の子ボックスを組み合わせて、`sinf` / `tenc` の保護情報と
+/// コーデック設定ボックスを含む未知の子ボックスが保持されることを検証する
+#[test]
+fn encv_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let encv = arb_encv_box(ctx);
+        let encoded = encv
+            .encode_to_vec()
+            .expect("CENC の保護情報が揃った EncvBox は encode できる");
+        let (decoded, size) = EncvBox::decode(&encoded)
+            .expect("直前に encode した有効な EncvBox は必ず decode できる");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, encv);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// EncaBox の encode/decode roundtrip
+///
+/// CENC の有効な `sinf` と任意の子ボックスを組み合わせて、`sinf` / `tenc` の保護情報と
+/// コーデック設定ボックスを含む未知の子ボックスが保持されることを検証する
+#[test]
+fn enca_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let enca = arb_enca_box(ctx);
+        let encoded = enca
+            .encode_to_vec()
+            .expect("CENC の保護情報が揃った EncaBox は encode できる");
+        let (decoded, size) = EncaBox::decode(&encoded)
+            .expect("直前に encode した有効な EncaBox は必ず decode できる");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, enca);
         Ok(())
     })?;
     Ok(())

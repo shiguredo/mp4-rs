@@ -10,8 +10,9 @@ use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, FtypBox,
-        Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, SampleEntry, SidxBox,
-        StppBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples, VisualSampleEntryFields,
+        Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, PsshBox, SampleEntry,
+        SidxBox, StppBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples,
+        VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
@@ -167,6 +168,29 @@ fn create_stpp_sample_entry() -> SampleEntry {
         auxiliary_mime_types: Utf8String::EMPTY,
         unknown_boxes: vec![],
     })
+}
+
+/// 任意の `PsshBox` を生成する
+///
+/// version 0 は KID の一覧を持てないため、version 1 のときだけ KID を生成する。
+/// version 1 の KID 0 件は「ムービー内の全 KID に適用する」表現として有効なので、
+/// 0 件を含めた件数で生成する。
+fn arb_pssh_box(ctx: &mut TestCaseContext) -> PsshBox {
+    let version = noprop::sample_u64_in(ctx, 0..=1) as u8;
+    let mut kids = Vec::new();
+    if version > 0 {
+        let kid_count = noprop::sample_usize_in(ctx, 0..=3);
+        for _ in 0..kid_count {
+            kids.push(noprop::sample_bytes::<16>(ctx));
+        }
+    }
+    let data_len = noprop::sample_usize_in(ctx, 0..=64);
+    PsshBox {
+        version,
+        system_id: noprop::sample_bytes::<16>(ctx),
+        kids,
+        data: noprop::sample_bytes_vec(ctx, data_len),
+    }
 }
 
 /// サンプルデータを表す補助構造体
@@ -714,7 +738,9 @@ const CASES: usize = 256;
 
 /// Options で指定した language / name が init セグメントの demux で復元される
 ///
-/// 3 kind（映像・音声・字幕）すべてで反映されることを固定する
+/// 3 kind（映像・音声・字幕）すべてで反映されることを固定する。
+/// あわせて、`SegmentMuxerOptions::pssh_boxes` に渡した任意の `pssh` が
+/// init セグメントの `moov` と demuxer の `pssh_boxes()` をそのまま往復することも確認する。
 #[test]
 fn track_metadata_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
@@ -732,10 +758,20 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             NonZeroU32::new(SUBTITLE_TIMESCALE).expect("timescale は非ゼロである"),
         );
 
+        // pssh なし（0 件）を含め、任意の pssh が init セグメントをそのまま往復することを確認する
+        let pssh_boxes = {
+            let count = noprop::sample_usize_in(ctx, 0..=3);
+            let mut boxes = Vec::new();
+            for _ in 0..count {
+                boxes.push(arb_pssh_box(ctx));
+            }
+            boxes
+        };
         let options = SegmentMuxerOptions {
             video_track: video_meta.clone(),
             audio_track: audio_meta.clone(),
             subtitle_track: subtitle_meta.clone(),
+            pssh_boxes: pssh_boxes.clone(),
             ..Default::default()
         };
         let mut muxer = Fmp4SegmentMuxer::with_options(options)
@@ -784,6 +820,10 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
             "moov の decode サイズがバイト列長と一致しない"
         );
         assert_eq!(moov_box.trak_boxes.len(), 3);
+        assert_eq!(
+            moov_box.pssh_boxes, pssh_boxes,
+            "init セグメントの moov に出力された pssh が muxer に渡した値と一致しない"
+        );
         helpers::assert_track_metadata(
             &moov_box.trak_boxes[0],
             &video_meta,
@@ -815,6 +855,11 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
         demuxer
             .handle_init_segment(&init_bytes)
             .expect("init セグメントの処理に失敗した");
+        assert_eq!(
+            demuxer.pssh_boxes(),
+            pssh_boxes.as_slice(),
+            "demuxer の pssh_boxes が init セグメントの pssh と一致しない"
+        );
         let tracks = demuxer.tracks().expect("tracks の取得に失敗した");
         assert_eq!(tracks.len(), 3);
         for (index, track) in tracks.iter().enumerate() {

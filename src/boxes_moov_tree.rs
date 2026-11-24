@@ -9,6 +9,7 @@ use crate::{
     FullBoxFlags, FullBoxHeader, LanguageCode, Mp4FileTime, Result, SampleFlags, Utf8String,
     basic_types::as_box_object,
     boxes::{SampleEntry, UnknownBox, check_mandatory_box, with_box_type},
+    boxes_cenc::PsshBox,
     descriptors::EsDescriptor,
 };
 
@@ -23,6 +24,9 @@ pub struct MoovBox {
 
     /// fMP4 の場合に存在する `mvex` ボックス（フラグメントのデフォルト値を保持する）
     pub mvex_box: Option<MvexBox>,
+
+    /// DRM システム固有の初期化データを保持する `pssh` ボックス群
+    pub pssh_boxes: Vec<PsshBox>,
 
     /// 上記のいずれにも該当しなかった子ボックス群（未知の box_type を含む）
     pub unknown_boxes: Vec<UnknownBox>,
@@ -44,6 +48,9 @@ impl Encode for MoovBox {
         if let Some(b) = &self.mvex_box {
             offset += b.encode(&mut buf[offset..])?;
         }
+        for b in &self.pssh_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
         for b in &self.unknown_boxes {
             offset += b.encode(&mut buf[offset..])?;
         }
@@ -62,6 +69,7 @@ impl Decode for MoovBox {
             let mut mvhd_box = None;
             let mut trak_boxes = Vec::new();
             let mut mvex_box = None;
+            let mut pssh_boxes = Vec::new();
             let mut unknown_boxes = Vec::new();
 
             while offset < payload.len() {
@@ -76,6 +84,9 @@ impl Decode for MoovBox {
                     MvexBox::TYPE if mvex_box.is_none() => {
                         mvex_box = Some(MvexBox::decode_at(payload, &mut offset)?);
                     }
+                    PsshBox::TYPE => {
+                        pssh_boxes.push(PsshBox::decode_at(payload, &mut offset)?);
+                    }
                     _ => {
                         unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
                     }
@@ -87,6 +98,7 @@ impl Decode for MoovBox {
                     mvhd_box: check_mandatory_box(mvhd_box, "mvhd", "moov")?,
                     trak_boxes,
                     mvex_box,
+                    pssh_boxes,
                     unknown_boxes,
                 },
                 header.external_size() + payload.len(),
@@ -106,6 +118,7 @@ impl BaseBox for MoovBox {
                 .chain(core::iter::once(&self.mvhd_box).map(as_box_object))
                 .chain(self.trak_boxes.iter().map(as_box_object))
                 .chain(self.mvex_box.iter().map(as_box_object))
+                .chain(self.pssh_boxes.iter().map(as_box_object))
                 .chain(self.unknown_boxes.iter().map(as_box_object)),
         )
     }

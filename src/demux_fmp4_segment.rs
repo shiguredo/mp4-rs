@@ -42,8 +42,8 @@ use alloc::{format, vec::Vec};
 use crate::{
     BoxHeader, BoxSize, Decode, Error, TrackKind,
     boxes::{
-        FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry, TfhdBox, TrafBox, TrexBox,
-        TrunBox, TrunSample, TrunSamples,
+        FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, PsshBox, SampleEntry, TfhdBox, TrafBox,
+        TrexBox, TrunBox, TrunSample, TrunSamples,
     },
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
@@ -92,6 +92,7 @@ pub struct Fmp4SegmentDemuxer {
     track_infos: Vec<TrackInfo>,
     track_runtimes: Option<Vec<TrackRuntime>>,
     skipped_tracks: Vec<SkippedTrack>,
+    pssh_boxes: Vec<PsshBox>,
 }
 
 impl Fmp4SegmentDemuxer {
@@ -102,6 +103,7 @@ impl Fmp4SegmentDemuxer {
             track_infos: Vec::new(),
             track_runtimes: None,
             skipped_tracks: Vec::new(),
+            pssh_boxes: Vec::new(),
         }
     }
 
@@ -155,6 +157,7 @@ impl Fmp4SegmentDemuxer {
             })?;
         };
 
+        let pssh_boxes = moov_box.pssh_boxes;
         let movie_timescale = moov_box.mvhd_box.timescale;
         let mvex_box = moov_box.mvex_box.ok_or_else(|| {
             DemuxError::DecodeError(Error::invalid_data(
@@ -222,7 +225,15 @@ impl Fmp4SegmentDemuxer {
         self.track_infos = track_infos;
         self.track_runtimes = Some(track_runtimes);
         self.skipped_tracks = skipped_tracks;
+        self.pssh_boxes = pssh_boxes;
         Ok(())
+    }
+
+    /// 初期化セグメントに含まれる `pssh` ボックス群を返す
+    ///
+    /// [`handle_init_segment()`](Self::handle_init_segment) を呼ぶ前は空スライスを返す。
+    pub fn pssh_boxes(&self) -> &[PsshBox] {
+        &self.pssh_boxes
     }
 
     /// 初期化済みのトラック情報を返す

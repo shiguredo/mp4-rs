@@ -752,6 +752,7 @@ mod moov_tree_base_box_tests {
             mvhd_box: create_mvhd_box(),
             trak_boxes: vec![create_video_trak_box()],
             mvex_box: None,
+            pssh_boxes: Vec::new(),
             unknown_boxes: vec![],
         }
     }
@@ -1313,6 +1314,7 @@ mod prop_container_boundary_tests {
             mvhd_box: minimal_mvhd_box(),
             trak_boxes: vec![minimal_trak_box_audio(1)],
             mvex_box: None,
+            pssh_boxes: Vec::new(),
             unknown_boxes: vec![],
         }
     }
@@ -1637,6 +1639,7 @@ mod prop_container_boundary_tests {
                     sample_entry_box_type,
                 )],
                 mvex_box: None,
+                pssh_boxes: Vec::new(),
                 unknown_boxes: vec![],
             };
             let mut bytes = ftyp.encode_to_vec().expect("ftyp の encode に失敗した");
@@ -1676,6 +1679,7 @@ mod prop_container_boundary_tests {
                     sample_entry_box_type,
                 )],
                 mvex_box: Some(mvex),
+                pssh_boxes: Vec::new(),
                 unknown_boxes: vec![],
             };
             let mut bytes = ftyp.encode_to_vec().expect("ftyp の encode に失敗した");
@@ -2516,6 +2520,7 @@ mod prop_container_boundary_tests {
                     minimal_trak_box_audio(3),
                 ],
                 mvex_box: None,
+                pssh_boxes: Vec::new(),
                 unknown_boxes: vec![],
             };
             let encoded = moov.encode_to_vec().expect("Vec への書き込みは失敗しない");

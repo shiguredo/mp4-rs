@@ -2691,3 +2691,367 @@ mod esds_error_tests {
         assert!(result.is_err());
     }
 }
+
+// ===== CENC (encv / enca) サンプルエントリーのテスト =====
+
+mod cenc_sample_entry_tests {
+    use shiguredo_mp4::{
+        Decode, Encode, ErrorKind,
+        boxes::{
+            AvccBox, EncaBox, EncvBox, FrmaBox, SampleEntry, SchiBox, SchmBox, SinfBox, TencBox,
+            UnknownBox,
+        },
+    };
+
+    use super::{create_audio_fields, create_avcc_box, create_visual_fields};
+
+    /// CENC のトラック暗号化の既定値を組み立てる
+    ///
+    /// `cenc` はパターン暗号化を使わないため、`tenc` は version 0（パターン暗号化
+    /// パラメーターなし）相当の値にする。IV はサンプルごとに与える前提で 8 バイトにする。
+    fn create_tenc_box() -> TencBox {
+        TencBox {
+            default_is_protected: 1,
+            default_per_sample_iv_size: 8,
+            default_kid: [0x11; 16],
+            default_constant_iv: None,
+            default_crypt_byte_block: None,
+            default_skip_byte_block: None,
+        }
+    }
+
+    /// CENC の保護スキーム情報を持つ `sinf` を組み立てる
+    fn create_sinf_box(data_format: [u8; 4]) -> SinfBox {
+        SinfBox {
+            frma_box: FrmaBox { data_format },
+            schm_box: Some(SchmBox {
+                scheme_type: *b"cenc",
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(create_tenc_box()),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        }
+    }
+
+    /// コーデック設定ボックスを `unknown_boxes` 用の `UnknownBox` に変換する
+    ///
+    /// `EncvBox` / `EncaBox` はコーデック設定ボックスを型付きでは持たず、生バイトの
+    /// `UnknownBox` として保持する。ここでは設定ボックスを encode し、その結果を
+    /// `UnknownBox` としてデコードして、実際にデコードされたのと同じ表現にする。
+    fn config_as_unknown_box<T: Encode>(config: &T) -> UnknownBox {
+        let encoded = config
+            .encode_to_vec()
+            .expect("テスト用のコーデック設定ボックスは encode できるはず");
+        let (unknown, size) = UnknownBox::decode(&encoded).expect(
+            "直前に encode したコーデック設定ボックスは UnknownBox としてデコードできるはず",
+        );
+        assert_eq!(size, encoded.len());
+        unknown
+    }
+
+    /// 有効な CENC の `sinf` と `avcC` を持つ `EncvBox` を組み立てる
+    fn create_encv_box() -> EncvBox {
+        EncvBox {
+            visual: create_visual_fields(),
+            sinf_box: create_sinf_box(*b"avc1"),
+            unknown_boxes: vec![config_as_unknown_box(&create_avcc_box())],
+        }
+    }
+
+    /// 有効な CENC の `sinf` を持つ `EncaBox` を組み立てる
+    fn create_enca_box() -> EncaBox {
+        EncaBox {
+            audio: create_audio_fields(),
+            sinf_box: create_sinf_box(*b"mp4a"),
+            unknown_boxes: vec![],
+        }
+    }
+
+    /// 子ボックスを持たないサンプルエントリーの生バイト列を組み立てる
+    ///
+    /// `sinf` 必須の検査を通すために、わざと子ボックスを 1 つも含めない入力を作る。
+    fn build_sample_entry_bytes_without_children(box_type: [u8; 4], fields: &[u8]) -> Vec<u8> {
+        let size = 8 + fields.len();
+        let mut bytes = Vec::with_capacity(size);
+        bytes.extend_from_slice(
+            &u32::try_from(size)
+                .expect("テスト用のサンプルエントリーのサイズは u32 に収まる")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(&box_type);
+        bytes.extend_from_slice(fields);
+        bytes
+    }
+
+    /// EncvBox: 有効な CENC の `sinf` と `avcC` を保持したまま encode/decode 往復できる
+    #[test]
+    fn encv_box_roundtrip_with_cenc_sinf() {
+        let encv = create_encv_box();
+        let encoded = encv
+            .encode_to_vec()
+            .expect("CENC の保護情報が揃った EncvBox は encode できるはず");
+        let (decoded, size) = EncvBox::decode(&encoded)
+            .expect("直前に encode した有効な EncvBox は decode できるはず");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, encv);
+
+        // sinf の保護情報が型付きのフィールドとして読めることを明示的に確認する
+        assert_eq!(decoded.sinf_box.frma_box.data_format, *b"avc1");
+        let schm = decoded
+            .sinf_box
+            .schm_box
+            .as_ref()
+            .expect("schm が保持されているはず");
+        assert_eq!(schm.scheme_type, *b"cenc");
+        let tenc = decoded
+            .sinf_box
+            .schi_box
+            .as_ref()
+            .expect("schi が保持されているはず")
+            .tenc_box
+            .as_ref()
+            .expect("tenc が保持されているはず");
+        assert_eq!(tenc.default_kid, [0x11; 16]);
+        assert_eq!(tenc.default_per_sample_iv_size, 8);
+
+        // コーデック設定ボックスは型付きではなく未知の子ボックスとして生バイトのまま保持される
+        assert_eq!(decoded.unknown_boxes.len(), 1);
+        assert_eq!(decoded.unknown_boxes[0].box_type, AvccBox::TYPE);
+        assert_eq!(decoded.unknown_boxes[0], encv.unknown_boxes[0]);
+    }
+
+    /// EncaBox: 有効な CENC の `sinf` を保持したまま encode/decode 往復できる
+    #[test]
+    fn enca_box_roundtrip_with_cenc_sinf() {
+        let enca = create_enca_box();
+        let encoded = enca
+            .encode_to_vec()
+            .expect("CENC の保護情報が揃った EncaBox は encode できるはず");
+        let (decoded, size) = EncaBox::decode(&encoded)
+            .expect("直前に encode した有効な EncaBox は decode できるはず");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, enca);
+
+        // sinf の保護情報が型付きのフィールドとして読めることを明示的に確認する
+        assert_eq!(decoded.sinf_box.frma_box.data_format, *b"mp4a");
+        assert_eq!(
+            decoded
+                .sinf_box
+                .schm_box
+                .as_ref()
+                .expect("schm が保持されているはず")
+                .scheme_type,
+            *b"cenc"
+        );
+        assert!(
+            decoded
+                .sinf_box
+                .schi_box
+                .as_ref()
+                .expect("schi が保持されているはず")
+                .tenc_box
+                .is_some(),
+            "tenc が保持されているはず"
+        );
+    }
+
+    /// EncvBox: `sinf` を持たない入力の decode は `InvalidData` になる
+    #[test]
+    fn encv_box_decode_without_sinf_is_invalid_data() {
+        let visual_bytes = create_visual_fields()
+            .encode_to_vec()
+            .expect("visual sample entry fields は encode できるはず");
+        let bytes = build_sample_entry_bytes_without_children(*b"encv", &visual_bytes);
+
+        let err =
+            EncvBox::decode(&bytes).expect_err("sinf を持たない encv は decode エラーになるはず");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "sinf 欠落のエラー種別が InvalidData ではない (実際は {:?})",
+            err.kind,
+        );
+    }
+
+    /// EncaBox: `sinf` を持たない入力の decode は `InvalidData` になる
+    #[test]
+    fn enca_box_decode_without_sinf_is_invalid_data() {
+        let audio_bytes = create_audio_fields()
+            .encode_to_vec()
+            .expect("audio sample entry fields は encode できるはず");
+        let bytes = build_sample_entry_bytes_without_children(*b"enca", &audio_bytes);
+
+        let err =
+            EncaBox::decode(&bytes).expect_err("sinf を持たない enca は decode エラーになるはず");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "sinf 欠落のエラー種別が InvalidData ではない (実際は {:?})",
+            err.kind,
+        );
+    }
+
+    /// EncvBox: `sinf` に `schm` がない場合の encode はエラーになる
+    #[test]
+    fn encv_box_encode_without_schm_is_error() {
+        let mut encv = create_encv_box();
+        // 14496-12 8.12.1.1 c により schm と schi は同時に存在しなければならないため、
+        // schm を外すときは schi も外して「schm / schi の組がない」形にする
+        encv.sinf_box.schm_box = None;
+        encv.sinf_box.schi_box = None;
+
+        let err = encv
+            .encode_to_vec()
+            .expect_err("schm を持たない encv は encode エラーになるはず");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "schm 欠落のエラー種別が InvalidInput ではない (実際は {:?})",
+            err.kind,
+        );
+        assert!(
+            err.reason.contains("schm"),
+            "エラー理由に schm が含まれるはず (実際は {:?})",
+            err.reason,
+        );
+    }
+
+    /// EncvBox: `sinf.schi` に `tenc` がない場合の encode はエラーになる
+    #[test]
+    fn encv_box_encode_without_tenc_is_error() {
+        let mut encv = create_encv_box();
+        encv.sinf_box
+            .schi_box
+            .as_mut()
+            .expect("テスト用の EncvBox には schi があるはず")
+            .tenc_box = None;
+
+        let err = encv
+            .encode_to_vec()
+            .expect_err("tenc を持たない encv は encode エラーになるはず");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "tenc 欠落のエラー種別が InvalidInput ではない (実際は {:?})",
+            err.kind,
+        );
+        assert!(
+            err.reason.contains("tenc"),
+            "エラー理由に tenc が含まれるはず (実際は {:?})",
+            err.reason,
+        );
+    }
+
+    /// EncaBox: `sinf` に `schm` がない場合の encode はエラーになる
+    #[test]
+    fn enca_box_encode_without_schm_is_error() {
+        let mut enca = create_enca_box();
+        enca.sinf_box.schm_box = None;
+        enca.sinf_box.schi_box = None;
+
+        let err = enca
+            .encode_to_vec()
+            .expect_err("schm を持たない enca は encode エラーになるはず");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "schm 欠落のエラー種別が InvalidInput ではない (実際は {:?})",
+            err.kind,
+        );
+        assert!(
+            err.reason.contains("schm"),
+            "エラー理由に schm が含まれるはず (実際は {:?})",
+            err.reason,
+        );
+    }
+
+    /// EncaBox: `sinf.schi` に `tenc` がない場合の encode はエラーになる
+    #[test]
+    fn enca_box_encode_without_tenc_is_error() {
+        let mut enca = create_enca_box();
+        enca.sinf_box
+            .schi_box
+            .as_mut()
+            .expect("テスト用の EncaBox には schi があるはず")
+            .tenc_box = None;
+
+        let err = enca
+            .encode_to_vec()
+            .expect_err("tenc を持たない enca は encode エラーになるはず");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "tenc 欠落のエラー種別が InvalidInput ではない (実際は {:?})",
+            err.kind,
+        );
+        assert!(
+            err.reason.contains("tenc"),
+            "エラー理由に tenc が含まれるはず (実際は {:?})",
+            err.reason,
+        );
+    }
+
+    /// SampleEntry::decode: `encv` が `SampleEntry::Encv` に振り分けられる
+    #[test]
+    fn sample_entry_decode_dispatches_encv() {
+        let encv = create_encv_box();
+        let encoded = encv
+            .encode_to_vec()
+            .expect("テスト用の EncvBox は encode できるはず");
+
+        let (entry, size) = SampleEntry::decode(&encoded)
+            .expect("直前に encode した有効な encv は decode できるはず");
+        assert_eq!(size, encoded.len());
+        assert_eq!(
+            entry,
+            SampleEntry::Encv(encv),
+            "encv が SampleEntry::Encv に落ちていない"
+        );
+    }
+
+    /// SampleEntry::decode: `enca` が `SampleEntry::Enca` に振り分けられる
+    #[test]
+    fn sample_entry_decode_dispatches_enca() {
+        let enca = create_enca_box();
+        let encoded = enca
+            .encode_to_vec()
+            .expect("テスト用の EncaBox は encode できるはず");
+
+        let (entry, size) = SampleEntry::decode(&encoded)
+            .expect("直前に encode した有効な enca は decode できるはず");
+        assert_eq!(size, encoded.len());
+        assert_eq!(
+            entry,
+            SampleEntry::Enca(enca),
+            "enca が SampleEntry::Enca に落ちていない"
+        );
+    }
+
+    /// SampleEntry のヘルパー: Encv は映像としてのみ扱われる
+    #[test]
+    fn encv_box_sample_entry_helpers() {
+        let entry = SampleEntry::Encv(create_encv_box());
+
+        assert_eq!(entry.video_resolution(), Some((1920, 1080)));
+        assert_eq!(entry.audio_channel_count(), None);
+        assert_eq!(entry.audio_sample_rate(), None);
+        assert_eq!(entry.audio_sample_size(), None);
+    }
+
+    /// SampleEntry のヘルパー: Enca は音声としてのみ扱われる
+    #[test]
+    fn enca_box_sample_entry_helpers() {
+        let entry = SampleEntry::Enca(create_enca_box());
+
+        assert_eq!(entry.audio_channel_count(), Some(2));
+        assert_eq!(entry.audio_sample_rate(), Some(48000));
+        assert_eq!(entry.audio_sample_size(), Some(16));
+        assert_eq!(entry.video_resolution(), None);
+    }
+}

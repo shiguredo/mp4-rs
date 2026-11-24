@@ -437,6 +437,16 @@ pub(crate) fn fmt_json(
         SampleEntry::Stpp(b) => crate::boxes_stpp::fmt_json(f, b),
         SampleEntry::Wvtt(b) => crate::boxes_wvtt::fmt_json(f, b),
         SampleEntry::Tx3g(b) => crate::boxes_tx3g::fmt_json(f, b),
+        // CENC で保護されたサンプルエントリーの JSON 表現は未対応のため、
+        // 未知のサンプルエントリーと同じく種別だけを返す。
+        SampleEntry::Encv(_) => f.object(|f| {
+            f.member("kind", "unknown")?;
+            f.member("boxType", "encv")
+        }),
+        SampleEntry::Enca(_) => f.object(|f| {
+            f.member("kind", "unknown")?;
+            f.member("boxType", "enca")
+        }),
         // 未知のサンプルエントリーは種別だけを返す。
         // ここでエラーにすると、未対応コーデックを含むファイルの他のトラックまで
         // 読めなくなってしまうため、利用側が判断できる形で情報を残す

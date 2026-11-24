@@ -9,6 +9,7 @@ use crate::{
     FullBoxHeader, Result, Uint, Utf8String,
     basic_types::as_box_object,
     boxes::{EsdsBox, UnknownBox, check_mandatory_box, with_box_type},
+    boxes_cenc::SinfBox,
 };
 
 /// [`StsdBox`][crate::boxes::StsdBox] に含まれるエントリー
@@ -50,6 +51,12 @@ pub enum SampleEntry {
     /// 3GPP タイムドテキスト用サンプルエントリー（`tx3g`）
     Tx3g(Tx3gBox),
 
+    /// CENC で保護された映像サンプルエントリー（`encv`）
+    Encv(EncvBox),
+
+    /// CENC で保護された音声サンプルエントリー（`enca`）
+    Enca(EncaBox),
+
     /// 上記のいずれにも該当しない box_type だった場合の受け皿
     ///
     /// demux 時に未知の box_type が出現した場合の保持先、および
@@ -66,6 +73,7 @@ impl SampleEntry {
             Self::Opus(b) => Some(b.audio.channelcount as u8),
             Self::Mp4a(b) => Some(b.audio.channelcount as u8),
             Self::Flac(b) => Some(b.audio.channelcount as u8),
+            Self::Enca(b) => Some(b.audio.channelcount as u8),
             _ => None,
         }
     }
@@ -87,6 +95,7 @@ impl SampleEntry {
             Self::Opus(b) => Some(b.audio.samplerate.integer),
             Self::Mp4a(b) => Some(b.audio.samplerate.integer),
             Self::Flac(b) => Some(b.audio.samplerate.integer),
+            Self::Enca(b) => Some(b.audio.samplerate.integer),
             _ => None,
         }
     }
@@ -99,6 +108,7 @@ impl SampleEntry {
             Self::Opus(b) => Some(b.audio.samplesize),
             Self::Mp4a(b) => Some(b.audio.samplesize),
             Self::Flac(b) => Some(b.audio.samplesize),
+            Self::Enca(b) => Some(b.audio.samplesize),
             _ => None,
         }
     }
@@ -114,6 +124,7 @@ impl SampleEntry {
             Self::Vp08(b) => Some((b.visual.width, b.visual.height)),
             Self::Vp09(b) => Some((b.visual.width, b.visual.height)),
             Self::Av01(b) => Some((b.visual.width, b.visual.height)),
+            Self::Encv(b) => Some((b.visual.width, b.visual.height)),
             _ => None,
         }
     }
@@ -132,6 +143,8 @@ impl SampleEntry {
             Self::Stpp(b) => b,
             Self::Wvtt(b) => b,
             Self::Tx3g(b) => b,
+            Self::Encv(b) => b,
+            Self::Enca(b) => b,
             Self::Unknown(b) => b,
         }
     }
@@ -152,6 +165,8 @@ impl Encode for SampleEntry {
             Self::Stpp(b) => b.encode(buf),
             Self::Wvtt(b) => b.encode(buf),
             Self::Tx3g(b) => b.encode(buf),
+            Self::Encv(b) => b.encode(buf),
+            Self::Enca(b) => b.encode(buf),
             Self::Unknown(b) => b.encode(buf),
         }
     }
@@ -173,6 +188,8 @@ impl Decode for SampleEntry {
             StppBox::TYPE => StppBox::decode(buf).map(|(b, n)| (Self::Stpp(b), n)),
             WvttBox::TYPE => WvttBox::decode(buf).map(|(b, n)| (Self::Wvtt(b), n)),
             Tx3gBox::TYPE => Tx3gBox::decode(buf).map(|(b, n)| (Self::Tx3g(b), n)),
+            EncvBox::TYPE => EncvBox::decode(buf).map(|(b, n)| (Self::Encv(b), n)),
+            EncaBox::TYPE => EncaBox::decode(buf).map(|(b, n)| (Self::Enca(b), n)),
             _ => UnknownBox::decode(buf).map(|(b, n)| (Self::Unknown(b), n)),
         }
     }
@@ -2700,6 +2717,198 @@ impl BaseBox for Tx3gBox {
         Box::new(
             core::iter::empty()
                 .chain(core::iter::once(&self.ftab_box).map(as_box_object))
+                .chain(self.unknown_boxes.iter().map(as_box_object)),
+        )
+    }
+}
+
+/// [ISO/IEC 14496-12] ProtectedVisualSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// CENC で保護された映像サンプルエントリー（`encv`）。
+/// コーデック設定ボックスは [`EncvBox::unknown_boxes`] に保持する。
+///
+/// # エラー条件
+///
+/// エンコード時は `sinf` に `schm` と `schi.tenc` が必要で、`sinf` のスキームが CENC 系で
+/// ない場合や、`tenc` のパターン暗号化パラメーターがスキームと一致しない場合は
+/// [`Encode::encode`] が [`crate::ErrorKind::InvalidInput`] または
+/// [`crate::ErrorKind::Unsupported`] を返す。
+/// デコード時は `sinf` の存在だけを必須とする。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EncvBox {
+    /// 映像系サンプルエントリー共通フィールド
+    pub visual: VisualSampleEntryFields,
+
+    /// 保護スキームの情報を保持する `sinf` ボックス
+    pub sinf_box: SinfBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（コーデック設定ボックスを含む）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl EncvBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"encv");
+}
+
+impl Encode for EncvBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // CMSF が要求する CENC の保護情報を欠いた init segment を生成しないよう、
+        // `schm` / `schi` / `tenc` が揃っていることを書き込み前に検査する。
+        self.sinf_box.check_cenc_sample_entry()?;
+
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += self.visual.encode(&mut buf[offset..])?;
+        offset += self.sinf_box.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for EncvBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let visual = VisualSampleEntryFields::decode_at(payload, &mut offset)?;
+
+            let mut sinf_box = None;
+            let mut unknown_boxes = Vec::new();
+            while offset < payload.len() {
+                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                match child_header.box_type {
+                    SinfBox::TYPE if sinf_box.is_none() => {
+                        sinf_box = Some(SinfBox::decode_at(payload, &mut offset)?);
+                    }
+                    _ => {
+                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                    }
+                }
+            }
+
+            Ok((
+                Self {
+                    visual,
+                    sinf_box: check_mandatory_box(sinf_box, "sinf", "encv")?,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for EncvBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(
+            core::iter::empty()
+                .chain(core::iter::once(&self.sinf_box).map(as_box_object))
+                .chain(self.unknown_boxes.iter().map(as_box_object)),
+        )
+    }
+}
+
+/// [ISO/IEC 14496-12] ProtectedAudioSampleEntry class (親: [`StsdBox`][crate::boxes::StsdBox])
+///
+/// CENC で保護された音声サンプルエントリー（`enca`）。
+/// コーデック設定ボックスは [`EncaBox::unknown_boxes`] に保持する。
+///
+/// # エラー条件
+///
+/// エンコード時は `sinf` に `schm` と `schi.tenc` が必要で、`sinf` のスキームが CENC 系で
+/// ない場合や、`tenc` のパターン暗号化パラメーターがスキームと一致しない場合は
+/// [`Encode::encode`] が [`crate::ErrorKind::InvalidInput`] または
+/// [`crate::ErrorKind::Unsupported`] を返す。
+/// デコード時は `sinf` の存在だけを必須とする。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EncaBox {
+    /// 音声系サンプルエントリー共通フィールド
+    pub audio: AudioSampleEntryFields,
+
+    /// 保護スキームの情報を保持する `sinf` ボックス
+    pub sinf_box: SinfBox,
+
+    /// 上記のいずれにも該当しなかった子ボックス群（コーデック設定ボックスを含む）
+    pub unknown_boxes: Vec<UnknownBox>,
+}
+
+impl EncaBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"enca");
+}
+
+impl Encode for EncaBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // CMSF が要求する CENC の保護情報を欠いた init segment を生成しないよう、
+        // `schm` / `schi` / `tenc` が揃っていることを書き込み前に検査する。
+        self.sinf_box.check_cenc_sample_entry()?;
+
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += self.audio.encode(&mut buf[offset..])?;
+        offset += self.sinf_box.encode(&mut buf[offset..])?;
+        for b in &self.unknown_boxes {
+            offset += b.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for EncaBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let audio = AudioSampleEntryFields::decode_at(payload, &mut offset)?;
+
+            let mut sinf_box = None;
+            let mut unknown_boxes = Vec::new();
+            while offset < payload.len() {
+                let (child_header, _) = BoxHeader::decode(&payload[offset..])?;
+                match child_header.box_type {
+                    SinfBox::TYPE if sinf_box.is_none() => {
+                        sinf_box = Some(SinfBox::decode_at(payload, &mut offset)?);
+                    }
+                    _ => {
+                        unknown_boxes.push(UnknownBox::decode_at(payload, &mut offset)?);
+                    }
+                }
+            }
+
+            Ok((
+                Self {
+                    audio,
+                    sinf_box: check_mandatory_box(sinf_box, "sinf", "enca")?,
+                    unknown_boxes,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for EncaBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(
+            core::iter::empty()
+                .chain(core::iter::once(&self.sinf_box).map(as_box_object))
                 .chain(self.unknown_boxes.iter().map(as_box_object)),
         )
     }

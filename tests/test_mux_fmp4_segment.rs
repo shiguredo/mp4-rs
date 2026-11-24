@@ -16,6 +16,12 @@
 //!   - 非参照トラックの `keyframe` に引きずられないこと
 //!   - PTS 同値時は samples[] 内で先出現のサンプルの `keyframe` が採られること
 //!
+//! - CENC (DRM) の `pssh` / `encv` / `enca` を含む init セグメントの生成
+//!   - `create_media_segment_metadata` が `Encv` / `Enca` のサンプルエントリーを受け付けること
+//!   - `SegmentMuxerOptions::pssh_boxes` の `pssh` が `moov` にそのまま出力されること
+//!   - `stsd` に `sinf` / `schm` / `schi` / `tenc` 付きの `encv` / `enca` が入ること
+//!   - `encv` の `frma` に応じて `ftyp` に `hev1` ブランドが立つこと
+//!
 //! 意図的なエラーパスと境界値は固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担う。
 
@@ -24,10 +30,11 @@ use std::num::{NonZeroU16, NonZeroU32};
 use shiguredo_mp4::{
     Decode, FixedPointNumber, TrackKind, Uint,
     boxes::{
-        AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, OpusBox, SampleEntry, SidxBox,
-        VisualSampleEntryFields,
+        AudioSampleEntryFields, Avc1Box, AvccBox, Brand, DopsBox, EncaBox, EncvBox, FrmaBox,
+        FtypBox, MoofBox, MoovBox, OpusBox, PsshBox, SampleEntry, SchiBox, SchmBox, SidxBox,
+        SinfBox, TencBox, VisualSampleEntryFields,
     },
-    mux::{Fmp4SegmentMuxer, MuxError, Sample},
+    mux::{Fmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
@@ -625,5 +632,348 @@ fn sidx_starts_with_sap_ties_prefer_first_occurrence() {
     assert_eq!(
         reference.sap_delta_time, 0,
         "sap_delta_time は現行の 0 のまま変更されないべき"
+    );
+}
+
+// ===== CENC (DRM) の初期化データのテスト =====
+
+/// DRM テスト用の映像トラックの KID
+const VIDEO_KID: [u8; 16] = [0x11; 16];
+
+/// DRM テスト用の音声トラックの KID
+const AUDIO_KID: [u8; 16] = [0x22; 16];
+
+/// `encv` 用の有効な `sinf` を組み立てる
+///
+/// CMSF 4.2 が要求する `schm` と `schi` / `tenc` をすべて含める。
+/// `frma` は `hev1` にして、init セグメントの `ftyp` に `hev1` ブランドが立つことを
+/// 確認できるようにする。`cbcs` はパターン暗号化を使うスキームなので、
+/// `tenc` はパターン暗号化パラメーターを持つ version 1 にする。
+fn create_encv_sinf_box() -> SinfBox {
+    SinfBox {
+        frma_box: FrmaBox {
+            data_format: *b"hev1",
+        },
+        schm_box: Some(SchmBox {
+            scheme_type: *b"cbcs",
+            // 保護スキームのバージョンは任意値
+            scheme_version: 0x0001_0000,
+            scheme_uri: None,
+        }),
+        schi_box: Some(SchiBox {
+            tenc_box: Some(TencBox {
+                default_is_protected: 1,
+                default_per_sample_iv_size: 16,
+                default_kid: VIDEO_KID,
+                default_constant_iv: None,
+                default_crypt_byte_block: Some(Uint::new(1)),
+                default_skip_byte_block: Some(Uint::new(9)),
+            }),
+            unknown_boxes: vec![],
+        }),
+        unknown_boxes: vec![],
+    }
+}
+
+/// `frma=hev1` の `EncvBox` を持つ `SampleEntry::Encv` を組み立てる
+fn create_encv_sample_entry(width: u16, height: u16) -> SampleEntry {
+    SampleEntry::Encv(EncvBox {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width,
+            height,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        sinf_box: create_encv_sinf_box(),
+        unknown_boxes: vec![],
+    })
+}
+
+/// `frma=mp4a` の `EncaBox` を持つ `SampleEntry::Enca` を組み立てる
+///
+/// `cenc` はパターン暗号化を使わないスキームなので、
+/// `tenc` はパターン暗号化パラメーターを持たない version 0 にする。
+fn create_enca_sample_entry() -> SampleEntry {
+    SampleEntry::Enca(EncaBox {
+        audio: AudioSampleEntryFields {
+            data_reference_index: AudioSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            channelcount: 2,
+            samplesize: AudioSampleEntryFields::DEFAULT_SAMPLESIZE,
+            samplerate: FixedPointNumber::new(48_000, 0),
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"mp4a",
+            },
+            schm_box: Some(SchmBox {
+                scheme_type: *b"cenc",
+                // 保護スキームのバージョンは任意値
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected: 1,
+                    default_per_sample_iv_size: 8,
+                    default_kid: AUDIO_KID,
+                    default_constant_iv: None,
+                    default_crypt_byte_block: None,
+                    default_skip_byte_block: None,
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// init セグメントに格納する `pssh` の組を組み立てる
+///
+/// version 0（KID 一覧なし）と version 1（KID 一覧あり）を 1 つずつ含め、
+/// 複数の `pssh` がそのままの順序で保持されることを確認できるようにする。
+fn create_pssh_boxes() -> Vec<PsshBox> {
+    vec![
+        PsshBox {
+            version: 1,
+            system_id: [0x01; 16],
+            kids: vec![VIDEO_KID, AUDIO_KID],
+            data: vec![0xAA, 0xBB, 0xCC],
+        },
+        PsshBox {
+            version: 0,
+            system_id: [0x02; 16],
+            kids: Vec::new(),
+            data: vec![0xDD],
+        },
+    ]
+}
+
+/// DRM サンプルエントリーを持つ映像サンプルを組み立てる
+fn drm_video_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usize) -> Sample {
+    Sample {
+        track_kind: TrackKind::Video,
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration: 3000,
+        keyframe: true,
+        composition_time_offset: None,
+        data_offset,
+        data_size,
+    }
+}
+
+/// DRM サンプルエントリーを持つ音声サンプルを組み立てる
+fn drm_audio_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usize) -> Sample {
+    Sample {
+        track_kind: TrackKind::Audio,
+        timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration: 960,
+        keyframe: true,
+        composition_time_offset: None,
+        data_offset,
+        data_size,
+    }
+}
+
+/// `create_media_segment_metadata` が `Encv` / `Enca` のサンプルエントリーを受け付けること
+///
+/// DRM で保護された 2 トラック分のサンプルを渡し、メディアセグメントの `moof` に
+/// 2 つの `traf` が作られることを確認する。サンプルエントリーの内容の検証は
+/// init セグメント側のテストで行う。
+#[test]
+fn create_media_segment_metadata_accepts_drm_sample_entries() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let video_size = 16usize;
+    let samples = [
+        drm_video_sample(create_encv_sample_entry(320, 240), 0, video_size),
+        drm_audio_sample(create_enca_sample_entry(), video_size as u64, 8),
+    ];
+
+    let media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("Encv / Enca のサンプルエントリーを受け付けなかった");
+    let (moof_box, _moof_size) =
+        MoofBox::decode(&media_segment).expect("メディアセグメントからの moof デコードに失敗した");
+    assert_eq!(
+        moof_box.traf_boxes.len(),
+        2,
+        "Encv / Enca の 2 トラック分の traf が作られるべき"
+    );
+}
+
+/// `pssh` と `Encv` / `Enca` を含む init セグメントを生成できること
+///
+/// 次の 3 点を確認する。
+/// - `SegmentMuxerOptions::pssh_boxes` に渡した `pssh` が `moov` にそのまま出力されること
+/// - `stsd` の `encv` / `enca` に `sinf` / `schm` / `schi` / `tenc` が型付きで入ること
+/// - `encv` の `frma=hev1` に応じて `ftyp` に `hev1` ブランドが立つこと
+#[test]
+fn init_segment_contains_pssh_and_drm_sample_entries() {
+    let pssh_boxes = create_pssh_boxes();
+    let options = SegmentMuxerOptions {
+        pssh_boxes: pssh_boxes.clone(),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+    let video_entry = create_encv_sample_entry(320, 240);
+    let audio_entry = create_enca_sample_entry();
+    let video_size = 16usize;
+    let samples = [
+        drm_video_sample(video_entry, 0, video_size),
+        drm_audio_sample(audio_entry, video_size as u64, 8),
+    ];
+    muxer
+        .create_media_segment_metadata(&samples)
+        .expect("Encv / Enca のサンプルエントリーを受け付けなかった");
+
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("DRM の init セグメントの作成に失敗した");
+
+    // init セグメントは ftyp + moov のみで、moov が pssh を保持している
+    let (ftyp_box, ftyp_size) =
+        FtypBox::decode(&init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+    let (moov_box, moov_size) = MoovBox::decode(&init_segment[ftyp_size..])
+        .expect("init セグメントからの moov デコードに失敗した");
+    assert_eq!(
+        ftyp_size + moov_size,
+        init_segment.len(),
+        "init セグメントは ftyp + moov のみを含む"
+    );
+    assert_eq!(
+        moov_box.pssh_boxes, pssh_boxes,
+        "moov に出力された pssh が SegmentMuxerOptions::pssh_boxes と一致しない"
+    );
+    assert_eq!(
+        moov_box.trak_boxes.len(),
+        2,
+        "DRM の映像・音声の 2 トラックが moov に含まれるべき"
+    );
+
+    // 映像トラック: encv の sinf / tenc と、tkhd に反映された解像度を確認する
+    let video_trak = &moov_box.trak_boxes[0];
+    let video_entries = &video_trak.mdia_box.minf_box.stbl_box.stsd_box.entries;
+    assert_eq!(
+        video_entries.len(),
+        1,
+        "映像トラックの stsd は 1 エントリー"
+    );
+    let SampleEntry::Encv(encv_box) = &video_entries[0] else {
+        panic!("映像トラックの stsd が Encv でない: {:?}", video_entries[0]);
+    };
+    assert_eq!(
+        encv_box.sinf_box.frma_box.data_format, *b"hev1",
+        "encv の frma が hev1 でない"
+    );
+    let schm_box = encv_box
+        .sinf_box
+        .schm_box
+        .as_ref()
+        .expect("encv の sinf に schm が含まれるべき");
+    assert_eq!(
+        schm_box.scheme_type, *b"cbcs",
+        "encv の schm の scheme_type が cbcs でない"
+    );
+    let tenc_box = encv_box
+        .sinf_box
+        .schi_box
+        .as_ref()
+        .expect("encv の sinf に schi が含まれるべき")
+        .tenc_box
+        .as_ref()
+        .expect("encv の schi に tenc が含まれるべき");
+    assert_eq!(
+        tenc_box.default_kid, VIDEO_KID,
+        "encv の tenc の default_KID が入力と一致しない"
+    );
+    assert_eq!(
+        tenc_box.default_crypt_byte_block,
+        Some(Uint::new(1)),
+        "encv の tenc の暗号化ブロック数が入力と一致しない"
+    );
+    assert_eq!(
+        tenc_box.default_skip_byte_block,
+        Some(Uint::new(9)),
+        "encv の tenc のスキップブロック数が入力と一致しない"
+    );
+    assert_eq!(
+        video_trak.tkhd_box.width,
+        FixedPointNumber::new(320, 0),
+        "encv の幅が tkhd に反映されていない"
+    );
+    assert_eq!(
+        video_trak.tkhd_box.height,
+        FixedPointNumber::new(240, 0),
+        "encv の高さが tkhd に反映されていない"
+    );
+
+    // 音声トラック: enca の sinf / tenc を確認する
+    let audio_trak = &moov_box.trak_boxes[1];
+    let audio_entries = &audio_trak.mdia_box.minf_box.stbl_box.stsd_box.entries;
+    assert_eq!(
+        audio_entries.len(),
+        1,
+        "音声トラックの stsd は 1 エントリー"
+    );
+    let SampleEntry::Enca(enca_box) = &audio_entries[0] else {
+        panic!("音声トラックの stsd が Enca でない: {:?}", audio_entries[0]);
+    };
+    assert_eq!(
+        enca_box.sinf_box.frma_box.data_format, *b"mp4a",
+        "enca の frma が mp4a でない"
+    );
+    let schm_box = enca_box
+        .sinf_box
+        .schm_box
+        .as_ref()
+        .expect("enca の sinf に schm が含まれるべき");
+    assert_eq!(
+        schm_box.scheme_type, *b"cenc",
+        "enca の schm の scheme_type が cenc でない"
+    );
+    let tenc_box = enca_box
+        .sinf_box
+        .schi_box
+        .as_ref()
+        .expect("enca の sinf に schi が含まれるべき")
+        .tenc_box
+        .as_ref()
+        .expect("enca の schi に tenc が含まれるべき");
+    assert_eq!(
+        tenc_box.default_kid, AUDIO_KID,
+        "enca の tenc の default_KID が入力と一致しない"
+    );
+    assert_eq!(
+        tenc_box.default_crypt_byte_block, None,
+        "cenc の tenc はパターン暗号化パラメーターを持たないべき"
+    );
+    assert_eq!(
+        tenc_box.default_skip_byte_block, None,
+        "cenc の tenc はパターン暗号化パラメーターを持たないべき"
+    );
+
+    // encv の frma=hev1 に対応するブランドだけが立つ
+    assert!(
+        ftyp_box.compatible_brands.contains(&Brand::HEV1),
+        "encv の frma=hev1 に対応する HEV1 ブランドが ftyp にない: {:?}",
+        ftyp_box.compatible_brands
+    );
+    assert!(
+        !ftyp_box.compatible_brands.contains(&Brand::HVC1),
+        "hvc1 の encv がないのに HVC1 ブランドが ftyp にある: {:?}",
+        ftyp_box.compatible_brands
+    );
+    assert!(
+        !ftyp_box.compatible_brands.contains(&Brand::AV01),
+        "av01 の encv がないのに AV01 ブランドが ftyp にある: {:?}",
+        ftyp_box.compatible_brands
     );
 }

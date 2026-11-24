@@ -9,8 +9,9 @@ use shiguredo_mp4::{
     Decode, Either, Encode, FixedPointNumber, LanguageCode, Mp4FileTime,
     boxes::{
         AudioSampleEntryFields, Co64Box, DinfBox, DopsBox, HdlrBox, MdhdBox, MdiaBox, MediaHeader,
-        MinfBox, MoovBox, MvhdBox, OpusBox, SampleEntry, SmhdBox, StblBox, StcoBox, StscBox,
-        StscEntry, StsdBox, StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox, VmhdBox,
+        MinfBox, MoovBox, MvhdBox, OpusBox, PsshBox, SampleEntry, SmhdBox, StblBox, StcoBox,
+        StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox, SttsEntry, TkhdBox, TrakBox,
+        VmhdBox,
     },
 };
 
@@ -180,6 +181,27 @@ fn sample_vec<T>(
         result.push(elem(ctx));
     }
     result
+}
+
+/// 任意の `PsshBox` を生成する
+///
+/// version 0 は KID の一覧を持てないため、version 1 のときだけ KID を生成する。
+/// version 1 の KID 0 件は「ムービー内の全 KID に適用する」表現として有効なので、
+/// 0 件を含めた件数で生成する。
+fn arb_pssh_box(ctx: &mut TestCaseContext) -> PsshBox {
+    let version = noprop::sample_u64_in(ctx, 0..=1) as u8;
+    let kids = if version == 0 {
+        Vec::new()
+    } else {
+        sample_vec(ctx, 0..3, |ctx| noprop::sample_bytes::<16>(ctx))
+    };
+    let data_len = noprop::sample_usize_in(ctx, 0..=64);
+    PsshBox {
+        version,
+        system_id: noprop::sample_bytes::<16>(ctx),
+        kids,
+        data: noprop::sample_bytes_vec(ctx, data_len),
+    }
 }
 
 /// SttsEntry を生成する
@@ -467,6 +489,8 @@ fn moov_box_roundtrip() -> noprop::TestResult {
         let trak_boxes: Vec<TrakBox> = (1..=track_count)
             .map(|i| minimal_trak_box_audio(i as u32))
             .collect();
+        // pssh なし（0 件）を含め、複数の pssh がそのまま往復することを確認する
+        let pssh_boxes = sample_vec(ctx, 0..4, arb_pssh_box);
 
         let moov = MoovBox {
             mvhd_box: MvhdBox {
@@ -481,6 +505,7 @@ fn moov_box_roundtrip() -> noprop::TestResult {
             },
             trak_boxes,
             mvex_box: None,
+            pssh_boxes,
             unknown_boxes: vec![],
         };
         let encoded = moov.encode_to_vec().expect("Vec への書き込みは失敗しない");
@@ -492,6 +517,10 @@ fn moov_box_roundtrip() -> noprop::TestResult {
         assert_eq!(decoded.mvhd_box.duration, duration);
         assert_eq!(decoded.mvhd_box.next_track_id, next_track_id);
         assert_eq!(decoded.trak_boxes.len(), track_count);
+        assert_eq!(
+            decoded.pssh_boxes, moov.pssh_boxes,
+            "pssh ボックスの数・順序・内容がラウンドトリップで変わった"
+        );
         Ok(())
     })?;
     Ok(())

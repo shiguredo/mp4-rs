@@ -3,6 +3,7 @@ use alloc::{boxed::Box, format, vec::Vec};
 
 use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result};
 
+pub use crate::boxes_cenc::{FrmaBox, PsshBox, SchiBox, SchmBox, SinfBox, TencBox};
 pub use crate::boxes_fmp4::{
     MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
     TfraEntry, TrafBox, TrunBox, TrunSample, TrunSamples,
@@ -15,9 +16,9 @@ pub use crate::boxes_moov_tree::{
 };
 pub use crate::boxes_sample_entry::{
     AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, BoxRecord, DflaBox, DopsBox,
-    FlacBox, FlacMetadataBlock, FontRecord, FtabBox, Hev1Box, Hvc1Box, HvccBox, HvccNalUintArray,
-    Mp4aBox, OpusBox, SampleEntry, StppBox, StyleRecord, Tx3gBox, VisualSampleEntryFields, Vp08Box,
-    Vp09Box, VpccBox, VttCBox, WvttBox,
+    EncaBox, EncvBox, FlacBox, FlacMetadataBlock, FontRecord, FtabBox, Hev1Box, Hvc1Box, HvccBox,
+    HvccNalUintArray, Mp4aBox, OpusBox, SampleEntry, StppBox, StyleRecord, Tx3gBox,
+    VisualSampleEntryFields, Vp08Box, Vp09Box, VpccBox, VttCBox, WvttBox,
 };
 
 pub(crate) fn with_box_type<F, T>(ty: BoxType, f: F) -> Result<T>

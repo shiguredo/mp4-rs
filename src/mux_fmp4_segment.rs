@@ -60,10 +60,10 @@ use crate::{
     TrackKind,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
-        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, SampleEntry,
-        SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox,
-        SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox,
-        TrunSample, TrunSamples, VmhdBox,
+        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, PsshBox,
+        SampleEntry, SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox,
+        StszBox, SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox,
+        TrunBox, TrunSample, TrunSamples, VmhdBox,
     },
     boxes_moov_tree::EdtsBox,
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
@@ -92,6 +92,11 @@ pub struct SegmentMuxerOptions {
     ///
     /// 同一 `TrackKind` 内での扱いは [`Self::audio_track`] を参照
     pub subtitle_track: TrackMetadata,
+
+    /// 初期化セグメントの `moov` に格納する `pssh` ボックス群
+    ///
+    /// DRM システムごとの初期化データを指定する。複数指定できる。
+    pub pssh_boxes: Vec<PsshBox>,
 }
 
 impl SegmentMuxerOptions {
@@ -597,6 +602,12 @@ impl Fmp4SegmentMuxer {
                     SampleEntry::Hev1(_) => has_hev1 = true,
                     SampleEntry::Hvc1(_) => has_hvc1 = true,
                     SampleEntry::Av01(_) => has_av01 = true,
+                    SampleEntry::Encv(b) => match &b.sinf_box.frma_box.data_format {
+                        b"hev1" => has_hev1 = true,
+                        b"hvc1" => has_hvc1 = true,
+                        b"av01" => has_av01 = true,
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -682,6 +693,7 @@ impl Fmp4SegmentMuxer {
             mvhd_box,
             trak_boxes,
             mvex_box: Some(mvex_box),
+            pssh_boxes: self.options.pssh_boxes.clone(),
             unknown_boxes: Vec::new(),
         })
     }
@@ -1181,6 +1193,7 @@ fn extract_video_dimensions(sample_entry: &SampleEntry) -> Result<TkhdDimensions
         SampleEntry::Vp08(b) => Some(&b.visual),
         SampleEntry::Vp09(b) => Some(&b.visual),
         SampleEntry::Av01(b) => Some(&b.visual),
+        SampleEntry::Encv(b) => Some(&b.visual),
         _ => None,
     };
     match visual {

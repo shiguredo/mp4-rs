@@ -70,7 +70,7 @@ use core::cmp::Ordering;
 
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
-    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, SampleEntry},
+    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, PsshBox, SampleEntry},
     demux_fmp4_segment::Fmp4SegmentDemuxer,
     demux_mp4_file::{DemuxError, Input, RequiredInput, Sample, TrackInfo},
 };
@@ -269,6 +269,13 @@ impl Fmp4FileDemuxer {
         {
             self.handle_input_error = Some(e);
         }
+    }
+
+    /// 初期化セグメントに含まれる `pssh` ボックス群を返す
+    ///
+    /// 初期化セグメントを処理する前は空スライスを返す。
+    pub fn pssh_boxes(&self) -> &[PsshBox] {
+        self.inner.pssh_boxes()
     }
 
     /// 初期化済みのトラック情報を返す

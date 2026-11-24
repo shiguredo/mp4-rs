@@ -69,6 +69,7 @@ impl Fmp4SegmentMuxer {
             video_track: parsed.video_track,
             audio_track: parsed.audio_track,
             subtitle_track: parsed.subtitle_track,
+            pssh_boxes: Vec::new(),
         };
         Self::from_options(options)
     }

@@ -100,6 +100,7 @@ impl OutputMp4Builder {
             mvhd_box,
             trak_boxes,
             mvex_box: None,
+            pssh_boxes: Vec::new(),
             unknown_boxes: Vec::new(),
         })
     }

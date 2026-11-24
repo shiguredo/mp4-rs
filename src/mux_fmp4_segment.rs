@@ -116,7 +116,7 @@ struct TrackEntry {
     current_sample_entry_index: Option<usize>,
 }
 
-/// tfra ボックス用の 1 セグメント分のエントリ
+/// tfra ボックス用の 1 セグメント分のエントリー
 #[derive(Debug, Clone)]
 struct TfraSegmentEntry {
     /// このセグメントの先頭サンプルのデコード時間
@@ -168,7 +168,7 @@ pub struct Fmp4SegmentMuxer {
     sequence_number: u32,
     /// `create_media_segment_metadata*()` で表現したメディアセグメントのバイト数累計
     media_bytes_written: u64,
-    /// トラックごとの tfra エントリ（tracks と同じインデックス）
+    /// トラックごとの tfra エントリー（tracks と同じインデックス）
     tfra_entries: Vec<Vec<TfraSegmentEntry>>,
 }
 
@@ -304,9 +304,9 @@ impl Fmp4SegmentMuxer {
         let (earliest_presentation_time, sap_at_ept) =
             compute_earliest_presentation_time(samples, first_track_kind, decode_time)?;
 
-        // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリ数を記録しておく。
+        // build_media_segment_bytes を呼ぶ前に、トラックごとの tfra エントリー数を記録しておく。
         // sidx エンコード後にこの記録と比較すれば、今回の呼び出しで新規追加された
-        // tfra エントリ（各トラックにつき末尾 1 件）を特定できる。
+        // tfra エントリー（各トラックにつき末尾 1 件）を特定できる。
         let pre_tfra_lens: Vec<usize> = self
             .tfra_entries
             .iter()
@@ -349,16 +349,16 @@ impl Fmp4SegmentMuxer {
 
         // 後続セグメントが moof_relative_offset の起点とする media_bytes_written に対して、
         // 先にオーバーフロー検査を済ませる。ここで検査が通れば、当該セグメントの
-        // tfra エントリ（moof_relative_offset は加算前の media_bytes_written 以下）への
+        // tfra エントリー（moof_relative_offset は加算前の media_bytes_written 以下）への
         // 加算はオーバーフローしない。
         let new_media_bytes_written = self
             .media_bytes_written
             .checked_add(sidx_size)
             .ok_or(MuxError::Overflow)?;
 
-        // 当該セグメントで新規追加された tfra エントリの moof_relative_offset に sidx サイズを加算する。
+        // 当該セグメントで新規追加された tfra エントリーの moof_relative_offset に sidx サイズを加算する。
         // build_media_segment_bytes は各 track_kind につき最大 1 件だけ push するため、
-        // pre_tfra_lens よりも長くなったトラックは末尾 1 件が今回の新規エントリである。
+        // pre_tfra_lens よりも長くなったトラックは末尾 1 件が今回の新規エントリーである。
         for (track_index, entries) in self.tfra_entries.iter_mut().enumerate() {
             // build_media_segment_bytes が新規トラックを追加した場合、self.tfra_entries は
             // pre_tfra_lens より長くなり、末尾の新規トラックについては pre_tfra_lens に対応する
@@ -473,7 +473,7 @@ impl Fmp4SegmentMuxer {
         let mut segment = moof_bytes;
         segment.extend_from_slice(&mdat_header_bytes);
 
-        // tfra エントリを記録してから decode_time を更新する
+        // tfra エントリーを記録してから decode_time を更新する
         let mut next_tfra_entries = self.tfra_entries.clone();
         while next_tfra_entries.len() < next_tracks.len() {
             next_tfra_entries.push(Vec::new());
@@ -1172,7 +1172,7 @@ pub(crate) fn subtitle_trak_attributes(sample_entry: &SampleEntry) -> ([u8; 4], 
 /// 映像系サンプルエントリーから幅・高さを取り出して tkhd 用の [`FixedPointNumber`] に変換する
 ///
 /// 非映像系 SampleEntry（`SampleEntry::Unknown` 等）が渡された場合は `(0, 0)` を返す
-/// （Video トラックに変則的に非映像系エントリが渡ったケースへの防御）
+/// （Video トラックに変則的に非映像系エントリーが渡ったケースへの防御）
 fn extract_video_dimensions(sample_entry: &SampleEntry) -> Result<TkhdDimensions, MuxError> {
     let visual = match sample_entry {
         SampleEntry::Avc1(b) => Some(&b.visual),

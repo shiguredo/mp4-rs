@@ -4,6 +4,7 @@
 - Completed: {YYYY-MM-DD}
 - Branch: feature/refactor-test-notation-consistency
 - Polished: {YYYY-MM-DD}
+- Refreshed: 2026-11-24
 
 ## 目的
 
@@ -22,9 +23,8 @@
 | `pbt/tests/prop_boxes.rs` | 2 |
 | `pbt/tests/prop_auxiliary.rs` | 2 |
 | `tests/test_mux_fmp4_segment.rs` | 1 |
-| `src/mux_mp4_file.rs` の `mod tests` | 1 |
 | `crates/wasm/src/boxes_tx3g.rs` の `mod tests` | 1 |
-| 合計 | 26 |
+| 合計 | 25 |
 
 - `tests/test_boxes_fmp4.rs` は、1 つのファイルの中で表記が揺れている
   - 冒頭の mod `encode_variable_uint_insufficient_buffer` は「1 エントリ」と書く
@@ -35,18 +35,18 @@
 揃える先は「エントリー」とする。
 
 - shiguredo-doc の規約は「カタカナ語の末尾長音は基本的に残すこと」で、「エントリ」は例外として挙げられていない
-- リポジトリ全体（`issues/` を除く）では、「エントリー」が 320 件、「エントリ」が 46 件ある。「サンプルエントリー」を除いても、「エントリー」は 79 件ある
+- リポジトリ全体（`issues/` を除く）では、「エントリー」が 339 件、「エントリ」が 27 件ある。「サンプルエントリー」を除いても、「エントリー」は 98 件ある
 - ただし、テストのディレクトリ（`tests/`、`pbt/`、`crates/wasm/tests/`）に限ると、「サンプルエントリー」を除いた「エントリー」は 23 件、「エントリ」は 24 件で、ほぼ同数である。揃える先は件数ではなく、規約で決める
 
 ## 設計方針
 
-- 上の表の 26 件を「エントリー」に書き換える。「エントリ数」は「エントリー数」にする
+- 上の表の 25 件を「エントリー」に書き換える。「エントリ数」は「エントリー数」にする
 - 書き換えるのは日本語の文言だけとし、テスト関数名や識別子は変えない
-- テスト以外のコードと `CHANGES.md` は対象外とする
+- テスト以外のコードと `CHANGES.md` は対象外とする。`src/` は `mod tests` を含めてすでに「エントリー」に揃っている
   - テスト以外のコードとは、`src/` と `crates/wasm/src/` のうち `mod tests` の外の部分を指す
 
 ## 完了条件
 
 - `tests/`、`pbt/`、`crates/wasm/tests/` に `rg -P "エントリ(?!ー)"` を実行すると、0 件になる
-- `src/mux_mp4_file.rs` と `crates/wasm/src/boxes_tx3g.rs` の `mod tests` に、「エントリ」が残っていない
+- `crates/wasm/src/boxes_tx3g.rs` の `mod tests` に、「エントリ」が残っていない
 - `cargo test --workspace` が成功する

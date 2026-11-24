@@ -88,7 +88,7 @@ pub fn estimate_maximum_moov_box_size(sample_count_per_track: &[usize]) -> usize
     const PER_TRACK_OVERHEAD: usize = 1024;
 
     // サンプルあたりの概算バイト数：
-    // - stts_box（時間-サンプル）: エントリあたり ~8 バイト
+    // - stts_box（時間-サンプル）: エントリーあたり ~8 バイト
     // - stsc_box（サンプル-チャンク）: チャンクあたり ~12 バイト（通常はサンプルより少ない）
     // - stsz_box（サンプルサイズ）: サンプルあたり ~4 バイト
     // - stss_box（同期サンプル）: キーフレームあたり ~4 バイト
@@ -413,10 +413,14 @@ pub struct Sample {
     /// 実際に MP4 / fMP4 のボックスへ書ける範囲はより狭い。
     ///
     /// - [`Mp4FileMuxer`]:
-    ///   - 負値は `i32::MIN ..= -1`
-    ///   - 非負値は `0 ..= u32::MAX`
+    ///   - 負値を含まないトラックでは `0 ..= u32::MAX` (`ctts` version 0)
+    ///   - 負値を含むトラックでは `i32::MIN ..= i32::MAX` (`ctts` version 1)
+    ///   - 負値と `i32::MAX` を超える値は、同じトラックに混在させられない
     /// - [`crate::mux::Fmp4SegmentMuxer`]:
-    ///   - `i32::MIN ..= i32::MAX`
+    ///   - 負値を含まない `trun` では `0 ..= u32::MAX` (`trun` version 0)
+    ///   - 負値を含む `trun` では `i32::MIN ..= i32::MAX` (`trun` version 1)
+    ///   - 負値と `i32::MAX` を超える値は、ひとつの `trun` に混在させられない
+    ///   - `trun` は、1 回のメディアセグメントの生成に含まれる同じトラックのサンプルごとに作られる
     ///
     /// 上記の範囲を超える値を指定した場合、mux 時にエラーになる。
     pub composition_time_offset: Option<i64>,
@@ -577,7 +581,7 @@ struct Chunk {
     samples: Vec<SampleMetadata>,
 }
 
-/// トラック種別ごとの [`Chunk`] 群とタイムスケールをまとめた内部エントリ
+/// トラック種別ごとの [`Chunk`] 群とタイムスケールをまとめた内部エントリー
 ///
 /// `mux_fmp4_segment` の同名 private 型と概念は同じだが、`Mp4FileMuxer` は
 /// フラグメント固有のフィールド（`decode_time` / `current_sample_entry_index`）を持たない。
@@ -1849,7 +1853,7 @@ mod tests {
     /// advance_position で次の書き込み位置を u64::MAX 付近まで進め、
     /// Overflow を起こしたあとに同じ data_offset かつ収まる data_size で再投入する。
     /// Overflow 直後に tracks / chunk / sample 数が増えていないことと、
-    /// finalize 後の stsz エントリ数が先行サンプル + 1 であることを確認し、二重登録が無いことを示す。
+    /// finalize 後の stsz エントリー数が先行サンプル + 1 であることを確認し、二重登録が無いことを示す。
     #[test]
     fn test_append_sample_overflow_keeps_muxer_state() {
         let mut muxer = Mp4FileMuxer::new().expect("ミューサの作成に失敗した");

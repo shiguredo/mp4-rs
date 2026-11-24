@@ -341,18 +341,18 @@ pub enum SampleTableAccessorError {
         other_sample_count: u32,
     },
 
-    /// [`StscBox`] の最初のエントリのチャンクインデックスが 1 ではない
+    /// [`StscBox`] の最初のエントリーのチャンクインデックスが 1 ではない
     FirstChunkIndexIsNotOne {
         /// 実際の最初のチャンクインデックスの値
         actual_chunk_index: NonZeroU32,
     },
 
-    /// [`StscBox`] の最後のエントリのチャンクインデックスが大きすぎる（存在しないチャンクを参照している）
+    /// [`StscBox`] の最後のエントリーのチャンクインデックスが大きすぎる（存在しないチャンクを参照している）
     LastChunkIndexIsTooLarge {
         /// [`StcoBox`][crate::boxes::StcoBox] ないし [`Co64Box`][crate::boxes::Co64Box] が表すチャンクインデックスの最大値
         max_chunk_index: NonZeroU32,
 
-        /// [`StscBox`] の最後のエントリのチャンクインデックス
+        /// [`StscBox`] の最後のエントリーのチャンクインデックス
         last_chunk_index: NonZeroU32,
     },
 
@@ -385,7 +385,7 @@ pub enum SampleTableAccessorError {
         /// オーバーフロー直前までの累計サンプル数
         accumulated_sample_count: u32,
 
-        /// 加算しようとしたエントリのサンプル数
+        /// 加算しようとしたエントリーのサンプル数
         entry_sample_count: u32,
     },
 

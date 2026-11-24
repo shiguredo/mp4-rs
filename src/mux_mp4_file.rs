@@ -416,7 +416,9 @@ pub struct Sample {
     ///   - 負値は `i32::MIN ..= -1`
     ///   - 非負値は `0 ..= u32::MAX`
     /// - [`crate::mux::Fmp4SegmentMuxer`]:
-    ///   - `i32::MIN ..= i32::MAX`
+    ///   - 負値を含まない `trun` では `0 ..= u32::MAX` (version 0)
+    ///   - 負値を含む `trun` では `i32::MIN ..= i32::MAX` (version 1)
+    ///   - 負値と `i32::MAX` を超える値は、ひとつの `trun` に混在させられない
     ///
     /// 上記の範囲を超える値を指定した場合、mux 時にエラーになる。
     pub composition_time_offset: Option<i64>,

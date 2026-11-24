@@ -250,6 +250,10 @@
   - アセットの `gh release upload` に `--clobber` を追加する
   - Slack 通知先のチャンネルを誤っていた `hisui` から `rust-oss` に直す
   - @voluntas
+- [FIX] `mux::Sample::composition_time_offset` の doc で、`Fmp4SegmentMuxer` が書き出せる範囲を `i32` の範囲としていたのを修正する
+  - 負値を含まない `trun` では `0 ..= u32::MAX`、負値を含む `trun` では `i32::MIN ..= i32::MAX` と書き直し、負値と `i32::MAX` を超える値をひとつの `trun` に混在させられないことを書き加える
+  - 挙動は変えていない
+  - @voluntas
 
 ## 2026.5.0
 

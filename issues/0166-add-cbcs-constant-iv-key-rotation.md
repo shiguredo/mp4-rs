@@ -1,7 +1,7 @@
 # `cbcs` の constant IV を使う鍵ローテーションに対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-cbcs-constant-iv-key-rotation
 - Polished: 2026-11-25
 
@@ -150,6 +150,17 @@ CENC の鍵ローテーション (`sbgp` / `sgpd` の `seig`) には対応済み
 - `CHANGES.md` の同じ開発サイクルの `[ADD]` エントリーを更新する
 - `skills/shiguredo-mp4/SKILL.md` の `seig` の非対応記述 (constant IV / パターン値)、mux の `Sample` の `encryption_info` の説明、demux の `Sample` の `encryption_info` の説明、`SampleEncryptionInfo` のフィールド一覧、`SeigEntry` の説明を更新する
 - `issues/0071-other-position-timing-boxes-inventory.md` の `sbgp` / `sgpd` の行を、constant IV とパターン値に対応した旨に更新する
+
+## 解決方法
+
+- `src/boxes_cenc.rs` の `SeigEntry` に `crypt_byte_block` / `skip_byte_block` (`Uint<u8, 4>`) を追加し、constant IV の長さと必須検査を decode (`InvalidData`) と encode (`InvalidInput`) の両方に入れた
+- `SampleEncryptionInfo` に `constant_iv` を追加し、`tenc` の既定値と同じ実効値は `None` に正規化した
+- `src/demux_fmp4_segment.rs` に `TrafEncryptionInfos::Runs` と `EncryptionRun` を追加し、`Constant` と `PerSample` の両方に `seig` の KID と constant IV を反映した。`sbgp` の範囲外は `base` で表現する
+- `check_seig_entry_against_tenc` に `scheme_type` を渡し、パターン値の一致、constant IV の `cbcs` 限定、KID 切り替えの許可構成を検査するようにした
+- mux の `TrackEncryption` に `scheme_type` を追加し、`validate_sample_encryption` の許可条件を `kid` と `constant_iv` でそれぞれ限定した
+- `build_seig_sample_groups` を (実効 KID, 実効 constant IV) でグループ化するように変更し、`tenc` と同じパターン値と実効 constant IV を持つ `sgpd` / `sbgp` を書くようにした。`default_length` は 20 / 29 / 37 / 0 を選ぶ
+- テストは `tests/test_boxes_cenc.rs` / `pbt/tests/prop_boxes_cenc.rs` / `tests/test_demux_fmp4_segment.rs` / `tests/test_mux_fmp4_segment.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` に追加し、既存の拒否系テストを置き換えた
+- `CHANGES.md`、`skills/shiguredo-mp4/SKILL.md`、`issues/0071-other-position-timing-boxes-inventory.md` を更新した
 
 ## 対象外
 

@@ -59,6 +59,9 @@ impl Fmp4SegmentMuxer {
     ///
     /// `new()` と異なり、ファイル作成時刻とトラックごとの編集リストを指定できる。
     /// スキーマは `crates/wasm/README.md` に記載している。
+    ///
+    /// `SegmentMuxerOptions::cmaf` は wasm の JSON API では指定できない。
+    /// そのため wasm が生成するセグメントは CMAF の構造ブランドにならず、`styp` も出力しない。
     #[wasm_bindgen(js_name = withOptions)]
     pub fn with_options(
         #[wasm_bindgen(js_name = optionsJson)] options_json: &str,
@@ -71,6 +74,7 @@ impl Fmp4SegmentMuxer {
             subtitle_track: parsed.subtitle_track,
             pssh_boxes: Vec::new(),
             styp: None,
+            cmaf: None,
         };
         Self::from_options(options)
     }
@@ -84,7 +88,8 @@ impl Fmp4SegmentMuxer {
 
     /// メディアセグメント全体 (`moof` と `mdat`) を返す
     ///
-    /// wasm では `styp` を指定できないため、返り値に `styp` は含まれない。
+    /// wasm では `styp` と `cmaf` を指定できないため、返り値に `styp` は含まれず、
+    /// CMAF の構造ブランドにもならない。
     ///
     /// `samplesJson` の出現順に並んだペイロードを muxer の要求順に並べ替え、
     /// メタデータの後ろに連結したものを返す。したがって返り値をそのまま書き込めば

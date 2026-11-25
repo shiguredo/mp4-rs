@@ -229,6 +229,26 @@ impl Brand {
     /// [ISO/IEC 14496-14] `mp41` ブランド
     pub const MP41: Self = Self::new(*b"mp41");
 
+    /// [ISO/IEC 23000-19] `cmfc` ブランド
+    ///
+    /// CMAF Track File の構造ブランドであり、[`FtypBox`] の `major_brand` と
+    /// [`FtypBox`] / [`StypBox`] の `compatible_brands` で使う。
+    ///
+    /// 根拠は ISO/IEC 23000-19:2024 7.6 である。
+    /// なお、このブランドの定義と配置は ISO/IEC 23000-19:2024 に基づくものであり、
+    /// 将来の改訂で変わる可能性がある。
+    pub const CMFC: Self = Self::new(*b"cmfc");
+
+    /// [ISO/IEC 23000-19] `cmfs` ブランド
+    ///
+    /// CMAF Segment を示すブランドであり、[`StypBox`] の `major_brand` で使う。
+    ///
+    /// 根拠は ISO/IEC 23000-19:2024/Amd 2:2026 の Table 1 で、この表では `cmfs` を
+    /// SegmentTypeBox 用のブランドとして扱っている。
+    /// なお、このブランドの定義と配置は ISO/IEC 23000-19:2024/Amd 2:2026 に基づくものであり、
+    /// 将来の改訂で変わる可能性がある。
+    pub const CMFS: Self = Self::new(*b"cmfs");
+
     /// [<https://aomediacodec.github.io/av1-isobmff/>] `av01` ブランド
     pub const AV01: Self = Self::new(*b"av01");
 

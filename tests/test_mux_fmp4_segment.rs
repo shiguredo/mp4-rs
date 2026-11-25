@@ -22,6 +22,15 @@
 //!   - `sidx.referenced_size` が `moof` + `mdat` の合計で、`first_offset` が 0 になること
 //!   - `mfra` の `tfra.moof_offset` が実際の `moof` 位置と一致すること
 //!
+//! - `SegmentMuxerOptions::cmaf` を指定したときの CMAF の構造ブランド出力
+//!   - `ftyp` が `major_brand = cmfc` / `minor_version = 0` になり、互換 brand に `cmfc` を含むこと
+//!   - `styp` が `major_brand = cmfs` になり、互換 brand が `ftyp` の互換 brand に
+//!     `cmfs` を加えた集合になること
+//!   - `cmaf` を指定しない場合の出力が `new()` で作った muxer と一致すること
+//!   - 複数の `TrackKind` を観測する場合に `MuxError::EncodeError` になり、状態が変わらないこと
+//!   - `cmaf` と `styp` の同時指定が `MuxError::EncodeError` になること
+//!   - `Fmp4SegmentDemuxer` で読み戻した `styp()` とサンプルが入力と一致すること
+//!
 //! - CENC (DRM) の `pssh` / `encv` / `enca` を含む init セグメントの生成
 //!   - `create_media_segment_metadata` が `Encv` / `Enca` のサンプルエントリーを受け付けること
 //!   - `SegmentMuxerOptions::pssh_boxes` の `pssh` が `moov` にそのまま出力されること
@@ -29,7 +38,9 @@
 //!   - `encv` の `frma` に応じて `ftyp` に `hev1` ブランドが立つこと
 //!
 //! 意図的なエラーパスと境界値は固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
-//! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担う。
+//! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_segment_mux_demux.rs` が担うが、
+//! CMAF 指定時の `styp` のブランドとサンプルの往復は `cmaf` 指定に固有の契約であるため、
+//! このファイルでも固定する。
 
 use std::num::{NonZeroU16, NonZeroU32};
 
@@ -41,7 +52,8 @@ use shiguredo_mp4::{
         SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox, SencBox, SidxBox, SinfBox, StypBox,
         Subsample, TencBox, VisualSampleEntryFields,
     },
-    mux::{Fmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions},
+    demux::Fmp4SegmentDemuxer,
+    mux::{CmafTrackFileBrand, Fmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
@@ -1679,5 +1691,548 @@ fn mfra_moof_offset_matches_actual_position_with_styp() {
             "{index} 番目のセグメントの tfra.moof_offset が実際の moof 位置と一致しない"
         );
         segment_head += u64::try_from(segment.len()).expect("セグメントサイズは u64 に収まる");
+    }
+}
+
+// ===== CMAF (構造ブランド) のテスト =====
+
+/// CMAF の往復テスト用に、`keyframe` と CTO を指定できる映像サンプルを組み立てる
+///
+/// `video_sample_with_timing()` は常に `keyframe = true` を設定するため、
+/// 往復で `keyframe` が保たれることを確認できるよう、このテスト専用に用意する。
+fn cmaf_video_sample(
+    sample_entry: SampleEntry,
+    duration: u32,
+    keyframe: bool,
+    composition_time_offset: Option<i64>,
+    data_offset: u64,
+    data_size: usize,
+) -> Sample {
+    Sample {
+        encryption_info: None,
+        track_kind: TrackKind::Video,
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration,
+        keyframe,
+        composition_time_offset,
+        data_offset,
+        data_size,
+    }
+}
+
+/// `cmaf: Some(Cmfc)` を指定した場合の `ftyp` が CMAF の構造ブランドになり、
+/// 同じセグメントの `styp` に観測したコーデックブランドが入ること
+///
+/// `major_brand` が `cmfc`、`minor_version` が 0 になり、互換 brand に従来の
+/// `iso5` / `iso6` / `mp41` と `cmfc`、および観測した映像のコーデックブランドが並ぶことを確認する。
+/// `isom` / `avc1` は `default_base_is_moof` の制約により含めない。
+/// このテストは `encv` の `frma` が `hev1` のサンプルエントリーを使うため、
+/// メディアセグメントの生成時点で初めて観測するコーデックブランド (`hev1`) が
+/// `styp` にも入ることを確認できる。
+#[test]
+fn cmaf_ftyp_uses_cmfc_brand() {
+    let options = SegmentMuxerOptions {
+        cmaf: Some(CmafTrackFileBrand::Cmfc),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+    // `encv` の `frma` が `hev1` なので、映像のコーデックブランドとして `hev1` が加わる
+    let samples = [drm_video_sample(create_encv_sample_entry(320, 240), 0, 16)];
+    let media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("CMAF 指定のメディアセグメントの作成に失敗した");
+
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("CMAF 指定の init セグメントの作成に失敗した");
+    let (ftyp_box, _) =
+        FtypBox::decode(&init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+
+    assert_eq!(
+        ftyp_box.major_brand,
+        Brand::CMFC,
+        "CMAF 指定時の major_brand が cmfc でない"
+    );
+    assert_eq!(
+        ftyp_box.minor_version, 0,
+        "CMAF 指定時の minor_version が 0 でない"
+    );
+    assert_eq!(
+        ftyp_box.compatible_brands,
+        vec![
+            Brand::ISO5,
+            Brand::ISO6,
+            Brand::MP41,
+            Brand::CMFC,
+            Brand::HEV1,
+        ],
+        "CMAF 指定時の互換 brand が期待値と一致しない"
+    );
+    assert!(
+        !ftyp_box.compatible_brands.contains(&Brand::ISOM)
+            && !ftyp_box.compatible_brands.contains(&Brand::AVC1),
+        "default_base_is_moof と互換でない isom / avc1 が互換 brand に含まれている: {:?}",
+        ftyp_box.compatible_brands
+    );
+
+    // `styp` の互換 brand は、その時点の `ftyp` の互換 brand に `major_brand` の `cmfs` を
+    // 加えた集合になる。`styp` を `ftyp` と同じ集合で組み立てていたり、組み立て時に
+    // このセグメントで初めて観測するサンプルエントリーを渡していなかったりすると、ここで落ちる
+    let (styp_box, _) = StypBox::decode(&media_segment)
+        .expect("メディアセグメント先頭からの styp デコードに失敗した");
+    let mut expected_styp_brands = vec![Brand::CMFS];
+    expected_styp_brands.extend_from_slice(&ftyp_box.compatible_brands);
+    assert_eq!(
+        styp_box.compatible_brands, expected_styp_brands,
+        "CMAF 指定時の styp の互換 brand が ftyp の互換 brand に cmfs を加えた集合と一致しない"
+    );
+    assert!(
+        styp_box.compatible_brands.contains(&Brand::HEV1),
+        "ftyp 生成後に観測したコーデックブランド hev1 が styp の互換 brand に含まれていない: {:?}",
+        styp_box.compatible_brands
+    );
+}
+
+/// `cmaf: Some(Cmfc)` を指定した場合の `styp` が CMAF Segment のブランドになり、
+/// 互換 brand が `ftyp` の互換 brand に `cmfs` を加えた集合になること
+///
+/// `sidx` なしでは `styp` の直後が `moof`、`sidx` ありでは `styp` + `sidx` + `moof` に
+/// なることも確認する。`sidx.referenced_size` は `styp` を含めない。
+#[test]
+fn cmaf_styp_uses_cmfs_brand_matching_ftyp() {
+    let options = SegmentMuxerOptions {
+        cmaf: Some(CmafTrackFileBrand::Cmfc),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let samples = [video_sample_with_timing(
+        create_avc1_sample_entry(320, 240),
+        3000,
+        None,
+        0,
+        16,
+    )];
+
+    // `sidx` なし: `styp` + `moof` + `mdat` ヘッダーの順になる
+    let mut segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("CMAF 指定のメディアセグメントの作成に失敗した");
+    // `mdat` payload まで含めた完全なメディアセグメントにする
+    segment.extend_from_slice(&[0u8; 16]);
+    let (styp_box, styp_size) =
+        StypBox::decode(&segment).expect("セグメント先頭からの styp デコードに失敗した");
+    assert_eq!(
+        styp_box.major_brand,
+        Brand::CMFS,
+        "CMAF 指定時の styp の major_brand が cmfs でない"
+    );
+    assert_eq!(
+        styp_box.minor_version, 0,
+        "CMAF 指定時の styp の minor_version が 0 でない"
+    );
+    MoofBox::decode(&segment[styp_size..]).expect("styp の直後からの moof デコードに失敗した");
+
+    // `styp` の互換 brand は、その時点の `ftyp` の互換 brand に `major_brand` の `cmfs` を
+    // 加えた集合になる
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("CMAF 指定の init セグメントの作成に失敗した");
+    let (ftyp_box, _) =
+        FtypBox::decode(&init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+    let mut expected_styp_brands = vec![Brand::CMFS];
+    expected_styp_brands.extend_from_slice(&ftyp_box.compatible_brands);
+    assert_eq!(
+        styp_box.compatible_brands, expected_styp_brands,
+        "styp の互換 brand が ftyp の互換 brand に cmfs を加えた集合と一致しない"
+    );
+
+    // `sidx` あり: `styp` + `sidx` + `moof` + `mdat` ヘッダーの順になる
+    let mut segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("CMAF 指定の sidx 入りメディアセグメントの作成に失敗した");
+    // `mdat` payload まで含めた完全なメディアセグメントにする
+    segment.extend_from_slice(&[0u8; 16]);
+    let (styp_box, styp_size) =
+        StypBox::decode(&segment).expect("セグメント先頭からの styp デコードに失敗した");
+    assert_eq!(
+        styp_box.compatible_brands, expected_styp_brands,
+        "sidx ありの styp の互換 brand が ftyp の互換 brand に cmfs を加えた集合と一致しない"
+    );
+    let (sidx_box, sidx_size) =
+        SidxBox::decode(&segment[styp_size..]).expect("styp の直後からの sidx デコードに失敗した");
+    MoofBox::decode(&segment[styp_size + sidx_size..])
+        .expect("sidx の直後からの moof デコードに失敗した");
+    let reference = sidx_box
+        .references
+        .first()
+        .expect("sidx の参照が 1 つもない");
+    assert_eq!(
+        usize::try_from(reference.referenced_size).expect("referenced_size は usize に収まる"),
+        segment.len() - (styp_size + sidx_size),
+        "sidx.referenced_size が moof + mdat の合計と一致しない"
+    );
+}
+
+/// `cmaf` を指定しない場合の出力が既存と一致すること
+///
+/// `new()` で作った muxer と、`cmaf: None` を明示した muxer の出力バイト列を比較する。
+/// 併せて `ftyp` の `major_brand` が従来の `iso5` のままで、`styp` が先頭に混入しないことも確認する。
+#[test]
+fn cmaf_none_keeps_output_unchanged() {
+    let samples = [video_sample_with_timing(
+        create_avc1_sample_entry(320, 240),
+        3000,
+        None,
+        0,
+        16,
+    )];
+    let mut default_muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let options = SegmentMuxerOptions {
+        cmaf: None,
+        ..Default::default()
+    };
+    let mut explicit_muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+    // メディアセグメント (sidx なし) のバイト列が一致する
+    let default_segment = default_muxer
+        .create_media_segment_metadata(&samples)
+        .expect("メディアセグメントの作成に失敗した");
+    let explicit_segment = explicit_muxer
+        .create_media_segment_metadata(&samples)
+        .expect("メディアセグメントの作成に失敗した");
+    assert_eq!(
+        default_segment, explicit_segment,
+        "cmaf を明示しない場合のメディアセグメントが new() の出力と変わった"
+    );
+
+    // メディアセグメント (sidx あり) のバイト列が一致する
+    let default_sidx_segment = default_muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("sidx 入りメディアセグメントの作成に失敗した");
+    let explicit_sidx_segment = explicit_muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("sidx 入りメディアセグメントの作成に失敗した");
+    assert_eq!(
+        default_sidx_segment, explicit_sidx_segment,
+        "cmaf を明示しない場合の sidx 入りメディアセグメントが new() の出力と変わった"
+    );
+
+    // init セグメントのバイト列が一致し、major_brand も従来どおりになる
+    let default_init = default_muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+    let explicit_init = explicit_muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+    assert_eq!(
+        default_init, explicit_init,
+        "cmaf を明示しない場合の init セグメントが new() の出力と変わった"
+    );
+    let (ftyp_box, _) =
+        FtypBox::decode(&explicit_init).expect("init セグメントからの ftyp デコードに失敗した");
+    assert_eq!(
+        ftyp_box.major_brand,
+        Brand::ISO5,
+        "cmaf 未指定時の major_brand が iso5 でない"
+    );
+
+    // `styp` が先頭に混入していない
+    MoofBox::decode(&explicit_segment)
+        .expect("cmaf 未指定時のメディアセグメントが moof から始まっていない");
+}
+
+/// `cmaf: Some(Cmfc)` を指定して複数の `TrackKind` を観測しようとすると
+/// `MuxError::EncodeError` になり、状態が変わらないこと
+///
+/// 別々のセグメントで 2 種類目の `TrackKind` を観測する場合を確認する。
+/// エラー後に同じ映像トラックのセグメントを作れることと、init セグメントが変わらないことで
+/// 内部状態が保たれていることを確かめる。
+#[test]
+fn cmaf_rejects_second_track_kind() {
+    let options = SegmentMuxerOptions {
+        cmaf: Some(CmafTrackFileBrand::Cmfc),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let video_samples = [video_sample_with_timing(
+        create_avc1_sample_entry(320, 240),
+        3000,
+        None,
+        0,
+        16,
+    )];
+    muxer
+        .create_media_segment_metadata(&video_samples)
+        .expect("CMAF 指定の映像セグメントの作成に失敗した");
+    let init_before = muxer
+        .init_segment_bytes()
+        .expect("CMAF 指定の init セグメントの作成に失敗した");
+
+    // 音声トラックを観測すると、観測済みの TrackKind が 2 種類になる
+    let audio_samples = [audio_sample_with_timing(
+        create_opus_sample_entry(),
+        960,
+        None,
+        0,
+        8,
+    )];
+    let err = muxer
+        .create_media_segment_metadata(&audio_samples)
+        .expect_err("CMAF 指定で 2 種類目の TrackKind を受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("cmaf requires a single media track kind"),
+                "複数 TrackKind の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+
+    // エラーを返した呼び出しで状態が変わっていない
+    assert_eq!(
+        muxer
+            .init_segment_bytes()
+            .expect("エラー後の init セグメントの作成に失敗した"),
+        init_before,
+        "エラーを返した呼び出しで init セグメントが変わった"
+    );
+    muxer
+        .create_media_segment_metadata(&video_samples)
+        .expect("エラーを返した呼び出しで muxer の状態が変わった");
+}
+
+/// `cmaf: Some(Cmfc)` を指定して 1 つの `moof` に複数の `traf` を書くことになる場合は
+/// `MuxError::EncodeError` になり、状態が変わらないこと
+///
+/// 1 つのセグメントに映像と音声を混在させる場合を確認する。
+/// エラー後に `init_segment_bytes()` が `EmptyTracks` を返すことで、
+/// トラックが 1 本も登録されていないことを確かめる。
+#[test]
+fn cmaf_rejects_multiple_trafs_in_one_segment() {
+    let options = SegmentMuxerOptions {
+        cmaf: Some(CmafTrackFileBrand::Cmfc),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let video_size = 16usize;
+    let samples = [
+        video_sample_with_timing(
+            create_avc1_sample_entry(320, 240),
+            3000,
+            None,
+            0,
+            video_size,
+        ),
+        audio_sample_with_timing(create_opus_sample_entry(), 960, None, video_size as u64, 8),
+    ];
+    let err = muxer
+        .create_media_segment_metadata(&samples)
+        .expect_err("CMAF 指定で複数の traf を書くセグメントを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("cmaf requires one traf per moof"),
+                "traf 数の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+
+    // `sidx` 付きの生成経路でも同じ検査が働く
+    let err = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect_err("CMAF 指定で複数の traf を書く sidx 入りセグメントを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("cmaf requires one traf per moof"),
+                "traf 数の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+
+    // エラーを返した呼び出しでトラックが登録されていない
+    assert!(
+        matches!(muxer.init_segment_bytes(), Err(MuxError::EmptyTracks)),
+        "エラーを返した呼び出しでトラックが登録された"
+    );
+}
+
+/// `cmaf` と `styp` を同時に指定すると `MuxError::EncodeError` になること
+///
+/// どちらを優先するかを黙って決めないよう、muxer の生成時点で拒否する。
+#[test]
+fn cmaf_and_styp_cannot_both_be_specified() {
+    let options = SegmentMuxerOptions {
+        cmaf: Some(CmafTrackFileBrand::Cmfc),
+        styp: Some(create_styp()),
+        ..Default::default()
+    };
+    match Fmp4SegmentMuxer::with_options(options) {
+        Err(MuxError::EncodeError(error)) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("cmaf and styp cannot both be specified"),
+                "cmaf と styp の同時指定の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        Ok(_) => panic!("cmaf と styp を同時に指定した muxer を生成できてしまった"),
+        Err(other) => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// CMAF 指定で生成したセグメントを `Fmp4SegmentDemuxer` で読み戻し、
+/// `styp()` とサンプルが入力と一致すること
+///
+/// `composition_time_offset` は、muxer が 1 つでも `Some` があると全サンプルを `Some` に
+/// 正規化するため、全 `Some` と全 `None` の 2 通りで往復を確認する。
+/// `data_offset` の数値は muxer と demuxer で基準が異なるため比較せず、
+/// `data_offset` が指すバイト列を payload と比較する。
+#[test]
+fn cmaf_segment_roundtrips_through_segment_demuxer() {
+    let payloads: [&[u8]; 2] = [b"first", b"second"];
+    let sample_entry = create_avc1_sample_entry(320, 240);
+
+    for with_composition_time_offset in [false, true] {
+        let composition_time_offset = with_composition_time_offset.then_some(3000i64);
+        let samples = [
+            cmaf_video_sample(
+                sample_entry.clone(),
+                3000,
+                true,
+                composition_time_offset,
+                0,
+                payloads[0].len(),
+            ),
+            cmaf_video_sample(
+                sample_entry.clone(),
+                3000,
+                false,
+                composition_time_offset,
+                payloads[0].len() as u64,
+                payloads[1].len(),
+            ),
+        ];
+        let options = SegmentMuxerOptions {
+            cmaf: Some(CmafTrackFileBrand::Cmfc),
+            ..Default::default()
+        };
+        let mut muxer = Fmp4SegmentMuxer::with_options(options)
+            .expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+        // メディアセグメントに payload を連結して完全なセグメントにする
+        let mut media_segment = muxer
+            .create_media_segment_metadata(&samples)
+            .expect("CMAF 指定のメディアセグメントの作成に失敗した");
+        media_segment.extend_from_slice(payloads[0]);
+        media_segment.extend_from_slice(payloads[1]);
+        let init_segment = muxer
+            .init_segment_bytes()
+            .expect("CMAF 指定の init セグメントの作成に失敗した");
+        let (ftyp_box, _) =
+            FtypBox::decode(&init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_segment)
+            .expect("CMAF 指定の init セグメントの処理に失敗した");
+        let demuxed_samples = demuxer
+            .handle_media_segment(&media_segment)
+            .expect("CMAF 指定のメディアセグメントの処理に失敗した");
+
+        assert_eq!(
+            demuxed_samples.len(),
+            samples.len(),
+            "読み戻したサンプル数が入力と一致しない"
+        );
+        for (index, (demuxed, sample)) in demuxed_samples.iter().zip(samples.iter()).enumerate() {
+            assert_eq!(
+                demuxed.data_size, sample.data_size,
+                "{index} 番目のサンプルの data_size が一致しない"
+            );
+            assert_eq!(
+                demuxed.keyframe, sample.keyframe,
+                "{index} 番目のサンプルの keyframe が一致しない"
+            );
+            assert_eq!(
+                demuxed.composition_time_offset, sample.composition_time_offset,
+                "{index} 番目のサンプルの composition_time_offset が一致しない"
+            );
+
+            // `data_offset` が指すバイト列が入力の payload と一致する
+            let start =
+                usize::try_from(demuxed.data_offset).expect("data_offset は usize に収まる");
+            let end = start
+                .checked_add(demuxed.data_size)
+                .expect("data_offset + data_size が usize を超えない");
+            assert_eq!(
+                &media_segment[start..end],
+                payloads[index],
+                "{index} 番目のサンプルの data_offset が指すバイト列が payload と一致しない"
+            );
+        }
+
+        // 先頭の `styp` が CMAF Segment のブランドで、互換 brand が `ftyp` の互換 brand に
+        // `cmfs` を加えた集合である。
+        // `handle_media_segment()` が返すサンプルは demuxer を借用しているため、
+        // サンプルの比較が終わった後に `styp()` を呼ぶ
+        let styp_box = demuxer
+            .styp()
+            .expect("CMAF 指定で生成したセグメントの styp を取得できない");
+        assert_eq!(
+            styp_box.major_brand,
+            Brand::CMFS,
+            "読み戻した styp の major_brand が cmfs でない"
+        );
+        assert_eq!(
+            styp_box.minor_version, 0,
+            "読み戻した styp の minor_version が 0 でない"
+        );
+        let mut expected_styp_brands = vec![Brand::CMFS];
+        expected_styp_brands.extend_from_slice(&ftyp_box.compatible_brands);
+        assert_eq!(
+            styp_box.compatible_brands, expected_styp_brands,
+            "読み戻した styp の互換 brand が ftyp の互換 brand に cmfs を加えた集合と一致しない"
+        );
     }
 }

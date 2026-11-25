@@ -29,8 +29,9 @@
 //! - 読み飛ばすトラックの `TrunSamples::CountOnly` の `trun` で、データ末尾が `usize` に収まらないデータ
 //!
 //! `moof` の前後にあるボックスを読み飛ばせる正常系は PBT で検証する。
-//! 先頭の `styp` だけは型付きで読むため、`styp()` の値、`styp` なしの場合、
-//! 2 個目以降の `styp` の無視、壊れた `styp` の読み飛ばし、エラー時の値の不変も単体テストで固定する。
+//! 先頭の `styp` だけは型付きで読むため、`styp()` の値 (CMAF 指定で muxer が組み立てた値を含む)、
+//! `styp` なしの場合、2 個目以降の `styp` の無視、壊れた `styp` の読み飛ばし、エラー時の値の不変も
+//! 単体テストで固定する。
 //! 意図的なエラーパスは固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //!
 //! 読み飛ばすトラックのデータ末尾の計算のように、`Fmp4SegmentMuxer` の出力を書き換えないと作れない
@@ -52,7 +53,7 @@ use shiguredo_mp4::{
         VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4SegmentDemuxer},
-    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
+    mux::{CmafTrackFileBrand, Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
 const VIDEO_TIMESCALE: u32 = 90_000;
@@ -3067,12 +3068,32 @@ fn create_styp(major_brand: [u8; 4]) -> StypBox {
     }
 }
 
-/// `styp` を指定してメディアセグメントを作り、init セグメントとともに返す
-fn build_segments_with_styp(styp: &StypBox) -> (Vec<u8>, Vec<u8>) {
+/// メディアセグメントの `styp` の指定方法
+///
+/// `SegmentMuxerOptions::styp` と `SegmentMuxerOptions::cmaf` は同時に指定できないため、
+/// どちらか一方だけを指定できるようにする。
+enum StypSource<'a> {
+    /// `styp` ボックスをそのまま指定する
+    Explicit(&'a StypBox),
+
+    /// CMAF の構造ブランドとして muxer に `styp` を組み立てさせる
+    Cmaf,
+}
+
+/// `styp` を持たせたメディアセグメントを作り、init セグメントとともに返す
+///
+/// `styp` の指定方法は `source` で切り替える。
+fn build_segments_with_styp(source: StypSource<'_>) -> (Vec<u8>, Vec<u8>) {
     let payload = [0u8; 16];
-    let options = SegmentMuxerOptions {
-        styp: Some(styp.clone()),
-        ..Default::default()
+    let options = match source {
+        StypSource::Explicit(styp) => SegmentMuxerOptions {
+            styp: Some(styp.clone()),
+            ..Default::default()
+        },
+        StypSource::Cmaf => SegmentMuxerOptions {
+            cmaf: Some(CmafTrackFileBrand::Cmfc),
+            ..Default::default()
+        },
     };
     let mut muxer =
         Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
@@ -3092,7 +3113,7 @@ fn build_segments_with_styp(styp: &StypBox) -> (Vec<u8>, Vec<u8>) {
 #[test]
 fn styp_value_is_available_after_media_segment() {
     let styp = create_styp(*b"msdh");
-    let (init_segment, media_segment) = build_segments_with_styp(&styp);
+    let (init_segment, media_segment) = build_segments_with_styp(StypSource::Explicit(&styp));
 
     let mut demuxer = Fmp4SegmentDemuxer::new();
     assert!(
@@ -3118,6 +3139,42 @@ fn styp_value_is_available_after_media_segment() {
     );
 }
 
+/// CMAF 指定で生成したメディアセグメントを処理すると、`styp()` が
+/// `major_brand = cmfs` の `StypBox` を返すこと
+///
+/// `styp` は muxer がセグメント生成時に組み立てるため、muxer と demuxer の間で
+/// `major_brand` と互換 brand が往復することも合わせて確認する。
+#[test]
+fn cmaf_styp_value_is_available_after_media_segment() {
+    let (init_segment, media_segment) = build_segments_with_styp(StypSource::Cmaf);
+
+    // init セグメントの `ftyp` をデコードし、`styp` の期待値を組み立てる。
+    // `styp` の互換 brand は、`ftyp` の互換 brand に `major_brand` の `cmfs` を加えた集合になる
+    let (ftyp_box, _) =
+        FtypBox::decode(&init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+    let mut expected_compatible_brands = vec![Brand::CMFS];
+    expected_compatible_brands.extend_from_slice(&ftyp_box.compatible_brands);
+    let expected_styp = StypBox {
+        major_brand: Brand::CMFS,
+        minor_version: 0,
+        compatible_brands: expected_compatible_brands,
+    };
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("CMAF 指定のメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 1, "サンプルが 1 つ返る");
+    assert_eq!(
+        demuxer.styp(),
+        Some(&expected_styp),
+        "CMAF 指定で生成したメディアセグメントの styp が取得できない"
+    );
+}
+
 /// `styp` を持たないメディアセグメントを処理すると `styp()` が `None` になること
 ///
 /// 直前の成功したメディアセグメントの値をそのまま残さず、
@@ -3125,7 +3182,8 @@ fn styp_value_is_available_after_media_segment() {
 #[test]
 fn styp_is_none_when_segment_has_no_styp() {
     let styp = create_styp(*b"msdh");
-    let (init_segment, media_segment_with_styp) = build_segments_with_styp(&styp);
+    let (init_segment, media_segment_with_styp) =
+        build_segments_with_styp(StypSource::Explicit(&styp));
     let (_, media_segment_without_styp) = build_init_and_media_segments();
 
     let mut demuxer = Fmp4SegmentDemuxer::new();
@@ -3227,7 +3285,7 @@ fn invalid_styp_is_skipped() {
 fn styp_is_unchanged_when_media_segment_decoding_fails() {
     let kept_styp = create_styp(*b"msdh");
     let rejected_styp = create_styp(*b"cmff");
-    let (init_segment, media_segment) = build_segments_with_styp(&kept_styp);
+    let (init_segment, media_segment) = build_segments_with_styp(StypSource::Explicit(&kept_styp));
 
     let mut demuxer = Fmp4SegmentDemuxer::new();
     demuxer

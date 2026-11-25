@@ -292,6 +292,9 @@ faststart 形式になる (`FinalizedBoxes::is_faststart_enabled()` で判定)�
 
 - 初期化セグメントの `moov` に `pssh` を書き出す場合は `SegmentMuxerOptions::pssh_boxes` に指定する
 - メディアセグメントの先頭に `styp` を書き出す場合は `SegmentMuxerOptions::styp` に `StypBox` を指定する。`styp` を指定しない場合の出力バイト列は変わらない。`sidx` を付ける場合も `styp` は `sidx` より前に置くため、`sidx.referenced_size` は `moof` と `mdat` の合計のままである
+- CMAF の構造ブランドとして出力する場合は `SegmentMuxerOptions::cmaf` に `CmafTrackFileBrand::Cmfc` を指定する。初期化セグメントの `ftyp` は `major_brand = cmfc`、メディアセグメントの `styp` は `major_brand = cmfs` になり、`ftyp` の互換 brand は映像コーデックブランドも含めた集合、`styp` の互換 brand はそれに `cmfs` を加えた集合になる。`styp` の互換 brand は各メディアセグメントの生成時点で観測済みのトラックから組み立てる
+- CMAF の構造ブランドは 1 ファイル 1 メディアトラックを前提とする。複数の `TrackKind` を観測した場合、1 つの `moof` に複数の `traf` を書く場合、初期化セグメントの `trak` が複数になる場合は `MuxError::EncodeError` を返す。`SegmentMuxerOptions::styp` とは同時に指定できない
+- wasm の JSON API では `cmaf` を指定できない。wasm が生成するセグメントは CMAF の構造ブランドにならず、`styp` も出力しない
 - サンプルエントリーが `Encv` / `Enca` のトラックでは `Sample.encryption_info` の有無と `tenc` の `default_is_protected` を一致させる。`default_is_protected = 1` のトラックでは全サンプルに `Some` が必要で、`iv` の長さは `tenc` の `default_per_sample_iv_size` と一致させる。選択的暗号化 (`default_is_protected = 0` のトラックに `Some`) は拒否する
 - 暗号化されたサンプルのある `traf` には `senc` / `saiz` / `saio` を書き出す。`saio` の offset は `moof` 先頭から `senc` 内の最初の SAI 先頭まで
 - `Sample.data_offset` は「ファイル全体の絶対位置」ではなく「今回のセグメントの `mdat` payload 領域の先頭からの相対位置」
@@ -323,7 +326,7 @@ let mfra = muxer.mfra_bytes()?;
 | `MdatBox` | メディアデータ本体 (`payload: Vec<u8>`) |
 | `FreeBox` | 空き領域 (`payload: Vec<u8>`) |
 | `UnknownBox` | 未知のボックスの受け皿 |
-| `Brand` | ブランド定数 (`ISOM` / `ISO2` / `MP41` / `AVC1` / `HEV1` / `HVC1` / `AV01` 等) |
+| `Brand` | ブランド定数 (`ISOM` / `ISO2` / `MP41` / `AVC1` / `HEV1` / `HVC1` / `AV01` / `CMFC` / `CMFS` 等) |
 
 ### moov ツリー (`boxes_moov_tree`)
 
@@ -478,6 +481,7 @@ for sample in table.samples() {
 - ISO/IEC 14496-14 (MP4 ファイル形式)
 - ISO/IEC 14496-15 (AVC / HEVC のファイル形式)
 - ISO/IEC 14496-30 (Timed Text 系)
+- ISO/IEC 23000-19 (CMAF)
 - 3GPP TS 26.245 (タイムドテキスト)
 - VP Codec ISO Media File Format Binding
 - RFC 6386: VP8 Data Format and Decoding Guide

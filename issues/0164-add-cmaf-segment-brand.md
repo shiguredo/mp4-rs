@@ -57,7 +57,7 @@ CMAF の構造ブランドを宣言できるのは、次の条件を満たす場
 `cmaf: Some(CmafTrackFileBrand::Cmfc)` を指定した場合、次のとおりにする。
 
 - `ftyp`: `major_brand = cmfc`、`minor_version = 0`。互換 brand は既存の `iso5` / `iso6` / `mp41` と映像コーデックブランドを残し、`cmfc` も含める
-- `styp`: `major_brand = cmfs`、`minor_version = 0`。互換 brand はその時点の `ftyp` の互換 brand と同じ集合にする
+- `styp`: `major_brand = cmfs`、`minor_version = 0`。互換 brand はその時点の `ftyp` の互換 brand に `cmfs` を加えた集合にする
 - `styp` は各メディアセグメントの生成時に、その時点で観測済みのトラックから組み立てる。`with_options()` の時点ではトラックが 0 本であり、後から観測するコーデックブランドを `styp` に含められないため
 - `styp` の書き出し自体は 0163 が追加する `SegmentMuxerOptions::styp` の処理を使う。本 issue では、CMAF 指定時に 0163 の `styp` 出力へ渡す `StypBox` を組み立てるだけにして、書き出し処理を二重実装しない
 - `cmaf` と 0163 の `styp` を同時に指定した場合は、どちらを優先するかを黙って決めない。`MuxError::EncodeError(Error::invalid_input("cmaf and styp cannot both be specified"))` を返す
@@ -71,7 +71,7 @@ CMAF の構造ブランドを宣言できるのは、次の条件を満たす場
 - `Brand` に `cmfc` と `cmfs` が追加され、各定数の rustdoc に「どのボックスで使うか」「根拠」「将来変更される可能性」が書かれている
 - `SegmentMuxerOptions::cmaf` を指定しない場合の init segment とメディアセグメントのバイト列が既存と一致する
 - `cmaf: Some(Cmfc)` を指定した場合の `ftyp` が `major_brand = cmfc`、`minor_version = 0`、互換 brand に `iso5` / `iso6` / `mp41` / `cmfc` を含む。映像トラックを観測した場合は、対応するコーデックブランド (`hev1` / `hvc1` / `av01`) も含む
-- `cmaf: Some(Cmfc)` を指定した場合の `styp` が `major_brand = cmfs`、互換 brand が `ftyp` と同じ集合になる
+- `cmaf: Some(Cmfc)` を指定した場合の `styp` が `major_brand = cmfs`、互換 brand が `ftyp` の互換 brand に `cmfs` を加えた集合になる
 - `cmaf` を指定して複数の `TrackKind` を観測した場合、`create_media_segment_metadata` 系が `MuxError::EncodeError` を返し、状態が変わらない
 - `cmaf` と `styp` を同時に指定した場合に `MuxError::EncodeError` を返す
 - 生成したセグメントを `Fmp4SegmentDemuxer` で読み戻し、`styp()` が `major_brand = cmfs` の `StypBox` を返す

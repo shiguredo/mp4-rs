@@ -11,6 +11,16 @@
 
 ## develop
 
+- [CHANGE] `SegmentMuxerOptions` に `cmaf` フィールドを追加する
+  - `..Default::default()` を使わずに構造体リテラルを構築している箇所は、`cmaf: None` の追加が必要になる
+  - wasm の JSON API では `cmaf` を指定できない
+  - @voluntas
+- [ADD] CMAF の構造ブランド (`cmfc` / `cmfs`) と、CMAF 向けの `ftyp` / `styp` 出力に対応する
+  - `Brand` に `CMFC` (`cmfc`) と `CMFS` (`cmfs`) を追加する
+  - `CmafTrackFileBrand` を追加し、`SegmentMuxerOptions::cmaf` に `Some(CmafTrackFileBrand::Cmfc)` を指定すると、初期化セグメントの `ftyp` を `major_brand = cmfc`、メディアセグメントの `styp` を `major_brand = cmfs` で出力する。`ftyp` の互換 brand は映像コーデックブランドも含めた集合になり、`styp` の互換 brand はそれに `cmfs` を加えた集合になる
+  - CMAF の構造ブランドは 1 ファイル 1 メディアトラックを前提とするため、複数の `TrackKind` を観測した場合、1 つの `moof` に複数の `traf` を書く場合、初期化セグメントの `trak` が複数になる場合は、`create_media_segment_metadata()` 系が `MuxError::EncodeError` を返す
+  - `SegmentMuxerOptions::styp` とは同時に指定できず、同時に指定すると `Fmp4SegmentMuxer::with_options()` が `MuxError::EncodeError` を返す
+  - @voluntas
 - [CHANGE] `SegmentMuxerOptions` に `styp` フィールドを追加する
   - `..Default::default()` を使わずに構造体リテラルを構築している箇所は、`styp: None` の追加が必要になる
   - wasm の JSON API では `styp` を指定できない

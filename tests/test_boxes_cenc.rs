@@ -1959,7 +1959,7 @@ mod sample_group_known_bytes_tests {
             kid: KID,
             constant_iv: None,
         };
-        let encoded = entry.encode_to_vec();
+        let encoded = entry.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let expected = seig_fixed_prefix(1, 9, 1, 16, KID);
         assert_eq!(
             encoded, expected,
@@ -1987,7 +1987,7 @@ mod sample_group_known_bytes_tests {
             kid: KID,
             constant_iv: None,
         };
-        let mut payload = entry.encode_to_vec();
+        let mut payload = entry.encode_to_vec().expect("Vec への書き込みは失敗しない");
         payload.extend_from_slice(&[0xFF, 0xEE, 0xDD]);
 
         let (decoded, consumed) = SeigEntry::decode(&payload)
@@ -2011,7 +2011,7 @@ mod sample_group_known_bytes_tests {
             kid: KID,
             constant_iv: Some(vec![0xAA; 8]),
         };
-        let encoded = entry.encode_to_vec();
+        let encoded = entry.encode_to_vec().expect("Vec への書き込みは失敗しない");
 
         let mut expected = seig_fixed_prefix(0, 0, 1, 0, KID);
         expected.push(8);
@@ -2272,6 +2272,60 @@ mod sample_group_error_tests {
         assert!(
             err.reason.contains("multi_key_flag"),
             "multi_key_flag の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SeigEntry: 4 bit を超えるパターン値のエンコードが InvalidInput になること
+    ///
+    /// `Uint::new()` は値を検証しないため 16 以上を設定できる。切り詰めて書くと
+    /// 読み戻したときに別の値になるので、エンコードで拒否する。
+    #[test]
+    fn seig_entry_encode_with_pattern_exceeding_four_bits_is_invalid_input() {
+        for (crypt_byte_block, skip_byte_block) in [(16u8, 0u8), (0, 16)] {
+            let entry = SeigEntry {
+                crypt_byte_block: Uint::new(crypt_byte_block),
+                skip_byte_block: Uint::new(skip_byte_block),
+                is_protected: 1,
+                per_sample_iv_size: 16,
+                kid: KID,
+                constant_iv: None,
+            };
+            let err = entry
+                .encode_to_vec()
+                .expect_err("4 bit を超えるパターン値をエンコードしてしまった");
+            assert_eq!(
+                err.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                err.reason,
+            );
+            assert!(
+                err.reason.contains("4 bits"),
+                "パターン値の検査とは別のエラーである (reason={})",
+                err.reason,
+            );
+        }
+    }
+
+    /// SeigEntry: constant IV の長さが `u8::MAX` を超える場合に InvalidInput になること
+    #[test]
+    fn seig_entry_encode_with_too_large_constant_iv_is_invalid_input() {
+        let entry = SeigEntry {
+            crypt_byte_block: Uint::new(1),
+            skip_byte_block: Uint::new(9),
+            is_protected: 1,
+            per_sample_iv_size: 0,
+            kid: KID,
+            constant_iv: Some(vec![0x77; 256]),
+        };
+        let err = entry
+            .encode_to_vec()
+            .expect_err("u8 に収まらない constant IV をエンコードしてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
             err.reason,
         );
     }

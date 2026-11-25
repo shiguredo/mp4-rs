@@ -1,7 +1,7 @@
 # CENC の鍵ローテーション (`sbgp` / `sgpd` / `seig`) に対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-cenc-key-rotation
 - Polished: 2026-11-25
 
@@ -174,6 +174,17 @@ ISO/IEC 14496-12:2022 8.9.2.3 と 8.9.4 に従い、次の 3 通りに解釈す�
 - `CHANGES.md` の `## develop` にある同じ開発サイクルの `[ADD]` エントリー (新しいボックと型) を更新し、`SbgpBox` / `SgpdBox` / `SeigEntry` / 鍵ローテーション対応と、`SencBox` が `SencSample` を使うことを含める。`SampleEncryptionInfo` は未リリースのため `[CHANGE]` は追加しない
 - `skills/shiguredo-mp4/SKILL.md` の「`seig` サンプルグループは非対応」という記述を削除・修正し、新しいボックス、`Sample` のフィールド表、`SampleEncryptionInfo` の説明に `kid` を追加する。`SencBox::samples` の要素型が `SencSample` になったことに合わせて、`SencBox` と `SampleEncryptionInfo` の説明も更新する
 - `issues/0071-other-position-timing-boxes-inventory.md` の `sbgp` / `sgpd` の行を実装済みに更新する
+
+## 解決方法
+
+- `src/boxes_cenc.rs` に `SbgpBox` / `SbgpEntry` / `SgpdBox` / `SgpdEntry` / `SeigEntry` / `SencSample` を追加した。`SeigEntry` は 20 バイトの固定前置と条件付きの constant IV を持ち、`decode` / `encode_to_vec` を用意した
+- `SgpdBox` は version 0 / 1 に対応し、version 2 は `Unsupported`、version 0 で `seig` 以外は `Unsupported` とした。`encode` で `grouping_type` と `SgpdEntry` の variant の整合を検査する
+- `SencBox::samples` の要素型を `SencSample` に変更し、`SampleEncryptionInfo` に `kid` を追加した
+- `src/demux_fmp4_segment.rs` で、初期化セグメントの `stbl` から track-level の `seig` `sgpd` を保持し、`traf` の `sbgp` の index からサンプルごとの実効 KID を解決するようにした。`has_seig_sample_group` による一律の `Unsupported` を削除した
+- `src/mux_fmp4_segment.rs` で、KID ごとに `sgpd` / `sbgp` を組み立てて `traf` に書くようにした。`sbgp` の index は `0x10000 + (1 始まりのエントリー番号)` とした
+- 対象外の構成 (パターン値が 0 以外の `tenc`、constant IV、`tenc` なし、track-level の `seig` `sbgp`、`sgpd` version 2、複数鍵) は mux で `InvalidInput`、demux で `Unsupported` / `InvalidData` として拒否する
+- テストは `tests/test_boxes_cenc.rs` / `pbt/tests/prop_boxes_cenc.rs` / `tests/test_demux_fmp4_segment.rs` / `tests/test_mux_fmp4_segment.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` に追加し、`seig_sample_group_is_unsupported` を置き換えた
+- `CHANGES.md` の `[ADD]` エントリーを更新し、`skills/shiguredo-mp4/SKILL.md` と `issues/0071-other-position-timing-boxes-inventory.md` を更新した
 
 ## 対象外
 

@@ -1071,3 +1071,844 @@ mod sinf_tests {
         assert_eq!(decoded, sinf);
     }
 }
+
+// ===== SencBox / SaizBox / SaioBox の既知バイト列でのエンコード検証 =====
+
+mod sample_aux_info_known_bytes_tests {
+    use shiguredo_mp4::{
+        Encode,
+        boxes::{SaioBox, SaizBox, SampleEncryptionInfo, SencBox, Subsample},
+    };
+
+    /// SencBox: サブサンプル暗号化フラグとサンプルごとの SAI が仕様どおりに並ぶこと
+    ///
+    /// サブサンプルを 1 つでも持つサンプルがあれば flags の `0x000002` が立ち、
+    /// サブサンプルを持たないサンプルにも `subsample_count = 0` が書かれる。
+    #[test]
+    fn senc_box_encode_known_bytes() {
+        let senc = SencBox {
+            samples: vec![
+                SampleEncryptionInfo {
+                    iv: vec![0x01; 8],
+                    subsamples: vec![Subsample {
+                        bytes_of_clear_data: 5,
+                        bytes_of_protected_data: 10,
+                    }],
+                },
+                SampleEncryptionInfo {
+                    iv: vec![0x02; 8],
+                    subsamples: Vec::new(),
+                },
+            ],
+        };
+        let encoded = senc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 (ヘッダー) + 4 (FullBox) + 4 (sample_count)
+        //      + (8 (IV) + 2 (subsample_count) + 6 (subsample))
+        //      + (8 (IV) + 2 (subsample_count))
+        expected.extend_from_slice(&42u32.to_be_bytes());
+        expected.extend_from_slice(b"senc");
+        // version 0, flags 0x000002 (subsample encryption)
+        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        expected.extend_from_slice(&2u32.to_be_bytes());
+        expected.extend_from_slice(&[0x01; 8]);
+        expected.extend_from_slice(&1u16.to_be_bytes());
+        expected.extend_from_slice(&5u16.to_be_bytes());
+        expected.extend_from_slice(&10u32.to_be_bytes());
+        expected.extend_from_slice(&[0x02; 8]);
+        expected.extend_from_slice(&0u16.to_be_bytes());
+
+        assert_eq!(
+            encoded, expected,
+            "SencBox のエンコード結果が既知のバイト列と一致しない"
+        );
+    }
+
+    /// SaizBox: サンプルごとの SAI 長が `default_sample_info_size` の後ろに並ぶこと
+    #[test]
+    fn saiz_box_encode_known_bytes() {
+        let saiz = SaizBox {
+            aux_info_type: None,
+            aux_info_type_parameter: 0,
+            default_sample_info_size: 0,
+            sample_count: 2,
+            sample_info_sizes: vec![0x10, 0x00],
+        };
+        let encoded = saiz.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 (ヘッダー) + 4 (FullBox) + 1 (default_sample_info_size)
+        //      + 4 (sample_count) + 2 (sample_info_size)
+        expected.extend_from_slice(&19u32.to_be_bytes());
+        expected.extend_from_slice(b"saiz");
+        // version 0, flags 0 (aux_info_type なし)
+        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        expected.push(0);
+        expected.extend_from_slice(&2u32.to_be_bytes());
+        expected.extend_from_slice(&[0x10, 0x00]);
+
+        assert_eq!(
+            encoded, expected,
+            "SaizBox のエンコード結果が既知のバイト列と一致しない"
+        );
+    }
+
+    /// SaioBox: version 0 の 32 bit offset が仕様どおりに並ぶこと
+    #[test]
+    fn saio_box_version_0_encode_known_bytes() {
+        let saio = SaioBox {
+            version: 0,
+            aux_info_type: None,
+            aux_info_type_parameter: 0,
+            offsets: vec![0x10, 0x20],
+        };
+        let encoded = saio.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 + 4 + 4 (entry_count) + 4 * 2 (offset)
+        expected.extend_from_slice(&24u32.to_be_bytes());
+        expected.extend_from_slice(b"saio");
+        // version 0, flags 0
+        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(&2u32.to_be_bytes());
+        expected.extend_from_slice(&0x10u32.to_be_bytes());
+        expected.extend_from_slice(&0x20u32.to_be_bytes());
+
+        assert_eq!(
+            encoded, expected,
+            "SaioBox version 0 のエンコード結果が既知のバイト列と一致しない"
+        );
+    }
+
+    /// SaioBox: version 1 の 64 bit offset が仕様どおりに並ぶこと
+    #[test]
+    fn saio_box_version_1_encode_known_bytes() {
+        let offset = u64::from(u32::MAX) + 1;
+        let saio = SaioBox {
+            version: 1,
+            aux_info_type: None,
+            aux_info_type_parameter: 0,
+            offsets: vec![offset],
+        };
+        let encoded = saio.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 + 4 + 4 (entry_count) + 8 (offset)
+        expected.extend_from_slice(&24u32.to_be_bytes());
+        expected.extend_from_slice(b"saio");
+        // version 1, flags 0
+        expected.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(&1u32.to_be_bytes());
+        expected.extend_from_slice(&offset.to_be_bytes());
+
+        assert_eq!(
+            encoded, expected,
+            "SaioBox version 1 のエンコード結果が既知のバイト列と一致しない"
+        );
+    }
+}
+
+// ===== SencBox のエラーパステスト =====
+
+mod senc_error_tests {
+    use shiguredo_mp4::{
+        Decode, Encode, ErrorKind,
+        boxes::{SampleEncryptionInfo, SencBox, Subsample},
+    };
+
+    use super::build_box;
+
+    /// SencBox: `Decode` は IV サイズを決められないため常に Unsupported になること
+    #[test]
+    fn senc_box_decode_is_unsupported() {
+        let senc = SencBox {
+            samples: vec![SampleEncryptionInfo {
+                iv: vec![0x11; 8],
+                subsamples: Vec::new(),
+            }],
+        };
+        let encoded = senc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let err = SencBox::decode(&encoded)
+            .expect_err("IV サイズなしで SencBox をデコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::Unsupported,
+            "エラー種別が Unsupported ではない (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: version 1 のデコードが InvalidData になること
+    #[test]
+    fn senc_box_version_1_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 1, flags 0
+        payload.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 8)
+            .expect_err("version 1 の SencBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("Unsupported SencBox version"),
+            "バージョンの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: 未知の flags を持つ入力のデコードが InvalidData になること
+    #[test]
+    fn senc_box_unknown_flags_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0x000001 (サブサンプル暗号化以外のビット)
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 8)
+            .expect_err("未知の flags を持つ SencBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("Unsupported SencBox flags"),
+            "flags の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: IV サイズが 0 / 8 / 16 以外の場合のデコードが InvalidData になること
+    #[test]
+    fn senc_box_invalid_iv_size_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 7)
+            .expect_err("IV サイズ 7 の SencBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason
+                .contains("per-sample IV size must be 0, 8, or 16"),
+            "IV サイズの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: サンプルの IV がペイロード末尾を超える入力のデコードが InvalidData になること
+    #[test]
+    fn senc_box_truncated_iv_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        // IV サイズは 8 だが、実データは 4 バイトだけ
+        payload.extend_from_slice(&[0x11; 4]);
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 8)
+            .expect_err("IV が途中で切れた SencBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason
+                .contains("sample count exceeds available payload"),
+            "サンプル数の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: サブサンプル表が切り詰められた入力のデコードが InvalidData になること
+    ///
+    /// `subsample_count` が残りのペイロードより大きい場合、個々のサブサンプルを
+    /// 読みながら判定すると `InsufficientBuffer` が返ってしまう。doc の契約どおり
+    /// `InvalidData` を返すことを固定する。
+    #[test]
+    fn senc_box_truncated_subsample_table_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0x000002 (サブサンプル暗号化)
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        // IV 8 バイト
+        payload.extend_from_slice(&[0x11; 8]);
+        // subsample_count は 2 だが、サブサンプルは 1 個分 (6 バイト) しかない
+        payload.extend_from_slice(&2u16.to_be_bytes());
+        payload.extend_from_slice(&[0x00, 0x05, 0x00, 0x00, 0x00, 0x0A]);
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 8)
+            .expect_err("サブサンプル表が切り詰められた SencBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason
+                .contains("subsample table exceeds available payload"),
+            "サブサンプル表の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: 末尾に余分なバイトがある入力のデコードが InvalidData になること
+    #[test]
+    fn senc_box_trailing_bytes_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.extend_from_slice(&[0x11; 8]);
+        payload.push(0xFF);
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 8)
+            .expect_err("末尾に余分なバイトがある SencBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("trailing bytes"),
+            "末尾バイトの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: サンプルごとに IV サイズが異なる場合のエンコードが InvalidInput になること
+    #[test]
+    fn senc_box_mixed_iv_sizes_encode_is_invalid_input() {
+        let senc = SencBox {
+            samples: vec![
+                SampleEncryptionInfo {
+                    iv: vec![0x11; 8],
+                    subsamples: Vec::new(),
+                },
+                SampleEncryptionInfo {
+                    iv: vec![0x22; 16],
+                    subsamples: Vec::new(),
+                },
+            ],
+        };
+        let err = senc
+            .encode_to_vec()
+            .expect_err("IV サイズの異なるサンプルを持つ SencBox はエンコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason
+                .contains("samples must all have the same IV size"),
+            "IV サイズの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: IV サイズが 0 / 8 / 16 以外の場合のエンコードが InvalidInput になること
+    #[test]
+    fn senc_box_invalid_iv_size_encode_is_invalid_input() {
+        let senc = SencBox {
+            samples: vec![SampleEncryptionInfo {
+                iv: vec![0x11; 4],
+                subsamples: Vec::new(),
+            }],
+        };
+        let err = senc
+            .encode_to_vec()
+            .expect_err("IV サイズ 4 の SencBox はエンコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("IV size must be 0, 8, or 16"),
+            "IV サイズの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SencBox: サブサンプル数が u16 を超える場合のエンコードが InvalidInput になること
+    #[test]
+    fn senc_box_too_many_subsamples_encode_is_invalid_input() {
+        let subsamples = vec![
+            Subsample {
+                bytes_of_clear_data: 1,
+                bytes_of_protected_data: 1,
+            };
+            usize::from(u16::MAX) + 1
+        ];
+        let senc = SencBox {
+            samples: vec![SampleEncryptionInfo {
+                iv: vec![0x11; 8],
+                subsamples,
+            }],
+        };
+        let err = senc
+            .encode_to_vec()
+            .expect_err("サブサンプル数が u16 を超える SencBox はエンコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("subsample count exceeds u16::MAX"),
+            "サブサンプル数の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+}
+
+// ===== SaizBox のエラーパステスト =====
+
+mod saiz_error_tests {
+    use shiguredo_mp4::{Decode, Encode, ErrorKind, boxes::SaizBox};
+
+    use super::build_box;
+
+    /// 有効な SaizBox を返す
+    fn valid_saiz_box() -> SaizBox {
+        SaizBox {
+            aux_info_type: Some(*b"cenc"),
+            aux_info_type_parameter: 0,
+            default_sample_info_size: 0,
+            sample_count: 1,
+            sample_info_sizes: vec![16],
+        }
+    }
+
+    /// SaizBox: version 1 のデコードが InvalidData になること
+    #[test]
+    fn saiz_box_version_1_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 1, flags 0
+        payload.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"saiz", &payload);
+
+        let err = SaizBox::decode(&buf).expect_err("version 1 の SaizBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("Unsupported SaizBox version"),
+            "バージョンの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaizBox: 未知の flags を持つ入力のデコードが InvalidData になること
+    #[test]
+    fn saiz_box_unknown_flags_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0x000002
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"saiz", &payload);
+
+        let err =
+            SaizBox::decode(&buf).expect_err("未知の flags を持つ SaizBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("Unsupported SaizBox flags"),
+            "flags の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaizBox: `aux_info_type_parameter` が 0 以外の入力のデコードが InvalidData になること
+    #[test]
+    fn saiz_box_non_zero_parameter_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0x000001 (aux_info_type あり)
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        payload.extend_from_slice(b"cenc");
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"saiz", &payload);
+
+        let err = SaizBox::decode(&buf)
+            .expect_err("aux_info_type_parameter が 0 以外の SaizBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("aux_info_type_parameter must be 0"),
+            "パラメーターの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaizBox: `aux_info_type_parameter` が 0 以外の場合のエンコードが InvalidInput になること
+    #[test]
+    fn saiz_box_non_zero_parameter_encode_is_invalid_input() {
+        let saiz = SaizBox {
+            aux_info_type_parameter: 1,
+            ..valid_saiz_box()
+        };
+        let err = saiz
+            .encode_to_vec()
+            .expect_err("aux_info_type_parameter が 0 以外の SaizBox はエンコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("aux_info_type_parameter must be 0"),
+            "パラメーターの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaizBox: `sample_info_sizes` の長さが `sample_count` と異なる場合のエンコードが
+    /// InvalidInput になること
+    #[test]
+    fn saiz_box_size_count_mismatch_encode_is_invalid_input() {
+        let saiz = SaizBox {
+            sample_count: 2,
+            sample_info_sizes: vec![16],
+            ..valid_saiz_box()
+        };
+        let err = saiz.encode_to_vec().expect_err(
+            "sample_info_sizes の長さが sample_count と異なる SaizBox はエンコードできない",
+        );
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason
+                .contains("sample_info_sizes length must equal sample_count"),
+            "サンプル数の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaizBox: `default_sample_info_size` が 0 以外なのに `sample_info_sizes` を持つ場合の
+    /// エンコードが InvalidInput になること
+    #[test]
+    fn saiz_box_unexpected_sizes_encode_is_invalid_input() {
+        let saiz = SaizBox {
+            default_sample_info_size: 16,
+            sample_info_sizes: vec![16],
+            ..valid_saiz_box()
+        };
+        let err = saiz.encode_to_vec().expect_err(
+            "default_sample_info_size と sample_info_sizes を併用した SaizBox はエンコードできない",
+        );
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains(
+                "sample_info_sizes must be empty when default_sample_info_size is non-zero"
+            ),
+            "サイズ一覧の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaizBox: 末尾に余分なバイトがある入力のデコードが InvalidData になること
+    #[test]
+    fn saiz_box_trailing_bytes_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.push(0xFF);
+        let buf = build_box(*b"saiz", &payload);
+
+        let err =
+            SaizBox::decode(&buf).expect_err("末尾に余分なバイトがある SaizBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("trailing bytes"),
+            "末尾バイトの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+}
+
+// ===== SaioBox のエラーパステスト =====
+
+mod saio_error_tests {
+    use shiguredo_mp4::{Decode, Encode, ErrorKind, boxes::SaioBox};
+
+    use super::build_box;
+
+    /// 有効な SaioBox を返す
+    fn valid_saio_box() -> SaioBox {
+        SaioBox {
+            version: 0,
+            aux_info_type: Some(*b"cenc"),
+            aux_info_type_parameter: 0,
+            offsets: vec![16],
+        }
+    }
+
+    /// SaioBox: version 2 のデコードが InvalidData になること
+    #[test]
+    fn saio_box_version_2_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 2, flags 0
+        payload.extend_from_slice(&[0x02, 0x00, 0x00, 0x00]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"saio", &payload);
+
+        let err = SaioBox::decode(&buf).expect_err("version 2 の SaioBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("Unsupported SaioBox version"),
+            "バージョンの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaioBox: version 2 のエンコードが InvalidInput になること
+    #[test]
+    fn saio_box_version_2_encode_is_invalid_input() {
+        let saio = SaioBox {
+            version: 2,
+            ..valid_saio_box()
+        };
+        let err = saio
+            .encode_to_vec()
+            .expect_err("version 2 の SaioBox はエンコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("version must be 0 or 1"),
+            "バージョンの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaioBox: `aux_info_type_parameter` が 0 以外の入力のデコードが InvalidData になること
+    #[test]
+    fn saio_box_non_zero_parameter_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0x000001 (aux_info_type あり)
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        payload.extend_from_slice(b"cenc");
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"saio", &payload);
+
+        let err = SaioBox::decode(&buf)
+            .expect_err("aux_info_type_parameter が 0 以外の SaioBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("aux_info_type_parameter must be 0"),
+            "パラメーターの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaioBox: `aux_info_type_parameter` が 0 以外の場合のエンコードが InvalidInput になること
+    #[test]
+    fn saio_box_non_zero_parameter_encode_is_invalid_input() {
+        let saio = SaioBox {
+            aux_info_type_parameter: 1,
+            ..valid_saio_box()
+        };
+        let err = saio
+            .encode_to_vec()
+            .expect_err("aux_info_type_parameter が 0 以外の SaioBox はエンコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("aux_info_type_parameter must be 0"),
+            "パラメーターの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaioBox: version 0 で `u32::MAX` を超える offset を持つ場合のエンコードが
+    /// InvalidInput になること
+    #[test]
+    fn saio_box_version_0_offset_overflow_encode_is_invalid_input() {
+        let saio = SaioBox {
+            version: 0,
+            offsets: vec![u64::from(u32::MAX) + 1],
+            ..valid_saio_box()
+        };
+        let err = saio.encode_to_vec().expect_err(
+            "version 0 で u32::MAX を超える offset を持つ SaioBox はエンコードできない",
+        );
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("version 0 offset exceeds u32::MAX"),
+            "offset の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaioBox: 未知の flags を持つ入力のデコードが InvalidData になること
+    #[test]
+    fn saio_box_unknown_flags_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0x000002
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"saio", &payload);
+
+        let err =
+            SaioBox::decode(&buf).expect_err("未知の flags を持つ SaioBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("Unsupported SaioBox flags"),
+            "flags の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SaioBox: 末尾に余分なバイトがある入力のデコードが InvalidData になること
+    #[test]
+    fn saio_box_trailing_bytes_decode_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        payload.push(0xFF);
+        let buf = build_box(*b"saio", &payload);
+
+        let err =
+            SaioBox::decode(&buf).expect_err("末尾に余分なバイトがある SaioBox はデコードできない");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("trailing bytes"),
+            "末尾バイトの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+}
+
+// ===== SencBox のサンプル数上限テスト =====
+
+mod senc_sample_count_limit_tests {
+    use shiguredo_mp4::{ErrorKind, boxes::SencBox};
+
+    use super::build_box;
+
+    /// SencBox: 各サンプルが SAI を持たない場合に、`sample_count` が上限を超えると
+    /// InvalidData になること
+    ///
+    /// IV サイズ 0 かつサブサンプル暗号化でない場合、各サンプルはペイロードを持たないため、
+    /// `sample_count` は入力サイズから制約されない。上限がないと、小さな入力で巨大な
+    /// `Vec` を確保できてしまう。
+    #[test]
+    fn senc_box_excessive_sample_count_without_aux_info_is_invalid_data() {
+        let mut payload = Vec::new();
+        // version 0, flags 0
+        payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        // 上限 (1,048,576) を超えるサンプル数を宣言する
+        payload.extend_from_slice(&(1_048_577u32).to_be_bytes());
+        let buf = build_box(*b"senc", &payload);
+
+        let err = SencBox::decode_with_iv_size(&buf, 0)
+            .expect_err("各サンプルが SAI を持たないのに巨大な sample_count を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains(
+                "sample count exceeds maximum allowed when samples have no auxiliary information"
+            ),
+            "サンプル数の上限の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+}

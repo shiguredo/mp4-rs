@@ -1,7 +1,7 @@
 # fMP4 の暗号化メディアセグメントのサンプル補助情報 (senc / saiz / saio) に対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-cenc-sample-aux-info
 - Polished: 2026-11-25
 
@@ -162,6 +162,18 @@ mux の `Sample` と demux の `Sample` に `encryption_info: Option<SampleEncry
 - `CHANGES.md` に `[ADD]` (新しいボックと型、demux の露出) と `[CHANGE]` (`mux::Sample` と `demux::Sample` のフィールド追加、構造体リテラルに `encryption_info: None` の追加が必要、`Mp4FileMuxer` は暗号化サンプルを拒否すること) を記録する
 - `skills/shiguredo-mp4/SKILL.md` に新しいボックスと `SampleEncryptionInfo` を追記し、`SencBox` の `Decode` が常に `Unsupported` を返す例外を明記する。`Sample` のフィールド表 (demux / mux 両方) に `encryption_info` を追加する
 - `issues/0071-other-position-timing-boxes-inventory.md` の `saio` / `saiz` の行を実装済みに更新する
+
+## 解決方法
+
+- `src/boxes_cenc.rs` に `SencBox` / `SaizBox` / `SaioBox` / `Subsample` / `SampleEncryptionInfo` を追加した
+- `src/boxes.rs` の再エクスポートに追加した
+- `src/mux_fmp4_segment.rs` で、暗号化サンプルのある `traf` に `senc` / `saiz` / `saio` を書き出すようにした。`saio` の offset は `moof` 先頭から `senc` 内の最初の SAI 先頭までで、`moof` のレイアウトを 2 パスで確定させてから書く
+- `src/demux_fmp4_segment.rs` で、`traf` の `unknown_boxes` から `senc` を優先し、無ければ `saiz` / `saio` から SAI を復元するようにした。サンプル数分の `Vec` を確保しない `TrafEncryptionInfos` を導入し、宣言値だけの巨大な `sample_count` でメモリを確保しないようにした
+- 選択的暗号化、`seig` のサンプルグループ、CENC 以外の保護スキームを検出した場合のエラーを追加した
+- `mux::Sample` と `demux::Sample` に `encryption_info` を追加し、`Mp4FileMuxer` は暗号化サンプルを拒否、`Mp4FileDemuxer` は常に `None` を返すようにした
+- `examples/` / `tests/` / `pbt/` / `crates/wasm/` / `docs/` / `fuzz/` のリテラルを更新した
+- `tests/test_boxes_cenc.rs` / `pbt/tests/prop_boxes_cenc.rs` / `tests/test_mux_fmp4_segment.rs` / `tests/test_demux_fmp4_segment.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` / `tests/test_mux_mp4_file.rs` にテストを追加した
+- `CHANGES.md`、`skills/shiguredo-mp4/SKILL.md`、`issues/0071-other-position-timing-boxes-inventory.md` を更新した
 
 ## 対象外
 

@@ -230,6 +230,7 @@ fn parse_json_mux_sample(text: &str) -> Result<Sample, nojson::JsonParseError> {
     let data_size = mux_sample::required_usize_member(value, "data_size")?;
 
     Ok(Sample {
+        encryption_info: None,
         track_kind: metadata.track_kind,
         sample_entry: metadata.sample_entry,
         keyframe: metadata.keyframe,
@@ -283,6 +284,7 @@ mod tests {
     fn test_check_ctts_range() {
         fn sample(offset: Option<i64>) -> Sample {
             Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: None,
                 keyframe: true,

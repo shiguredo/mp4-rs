@@ -102,6 +102,7 @@ fn build_regular_mp4_file_data(
 
     for (index, data_size) in sample_sizes.iter().copied().enumerate() {
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: sample_entry.take(),
             keyframe: index == 0,
@@ -139,6 +140,7 @@ fn build_fragmented_mp4_file_data(width: u16, height: u16, sample_sizes: &[usize
         .enumerate()
         .map(|(index, payload)| {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 timescale: NonZeroU32::new(90_000).expect("非ゼロである"),
                 sample_entry: Some(sample_entry.clone()),

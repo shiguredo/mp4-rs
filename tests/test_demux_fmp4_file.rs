@@ -76,6 +76,7 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
 /// payload が `data_size` バイトの映像サンプル 1 個分の `Sample` を組み立てる
 fn create_video_sample(data_size: usize) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(create_avc1_sample_entry(320, 240)),

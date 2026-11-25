@@ -247,6 +247,18 @@
     - `parse_frame_header` が返すキーフレームと intra-only frame の header は、この表に合うか、`build_vp09_box` がこれまでも拒否していた 4:4:0 のいずれかである
     - 色情報を持たない inter frame / `show_existing_frame` の header は、これまでどおり拒否する。この拒否は組み合わせの検査より前に行うため、エラー理由も変わらない
   - @voluntas
+- [CHANGE] `mux::Sample` と `demux::Sample` に `encryption_info` フィールドを追加する
+  - 構造体リテラルで `Sample` を構築している箇所は `encryption_info: None` の追加が必要になる
+  - `Fmp4SegmentMuxer` は `tenc` の `default_is_protected` と `encryption_info` の有無が一致しないサンプルを拒否する
+  - `Mp4FileMuxer::append_sample()` は `encryption_info: Some` を `MuxError::EncodeError` で拒否する
+  - @voluntas
+- [ADD] fMP4 の暗号化メディアセグメントのサンプル補助情報 (senc / saiz / saio) に対応する
+  - `SencBox` / `SaizBox` / `SaioBox` / `Subsample` / `SampleEncryptionInfo` を追加する
+  - `Fmp4SegmentMuxer` が暗号化されたサンプルのある `traf` に `senc` / `saiz` / `saio` を書き出す
+  - `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` がサンプルごとの `encryption_info` を返す
+  - `SencBox` は IV サイズを `tenc` から受け取る `SencBox::decode_with_iv_size()` でデコードする
+  - wasm の暗号化情報の JSON 対応は対象外
+  - @voluntas
 
 ### misc
 

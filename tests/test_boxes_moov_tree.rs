@@ -1802,6 +1802,7 @@ mod prop_container_boundary_tests {
             });
             let sample_payload = b"hello subtitle";
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: Some(subtitle_sample_entry),
                 keyframe: true,
@@ -1865,6 +1866,7 @@ mod prop_container_boundary_tests {
             sample_payload: &[u8],
         ) -> (Vec<u8>, Vec<u8>) {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: Some(sample_entry),
                 keyframe: true,
@@ -2019,6 +2021,7 @@ mod prop_container_boundary_tests {
             output.extend_from_slice(payload);
 
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: Some(sample_entry),
                 keyframe: true,
@@ -2123,6 +2126,7 @@ mod prop_container_boundary_tests {
             });
             let sample_payload = b"hello subtitle";
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: Some(wvtt_sample_entry),
                 keyframe: true,
@@ -2325,6 +2329,7 @@ mod prop_container_boundary_tests {
             // 最小構成を渡す（Fmp4SegmentMuxer は payload 内部構造を検証しない）
             let sample_payload = b"\x00\x05HELLO";
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: Some(tx3g_sample_entry),
                 keyframe: true,

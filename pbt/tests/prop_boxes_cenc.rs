@@ -6,7 +6,10 @@
 use noprop::TestCaseContext;
 use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Encode, Uint, Utf8String,
-    boxes::{FrmaBox, PsshBox, SchiBox, SchmBox, SinfBox, TencBox, UnknownBox},
+    boxes::{
+        FrmaBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SchiBox, SchmBox, SencBox,
+        SinfBox, Subsample, TencBox, UnknownBox,
+    },
 };
 
 /// このファイルの主要 PBT ケース数（他のボックス系 PBT と揃える）
@@ -352,6 +355,172 @@ fn tenc_box_roundtrip() -> noprop::TestResult {
 
         assert_eq!(size, encoded.len());
         assert_eq!(decoded, tenc);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== サンプル補助情報 (senc / saiz / saio) のサンプラー =====
+
+/// `Subsample` を生成する
+fn arb_subsample(ctx: &mut TestCaseContext) -> Subsample {
+    Subsample {
+        bytes_of_clear_data: noprop::sample_u64_in(ctx, 0..=u64::from(u16::MAX)) as u16,
+        bytes_of_protected_data: noprop::sample_u32(ctx),
+    }
+}
+
+/// 指定された IV サイズの `SampleEncryptionInfo` を生成する
+///
+/// IV サイズ 0 は constant IV を使うサンプルを表すため、`iv` は空になる。
+fn arb_sample_encryption_info(ctx: &mut TestCaseContext, iv_size: usize) -> SampleEncryptionInfo {
+    let iv = if iv_size == 0 {
+        Vec::new()
+    } else {
+        noprop::sample_bytes_vec(ctx, iv_size)
+    };
+    let subsample_count = noprop::sample_usize_in(ctx, 0..=4);
+    let mut subsamples = Vec::new();
+    for _ in 0..subsample_count {
+        subsamples.push(arb_subsample(ctx));
+    }
+    SampleEncryptionInfo { iv, subsamples }
+}
+
+/// `SencBox` と、そのサンプルに使った IV サイズを生成する
+///
+/// `senc` は IV サイズを保持しないため、encode に使った IV サイズを
+/// `decode_with_iv_size()` に渡せるように一緒に返す。
+fn arb_senc_box(ctx: &mut TestCaseContext) -> (SencBox, u8) {
+    let iv_size = match noprop::sample_u64_in(ctx, 0..=2) {
+        0 => 0u8,
+        1 => 8u8,
+        _ => 16u8,
+    };
+    let sample_count = noprop::sample_usize_in(ctx, 0..=5);
+    let mut samples = Vec::new();
+    for _ in 0..sample_count {
+        samples.push(arb_sample_encryption_info(ctx, usize::from(iv_size)));
+    }
+    (SencBox { samples }, iv_size)
+}
+
+/// `SaizBox` を生成する
+///
+/// `default_sample_info_size` を使う形式と、サンプルごとの `sample_info_sizes` を使う形式の
+/// 両方を生成する。
+fn arb_saiz_box(ctx: &mut TestCaseContext) -> SaizBox {
+    let aux_info_type = if noprop::sample_bool(ctx) {
+        Some(noprop::sample_bytes::<4>(ctx))
+    } else {
+        None
+    };
+    if noprop::sample_bool(ctx) {
+        SaizBox {
+            aux_info_type,
+            aux_info_type_parameter: 0,
+            default_sample_info_size: noprop::sample_u64_in(ctx, 1..=u64::from(u8::MAX)) as u8,
+            sample_count: noprop::sample_u32(ctx),
+            sample_info_sizes: Vec::new(),
+        }
+    } else {
+        let sample_count = noprop::sample_u64_in(ctx, 0..=8) as u32;
+        let mut sample_info_sizes = Vec::new();
+        for _ in 0..sample_count {
+            sample_info_sizes.push(noprop::sample_u64_in(ctx, 0..=u64::from(u8::MAX)) as u8);
+        }
+        SaizBox {
+            aux_info_type,
+            aux_info_type_parameter: 0,
+            default_sample_info_size: 0,
+            sample_count,
+            sample_info_sizes,
+        }
+    }
+}
+
+/// `SaioBox` を生成する
+///
+/// version 0 は 32 bit offset、version 1 は 64 bit offset を生成する。
+fn arb_saio_box(ctx: &mut TestCaseContext) -> SaioBox {
+    let version = noprop::sample_u64_in(ctx, 0..=1) as u8;
+    let aux_info_type = if noprop::sample_bool(ctx) {
+        Some(noprop::sample_bytes::<4>(ctx))
+    } else {
+        None
+    };
+    let entry_count = noprop::sample_usize_in(ctx, 0..=4);
+    let mut offsets = Vec::new();
+    for _ in 0..entry_count {
+        if version == 0 {
+            offsets.push(u64::from(noprop::sample_u32(ctx)));
+        } else {
+            offsets.push(noprop::sample_u64(ctx));
+        }
+    }
+    SaioBox {
+        version,
+        aux_info_type,
+        aux_info_type_parameter: 0,
+        offsets,
+    }
+}
+
+// ===== SencBox / SaizBox / SaioBox のテスト =====
+
+/// SencBox の encode / decode (IV サイズ指定) roundtrip
+///
+/// サブサンプルあり・なしと、constant IV (IV サイズ 0) と per-sample IV (8 / 16) の
+/// 組み合わせを検証する。
+#[test]
+fn senc_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let (senc, iv_size) = arb_senc_box(ctx);
+        let encoded = senc.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SencBox::decode_with_iv_size(&encoded, iv_size)
+            .expect("直前にエンコードした有効な SencBox は必ずデコードできる");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, senc);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// SaizBox の encode / decode roundtrip
+///
+/// `default_sample_info_size` を使う形式と `sample_info_sizes` を使う形式の両方を検証する。
+#[test]
+fn saiz_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let saiz = arb_saiz_box(ctx);
+        let encoded = saiz.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SaizBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SaizBox は必ずデコードできる");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, saiz);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// SaioBox の encode / decode roundtrip
+///
+/// version 0 (32 bit offset) と version 1 (64 bit offset) の両方を検証する。
+#[test]
+fn saio_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let saio = arb_saio_box(ctx);
+        let encoded = saio.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SaioBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SaioBox は必ずデコードできる");
+
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, saio);
         Ok(())
     })?;
     Ok(())

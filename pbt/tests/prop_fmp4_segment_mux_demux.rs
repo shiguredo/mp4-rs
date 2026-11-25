@@ -9,10 +9,10 @@ use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, FixedPointNumber, TrackKind, Uint, Utf8String,
     boxes::{
-        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, FtypBox,
-        Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, PsshBox, SampleEntry,
-        SidxBox, StppBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples,
-        VisualSampleEntryFields,
+        AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, EncvBox,
+        FrmaBox, FtypBox, Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, PsshBox,
+        SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox, SidxBox, SinfBox, StppBox, Subsample,
+        TencBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples, VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
@@ -274,6 +274,7 @@ fn video_segment_sample(
     composition_time_offset: Option<i64>,
 ) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("非ゼロである"),
         sample_entry: Some(sample_entry.clone()),
@@ -287,6 +288,7 @@ fn video_segment_sample(
 
 fn audio_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Audio,
         timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("非ゼロである"),
         sample_entry: Some(sample_entry.clone()),
@@ -300,6 +302,7 @@ fn audio_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Samp
 
 fn subtitle_segment_sample(sample_entry: &SampleEntry, sample: &TestSample) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Subtitle,
         timescale: NonZeroU32::new(SUBTITLE_TIMESCALE).expect("非ゼロである"),
         sample_entry: Some(sample_entry.clone()),
@@ -1921,6 +1924,7 @@ fn leading_boxes_before_moof_are_skipped() -> noprop::TestResult {
                 data_offset,
                 data_size,
                 composition_time_offset,
+                encryption_info: ref expected_encryption_info,
             } = *expected_sample;
             assert_eq!(
                 (
@@ -1931,6 +1935,7 @@ fn leading_boxes_before_moof_are_skipped() -> noprop::TestResult {
                     actual_sample.duration,
                     actual_sample.data_size,
                     actual_sample.composition_time_offset,
+                    actual_sample.encryption_info.as_ref(),
                 ),
                 (
                     track,
@@ -1940,6 +1945,7 @@ fn leading_boxes_before_moof_are_skipped() -> noprop::TestResult {
                     duration,
                     data_size,
                     composition_time_offset,
+                    expected_encryption_info.as_ref(),
                 ),
                 "{index} 番目のサンプルの data_offset 以外のフィールドは、前にボックスを置いても変わらない"
             );
@@ -2144,6 +2150,7 @@ fn boxes_between_moof_and_mdat_and_after_mdat_are_skipped() -> noprop::TestResul
                 data_offset,
                 data_size,
                 composition_time_offset,
+                encryption_info: ref expected_encryption_info,
             } = *expected_sample;
             assert_eq!(
                 (
@@ -2154,6 +2161,7 @@ fn boxes_between_moof_and_mdat_and_after_mdat_are_skipped() -> noprop::TestResul
                     actual_sample.duration,
                     actual_sample.data_size,
                     actual_sample.composition_time_offset,
+                    actual_sample.encryption_info.as_ref(),
                 ),
                 (
                     track,
@@ -2163,6 +2171,7 @@ fn boxes_between_moof_and_mdat_and_after_mdat_are_skipped() -> noprop::TestResul
                     duration,
                     data_size,
                     composition_time_offset,
+                    expected_encryption_info.as_ref(),
                 ),
                 "{index} 番目のサンプルの data_offset 以外のフィールドは、ボックスを置いても変わらない"
             );
@@ -2337,6 +2346,7 @@ fn sidx_rejects_missing_sample_entry_on_first_sample() -> noprop::TestResult {
 
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("非ゼロである"),
             sample_entry: None,
@@ -2633,6 +2643,7 @@ struct ComparableSample {
     data_offset: u64,
     data_size: usize,
     composition_time_offset: Option<i64>,
+    encryption_info: Option<SampleEncryptionInfo>,
 }
 
 /// demux したサンプル 1 個を、比較できる形 [`ComparableSample`] に変換する
@@ -2647,6 +2658,7 @@ fn to_comparable_sample(sample: &shiguredo_mp4::demux::Sample<'_>) -> Comparable
         data_offset,
         data_size,
         composition_time_offset,
+        encryption_info: ref sample_encryption_info,
     } = *sample;
     ComparableSample {
         track: track.clone(),
@@ -2657,6 +2669,7 @@ fn to_comparable_sample(sample: &shiguredo_mp4::demux::Sample<'_>) -> Comparable
         data_offset,
         data_size,
         composition_time_offset,
+        encryption_info: sample_encryption_info.clone(),
     }
 }
 
@@ -4205,13 +4218,8 @@ fn fmp4_file_demuxer_swapped_traf_order_keeps_sample_entry_contract() -> noprop:
     Ok(())
 }
 
-/// `data_offset` を除いた比較用のフィールドをまとめる
-///
-/// `ComparableSample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、
-/// `..` を使わずに分解する
-fn comparable_without_data_offset(
-    sample: &ComparableSample,
-) -> (
+/// `data_offset` を除いた比較用のフィールドの組
+type ComparableWithoutDataOffset = (
     TrackInfo,
     Option<SampleEntry>,
     bool,
@@ -4219,7 +4227,14 @@ fn comparable_without_data_offset(
     u32,
     usize,
     Option<i64>,
-) {
+    Option<SampleEncryptionInfo>,
+);
+
+/// `data_offset` を除いた比較用のフィールドをまとめる
+///
+/// `ComparableSample` にフィールドが増えたときに比較漏れがコンパイルエラーになるよう、
+/// `..` を使わずに分解する
+fn comparable_without_data_offset(sample: &ComparableSample) -> ComparableWithoutDataOffset {
     let ComparableSample {
         track,
         sample_entry,
@@ -4229,6 +4244,7 @@ fn comparable_without_data_offset(
         data_offset: _,
         data_size,
         composition_time_offset,
+        encryption_info,
     } = sample;
     (
         track.clone(),
@@ -4238,6 +4254,7 @@ fn comparable_without_data_offset(
         *duration,
         *data_size,
         *composition_time_offset,
+        encryption_info.clone(),
     )
 }
 
@@ -4894,6 +4911,7 @@ fn rejects_gapped_track_payload_layout() -> noprop::TestResult {
 
         let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(320, 240)),
             keyframe: true,
@@ -4904,6 +4922,7 @@ fn rejects_gapped_track_payload_layout() -> noprop::TestResult {
             data_size: video_size,
         };
         let audio_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: true,
@@ -4919,6 +4938,171 @@ fn rejects_gapped_track_payload_layout() -> noprop::TestResult {
             result,
             Err(shiguredo_mp4::mux::MuxError::EncodeError(_))
         ));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== サンプル補助情報 (senc / saiz / saio) の mux → demux roundtrip =====
+
+/// テスト用の CENC の `encv` サンプルエントリーを組み立てる
+///
+/// `default_per_sample_iv_size` は 0 (constant IV) / 8 / 16 のいずれかを指定する。
+/// ISO/IEC 23001-7:2023 8.2.3 は counter mode (`cenc` / `cens`) で constant IV を
+/// 使うことを禁じているため、constant IV を使う場合は CBC のスキーム (`cbc1`) にする。
+fn create_encv_sample_entry_for_test(default_per_sample_iv_size: u8) -> SampleEntry {
+    let default_constant_iv = if default_per_sample_iv_size == 0 {
+        Some(vec![0x77; 8])
+    } else {
+        None
+    };
+    let scheme_type = if default_per_sample_iv_size == 0 {
+        *b"cbc1"
+    } else {
+        *b"cenc"
+    };
+    SampleEntry::Encv(EncvBox {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width: 320,
+            height: 240,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"hev1",
+            },
+            schm_box: Some(SchmBox {
+                scheme_type,
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected: 1,
+                    default_per_sample_iv_size,
+                    default_kid: [0x11; 16],
+                    default_constant_iv,
+                    default_crypt_byte_block: None,
+                    default_skip_byte_block: None,
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// 指定された IV サイズの `SampleEncryptionInfo` を生成する
+fn arb_sample_encryption_info(ctx: &mut TestCaseContext, iv_size: usize) -> SampleEncryptionInfo {
+    let iv = if iv_size == 0 {
+        Vec::new()
+    } else {
+        noprop::sample_bytes_vec(ctx, iv_size)
+    };
+    let subsample_count = noprop::sample_usize_in(ctx, 0..=4);
+    let mut subsamples = Vec::new();
+    for _ in 0..subsample_count {
+        subsamples.push(Subsample {
+            bytes_of_clear_data: noprop::sample_u64_in(ctx, 0..=u64::from(u16::MAX)) as u16,
+            bytes_of_protected_data: noprop::sample_u32(ctx),
+        });
+    }
+    SampleEncryptionInfo { iv, subsamples }
+}
+
+/// 暗号化された映像トラックの mux → demux roundtrip
+///
+/// `senc` / `saiz` / `saio` から復元したサンプルごとの `encryption_info` が、
+/// mux に渡した値と一致することを `Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の
+/// 両方で確認する。
+#[test]
+fn encrypted_video_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        // constant IV (0) と per-sample IV (8 / 16) のすべてを生成する
+        let iv_size: u8 = match noprop::sample_u64_in(ctx, 0..=2) {
+            0 => 0,
+            1 => 8,
+            _ => 16,
+        };
+        let sample_count = noprop::sample_usize_in(ctx, 1..5);
+        let mut encryption_infos = Vec::new();
+        for _ in 0..sample_count {
+            encryption_infos.push(arb_sample_encryption_info(ctx, usize::from(iv_size)));
+        }
+
+        let sample_entry = create_encv_sample_entry_for_test(iv_size);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+
+        let mut fmp4_samples = Vec::new();
+        let mut payloads = Vec::new();
+        for (index, encryption_info) in encryption_infos.iter().enumerate() {
+            let test_sample = TestSample {
+                track_index: 0,
+                duration: 3000,
+                keyframe: true,
+                data: vec![u8::try_from(index).unwrap_or(0xAA); 16],
+            };
+            let mut sample = video_segment_sample(&sample_entry, &test_sample, None);
+            sample.encryption_info = Some(encryption_info.clone());
+            fmp4_samples.push(sample);
+            payloads.push(test_sample.data);
+        }
+        let payload_refs: Vec<&[u8]> = payloads.iter().map(|payload| payload.as_slice()).collect();
+        let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payload_refs);
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // セグメント demuxer で復元できること
+        let mut segment_demuxer = Fmp4SegmentDemuxer::new();
+        segment_demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let segment_samples = segment_demuxer
+            .handle_media_segment(&segment_bytes)
+            .expect("暗号化サンプルのメディアセグメントの処理に失敗した");
+        assert_eq!(segment_samples.len(), encryption_infos.len());
+        for (index, (sample, expected)) in segment_samples
+            .iter()
+            .zip(encryption_infos.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                sample.encryption_info.as_ref(),
+                Some(expected),
+                "{index} 番目のサンプルの encryption_info が mux した値と一致しない"
+            );
+        }
+
+        // ファイル demuxer でも同じ暗号化情報が取り出せること
+        let mut file_data = init_bytes;
+        file_data.extend_from_slice(&segment_bytes);
+        let mut file_demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut file_demuxer, &file_data);
+        let mut file_encryption_infos = Vec::new();
+        loop {
+            match file_demuxer.next_sample() {
+                Ok(Some(sample)) => file_encryption_infos.push(sample.encryption_info.clone()),
+                Ok(None) => break,
+                Err(DemuxError::InputRequired(_)) => {
+                    feed_fmp4_file_demuxer(&mut file_demuxer, &file_data)
+                }
+                Err(error) => panic!("next_sample エラー: {error}"),
+            }
+        }
+        let expected_file_encryption_infos: Vec<_> =
+            encryption_infos.iter().cloned().map(Some).collect();
+        assert_eq!(
+            file_encryption_infos, expected_file_encryption_infos,
+            "Fmp4FileDemuxer が返す encryption_info が mux した値と一致しない"
+        );
         Ok(())
     })?;
     Ok(())

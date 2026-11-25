@@ -224,6 +224,7 @@ fn arrange_payload(
                 continue;
             }
             mux_samples.push(Sample {
+                encryption_info: None,
                 track_kind: sample.metadata.track_kind,
                 sample_entry: sample.metadata.sample_entry.clone(),
                 keyframe: sample.metadata.keyframe,

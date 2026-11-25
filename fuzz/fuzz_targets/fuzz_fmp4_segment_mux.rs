@@ -37,6 +37,7 @@ fuzz_target!(|data: &[u8]| {
                     composition_time_offset: sample.composition_time_offset,
                     data_offset,
                     data_size: sample.data_size,
+                    encryption_info: sample.encryption_info.clone(),
                 };
                 data_offset += sample.data_size as u64;
                 samples.push(mux_sample);

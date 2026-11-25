@@ -16,7 +16,7 @@ use shiguredo_mp4::{
         VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
-    mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
+    mux::{CmafTrackFileBrand, Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
 };
 
 mod helpers;
@@ -900,7 +900,10 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
 /// ファイルで使ってはならないと定めており、附属書 E の NOTE も `isom` / `avc1` を付けた
 /// ファイルではこのフラグを立てられないとしている。そのため init セグメントの
 /// `compatible_brands` からこれらを外す。任意のサンプルエントリーの組み合わせで
-/// init セグメントを作り、サンプルエントリーに応じた brand だけを従来と同じ並びで含むことを確認する
+/// init セグメントを作り、サンプルエントリーに応じた brand だけを従来と同じ並びで含むことを確認する。
+/// CMAF の構造ブランドを指定したケースでは、`major_brand` が `cmfc` になり、互換 brand に `cmfc` が
+/// 加わることも合わせて確認する。CMAF の構造ブランドは 1 ファイル 1 メディアトラックのみを許すため、
+/// このケースでは音声・字幕トラックを観測させない
 #[test]
 fn ftyp_compatible_brands_are_compatible_with_default_base_is_moof() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
@@ -913,10 +916,19 @@ fn ftyp_compatible_brands_are_compatible_with_default_base_is_moof() -> noprop::
     runner.run(CASES, |ctx| {
         // 4 種類の映像サンプルエントリーから空でない部分集合を選ぶ（1..16 は 0 を含まない）
         let codec_mask = noprop::sample_u64_in(ctx, 1..16);
-        let has_audio = noprop::sample_bool(ctx);
-        let has_subtitle = noprop::sample_bool(ctx);
+        // CMAF の構造ブランドを指定するかどうか。
+        // 指定した場合は 1 ファイル 1 メディアトラックの制約があるため、音声・字幕トラックを
+        // 観測させない。cmaf の値によらず同じ回数をサンプリングし、抽選の並びを変えない
+        let cmaf = noprop::sample_bool(ctx);
+        let has_audio = noprop::sample_bool(ctx) && !cmaf;
+        let has_subtitle = noprop::sample_bool(ctx) && !cmaf;
 
-        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let options = SegmentMuxerOptions {
+            cmaf: cmaf.then_some(CmafTrackFileBrand::Cmfc),
+            ..Default::default()
+        };
+        let mut muxer = Fmp4SegmentMuxer::with_options(options)
+            .expect("Fmp4SegmentMuxer::with_options に失敗した");
         let payload = [0x11u8; 4];
 
         // 映像トラックには、選んだサンプルエントリーごとに別々のセグメントを作る。
@@ -1018,8 +1030,12 @@ fn ftyp_compatible_brands_are_compatible_with_default_base_is_moof() -> noprop::
         }
 
         // isom と avc1 は default-base-is-moof と両立しないため含めず、
-        // サンプルエントリーに応じた他の brand を従来と同じ並びで含める
+        // サンプルエントリーに応じた他の brand を従来と同じ並びで含める。
+        // CMAF の構造ブランドを指定した場合は、major_brand に対応する cmfc も加える
         let mut expected_brands = vec![Brand::ISO5, Brand::ISO6, Brand::MP41];
+        if cmaf {
+            expected_brands.push(Brand::CMFC);
+        }
         if (codec_mask & 0b0010) != 0 {
             expected_brands.push(Brand::HEV1);
         }
@@ -1032,8 +1048,8 @@ fn ftyp_compatible_brands_are_compatible_with_default_base_is_moof() -> noprop::
 
         assert_eq!(
             ftyp_box.major_brand,
-            Brand::ISO5,
-            "major_brand が iso5 でない"
+            if cmaf { Brand::CMFC } else { Brand::ISO5 },
+            "major_brand が期待どおりでない"
         );
         assert_eq!(
             ftyp_box.compatible_brands, expected_brands,

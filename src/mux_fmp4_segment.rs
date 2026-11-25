@@ -72,6 +72,27 @@ use crate::{
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
 };
 
+/// [`SegmentMuxerOptions::cmaf`] で指定する、CMAF の構造ブランド
+///
+/// CMAF (ISO/IEC 23000-19:2024 7.6) の構造ブランドのうち、本ライブラリが出力を
+/// 名乗れるものを表す。指定すると、初期化セグメントの `ftyp` とメディアセグメントの
+/// `styp` が、対応する CMAF のブランドになる。
+///
+/// 現在は CMAF Track File の構造ブランド `cmfc` のみを扱う。
+/// より制約の強い構造ブランド (`cmf2` 等) を追加する場合は、この enum に variant を追加する。
+/// なお、CMAF のブランドの定義と配置は ISO/IEC 23000-19:2024 に基づくものであり、
+/// 将来の改訂で変わる可能性がある。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CmafTrackFileBrand {
+    /// CMAF Track File の構造ブランド `cmfc`
+    ///
+    /// `ftyp` の `major_brand` を `cmfc`、`styp` の `major_brand` を `cmfs` にする。
+    /// 1 ファイル 1 メディアトラック、1 つの `moof` に 1 つの `traf` という構造を
+    /// 前提とするため、これに反する出力になる場合は
+    /// [`Fmp4SegmentMuxer::create_media_segment_metadata()`] 系がエラーを返す。
+    Cmfc,
+}
+
 /// [`Fmp4SegmentMuxer`] 用のオプション
 #[derive(Debug, Clone, Default)]
 pub struct SegmentMuxerOptions {
@@ -107,7 +128,26 @@ pub struct SegmentMuxerOptions {
     /// と [`create_media_segment_metadata_with_sidx()`](Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx)
     /// が返すバイト列の先頭に `styp` を含める。
     /// 既定値は `None` で、指定しない場合の出力バイト列は変わらない。
+    ///
+    /// [`Self::cmaf`] とは同時に指定できない。
     pub styp: Option<StypBox>,
+
+    /// CMAF の構造ブランドとして出力する場合の種別
+    ///
+    /// `Some(CmafTrackFileBrand::Cmfc)` を指定すると、初期化セグメントの `ftyp` を
+    /// `major_brand = cmfc`、メディアセグメントの `styp` を `major_brand = cmfs` にして出力する。
+    /// `styp` の互換 brand は、各メディアセグメントの生成時点で観測済みのトラックから
+    /// 組み立てるため、その時点の `ftyp` の互換 brand に `cmfs` を加えた集合になる。
+    ///
+    /// CMAF の構造ブランドは 1 ファイル 1 メディアトラックを前提とするため、
+    /// 複数の [`TrackKind`] を観測した場合、1 つの `moof` に複数の `traf` を書く場合、
+    /// 初期化セグメントの `trak` が複数になる場合は、
+    /// [`create_media_segment_metadata()`](Fmp4SegmentMuxer::create_media_segment_metadata) 系が
+    /// [`MuxError::EncodeError`] を返す。
+    ///
+    /// [`Self::styp`] とは同時に指定できない。
+    /// 既定値は `None` で、指定しない場合の出力バイト列は変わらない。
+    pub cmaf: Option<CmafTrackFileBrand>,
 }
 
 impl SegmentMuxerOptions {
@@ -151,7 +191,10 @@ struct BuiltMediaSegment {
     /// `sidx` を付ける場合、呼び出し側は `styp` の後ろ、このバイト列の前に `sidx` を置く。
     metadata: Vec<u8>,
 
-    /// `styp` ボックスのバイト列（[`SegmentMuxerOptions::styp`] が `None` の場合は空）
+    /// `styp` ボックスのバイト列
+    ///
+    /// [`SegmentMuxerOptions::styp`] と [`SegmentMuxerOptions::cmaf`] のどちらも
+    /// 指定されていない場合は空になる。
     styp: Vec<u8>,
 
     /// `mdat` payload のバイト数
@@ -273,7 +316,18 @@ impl Fmp4SegmentMuxer {
     }
 
     /// オプションを指定して [`Fmp4SegmentMuxer`] インスタンスを生成する
+    ///
+    /// [`SegmentMuxerOptions::cmaf`] と [`SegmentMuxerOptions::styp`] を同時に指定した場合は、
+    /// どちらを優先するかを決められないため [`MuxError::EncodeError`] を返す。
     pub fn with_options(options: SegmentMuxerOptions) -> Result<Self, MuxError> {
+        // CMAF 指定時は構造ブランドに合わせた `styp` を組み立てて書き出すため、
+        // 利用者が指定した `styp` と同時には指定できない。
+        // どちらを優先するかを黙って決めないよう、インスタンスの生成時点で拒否する。
+        if options.cmaf.is_some() && options.styp.is_some() {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "cmaf and styp cannot both be specified",
+            )));
+        }
         Ok(Self {
             tracks: Vec::new(),
             options,
@@ -309,6 +363,13 @@ impl Fmp4SegmentMuxer {
     ///
     /// [`SegmentMuxerOptions::styp`] を指定した場合は、返り値の先頭に `styp` ボックスを含める。
     /// 指定しない場合の出力順は `moof` + `mdat` ヘッダーである。
+    /// [`SegmentMuxerOptions::cmaf`] を指定した場合は、この時点で観測済みのトラックから
+    /// 組み立てた `styp` を先頭に含める。
+    ///
+    /// [`SegmentMuxerOptions::cmaf`] を指定した場合、CMAF の構造ブランドを宣言できる
+    /// 出力になるかを検査し、複数の [`TrackKind`] を観測する場合、1 つの `moof` に
+    /// 複数の `traf` を書く場合、初期化セグメントの `trak` が複数になる場合は
+    /// [`MuxError::EncodeError`] を返す。エラー時は muxer の内部状態を変更しない。
     ///
     /// `samples` に含まれるサンプルは `track_kind` でグループ化して扱われる。
     /// 同一セグメント内の同一トラックのサンプルは、`data_offset` の昇順で
@@ -356,6 +417,12 @@ impl Fmp4SegmentMuxer {
     /// [`SegmentMuxerOptions::styp`] を指定した場合は、出力順は `styp` + `sidx` + `moof` + `mdat` ヘッダーになる。
     /// `styp` は `sidx` より前にあるため `sidx` の参照範囲には入らず、
     /// `sidx` の `referenced_size` は `moof` と `mdat` の合計、`first_offset` は 0 になる。
+    /// [`SegmentMuxerOptions::cmaf`] を指定した場合も、この時点で観測済みのトラックから
+    /// 組み立てた `styp` を同じ位置に含める。
+    ///
+    /// [`SegmentMuxerOptions::cmaf`] を指定した場合の構造の検査は
+    /// [`create_media_segment_metadata()`](Self::create_media_segment_metadata) と同じであり、
+    /// 検査に反する場合は [`MuxError::EncodeError`] を返して内部状態を変更しない。
     ///
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
@@ -497,6 +564,75 @@ impl Fmp4SegmentMuxer {
         Ok(result)
     }
 
+    /// CMAF の構造ブランドを宣言できるメディアセグメントかを検査する
+    ///
+    /// CMAF (ISO/IEC 23000-19:2024 7.6) の構造ブランドは、1 ファイル 1 メディアトラック、
+    /// 1 つの `moof` に 1 つの `traf` という構造を前提とする。
+    /// [`SegmentMuxerOptions::cmaf`] を指定していない場合は何もしない。
+    ///
+    /// 検査に反する場合は [`MuxError::EncodeError`] を返す。
+    /// この関数は muxer の内部状態を変更しない。
+    /// なお、ここでの条件は ISO/IEC 23000-19:2024 に基づくものであり、
+    /// 将来の改訂で変わる可能性がある。
+    fn validate_cmaf_track_structure(&self, samples: &[Sample]) -> Result<(), MuxError> {
+        if self.options.cmaf.is_none() {
+            return Ok(());
+        }
+
+        // このメディアセグメントの `moof` に書く `traf` の数。
+        // 現実装は 1 TrackKind = 1 traf = 1 trun である
+        let mut segment_kinds = Vec::new();
+        for sample in samples {
+            if !segment_kinds.contains(&sample.track_kind) {
+                segment_kinds.push(sample.track_kind);
+            }
+        }
+        if segment_kinds.len() > 1 {
+            return Err(MuxError::EncodeError(Error::invalid_input(format!(
+                "cmaf requires one traf per moof, but {} trafs would be written",
+                segment_kinds.len()
+            ))));
+        }
+
+        // 観測済みの TrackKind と、この呼び出しで観測する TrackKind を合わせた数。
+        // self.tracks は成功した呼び出しでしか増えないため、ここで累積の種別数を検査できる
+        let mut observed_kinds: Vec<TrackKind> =
+            self.tracks.iter().map(|track| track.track_kind).collect();
+        for track_kind in &segment_kinds {
+            if !observed_kinds.contains(track_kind) {
+                observed_kinds.push(*track_kind);
+            }
+        }
+        if observed_kinds.len() > 1 {
+            return Err(MuxError::EncodeError(Error::invalid_input(format!(
+                "cmaf requires a single media track kind, but {} kinds would be observed",
+                observed_kinds.len()
+            ))));
+        }
+
+        // 初期化セグメントの `trak` の数。
+        // 現実装は 1 TrackKind = 1 トラックなので上の検査に含まれるが、
+        // CMAF の制約としては独立しているため、将来 1 つの TrackKind に複数トラックを
+        // 持てるようになった場合に検査が漏れないよう明示的に検査する
+        let new_track_count = segment_kinds
+            .iter()
+            .filter(|track_kind| {
+                !self
+                    .tracks
+                    .iter()
+                    .any(|track| track.track_kind == **track_kind)
+            })
+            .count();
+        let trak_count = self.tracks.len() + new_track_count;
+        if trak_count > 1 {
+            return Err(MuxError::EncodeError(Error::invalid_input(format!(
+                "cmaf requires one trak in the init segment, but {trak_count} traks would be present"
+            ))));
+        }
+
+        Ok(())
+    }
+
     fn build_media_segment_bytes(
         &mut self,
         samples: &[Sample],
@@ -504,11 +640,29 @@ impl Fmp4SegmentMuxer {
         if samples.is_empty() {
             return Err(MuxError::EmptySamples);
         }
+        // CMAF の構造ブランドを宣言できる出力かを検査する。
+        // ここから先でトラック情報を書き換えるため、検査はその前に行う
+        self.validate_cmaf_track_structure(samples)?;
         // `styp` はセグメントの先頭に置く。エンコードに失敗した場合は
-        // 以降で内部状態を変更しないよう、先に済ませておく
-        let styp = self
-            .options
-            .styp
+        // 以降で内部状態を変更しないよう、先に済ませておく。
+        // CMAF 指定時は、この時点で観測済みのトラックから `StypBox` を組み立てる。
+        // 組み立てた `StypBox` は `SegmentMuxerOptions::styp` と同じ書き出し経路に渡し、
+        // `styp` の書き出し処理を二重実装しない
+        let styp_box = match self.options.cmaf {
+            Some(CmafTrackFileBrand::Cmfc) => {
+                let segment_sample_entries: Vec<&SampleEntry> = samples
+                    .iter()
+                    .filter_map(|sample| sample.sample_entry.as_ref())
+                    .collect();
+                Some(StypBox {
+                    major_brand: Brand::CMFS,
+                    minor_version: 0,
+                    compatible_brands: self.build_styp_compatible_brands(&segment_sample_entries),
+                })
+            }
+            None => self.options.styp.clone(),
+        };
+        let styp = styp_box
             .as_ref()
             .map(|styp_box| styp_box.encode_to_vec())
             .transpose()?
@@ -737,25 +891,44 @@ impl Fmp4SegmentMuxer {
         Ok(mfra_box.encode_to_vec()?)
     }
 
-    fn build_ftyp(&self) -> FtypBox {
+    /// CMAF の構造ブランドを指定している場合に、`ftyp` の `major_brand` に使うブランドを返す
+    ///
+    /// CMAF の構造ブランドを指定していない場合は `None` を返し、
+    /// `ftyp` の従来の `major_brand` を使う。
+    fn cmaf_ftyp_brand(&self) -> Option<Brand> {
+        self.options.cmaf.map(|cmaf| match cmaf {
+            CmafTrackFileBrand::Cmfc => Brand::CMFC,
+        })
+    }
+
+    /// `ftyp` / `styp` の互換 brand 集合を組み立てる
+    ///
+    /// `extra_sample_entries` には、まだ `self.tracks` に反映されていないサンプルエントリー
+    /// （これから生成するメディアセグメントで観測するもの）を渡す。
+    /// `styp` はメディアセグメントの生成時点で組み立てるため、そのセグメントで
+    /// 初めて観測するコーデックブランドも含める必要がある。
+    fn build_compatible_brands(&self, extra_sample_entries: &[&SampleEntry]) -> Vec<Brand> {
         let mut has_hev1 = false;
         let mut has_hvc1 = false;
         let mut has_av01 = false;
 
-        for track in &self.tracks {
-            for sample_entry in &track.sample_entries {
-                match sample_entry {
-                    SampleEntry::Hev1(_) => has_hev1 = true,
-                    SampleEntry::Hvc1(_) => has_hvc1 = true,
-                    SampleEntry::Av01(_) => has_av01 = true,
-                    SampleEntry::Encv(b) => match &b.sinf_box.frma_box.data_format {
-                        b"hev1" => has_hev1 = true,
-                        b"hvc1" => has_hvc1 = true,
-                        b"av01" => has_av01 = true,
-                        _ => {}
-                    },
+        let sample_entries = self
+            .tracks
+            .iter()
+            .flat_map(|track| track.sample_entries.iter())
+            .chain(extra_sample_entries.iter().copied());
+        for sample_entry in sample_entries {
+            match sample_entry {
+                SampleEntry::Hev1(_) => has_hev1 = true,
+                SampleEntry::Hvc1(_) => has_hvc1 = true,
+                SampleEntry::Av01(_) => has_av01 = true,
+                SampleEntry::Encv(b) => match &b.sinf_box.frma_box.data_format {
+                    b"hev1" => has_hev1 = true,
+                    b"hvc1" => has_hvc1 = true,
+                    b"av01" => has_av01 = true,
                     _ => {}
-                }
+                },
+                _ => {}
             }
         }
 
@@ -773,6 +946,14 @@ impl Fmp4SegmentMuxer {
         // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、
         // 将来の改訂で変わる可能性がある。
         let mut compatible_brands = vec![Brand::ISO5, Brand::ISO6, Brand::MP41];
+        // CMAF の構造ブランドを指定した場合は、構造ブランド自身も互換 brand に含める。
+        // `styp` の互換 brand は、この集合に `major_brand` の `cmfs` を加えた集合になる
+        // （`build_styp_compatible_brands()` を参照）。
+        // なお、CMAF のブランドの定義と配置は ISO/IEC 23000-19:2024 に基づくものであり、
+        // 将来の改訂で変わる可能性がある。
+        if let Some(cmaf_brand) = self.cmaf_ftyp_brand() {
+            compatible_brands.push(cmaf_brand);
+        }
         if has_hev1 {
             compatible_brands.push(Brand::HEV1);
         }
@@ -782,11 +963,29 @@ impl Fmp4SegmentMuxer {
         if has_av01 {
             compatible_brands.push(Brand::AV01);
         }
+        compatible_brands
+    }
 
+    /// `styp` の互換 brand 集合を組み立てる
+    ///
+    /// [`StypBox::compatible_brands`] は `major_brand` を含めた列挙と定めているため、
+    /// [`build_compatible_brands()`](Self::build_compatible_brands) が返す `ftyp` の
+    /// 互換 brand 集合の先頭に `major_brand` の `cmfs` を加える。
+    /// `cmfs` は `styp` で CMAF Segment を示すブランドであり、`ftyp` では使わないため、
+    /// `ftyp` の互換 brand 集合そのものには含めない。
+    /// なお、CMAF のブランドの定義と配置は ISO/IEC 23000-19:2024 に基づくものであり、
+    /// 将来の改訂で変わる可能性がある。
+    fn build_styp_compatible_brands(&self, extra_sample_entries: &[&SampleEntry]) -> Vec<Brand> {
+        let mut compatible_brands = self.build_compatible_brands(extra_sample_entries);
+        compatible_brands.insert(0, Brand::CMFS);
+        compatible_brands
+    }
+
+    fn build_ftyp(&self) -> FtypBox {
         FtypBox {
-            major_brand: Brand::ISO5,
+            major_brand: self.cmaf_ftyp_brand().unwrap_or(Brand::ISO5),
             minor_version: 0,
-            compatible_brands,
+            compatible_brands: self.build_compatible_brands(&[]),
         }
     }
 

@@ -40,7 +40,7 @@
 //! };
 //! let _muxer = Mp4FileMuxer::with_options(options).expect("muxer creation failed");
 //! ```
-pub use crate::mux_fmp4_segment::{Fmp4SegmentMuxer, SegmentMuxerOptions};
+pub use crate::mux_fmp4_segment::{CmafTrackFileBrand, Fmp4SegmentMuxer, SegmentMuxerOptions};
 pub use crate::mux_mp4_file::{
     EditList, FinalizedBoxes, Mp4FileMuxer, Mp4FileMuxerOptions, MuxError, Sample, TrackMetadata,
     estimate_maximum_moov_box_size,

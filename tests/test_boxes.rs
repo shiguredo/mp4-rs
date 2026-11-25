@@ -355,6 +355,8 @@ mod root_box_tests {
         assert_eq!(Brand::ISOB.get(), *b"isob");
         assert_eq!(Brand::RELO.get(), *b"relo");
         assert_eq!(Brand::MP41.get(), *b"mp41");
+        assert_eq!(Brand::CMFC.get(), *b"cmfc");
+        assert_eq!(Brand::CMFS.get(), *b"cmfs");
         assert_eq!(Brand::AV01.get(), *b"av01");
     }
 

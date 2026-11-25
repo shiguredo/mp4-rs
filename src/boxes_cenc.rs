@@ -2,7 +2,7 @@
 //!
 //! ISO/IEC 23001-7 の `pssh` / `tenc` / `senc` と、ISO/IEC 14496-12 の `sinf` /
 //! `frma` / `schm` / `schi` / `saiz` / `saio` を扱う。
-use alloc::{boxed::Box, format, vec::Vec};
+use alloc::{boxed::Box, format, vec, vec::Vec};
 
 use crate::{
     BaseBox, BoxHeader, BoxType, Decode, Encode, Error, FullBox, FullBoxFlags, FullBoxHeader,
@@ -590,7 +590,8 @@ pub struct Subsample {
 /// サンプル単位の CENC 暗号化情報
 ///
 /// `senc` (ISO/IEC 23001-7:2023 7.2.1) の 1 サンプル分、および `saiz` が指す
-/// Sample Auxiliary Information (SAI) の内容を表す。
+/// Sample Auxiliary Information (SAI) の内容と、`seig` サンプルグループから解決した
+/// 実効 KID を表す。
 /// 入力データの形式は将来の改訂で変わる可能性がある。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SampleEncryptionInfo {
@@ -603,9 +604,33 @@ pub struct SampleEncryptionInfo {
     ///
     /// 空の場合はサンプル全体を暗号化する。
     pub subsamples: Vec<Subsample>,
+
+    /// 実効 KID
+    ///
+    /// [`None`] は `tenc` の `default_kid` を使うことを表す。実効 KID が
+    /// `tenc.default_kid` と異なる場合だけ `Some` になり、同じ値が指定された場合は
+    /// [`None`] に正規化する。
+    pub kid: Option<[u8; 16]>,
 }
 
-impl SampleEncryptionInfo {
+/// `senc` (ISO/IEC 23001-7:2023 7.2.1) の 1 サンプル分の SAI
+///
+/// `senc` は KID を持たないため、実効 KID は [`SampleEncryptionInfo::kid`] として
+/// 別に扱う。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SencSample {
+    /// 初期化ベクトル
+    ///
+    /// constant IV を使うサンプルでは空になる。
+    pub iv: Vec<u8>,
+
+    /// 暗号化される範囲
+    ///
+    /// 空の場合はサンプル全体を暗号化する。
+    pub subsamples: Vec<Subsample>,
+}
+
+impl SencSample {
     /// このサンプルの SAI 長を返す
     ///
     /// `subsample_encryption` は `senc` の flags の `0x000002` が立っているかどうかである。
@@ -618,6 +643,15 @@ impl SampleEncryptionInfo {
             size = size.checked_add(6usize.checked_mul(self.subsamples.len())?)?;
         }
         Some(size)
+    }
+}
+
+impl From<&SampleEncryptionInfo> for SencSample {
+    fn from(info: &SampleEncryptionInfo) -> Self {
+        Self {
+            iv: info.iv.clone(),
+            subsamples: info.subsamples.clone(),
+        }
     }
 }
 
@@ -646,10 +680,10 @@ impl SampleEncryptionInfo {
 /// 変わる可能性がある。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SencBox {
-    /// サンプルごとの暗号化情報
+    /// サンプルごとの SAI
     ///
     /// 要素数が `sample_count` になる。constant IV を使うサンプルは `iv` が空になる。
-    pub samples: Vec<SampleEncryptionInfo>,
+    pub samples: Vec<SencSample>,
 }
 
 impl SencBox {
@@ -758,7 +792,7 @@ impl SencBox {
                         });
                     }
                 }
-                samples.push(SampleEncryptionInfo { iv, subsamples });
+                samples.push(SencSample { iv, subsamples });
             }
             if offset != payload.len() {
                 return Err(Error::invalid_data("SencBox has trailing bytes"));
@@ -1215,6 +1249,682 @@ impl FullBox for SaioBox {
             0
         };
         FullBoxFlags::new(flags)
+    }
+}
+
+/// `seig` サンプルグループの `grouping_type`
+pub(crate) const SEIG_GROUPING_TYPE: [u8; 4] = *b"seig";
+
+/// [ISO/IEC 23001-7] `seig` サンプルグループの 1 エントリー
+///
+/// `CencSampleEncryptionInformationGroupEntry` (ISO/IEC 23001-7:2023 6) のうち、
+/// `multi_key_flag == 0` の形式だけを扱う。ワイヤ形式は 20 バイトの固定前置
+/// (`multi_key_flag` 1 bit + reserved 7 bit、`crypt_byte_block` 4 bit +
+/// `skip_byte_block` 4 bit、`is_protected` 8 bit、`Per_Sample_IV_Size` 8 bit、
+/// KID 16 バイト) に、条件付きで constant IV が続く。
+///
+/// `multi_key_flag == 1`、`crypt_byte_block` / `skip_byte_block` が 0 以外の入力の
+/// デコードは [`crate::ErrorKind::Unsupported`] を返す。`is_protected` が 0 / 1 以外、
+/// `Per_Sample_IV_Size` が 0 / 8 / 16 以外、constant IV が切り詰められている入力の
+/// デコードは [`crate::ErrorKind::InvalidData`] を返す。
+///
+/// 定義済みフィールドの後ろに追加バイトがあっても無視し、消費バイト数を返す
+/// ([`SeigEntry::decode()`])。仕様では将来の拡張を読み飛ばす必要がある。
+/// なお、ここでの扱いは ISO/IEC 23001-7:2023 に基づくものであり、将来の改訂で
+/// 変わる可能性がある。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SeigEntry {
+    /// サンプルが保護されるか (0 または 1)
+    pub is_protected: u8,
+
+    /// サンプルごとの IV サイズ (0 / 8 / 16)
+    pub per_sample_iv_size: u8,
+
+    /// 暗号化に使う KID (16 バイト)
+    pub kid: [u8; 16],
+
+    /// constant IV
+    ///
+    /// `is_protected == 1 && per_sample_iv_size == 0` の場合だけ存在する。
+    pub constant_iv: Option<Vec<u8>>,
+}
+
+impl SeigEntry {
+    /// 固定前置のバイト数
+    pub const FIXED_SIZE: usize = 20;
+
+    /// `seig` エントリーの定義済みフィールドをデコードする
+    ///
+    /// 返り値の第 2 要素は消費したバイト数であり、定義済みフィールドの後ろに追加バイトが
+    /// あってもそれは消費せず、無視する。
+    ///
+    /// `multi_key_flag == 1`、`crypt_byte_block` / `skip_byte_block` が 0 以外の入力は
+    /// [`crate::ErrorKind::Unsupported`] を返す。`is_protected` が 0 / 1 以外、
+    /// `Per_Sample_IV_Size` が 0 / 8 / 16 以外、固定前置や constant IV が切り詰められた
+    /// 入力は [`crate::ErrorKind::InvalidData`] を返す。
+    ///
+    /// なお、ここでの扱いは ISO/IEC 23001-7:2023 6 に基づくものであり、将来の改訂で
+    /// 変わる可能性がある。
+    pub fn decode(payload: &[u8]) -> Result<(Self, usize)> {
+        if payload.len() < Self::FIXED_SIZE {
+            return Err(Error::invalid_data(
+                "SeigEntry is shorter than the 20-byte fixed prefix",
+            ));
+        }
+
+        let multi_key_flag = payload[0] >> 7;
+        if multi_key_flag != 0 {
+            return Err(Error::unsupported("SeigEntry multi_key_flag must be 0"));
+        }
+        let crypt_byte_block = payload[1] >> 4;
+        let skip_byte_block = payload[1] & 0x0F;
+        if crypt_byte_block != 0 || skip_byte_block != 0 {
+            return Err(Error::unsupported(
+                "SeigEntry crypt_byte_block and skip_byte_block must be 0",
+            ));
+        }
+
+        let is_protected = payload[2];
+        if is_protected > 1 {
+            return Err(Error::invalid_data("SeigEntry is_protected must be 0 or 1"));
+        }
+        let per_sample_iv_size = payload[3];
+        if !matches!(per_sample_iv_size, 0 | 8 | 16) {
+            return Err(Error::invalid_data(
+                "SeigEntry per_sample_iv_size must be 0, 8, or 16",
+            ));
+        }
+        let kid = <[u8; 16]>::try_from(&payload[4..Self::FIXED_SIZE])
+            .expect("bug: the fixed prefix length is already checked");
+
+        let mut offset = Self::FIXED_SIZE;
+        let constant_iv = if is_protected == 1 && per_sample_iv_size == 0 {
+            let constant_iv_size = *payload
+                .get(offset)
+                .ok_or_else(|| Error::invalid_data("SeigEntry constant_IV_size is missing"))?;
+            offset += 1;
+            let end = offset
+                .checked_add(usize::from(constant_iv_size))
+                .ok_or_else(|| Error::invalid_data("SeigEntry constant IV size overflow"))?;
+            if end > payload.len() {
+                return Err(Error::invalid_data(
+                    "SeigEntry constant_IV exceeds remaining payload",
+                ));
+            }
+            let constant_iv = payload[offset..end].to_vec();
+            offset = end;
+            Some(constant_iv)
+        } else {
+            None
+        };
+
+        Ok((
+            Self {
+                is_protected,
+                per_sample_iv_size,
+                kid,
+                constant_iv,
+            },
+            offset,
+        ))
+    }
+
+    /// `seig` エントリーをバイト列に変換する
+    ///
+    /// `multi_key_flag` と `crypt_byte_block` / `skip_byte_block` は常に 0 を書き込む。
+    /// [`SeigEntry::constant_iv`] は、`is_protected == 1 && per_sample_iv_size == 0` の
+    /// 場合だけ設定すること。その長さが `u8::MAX` を超える場合はパニックする
+    /// ([`SgpdBox`] のエンコードは、書き込む前に長さを検査する)。
+    pub fn encode_to_vec(&self) -> Vec<u8> {
+        // 先頭 2 バイトは multi_key_flag = 0 / reserved = 0 と
+        // crypt_byte_block = 0 / skip_byte_block = 0 を表す
+        let mut bytes = vec![0x00, 0x00, self.is_protected, self.per_sample_iv_size];
+        bytes.extend_from_slice(&self.kid);
+        if let Some(constant_iv) = &self.constant_iv {
+            let size = u8::try_from(constant_iv.len())
+                .expect("constant IV length must fit in u8; validate it before encoding");
+            bytes.push(size);
+            bytes.extend_from_slice(constant_iv);
+        }
+        bytes
+    }
+}
+
+/// `seig` エントリーのエンコード内容を検査する
+fn check_seig_entry_for_encode(entry: &SeigEntry) -> Result<()> {
+    if entry.is_protected > 1 {
+        return Err(Error::invalid_input(
+            "SeigEntry is_protected must be 0 or 1",
+        ));
+    }
+    if !matches!(entry.per_sample_iv_size, 0 | 8 | 16) {
+        return Err(Error::invalid_input(
+            "SeigEntry per_sample_iv_size must be 0, 8, or 16",
+        ));
+    }
+    if entry.is_protected == 1 && entry.per_sample_iv_size == 0 {
+        let constant_iv = entry.constant_iv.as_ref().ok_or_else(|| {
+            Error::invalid_input("SeigEntry constant_iv is required when constant IV is used")
+        })?;
+        if u8::try_from(constant_iv.len()).is_err() {
+            return Err(Error::invalid_input(
+                "SeigEntry constant_iv exceeds u8::MAX bytes",
+            ));
+        }
+    } else if entry.constant_iv.is_some() {
+        return Err(Error::invalid_input(
+            "SeigEntry constant_iv must be absent when per-sample IV is used",
+        ));
+    }
+    Ok(())
+}
+
+/// `sgpd` の 1 エントリー
+///
+/// `grouping_type` が `seig` の場合は [`SgpdEntry::Seig`] にし、それ以外は version 1 の
+/// `default_length` / `description_length` で切り出した生バイトを [`SgpdEntry::Unknown`]
+/// として保持する。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SgpdEntry {
+    /// `seig` サンプルグループのエントリー
+    Seig(SeigEntry),
+
+    /// `seig` 以外のサンプルグループのエントリー
+    ///
+    /// 意味の解釈はせず、生バイトのまま保持する。
+    Unknown(Vec<u8>),
+}
+
+/// [ISO/IEC 14496-12] SampleGroupDescriptionBox class
+///
+/// `grouping_type` ごとのサンプルグループのエントリーを保持する。
+///
+/// # 対応バージョン
+///
+/// version 0 と 1 に対応する。version 0 は `default_length` を持たず、
+/// `grouping_type` が `seig` の場合だけエントリー長を決められるため、それ以外は
+/// [`crate::ErrorKind::Unsupported`] を返す。
+/// version 1 は `default_length` を持ち、`default_length == 0` の場合は各エントリーの
+/// 直前に 32 ビットの `description_length` が入る。
+/// version 2 は `default_group_description_index` を持つが、本実装では
+/// [`crate::ErrorKind::Unsupported`] として拒否する。
+///
+/// # エンコード時のエラー
+///
+/// version 1 で `default_length` が 0 以外の場合、各エントリーのエンコード結果の長さは
+/// `default_length` と一致しなければならず、一致しない場合は
+/// [`crate::ErrorKind::InvalidInput`] を返す。`seig` エントリーは定義済みフィールドだけを
+/// 書き出すため、デコード時に読み飛ばした将来の拡張バイトは保持しない。
+///
+/// `grouping_type` と [`SgpdEntry`] の variant も検査する。`grouping_type` が `seig` の
+/// 場合は [`SgpdEntry::Seig`] だけを許可し、それ以外の場合は [`SgpdEntry::Unknown`] だけを
+/// 許可する。不一致は [`crate::ErrorKind::InvalidInput`] を返す。デコードは
+/// `grouping_type` だけで variant を決めるため、不一致のまま書き出すとエンコードと
+/// デコードの往復契約が壊れるためである。
+///
+/// なお、ここでの扱いは ISO/IEC 14496-12:2022 8.9.3 に基づくものであり、
+/// 将来の改訂で変わる可能性がある。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SgpdBox {
+    /// FullBox バージョン (0 または 1)
+    pub version: u8,
+
+    /// サンプルグループの種類を表す 4CC
+    pub grouping_type: [u8; 4],
+
+    /// version 1 の既定エントリー長
+    ///
+    /// 0 の場合は各エントリーの直前に `description_length` が入る。
+    /// version 0 では存在しない。
+    pub default_length: Option<u32>,
+
+    /// サンプルグループのエントリー
+    pub entries: Vec<SgpdEntry>,
+}
+
+impl SgpdBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"sgpd");
+}
+
+impl Encode for SgpdBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        if self.version > 1 {
+            return Err(Error::unsupported(format!(
+                "SgpdBox version {} is not supported",
+                self.version
+            )));
+        }
+        if self.version == 0 && self.grouping_type != SEIG_GROUPING_TYPE {
+            return Err(Error::unsupported(
+                "SgpdBox version 0 only supports the 'seig' grouping type",
+            ));
+        }
+        match (self.version, self.default_length) {
+            (0, None) | (1, Some(_)) => {}
+            (0, Some(_)) => {
+                return Err(Error::invalid_input(
+                    "SgpdBox version 0 must not have default_length",
+                ));
+            }
+            (1, None) => {
+                return Err(Error::invalid_input(
+                    "SgpdBox version 1 requires default_length",
+                ));
+            }
+            _ => {
+                return Err(Error::unsupported(format!(
+                    "SgpdBox version {} is not supported",
+                    self.version
+                )));
+            }
+        }
+
+        // `decode()` は `grouping_type` だけでエントリーの variant を決めるため、
+        // 不一致のまま書き出すとエンコードとデコードの往復契約が壊れる。
+        // この検査は version 0 / 1 の両方に適用する。version 0 は `grouping_type` が
+        // `seig` に限られるため、`SgpdEntry::Unknown` はここで拒否される
+        for entry in &self.entries {
+            match entry {
+                SgpdEntry::Seig(_) if self.grouping_type != SEIG_GROUPING_TYPE => {
+                    return Err(Error::invalid_input(
+                        "SgpdBox 'seig' entries require grouping_type 'seig'",
+                    ));
+                }
+                SgpdEntry::Unknown(_) if self.grouping_type == SEIG_GROUPING_TYPE => {
+                    return Err(Error::invalid_input(
+                        "SgpdBox grouping_type 'seig' requires 'seig' entries",
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        // エントリーを先にバイト列へ変換し、version 1 の固定長形式では
+        // すべてのエントリー長が default_length と一致することを検査する
+        let mut encoded_entries = Vec::new();
+        for entry in &self.entries {
+            match entry {
+                SgpdEntry::Seig(seig_entry) => {
+                    check_seig_entry_for_encode(seig_entry)?;
+                    encoded_entries.push(seig_entry.encode_to_vec());
+                }
+                SgpdEntry::Unknown(bytes) => {
+                    encoded_entries.push(bytes.clone());
+                }
+            }
+        }
+        let fixed_entry_length =
+            match (self.version, self.default_length) {
+                (1, Some(0)) => None,
+                (1, Some(length)) => Some(usize::try_from(length).map_err(|_| {
+                    Error::invalid_input("SgpdBox default_length exceeds usize::MAX")
+                })?),
+                _ => None,
+            };
+        if let Some(fixed_entry_length) = fixed_entry_length {
+            for encoded in &encoded_entries {
+                if encoded.len() != fixed_entry_length {
+                    return Err(Error::invalid_input(format!(
+                        "SgpdBox entry length {} does not match default_length {fixed_entry_length}",
+                        encoded.len()
+                    )));
+                }
+            }
+        }
+
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += self.grouping_type.encode(&mut buf[offset..])?;
+        if self.version == 1 {
+            let default_length = self
+                .default_length
+                .expect("bug: SgpdBox version 1 requires default_length");
+            offset += default_length.encode(&mut buf[offset..])?;
+        }
+        let entry_count = u32::try_from(encoded_entries.len())
+            .map_err(|_| Error::invalid_input("SgpdBox entry count exceeds u32::MAX"))?;
+        offset += entry_count.encode(&mut buf[offset..])?;
+        for encoded in &encoded_entries {
+            if self.version == 1 && fixed_entry_length.is_none() {
+                let description_length = u32::try_from(encoded.len())
+                    .map_err(|_| Error::invalid_input("SgpdBox entry length exceeds u32::MAX"))?;
+                offset += description_length.encode(&mut buf[offset..])?;
+            }
+            offset += encoded.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for SgpdBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let full_header = FullBoxHeader::decode_at(payload, &mut offset)?;
+            let version = full_header.version;
+            if version > 1 {
+                return Err(Error::unsupported(format!(
+                    "Unsupported SgpdBox version: {version}"
+                )));
+            }
+            let grouping_type = <[u8; 4]>::decode_at(payload, &mut offset)?;
+            if version == 0 && grouping_type != SEIG_GROUPING_TYPE {
+                return Err(Error::unsupported(
+                    "SgpdBox version 0 cannot determine entry lengths for a grouping type other than 'seig'",
+                ));
+            }
+            let default_length = if version == 1 {
+                Some(u32::decode_at(payload, &mut offset)?)
+            } else {
+                None
+            };
+            let entry_count = u32::decode_at(payload, &mut offset)?;
+            let entry_count = usize::try_from(entry_count)
+                .map_err(|_| Error::invalid_data("SgpdBox entry count exceeds usize::MAX"))?;
+
+            // 切り詰められた入力を InvalidData として返すため、エントリーを読む前に
+            // 残りのペイロード長とエントリー数の整合性を検査する。
+            // 入力サイズに比例しないメモリを確保しないよう、最小エントリー長も使う
+            let fixed_entry_length = match default_length {
+                Some(0) => None,
+                Some(length) => Some(usize::try_from(length).map_err(|_| {
+                    Error::invalid_data("SgpdBox default_length exceeds usize::MAX")
+                })?),
+                None => None,
+            };
+            if let Some(fixed_entry_length) = fixed_entry_length {
+                if grouping_type == SEIG_GROUPING_TYPE && fixed_entry_length < SeigEntry::FIXED_SIZE
+                {
+                    return Err(Error::invalid_data(
+                        "SgpdBox default_length is shorter than the 20-byte 'seig' fixed prefix",
+                    ));
+                }
+                let required = entry_count
+                    .checked_mul(fixed_entry_length)
+                    .ok_or_else(|| Error::invalid_data("SgpdBox entry sizes overflow"))?;
+                if payload.len().saturating_sub(offset) < required {
+                    return Err(Error::invalid_data("SgpdBox entries are truncated"));
+                }
+            } else {
+                // version 0 は `seig` のみ、version 1 の `default_length == 0` は
+                // 各エントリーの前に 4 バイトの `description_length` が入る
+                let minimum_entry_length = if version == 0 {
+                    SeigEntry::FIXED_SIZE
+                } else {
+                    4
+                };
+                let required = entry_count
+                    .checked_mul(minimum_entry_length)
+                    .ok_or_else(|| Error::invalid_data("SgpdBox entry sizes overflow"))?;
+                if payload.len().saturating_sub(offset) < required {
+                    return Err(Error::invalid_data("SgpdBox entries are truncated"));
+                }
+            }
+
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                let (entry_payload, entry_length) = if let Some(fixed_entry_length) =
+                    fixed_entry_length
+                {
+                    let end = offset
+                        .checked_add(fixed_entry_length)
+                        .ok_or_else(|| Error::invalid_data("SgpdBox entry length overflow"))?;
+                    if end > payload.len() {
+                        return Err(Error::invalid_data("SgpdBox entries are truncated"));
+                    }
+                    (&payload[offset..end], fixed_entry_length)
+                } else if version == 1 {
+                    let description_length = usize::try_from(u32::decode_at(payload, &mut offset)?)
+                        .map_err(|_| {
+                            Error::invalid_data("SgpdBox description_length exceeds usize::MAX")
+                        })?;
+                    let end = offset
+                        .checked_add(description_length)
+                        .ok_or_else(|| Error::invalid_data("SgpdBox entry length overflow"))?;
+                    if end > payload.len() {
+                        return Err(Error::invalid_data("SgpdBox entries are truncated"));
+                    }
+                    (&payload[offset..end], description_length)
+                } else {
+                    // version 0 は `seig` のみなので、エントリー自身が長さを持つ
+                    let (seig_entry, consumed) = SeigEntry::decode(&payload[offset..])?;
+                    offset += consumed;
+                    entries.push(SgpdEntry::Seig(seig_entry));
+                    continue;
+                };
+
+                if grouping_type == SEIG_GROUPING_TYPE {
+                    let (seig_entry, _) = SeigEntry::decode(entry_payload)?;
+                    entries.push(SgpdEntry::Seig(seig_entry));
+                } else {
+                    entries.push(SgpdEntry::Unknown(entry_payload.to_vec()));
+                }
+                offset += entry_length;
+            }
+            if offset != payload.len() {
+                return Err(Error::invalid_data("SgpdBox has trailing bytes"));
+            }
+
+            Ok((
+                Self {
+                    version,
+                    grouping_type,
+                    default_length,
+                    entries,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for SgpdBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+impl FullBox for SgpdBox {
+    fn full_box_version(&self) -> u8 {
+        self.version
+    }
+
+    fn full_box_flags(&self) -> FullBoxFlags {
+        FullBoxFlags::new(0)
+    }
+}
+
+/// [ISO/IEC 14496-12] SampleToGroupBox class の 1 エントリー
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SbgpEntry {
+    /// このエントリーが適用される連続サンプル数
+    pub sample_count: u32,
+
+    /// `sgpd` のエントリー番号
+    ///
+    /// `0` はグループに属さないことを表す。`1..=0x10000` は track-level の `sgpd`、
+    /// `0x10001` 以上は fragment-local の `sgpd` の 1 始まりエントリー番号
+    /// (`index - 0x10000`) を表す (ISO/IEC 14496-12:2022 8.9.4)。
+    pub group_description_index: u32,
+}
+
+impl Encode for SbgpEntry {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut offset = self.sample_count.encode(buf)?;
+        offset += self.group_description_index.encode(&mut buf[offset..])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for SbgpEntry {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        let mut offset = 0;
+        let sample_count = u32::decode_at(buf, &mut offset)?;
+        let group_description_index = u32::decode_at(buf, &mut offset)?;
+        Ok((
+            Self {
+                sample_count,
+                group_description_index,
+            },
+            offset,
+        ))
+    }
+}
+
+/// [ISO/IEC 14496-12] SampleToGroupBox class
+///
+/// 連続するサンプルと、`sgpd` に格納されたサンプルグループのエントリー番号との
+/// 対応を保持する。
+///
+/// # 対応バージョン
+///
+/// version 0 と 1 に対応する。version 1 は `grouping_type_parameter` を持つ。
+/// なお、ここでの扱いは ISO/IEC 14496-12:2022 8.9.2 に基づくものであり、
+/// 将来の改訂で変わる可能性がある。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SbgpBox {
+    /// FullBox バージョン (0 または 1)
+    pub version: u8,
+
+    /// サンプルグループの種類を表す 4CC
+    pub grouping_type: [u8; 4],
+
+    /// version 1 の `grouping_type_parameter`
+    ///
+    /// version 0 では存在しない。
+    pub grouping_type_parameter: Option<u32>,
+
+    /// サンプルとグループの対応
+    pub entries: Vec<SbgpEntry>,
+}
+
+impl SbgpBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"sbgp");
+}
+
+impl Encode for SbgpBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        match (self.version, self.grouping_type_parameter) {
+            (0, None) | (1, Some(_)) => {}
+            (0, Some(_)) => {
+                return Err(Error::invalid_input(
+                    "SbgpBox version 0 must not have grouping_type_parameter",
+                ));
+            }
+            (1, None) => {
+                return Err(Error::invalid_input(
+                    "SbgpBox version 1 requires grouping_type_parameter",
+                ));
+            }
+            _ => {
+                return Err(Error::invalid_input(format!(
+                    "SbgpBox version must be 0 or 1, got {}",
+                    self.version
+                )));
+            }
+        }
+        let entry_count = u32::try_from(self.entries.len())
+            .map_err(|_| Error::invalid_input("SbgpBox entry count exceeds u32::MAX"))?;
+
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += FullBoxHeader::from_box(self).encode(&mut buf[offset..])?;
+        offset += self.grouping_type.encode(&mut buf[offset..])?;
+        if self.version == 1 {
+            let grouping_type_parameter = self
+                .grouping_type_parameter
+                .expect("bug: SbgpBox version 1 requires grouping_type_parameter");
+            offset += grouping_type_parameter.encode(&mut buf[offset..])?;
+        }
+        offset += entry_count.encode(&mut buf[offset..])?;
+        for entry in &self.entries {
+            offset += entry.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for SbgpBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let full_header = FullBoxHeader::decode_at(payload, &mut offset)?;
+            let version = full_header.version;
+            if version > 1 {
+                return Err(Error::invalid_data(format!(
+                    "Unsupported SbgpBox version: {version}"
+                )));
+            }
+            let grouping_type = <[u8; 4]>::decode_at(payload, &mut offset)?;
+            let grouping_type_parameter = if version == 1 {
+                Some(u32::decode_at(payload, &mut offset)?)
+            } else {
+                None
+            };
+            let entry_count = u32::decode_at(payload, &mut offset)?;
+            let entry_count = usize::try_from(entry_count)
+                .map_err(|_| Error::invalid_data("SbgpBox entry count exceeds usize::MAX"))?;
+            // 切り詰められた入力を InvalidData として返し、入力サイズに比例しない
+            // メモリを確保しないよう、エントリーを読む前に件数を検査する
+            let required = entry_count
+                .checked_mul(8)
+                .ok_or_else(|| Error::invalid_data("SbgpBox entry sizes overflow"))?;
+            if payload.len().saturating_sub(offset) < required {
+                return Err(Error::invalid_data("SbgpBox entries are truncated"));
+            }
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(SbgpEntry::decode_at(payload, &mut offset)?);
+            }
+            if offset != payload.len() {
+                return Err(Error::invalid_data("SbgpBox has trailing bytes"));
+            }
+
+            Ok((
+                Self {
+                    version,
+                    grouping_type,
+                    grouping_type_parameter,
+                    entries,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for SbgpBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
+}
+
+impl FullBox for SbgpBox {
+    fn full_box_version(&self) -> u8 {
+        self.version
+    }
+
+    fn full_box_flags(&self) -> FullBoxFlags {
+        FullBoxFlags::new(0)
     }
 }
 

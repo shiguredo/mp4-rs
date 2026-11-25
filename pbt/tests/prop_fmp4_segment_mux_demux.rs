@@ -5279,7 +5279,11 @@ fn arb_sample_encryption_info(ctx: &mut TestCaseContext, iv_size: usize) -> Samp
             bytes_of_protected_data: noprop::sample_u32(ctx),
         });
     }
-    SampleEncryptionInfo { iv, subsamples }
+    SampleEncryptionInfo {
+        iv,
+        subsamples,
+        kid: None,
+    }
 }
 
 /// 暗号化された映像トラックの mux → demux roundtrip
@@ -5368,6 +5372,131 @@ fn encrypted_video_roundtrip() -> noprop::TestResult {
         assert_eq!(
             file_encryption_infos, expected_file_encryption_infos,
             "Fmp4FileDemuxer が返す encryption_info が mux した値と一致しない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== 鍵ローテーション (`seig` サンプルグループ) の mux → demux roundtrip =====
+
+/// KID が切り替わる暗号化映像トラックの mux → demux roundtrip
+///
+/// `Some(tenc.default_kid)` は `None` に正規化されるため、サンプルごとの実効 KID を
+/// 比較する。KID が切り替わる場合は `traf` に `sgpd` / `sbgp` が書かれ、全サンプルが
+/// 既定 KID の場合は書かれないことも確認する。
+#[test]
+fn encrypted_video_with_kid_rotation_roundtrip() -> noprop::TestResult {
+    const DEFAULT_KID: [u8; 16] = [0x11; 16];
+    const ROTATED_KID_A: [u8; 16] = [0xAA; 16];
+    const ROTATED_KID_B: [u8; 16] = [0xBB; 16];
+
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        // constant IV は対象外なので per-sample IV の 8 / 16 だけを生成する
+        let iv_size: u8 = if noprop::sample_bool(ctx) { 8 } else { 16 };
+        let sample_count = noprop::sample_usize_in(ctx, 1..5);
+        let mut encryption_infos = Vec::new();
+        let mut expected_kids = Vec::new();
+        for _ in 0..sample_count {
+            let kid = match noprop::sample_u64_in(ctx, 0..=3) {
+                0 => None,
+                1 => Some(DEFAULT_KID),
+                2 => Some(ROTATED_KID_A),
+                _ => Some(ROTATED_KID_B),
+            };
+            // 実効 KID が既定 KID と同じ場合は None に正規化される
+            expected_kids.push(if kid == Some(DEFAULT_KID) { None } else { kid });
+            encryption_infos.push(SampleEncryptionInfo {
+                iv: noprop::sample_bytes_vec(ctx, usize::from(iv_size)),
+                subsamples: Vec::new(),
+                kid,
+            });
+        }
+
+        let sample_entry = create_encv_sample_entry_for_test(iv_size);
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let mut fmp4_samples = Vec::new();
+        let mut payloads = Vec::new();
+        for (index, encryption_info) in encryption_infos.iter().enumerate() {
+            let test_sample = TestSample {
+                track_index: 0,
+                duration: 3000,
+                keyframe: true,
+                data: vec![u8::try_from(index).unwrap_or(0xAA); 16],
+            };
+            let mut sample = video_segment_sample(&sample_entry, &test_sample, None);
+            sample.encryption_info = Some(encryption_info.clone());
+            fmp4_samples.push(sample);
+            payloads.push(test_sample.data);
+        }
+        let payload_refs: Vec<&[u8]> = payloads.iter().map(|payload| payload.as_slice()).collect();
+        let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payload_refs);
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // KID が切り替わる場合だけ sgpd / sbgp が書かれていること
+        let (moof_box, _) = MoofBox::decode(&segment_bytes).expect("moof のデコードに失敗した");
+        let traf_box = &moof_box.traf_boxes[0];
+        let has_sgpd = traf_box
+            .unknown_boxes
+            .iter()
+            .any(|unknown_box| unknown_box.box_type.as_bytes() == b"sgpd");
+        let has_sbgp = traf_box
+            .unknown_boxes
+            .iter()
+            .any(|unknown_box| unknown_box.box_type.as_bytes() == b"sbgp");
+        let expects_rotation = expected_kids.iter().any(Option::is_some);
+        assert_eq!(
+            has_sgpd, expects_rotation,
+            "KID の切り替えの有無と sgpd の有無が一致しない"
+        );
+        assert_eq!(
+            has_sbgp, expects_rotation,
+            "KID の切り替えの有無と sbgp の有無が一致しない"
+        );
+
+        // demux でサンプルごとの実効 KID が一致すること
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let decoded_samples = demuxer
+            .handle_media_segment(&segment_bytes)
+            .expect("KID が切り替わるメディアセグメントの処理に失敗した");
+        assert_eq!(decoded_samples.len(), expected_kids.len());
+        for (index, (sample, expected_kid)) in
+            decoded_samples.iter().zip(expected_kids.iter()).enumerate()
+        {
+            let actual_kid = sample.encryption_info.as_ref().and_then(|info| info.kid);
+            assert_eq!(
+                actual_kid, *expected_kid,
+                "{index} 番目のサンプルの実効 KID が一致しない"
+            );
+        }
+
+        // ファイル demuxer でも同じ実効 KID が取り出せること
+        let mut file_data = init_bytes;
+        file_data.extend_from_slice(&segment_bytes);
+        let mut file_demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut file_demuxer, &file_data);
+        let mut file_kids = Vec::new();
+        loop {
+            match file_demuxer.next_sample() {
+                Ok(Some(sample)) => {
+                    file_kids.push(sample.encryption_info.as_ref().and_then(|info| info.kid))
+                }
+                Ok(None) => break,
+                Err(DemuxError::InputRequired(_)) => {
+                    feed_fmp4_file_demuxer(&mut file_demuxer, &file_data)
+                }
+                Err(error) => panic!("next_sample エラー: {error}"),
+            }
+        }
+        assert_eq!(
+            file_kids, expected_kids,
+            "Fmp4FileDemuxer が返す実効 KID が一致しない"
         );
         Ok(())
     })?;

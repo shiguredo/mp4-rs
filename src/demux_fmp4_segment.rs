@@ -43,9 +43,11 @@ use crate::{
     BoxHeader, BoxSize, BoxType, Decode, Encode, Error, TrackKind,
     boxes::{
         FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, PsshBox, SaioBox, SaizBox,
-        SampleEncryptionInfo, SampleEntry, SencBox, StypBox, Subsample, TencBox, TfhdBox, TrafBox,
-        TrexBox, TrunBox, TrunSample, TrunSamples, UnknownBox,
+        SampleEncryptionInfo, SampleEntry, SbgpBox, SeigEntry, SencBox, SencSample, SgpdBox,
+        SgpdEntry, StypBox, Subsample, TencBox, TfhdBox, TrafBox, TrexBox, TrunBox, TrunSample,
+        TrunSamples, UnknownBox,
     },
+    boxes_cenc::SEIG_GROUPING_TYPE,
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
 
@@ -54,6 +56,11 @@ struct TrackRuntime {
     sample_entries: Vec<SampleEntry>,
     trex: TrexBox,
     current_sample_description_index: Option<u32>,
+
+    /// 初期化セグメントの `stbl` にある `grouping_type` が `seig` の `sgpd`
+    ///
+    /// `traf` の `sbgp` が `1..=0x10000` の index で参照する。
+    seig_sgpd: Option<SgpdBox>,
 }
 
 /// 初期化セグメントで読み飛ばしたトラック
@@ -194,6 +201,11 @@ impl Fmp4SegmentDemuxer {
                 }
             };
 
+            // `seig` の track-level サンプルグループを取り出す。
+            // `grouping_type` が `seig` の track-level `sbgp` は、トラック先頭からの
+            // 通算サンプル番号が必要になるため対象外とする
+            let seig_sgpd =
+                track_level_seig_sgpd(&trak.mdia_box.minf_box.stbl_box.unknown_boxes, track_id)?;
             let sample_entries = trak.mdia_box.minf_box.stbl_box.stsd_box.entries;
             if sample_entries.is_empty() {
                 return Err(DemuxError::DecodeError(Error::invalid_data(format!(
@@ -224,6 +236,7 @@ impl Fmp4SegmentDemuxer {
                 sample_entries,
                 trex,
                 current_sample_description_index: None,
+                seig_sgpd,
             });
         }
 
@@ -488,15 +501,6 @@ impl Fmp4SegmentDemuxer {
             let mut prev_traf_data_end: Option<usize> = None;
 
             for traf in &moof.traf_boxes {
-                // 鍵ローテーション (`seig` サンプルグループ) は対象外である。
-                // `tenc` の既定値と異なる KID / isProtected / IV サイズのサンプルを
-                // 誤って解釈しないよう、読み飛ばす前に検出して拒否する
-                if has_seig_sample_group(traf) {
-                    return Err(DemuxError::DecodeError(Error::unsupported(
-                        "seig sample group (key rotation) is not supported",
-                    )));
-                }
-
                 let track_index = track_infos
                     .iter()
                     .position(|track_info| track_info.track_id == traf.tfhd_box.track_id);
@@ -548,6 +552,7 @@ impl Fmp4SegmentDemuxer {
                     file_offset,
                     &track_runtime.sample_entries[sample_entry_index],
                     traf_sample_count,
+                    track_runtime.seig_sgpd.as_ref(),
                 )?;
 
                 let base_media_decode_time = traf
@@ -924,15 +929,298 @@ fn checked_sample_entry_index(
     Ok(sample_entry_index)
 }
 
-/// `traf` に `grouping_type` が `seig` の `sbgp` / `sgpd` があるかを返す
+/// `unknown_boxes` から `grouping_type` が `seig` の指定種別のボックスを 1 つだけ取り出す
 ///
-/// `sbgp` / `sgpd` は `TrafBox` の型付きフィールドを持たないため、`unknown_boxes` の
-/// ペイロードを読んで判定する。FullBox ヘッダーの直後の 4 バイトが `grouping_type` である。
-fn has_seig_sample_group(traf: &TrafBox) -> bool {
-    traf.unknown_boxes.iter().any(|unknown_box| {
-        matches!(&unknown_box.box_type, BoxType::Normal(ty) if ty == b"sbgp" || ty == b"sgpd")
-            && unknown_box.payload.get(4..8) == Some(&b"seig"[..])
-    })
+/// `grouping_type` が `seig` 以外のボックスは、意味の解釈をせず生バイトのまま扱うため無視する。
+/// 同じ種別の `seig` のボックスが複数ある場合は、どのサンプルグループを使うべきか
+/// 決められないため [`crate::ErrorKind::InvalidData`] を返す。
+fn find_seig_sample_group_box<'a>(
+    unknown_boxes: &'a [UnknownBox],
+    box_type: BoxType,
+    context: &str,
+) -> Result<Option<&'a UnknownBox>, DemuxError> {
+    let mut found = None;
+    for unknown_box in unknown_boxes {
+        if unknown_box.box_type == box_type
+            && unknown_box.payload.get(4..8) == Some(&SEIG_GROUPING_TYPE[..])
+        {
+            if found.is_some() {
+                return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+                    "multiple '{box_type}' boxes for the 'seig' grouping type in {context}",
+                ))));
+            }
+            found = Some(unknown_box);
+        }
+    }
+    Ok(found)
+}
+
+/// `seig` の `sgpd` を型付きボックスとしてデコードする
+fn decode_seig_sgpd(unknown_box: &UnknownBox) -> Result<SgpdBox, DemuxError> {
+    let bytes = unknown_box.encode_to_vec()?;
+    let (sgpd_box, _) = SgpdBox::decode(&bytes)?;
+    Ok(sgpd_box)
+}
+
+/// `stbl` から track-level の `seig` `sgpd` を取り出す
+///
+/// `grouping_type` が `seig` の track-level `sbgp` は、トラック先頭からの通算サンプル
+/// 番号が必要になるため対象外として [`crate::ErrorKind::Unsupported`] を返す。
+/// `seig` 以外の track-level `sbgp` は無視する。
+fn track_level_seig_sgpd(
+    unknown_boxes: &[UnknownBox],
+    track_id: u32,
+) -> Result<Option<SgpdBox>, DemuxError> {
+    if find_seig_sample_group_box(unknown_boxes, SbgpBox::TYPE, "stbl")?.is_some() {
+        return Err(DemuxError::DecodeError(Error::unsupported(format!(
+            "track-level 'sbgp' box for the 'seig' grouping type is not supported (track_id={track_id})",
+        ))));
+    }
+    match find_seig_sample_group_box(unknown_boxes, SgpdBox::TYPE, "stbl")? {
+        Some(unknown_box) => Ok(Some(decode_seig_sgpd(unknown_box)?)),
+        None => Ok(None),
+    }
+}
+
+/// `sbgp` の 1 エントリーが適用されるサンプル範囲と、その実効 KID
+#[derive(Debug, Clone, Copy)]
+struct SeigSampleRun {
+    /// この run が適用されるサンプル数
+    sample_count: u32,
+
+    /// 実効 KID (`None` は `tenc` の既定 KID を使う)
+    kid: Option<[u8; 16]>,
+}
+
+/// `traf` の `seig` サンプルグループからサンプルごとの実効 KID を解決する
+///
+/// 返り値は `sbgp` のエントリー順の run である。`sbgp` が無い場合は [`None`] を返し、
+/// すべてのサンプルは `tenc` の既定 KID を使う。`sbgp` の `sample_count` の合計が
+/// `traf` のサンプル数より少ない場合、余りのサンプルは index `0` として扱う
+/// (ISO/IEC 14496-12:2022 8.9.4)。
+///
+/// サンプルごとの実効 KID の解決は SAI の解釈とは独立して行う。`seig` 以外の
+/// サンプルグループ種別は解釈しない。
+fn resolve_seig_sample_group(
+    traf: &TrafBox,
+    track_seig_sgpd: Option<&SgpdBox>,
+    track_encryption: Option<&TrackEncryption>,
+    sample_count: usize,
+) -> Result<Option<Vec<SeigSampleRun>>, DemuxError> {
+    let sbgp_unknown_box = find_seig_sample_group_box(&traf.unknown_boxes, SbgpBox::TYPE, "traf")?;
+    let sgpd_unknown_box = find_seig_sample_group_box(&traf.unknown_boxes, SgpdBox::TYPE, "traf")?;
+    // `sbgp` が参照していなくても、壊れた `seig` の `sgpd` は早期に拒否する
+    let fragment_sgpd = match sgpd_unknown_box {
+        Some(unknown_box) => Some(decode_seig_sgpd(unknown_box)?),
+        None => None,
+    };
+    let Some(sbgp_unknown_box) = sbgp_unknown_box else {
+        return Ok(None);
+    };
+    let sbgp_bytes = sbgp_unknown_box.encode_to_vec()?;
+    let (sbgp_box, _) = SbgpBox::decode(&sbgp_bytes)?;
+    // `grouping_type_parameter` はサンプルグループの細分を表す。本実装は `seig` を
+    // 1 種類しか扱わないため、0 以外は対象外とする
+    if sbgp_box.grouping_type_parameter.unwrap_or(0) != 0 {
+        return Err(DemuxError::DecodeError(Error::unsupported(
+            "'sbgp' grouping_type_parameter must be 0 for the 'seig' grouping type",
+        )));
+    }
+    let Some(track_encryption) = track_encryption else {
+        return Err(DemuxError::DecodeError(Error::unsupported(
+            "'seig' sample group requires a CENC protected track",
+        )));
+    };
+    if track_encryption.tenc_box.default_is_protected == 0 {
+        return Err(DemuxError::DecodeError(Error::unsupported(
+            "'seig' sample group requires a track whose tenc default_is_protected is 1",
+        )));
+    }
+
+    let mut total_sample_count = 0usize;
+    for entry in &sbgp_box.entries {
+        total_sample_count = total_sample_count
+            .checked_add(usize::try_from(entry.sample_count).map_err(|_| {
+                DemuxError::DecodeError(Error::invalid_data(
+                    "'sbgp' sample_count exceeds usize::MAX",
+                ))
+            })?)
+            .ok_or_else(|| {
+                DemuxError::DecodeError(Error::invalid_data("'sbgp' sample_count total overflow"))
+            })?;
+    }
+    if total_sample_count > sample_count {
+        return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+            "'sbgp' sample_count total {total_sample_count} exceeds the number of samples in traf ({sample_count})"
+        ))));
+    }
+
+    let mut runs = Vec::new();
+    for entry in &sbgp_box.entries {
+        let kid = resolve_sbgp_group_description_index(
+            entry.group_description_index,
+            track_seig_sgpd,
+            fragment_sgpd.as_ref(),
+            &track_encryption.tenc_box,
+        )?;
+        runs.push(SeigSampleRun {
+            sample_count: entry.sample_count,
+            kid,
+        });
+    }
+    Ok(Some(runs))
+}
+
+/// `sbgp` の `group_description_index` を実効 KID に解決する
+///
+/// `0` はグループに属さないサンプルとして `tenc` の既定 KID を使う。`1..=0x10000` は
+/// track-level の `sgpd`、`0x10001` 以上は fragment-local の `sgpd` の 1 始まり
+/// エントリー番号として解決する (ISO/IEC 14496-12:2022 8.9.4)。
+fn resolve_sbgp_group_description_index(
+    group_description_index: u32,
+    track_seig_sgpd: Option<&SgpdBox>,
+    fragment_sgpd: Option<&SgpdBox>,
+    tenc_box: &TencBox,
+) -> Result<Option<[u8; 16]>, DemuxError> {
+    if group_description_index == 0 {
+        return Ok(None);
+    }
+    let (sgpd_box, entry_index, scope) = if group_description_index <= 0x1_0000 {
+        let sgpd_box = track_seig_sgpd.ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "'sbgp' refers to a track-level 'seig' 'sgpd' box but the init segment does not contain one",
+            ))
+        })?;
+        (sgpd_box, group_description_index - 1, "track-level")
+    } else {
+        let sgpd_box = fragment_sgpd.ok_or_else(|| {
+            DemuxError::DecodeError(Error::invalid_data(
+                "'sbgp' refers to a fragment-local 'seig' 'sgpd' box but the traf does not contain one",
+            ))
+        })?;
+        (
+            sgpd_box,
+            group_description_index - 0x1_0001,
+            "fragment-local",
+        )
+    };
+    let entry_index = usize::try_from(entry_index).map_err(|_| {
+        DemuxError::DecodeError(Error::invalid_data(
+            "'sbgp' group_description_index exceeds usize::MAX",
+        ))
+    })?;
+    let entry = sgpd_box.entries.get(entry_index).ok_or_else(|| {
+        DemuxError::DecodeError(Error::invalid_data(format!(
+            "'sbgp' group_description_index refers to the {scope} 'sgpd' entry {} but it has only {} entries",
+            entry_index + 1,
+            sgpd_box.entries.len(),
+        )))
+    })?;
+    let SgpdEntry::Seig(seig_entry) = entry else {
+        return Err(DemuxError::DecodeError(Error::invalid_data(
+            "'sbgp' refers to a 'sgpd' entry that is not a 'seig' entry",
+        )));
+    };
+    check_seig_entry_against_tenc(seig_entry, tenc_box)?;
+    // 実効 KID が tenc の既定 KID と同じ場合は None に正規化する
+    if seig_entry.kid == tenc_box.default_kid {
+        Ok(None)
+    } else {
+        Ok(Some(seig_entry.kid))
+    }
+}
+
+/// `seig` エントリーが `tenc` の既定値と整合するかを検査する
+///
+/// 本実装は KID の切り替えだけを対象とする。`is_protected` / IV サイズの上書き、
+/// constant IV、パターン暗号化パラメーターの上書きは対象外であり、`tenc` の既定値と
+/// 異なる場合は [`crate::ErrorKind::Unsupported`] を返す。
+fn check_seig_entry_against_tenc(entry: &SeigEntry, tenc_box: &TencBox) -> Result<(), DemuxError> {
+    if entry.is_protected != tenc_box.default_is_protected {
+        return Err(DemuxError::DecodeError(Error::unsupported(format!(
+            "'seig' is_protected {} does not match tenc default_is_protected {}",
+            entry.is_protected, tenc_box.default_is_protected,
+        ))));
+    }
+    if entry.per_sample_iv_size != tenc_box.default_per_sample_iv_size {
+        return Err(DemuxError::DecodeError(Error::unsupported(format!(
+            "'seig' Per_Sample_IV_Size {} does not match tenc default_per_sample_iv_size {}",
+            entry.per_sample_iv_size, tenc_box.default_per_sample_iv_size,
+        ))));
+    }
+    if entry.constant_iv.is_some() {
+        return Err(DemuxError::DecodeError(Error::unsupported(
+            "'seig' constant IV is not supported",
+        )));
+    }
+    // `seig` のパターン暗号化パラメーターは常に 0 / 0 であり、`tenc` に 0 以外の
+    // パターン値がある場合はそれを上書きして復号結果が変わってしまう
+    let crypt_byte_block = tenc_box
+        .default_crypt_byte_block
+        .map(|v| v.get())
+        .unwrap_or(0);
+    let skip_byte_block = tenc_box
+        .default_skip_byte_block
+        .map(|v| v.get())
+        .unwrap_or(0);
+    if crypt_byte_block != 0 || skip_byte_block != 0 {
+        return Err(DemuxError::DecodeError(Error::unsupported(
+            "'seig' pattern encryption parameters are not supported",
+        )));
+    }
+    Ok(())
+}
+
+/// `seig` サンプルグループから解決した実効 KID をサンプルごとの暗号化情報に反映する
+///
+/// `runs` に含まれないサンプルは `tenc` の既定 KID (`kid: None`) のままになる。
+fn apply_seig_sample_runs(
+    encryption_infos: &mut TrafEncryptionInfos,
+    runs: &[SeigSampleRun],
+) -> Result<(), DemuxError> {
+    match encryption_infos {
+        TrafEncryptionInfos::None => {
+            if runs.iter().any(|run| run.kid.is_some()) {
+                return Err(DemuxError::DecodeError(Error::unsupported(
+                    "'seig' KID rotation requires a CENC encrypted track",
+                )));
+            }
+        }
+        TrafEncryptionInfos::Constant(_) => {
+            // constant IV のトラックは per-sample IV ではないため、KID の切り替えを
+            // `SampleEncryptionInfo::kid` として表現できない
+            if runs.iter().any(|run| run.kid.is_some()) {
+                return Err(DemuxError::DecodeError(Error::unsupported(
+                    "'seig' KID rotation requires per-sample IV",
+                )));
+            }
+        }
+        TrafEncryptionInfos::PerSample(infos) => {
+            let mut sample_index = 0usize;
+            for run in runs {
+                let sample_count = usize::try_from(run.sample_count).map_err(|_| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "'sbgp' sample_count exceeds usize::MAX",
+                    ))
+                })?;
+                let end = sample_index.checked_add(sample_count).ok_or_else(|| {
+                    DemuxError::DecodeError(Error::invalid_data(
+                        "'sbgp' sample_count total overflow",
+                    ))
+                })?;
+                let Some(target) = infos.get_mut(sample_index..end) else {
+                    return Err(DemuxError::DecodeError(Error::invalid_data(
+                        "'sbgp' sample_count total exceeds the number of samples in traf",
+                    )));
+                };
+                for info in target {
+                    info.kid = run.kid;
+                }
+                sample_index = end;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `traf` に含まれるサンプル数を返す
@@ -1087,6 +1375,7 @@ fn resolve_traf_encryption(
     file_offset: Option<u64>,
     sample_entry: &SampleEntry,
     sample_count: usize,
+    track_seig_sgpd: Option<&SgpdBox>,
 ) -> Result<TrafEncryptionInfos, DemuxError> {
     let senc_unknown_box = find_single_unknown_box(traf, SencBox::TYPE)?;
     let saiz_unknown_box = find_single_unknown_box(traf, SaizBox::TYPE)?;
@@ -1094,6 +1383,14 @@ fn resolve_traf_encryption(
     let has_sai =
         senc_unknown_box.is_some() || saiz_unknown_box.is_some() || saio_unknown_box.is_some();
     let track_encryption = TrackEncryption::from_sample_entry(sample_entry)?;
+    // KID の解決は SAI の解釈とは独立して行う。`seig` の `sbgp` が無ければ `None` であり、
+    // すべてのサンプルが `tenc` の既定 KID を使う
+    let seig_sample_runs = resolve_seig_sample_group(
+        traf,
+        track_seig_sgpd,
+        track_encryption.as_ref(),
+        sample_count,
+    )?;
 
     if !has_sai {
         let Some(track_encryption) = track_encryption else {
@@ -1110,10 +1407,16 @@ fn resolve_traf_encryption(
         }
         // constant IV を使うサンプル全体暗号化なので、iv / subsamples が空の情報を
         // 全サンプルで共有する
-        return Ok(TrafEncryptionInfos::Constant(SampleEncryptionInfo {
+        let mut encryption_infos = TrafEncryptionInfos::Constant(SampleEncryptionInfo {
             iv: Vec::new(),
             subsamples: Vec::new(),
-        }));
+            kid: None,
+        });
+        apply_seig_sample_runs(
+            &mut encryption_infos,
+            seig_sample_runs.as_deref().unwrap_or_default(),
+        )?;
+        return Ok(encryption_infos);
     }
 
     let Some(track_encryption) = track_encryption else {
@@ -1168,7 +1471,22 @@ fn resolve_traf_encryption(
                 senc_box.samples.len()
             ))));
         }
-        return Ok(TrafEncryptionInfos::PerSample(senc_box.samples));
+        // `senc` は KID を持たないため、解決済みの実効 KID を後から付ける
+        let samples: Vec<SampleEncryptionInfo> = senc_box
+            .samples
+            .into_iter()
+            .map(|sample| SampleEncryptionInfo {
+                iv: sample.iv,
+                subsamples: sample.subsamples,
+                kid: None,
+            })
+            .collect();
+        let mut encryption_infos = TrafEncryptionInfos::PerSample(samples);
+        apply_seig_sample_runs(
+            &mut encryption_infos,
+            seig_sample_runs.as_deref().unwrap_or_default(),
+        )?;
+        return Ok(encryption_infos);
     }
 
     let (Some(saiz_box), Some(saio_box)) = (saiz_box, saio_box) else {
@@ -1263,9 +1581,19 @@ fn resolve_traf_encryption(
                 "sample auxiliary information exceeds the media segment",
             )));
         }
-        samples.push(parse_sample_aux_info(&data[*start..end], iv_size)?);
+        let sample = parse_sample_aux_info(&data[*start..end], iv_size)?;
+        samples.push(SampleEncryptionInfo {
+            iv: sample.iv,
+            subsamples: sample.subsamples,
+            kid: None,
+        });
     }
-    Ok(TrafEncryptionInfos::PerSample(samples))
+    let mut encryption_infos = TrafEncryptionInfos::PerSample(samples);
+    apply_seig_sample_runs(
+        &mut encryption_infos,
+        seig_sample_runs.as_deref().unwrap_or_default(),
+    )?;
+    Ok(encryption_infos)
 }
 
 /// `saiz` / `saio` を持つ `traf` の SAI の基準位置を返す
@@ -1316,9 +1644,12 @@ fn saio_offset_position(base: usize, offset: u64) -> Result<usize, DemuxError> {
 /// IV の後ろに `subsample_count` とサブサンプルが続く
 /// (ISO/IEC 23001-7:2023 7.2.1 の `SampleEncryption` と同じ形式)。
 ///
+/// SAI は KID を持たないため [`SencSample`] を返す。実効 KID は `seig` サンプルグループの
+/// 解決処理で後から付ける。
+///
 /// IV より短い入力、サブサンプル表が切り詰められた入力、末尾に余分なバイトがある入力は
 /// [`crate::ErrorKind::InvalidData`] を返す。
-fn parse_sample_aux_info(bytes: &[u8], iv_size: usize) -> Result<SampleEncryptionInfo, DemuxError> {
+fn parse_sample_aux_info(bytes: &[u8], iv_size: usize) -> Result<SencSample, DemuxError> {
     if bytes.len() < iv_size {
         return Err(DemuxError::DecodeError(Error::invalid_data(
             "sample auxiliary information is shorter than the IV size",
@@ -1327,7 +1658,7 @@ fn parse_sample_aux_info(bytes: &[u8], iv_size: usize) -> Result<SampleEncryptio
     let iv = bytes[..iv_size].to_vec();
     let rest = &bytes[iv_size..];
     if rest.is_empty() {
-        return Ok(SampleEncryptionInfo {
+        return Ok(SencSample {
             iv,
             subsamples: Vec::new(),
         });
@@ -1357,7 +1688,7 @@ fn parse_sample_aux_info(bytes: &[u8], iv_size: usize) -> Result<SampleEncryptio
             "sample auxiliary information has trailing bytes",
         )));
     }
-    Ok(SampleEncryptionInfo { iv, subsamples })
+    Ok(SencSample { iv, subsamples })
 }
 
 /// 型付きボックスとしてデコードする

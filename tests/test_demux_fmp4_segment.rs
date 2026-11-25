@@ -1342,6 +1342,7 @@ fn create_video_drm_sample(
         encryption_info: Some(SampleEncryptionInfo {
             iv: vec![0x33; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
     }
 }
@@ -1365,6 +1366,7 @@ fn create_audio_drm_sample(
         encryption_info: Some(SampleEncryptionInfo {
             iv: vec![0x44; 8],
             subsamples: Vec::new(),
+            kid: None,
         }),
     }
 }
@@ -1883,10 +1885,12 @@ fn two_subsample_encryption_infos() -> Vec<Option<SampleEncryptionInfo>> {
                 bytes_of_clear_data: 5,
                 bytes_of_protected_data: 10,
             }],
+            kid: None,
         }),
         Some(SampleEncryptionInfo {
             iv: vec![0x22; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
     ]
 }
@@ -1992,6 +1996,7 @@ fn constant_iv_without_sai_returns_empty_encryption_info() {
         vec![Some(SampleEncryptionInfo {
             iv: Vec::new(),
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     let rewritten = remove_all_sample_aux_info(&media_segment);
@@ -2009,6 +2014,7 @@ fn constant_iv_without_sai_returns_empty_encryption_info() {
         Some(SampleEncryptionInfo {
             iv: Vec::new(),
             subsamples: Vec::new(),
+            kid: None,
         }),
         "constant IV のサンプル全体暗号化として復元されていない"
     );
@@ -2023,6 +2029,7 @@ fn missing_sai_with_per_sample_iv_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 8],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     let rewritten = remove_all_sample_aux_info(&media_segment);
@@ -2063,6 +2070,7 @@ fn selective_encryption_sai_with_clear_default_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     let init_segment = rewrite_init_tenc_default_is_protected(&init_segment, 0);
@@ -2094,54 +2102,533 @@ fn selective_encryption_sai_with_clear_default_is_invalid_data() {
     }
 }
 
-/// `grouping_type` が `seig` の `sbgp` / `sgpd` を持つ `traf` が Unsupported になること
+// ===== 鍵ローテーション (`seig` サンプルグループ) の読み取りテスト =====
+
+/// 鍵ローテーションテスト用の KID A
+const ROTATED_KID_A: [u8; 16] = [0xAA; 16];
+
+/// 鍵ローテーションテスト用の KID B
+const ROTATED_KID_B: [u8; 16] = [0xBB; 16];
+
+/// `seig` エントリーのバイト列を組み立てる
+///
+/// 20 バイトの固定前置 (`multi_key_flag` / reserved / パターン値 / `is_protected` /
+/// `Per_Sample_IV_Size` / KID) に、条件付きで constant IV を続ける。
+fn build_seig_entry(
+    is_protected: u8,
+    per_sample_iv_size: u8,
+    kid: [u8; 16],
+    constant_iv: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut entry = vec![0x00, 0x00, is_protected, per_sample_iv_size];
+    entry.extend_from_slice(&kid);
+    if let Some(constant_iv) = constant_iv {
+        entry.push(u8::try_from(constant_iv.len()).expect("テスト用の constant IV は u8 に収まる"));
+        entry.extend_from_slice(constant_iv);
+    }
+    entry
+}
+
+/// `grouping_type` が `seig` の `sgpd` (version 1) を組み立てる
+///
+/// `default_length` が `Some` の場合は各エントリーをその長さで並べ、
+/// `None` の場合は各エントリーの前に `description_length` を書く。
+fn build_seig_sgpd(entries: &[Vec<u8>], default_length: Option<u32>) -> UnknownBox {
+    let mut payload = vec![0x01, 0x00, 0x00, 0x00];
+    payload.extend_from_slice(b"seig");
+    let default_length_value = default_length.unwrap_or(0);
+    payload.extend_from_slice(&default_length_value.to_be_bytes());
+    payload.extend_from_slice(
+        &u32::try_from(entries.len())
+            .expect("テスト用のエントリー数は u32 に収まる")
+            .to_be_bytes(),
+    );
+    for entry in entries {
+        if default_length_value == 0 {
+            payload.extend_from_slice(
+                &u32::try_from(entry.len())
+                    .expect("テスト用のエントリー長は u32 に収まる")
+                    .to_be_bytes(),
+            );
+        } else {
+            assert_eq!(
+                entry.len(),
+                usize::try_from(default_length_value)
+                    .expect("テスト用の default_length は usize に収まる"),
+                "テスト用の default_length とエントリー長が一致しない"
+            );
+        }
+        payload.extend_from_slice(entry);
+    }
+    build_unknown_box(*b"sgpd", payload)
+}
+
+/// `sbgp` を組み立てる
+///
+/// `version == 1` の場合は `grouping_type_parameter` を書き込む。
+fn build_sbgp_box(
+    grouping_type: [u8; 4],
+    version: u8,
+    grouping_type_parameter: Option<u32>,
+    entries: &[(u32, u32)],
+) -> UnknownBox {
+    let mut payload = vec![version, 0x00, 0x00, 0x00];
+    payload.extend_from_slice(&grouping_type);
+    if let Some(grouping_type_parameter) = grouping_type_parameter {
+        payload.extend_from_slice(&grouping_type_parameter.to_be_bytes());
+    }
+    payload.extend_from_slice(
+        &u32::try_from(entries.len())
+            .expect("テスト用のエントリー数は u32 に収まる")
+            .to_be_bytes(),
+    );
+    for (sample_count, group_description_index) in entries {
+        payload.extend_from_slice(&sample_count.to_be_bytes());
+        payload.extend_from_slice(&group_description_index.to_be_bytes());
+    }
+    build_unknown_box(*b"sbgp", payload)
+}
+
+/// `grouping_type` が `seig` の `sbgp` (version 0) を組み立てる
+fn build_seig_sbgp(entries: &[(u32, u32)]) -> UnknownBox {
+    build_sbgp_box(*b"seig", 0, None, entries)
+}
+
+/// 最初の `traf` にサンプルグループのボックスを追加したメディアセグメントを返す
+fn add_traf_sample_group_boxes(media_segment: &[u8], boxes: Vec<UnknownBox>) -> Vec<u8> {
+    rewrite_media_segment_moof(media_segment, move |moof_box| {
+        assert_eq!(moof_box.traf_boxes.len(), 1, "テストは 1 traf を前提にする");
+        moof_box.traf_boxes[0].unknown_boxes.extend(boxes);
+    })
+}
+
+/// 最初のトラックの `stbl` に未知ボックスを追加した init セグメントを返す
+fn add_stbl_unknown_box(init_segment: &[u8], unknown_box: UnknownBox) -> Vec<u8> {
+    let (ftyp_box, ftyp_size) =
+        FtypBox::decode(init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+    let (mut moov_box, _) = MoovBox::decode(&init_segment[ftyp_size..])
+        .expect("init セグメントからの moov デコードに失敗した");
+    moov_box.trak_boxes[0]
+        .mdia_box
+        .minf_box
+        .stbl_box
+        .unknown_boxes
+        .push(unknown_box);
+    let mut result = ftyp_box
+        .encode_to_vec()
+        .expect("ftyp のエンコードに失敗した");
+    result.extend_from_slice(
+        &moov_box
+            .encode_to_vec()
+            .expect("moov のエンコードに失敗した"),
+    );
+    result
+}
+
+/// `cenc` の per-sample IV 16 バイトの暗号化トラックと、指定サンプル数の
+/// init セグメント / メディアセグメントを組み立てる
+fn build_cenc_encrypted_segments(sample_count: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut encryption_infos = Vec::new();
+    for index in 0..sample_count {
+        encryption_infos.push(Some(SampleEncryptionInfo {
+            iv: vec![
+                u8::try_from(index + 1).expect("テスト用のサンプル数は u8 に収まる");
+                16
+            ],
+            subsamples: Vec::new(),
+            kid: None,
+        }));
+    }
+    build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc(*b"cenc", 1, 16, None),
+        encryption_infos,
+    )
+}
+
+/// メディアセグメントを処理してサンプルごとの `kid` を返す
+fn demux_sample_kids(
+    init_segment: &[u8],
+    media_segment: &[u8],
+) -> Result<Vec<Option<[u8; 16]>>, DemuxError> {
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer.handle_init_segment(init_segment)?;
+    let samples = demuxer.handle_media_segment(media_segment)?;
+    Ok(samples
+        .iter()
+        .map(|sample| sample.encryption_info.as_ref().and_then(|info| info.kid))
+        .collect())
+}
+
+/// `DemuxError::DecodeError` の種別と理由の一部を検査する
+fn assert_demux_decode_error(
+    err: DemuxError,
+    expected_kind: ErrorKind,
+    expected_reason: &str,
+    description: &str,
+) {
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind, expected_kind,
+                "{description} のエラー種別が {expected_kind:?} ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains(expected_reason),
+                "{description} の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("{description} で DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// fragment-local の `sgpd` を参照する `sbgp` からサンプルごとの KID が設定されること
+///
+/// `sbgp` の `group_description_index` は `0x10001` 以上で fragment-local の
+/// `sgpd` の 1 始まりエントリー番号を表す (ISO/IEC 14496-12:2022 8.9.4)。
 #[test]
-fn seig_sample_group_is_unsupported() {
+fn demuxes_kid_from_fragment_local_seig_sgpd() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(3);
+    let sgpd = build_seig_sgpd(
+        &[
+            build_seig_entry(1, 16, ROTATED_KID_A, None),
+            build_seig_entry(1, 16, ROTATED_KID_B, None),
+        ],
+        Some(20),
+    );
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001), (1, 0x1_0002), (1, 0)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let kids = demux_sample_kids(&init_segment, &rewritten)
+        .expect("fragment-local の seig sgpd を持つセグメントの処理に失敗した");
+    assert_eq!(
+        kids,
+        vec![Some(ROTATED_KID_A), Some(ROTATED_KID_B), None],
+        "fragment-local の sgpd から復元した KID が入力と一致しない"
+    );
+}
+
+/// track-level の `sgpd` を参照する `sbgp` からサンプルごとの KID が設定されること
+///
+/// `sbgp` の `group_description_index` が `1..=0x10000` の場合は、初期化セグメントの
+/// `stbl` にある `sgpd` の 1 始まりエントリー番号を表す。
+#[test]
+fn demuxes_kid_from_track_level_seig_sgpd() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(2);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
+    let init_segment = add_stbl_unknown_box(&init_segment, sgpd);
+    let sbgp = build_seig_sbgp(&[(1, 1), (1, 0)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sbgp]);
+
+    let kids = demux_sample_kids(&init_segment, &rewritten)
+        .expect("track-level の seig sgpd を持つセグメントの処理に失敗した");
+    assert_eq!(
+        kids,
+        vec![Some(ROTATED_KID_A), None],
+        "track-level の sgpd から復元した KID が入力と一致しない"
+    );
+}
+
+/// `seig` のエントリーの KID が `tenc.default_kid` と同じ場合は `kid: None` に
+/// 正規化されること
+#[test]
+fn normalizes_seig_kid_equal_to_tenc_default_kid() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(2);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, VIDEO_KID, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(2, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let kids = demux_sample_kids(&init_segment, &rewritten)
+        .expect("既定 KID と同じ KID を持つセグメントの処理に失敗した");
+    assert_eq!(
+        kids,
+        vec![None, None],
+        "tenc.default_kid と同じ KID が None に正規化されていない"
+    );
+}
+
+/// `sbgp` の `sample_count` の合計がサンプル数より少ない場合、余りのサンプルの
+/// KID が `None` (tenc の既定 KID) になること
+#[test]
+fn remaining_samples_use_default_kid() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(3);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let kids = demux_sample_kids(&init_segment, &rewritten)
+        .expect("sbgp の sample_count の合計がサンプル数より少ないセグメントの処理に失敗した");
+    assert_eq!(
+        kids,
+        vec![Some(ROTATED_KID_A), None, None],
+        "sbgp に含まれないサンプルの KID が既定 KID になっていない"
+    );
+}
+
+/// `grouping_type` が `seig` 以外の track-level の `sbgp` が無視されること
+#[test]
+fn non_seig_track_level_sbgp_is_ignored() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sbgp = build_sbgp_box(*b"roll", 0, None, &[(1, 1)]);
+    let init_segment = add_stbl_unknown_box(&init_segment, sbgp);
+
+    let kids = demux_sample_kids(&init_segment, &media_segment)
+        .expect("seig 以外の track-level sbgp でエラーになった");
+    assert_eq!(
+        kids,
+        vec![None],
+        "seig 以外の track-level sbgp を解釈してしまった"
+    );
+}
+
+/// `grouping_type` が `seig` の track-level の `sbgp` が Unsupported になること
+///
+/// track-level の `sbgp` はトラック先頭からの通算サンプル番号が必要になるため対象外。
+#[test]
+fn track_level_seig_sbgp_is_unsupported() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sbgp = build_seig_sbgp(&[(1, 1)]);
+    let init_segment = add_stbl_unknown_box(&init_segment, sbgp);
+
+    let err = demux_sample_kids(&init_segment, &media_segment)
+        .expect_err("track-level の seig sbgp を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::Unsupported,
+        "track-level 'sbgp'",
+        "track-level の seig sbgp",
+    );
+}
+
+/// `sbgp` の `sample_count` の合計がサンプル数より多い入力が InvalidData になること
+#[test]
+fn sbgp_sample_count_exceeding_samples_is_invalid_data() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sbgp = build_seig_sbgp(&[(2, 0)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("sample_count の合計がサンプル数より多い sbgp を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::InvalidData,
+        "exceeds the number of samples",
+        "sample_count の合計超過",
+    );
+}
+
+/// `sbgp` の `group_description_index` が `sgpd` のエントリー数の範囲外の入力が
+/// InvalidData になること
+#[test]
+fn sbgp_group_description_index_out_of_range_is_invalid_data() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
+    // sgpd は 1 エントリーしかないのに 2 番目のエントリーを参照する
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0002)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("範囲外の group_description_index を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::InvalidData,
+        "entry 2 but it has only 1 entries",
+        "group_description_index の範囲外",
+    );
+}
+
+/// `sbgp` が参照する `sgpd` が無い入力が InvalidData になること
+#[test]
+fn sbgp_referencing_missing_sgpd_is_invalid_data() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("参照先の sgpd が無い sbgp を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::InvalidData,
+        "fragment-local 'seig' 'sgpd'",
+        "参照先の sgpd が無い入力",
+    );
+}
+
+/// `grouping_type` が `seig` の `sbgp` が同じ `traf` に複数ある入力が
+/// InvalidData になること
+#[test]
+fn duplicate_seig_sbgp_is_invalid_data() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp.clone(), sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("seig の sbgp が重複する入力を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::InvalidData,
+        "multiple 'sbgp' boxes",
+        "sbgp の重複",
+    );
+}
+
+/// `grouping_type` が `seig` の `sgpd` が同じ `traf` に複数ある入力が
+/// InvalidData になること
+#[test]
+fn duplicate_seig_sgpd_is_invalid_data() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd.clone(), sgpd, sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("seig の sgpd が重複する入力を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::InvalidData,
+        "multiple 'sgpd' boxes",
+        "sgpd の重複",
+    );
+}
+
+/// `sbgp` の version 1 で `grouping_type_parameter` が 0 以外の入力が
+/// Unsupported になること
+#[test]
+fn sbgp_non_zero_grouping_type_parameter_is_unsupported() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sbgp = build_sbgp_box(*b"seig", 1, Some(1), &[(1, 0)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("grouping_type_parameter が 0 以外の sbgp を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::Unsupported,
+        "grouping_type_parameter",
+        "grouping_type_parameter が 0 以外の入力",
+    );
+}
+
+/// `sgpd` のエントリーが切り詰められた入力が InvalidData になること
+#[test]
+fn truncated_seig_sgpd_is_invalid_data() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    // version 1, flags 0, grouping_type 'seig', default_length 20,
+    // entry_count 1 だがエントリーバイトが無い
+    let mut payload = vec![0x01, 0x00, 0x00, 0x00];
+    payload.extend_from_slice(b"seig");
+    payload.extend_from_slice(&20u32.to_be_bytes());
+    payload.extend_from_slice(&1u32.to_be_bytes());
+    let sgpd = build_unknown_box(*b"sgpd", payload);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("エントリーが切り詰められた sgpd を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::InvalidData,
+        "truncated",
+        "sgpd のエントリーの切り詰め",
+    );
+}
+
+/// `seig` の `is_protected` が `tenc` と食い違う入力が Unsupported になること
+#[test]
+fn seig_is_protected_mismatch_is_unsupported() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(0, 16, ROTATED_KID_A, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("is_protected が tenc と食い違う seig を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::Unsupported,
+        "is_protected",
+        "is_protected の食い違い",
+    );
+}
+
+/// `seig` の `Per_Sample_IV_Size` が `tenc` と食い違う入力が Unsupported になること
+#[test]
+fn seig_per_sample_iv_size_mismatch_is_unsupported() {
+    let (init_segment, media_segment) = build_cenc_encrypted_segments(1);
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 8, ROTATED_KID_A, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("Per_Sample_IV_Size が tenc と食い違う seig を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::Unsupported,
+        "Per_Sample_IV_Size",
+        "Per_Sample_IV_Size の食い違い",
+    );
+}
+
+/// `constant_iv` を持つ `seig` の入力が Unsupported になること
+///
+/// 本実装は per-sample IV を使うトラックだけを対象とするため、constant IV の
+/// 上書きは表現できない。
+#[test]
+fn seig_constant_iv_is_unsupported() {
+    let constant_iv = vec![0x77; 8];
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc(*b"cbc1", 1, 0, Some(constant_iv.clone())),
+        vec![Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: None,
+        })],
+    );
+    let sgpd = build_seig_sgpd(
+        &[build_seig_entry(1, 0, ROTATED_KID_A, Some(&constant_iv))],
+        None,
+    );
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("constant IV を持つ seig を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::Unsupported,
+        "constant IV",
+        "constant IV を持つ seig",
+    );
+}
+
+/// `tenc` にパターン暗号化パラメーターを持つトラックで `seig` を参照する入力が
+/// Unsupported になること
+///
+/// `seig` のパターン値は常に 0 / 0 であり、`tenc` のパターン値を上書きしてしまう。
+#[test]
+fn seig_pattern_override_is_unsupported() {
+    // `create_encv_sample_entry()` の `tenc` は `cbcs` かつパターン値 (1, 9) を持つ
     let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
         create_encv_sample_entry(320, 240),
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
+    let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
 
-    // `sbgp` と `sgpd` はどちらも、version 0, flags 0 の直後に grouping_type が 4 バイトで並ぶ。
-    // ここでは grouping_type 'seig', entry_count 0 のボックスを追加する
-    for (box_type, description) in [(*b"sbgp", "sbgp"), (*b"sgpd", "sgpd")] {
-        let mut payload = vec![0x00, 0x00, 0x00, 0x00];
-        payload.extend_from_slice(b"seig");
-        payload.extend_from_slice(&0u32.to_be_bytes());
-        let rewritten = rewrite_media_segment_moof(&media_segment, move |moof_box| {
-            assert_eq!(moof_box.traf_boxes.len(), 1, "テストは 1 traf を前提にする");
-            moof_box.traf_boxes[0]
-                .unknown_boxes
-                .push(build_unknown_box(box_type, payload));
-        });
-
-        let mut demuxer = Fmp4SegmentDemuxer::new();
-        demuxer
-            .handle_init_segment(&init_segment)
-            .expect("init セグメントの処理に失敗した");
-        let err = demuxer
-            .handle_media_segment(&rewritten)
-            .expect_err("seig サンプルグループを持つ入力を解釈してしまった");
-        match err {
-            DemuxError::DecodeError(error) => {
-                assert_eq!(
-                    error.kind,
-                    ErrorKind::Unsupported,
-                    "{description} のエラー種別が Unsupported ではない (reason={})",
-                    error.reason,
-                );
-                assert!(
-                    error.reason.contains("seig sample group"),
-                    "{description} の seig の検査とは別のエラーである (reason={})",
-                    error.reason,
-                );
-            }
-            other => panic!("DecodeError を期待したが {other:?} だった"),
-        }
-    }
+    let err = demux_sample_kids(&init_segment, &rewritten)
+        .expect_err("パターン暗号化パラメーターを持つトラックの seig を解釈してしまった");
+    assert_demux_decode_error(
+        err,
+        ErrorKind::Unsupported,
+        "pattern encryption parameters",
+        "パターン暗号化パラメーターの上書き",
+    );
 }
 
 /// `senc` の version が 0 以外の入力が InvalidData になること
@@ -2152,6 +2639,7 @@ fn senc_version_1_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     let rewritten = rewrite_senc_version(&media_segment, 1);
@@ -2189,6 +2677,7 @@ fn saiz_non_zero_aux_info_type_parameter_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     // version 0, flags 0x000001 (aux_info_type あり), aux_info_type 'cenc',
@@ -2236,6 +2725,7 @@ fn saio_non_zero_aux_info_type_parameter_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     // version 0, flags 0x000001 (aux_info_type あり), aux_info_type 'cenc',
@@ -2287,6 +2777,7 @@ fn demuxes_encryption_info_for_multiple_encrypted_tracks() {
             bytes_of_clear_data: 5,
             bytes_of_protected_data: 10,
         }],
+        kid: None,
     };
     let audio_encryption = SampleEncryptionInfo {
         iv: vec![0x22; 8],
@@ -2294,6 +2785,7 @@ fn demuxes_encryption_info_for_multiple_encrypted_tracks() {
             bytes_of_clear_data: 3,
             bytes_of_protected_data: 4,
         }],
+        kid: None,
     };
     let video_size = 16usize;
     let audio_size = 8usize;
@@ -2358,6 +2850,7 @@ fn saiz_saio_without_base_data_offset_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     let (mut moof_box, old_moof_size) =
@@ -2435,6 +2928,7 @@ fn non_cenc_protection_scheme_is_unsupported() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     // `EncvBox::encode` は CENC 系以外のスキームを書き出せないため、
@@ -2532,6 +3026,7 @@ fn constant_iv_with_huge_sample_count_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: Vec::new(),
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     // constant IV では SAI が無くても暗号化情報を復元できるため、SAI をすべて削除する
@@ -2582,6 +3077,7 @@ fn per_sample_sai_with_huge_sample_count_is_invalid_data() {
         vec![Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         })],
     );
     // `saiz` の `default_sample_info_size` を 1 にすると、`sample_info_sizes` を
@@ -3025,10 +3521,12 @@ fn demuxes_encryption_info_with_default_sample_info_size() {
         Some(SampleEncryptionInfo {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
         Some(SampleEncryptionInfo {
             iv: vec![0x22; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
     ];
     let (init_segment, media_segment) = build_encrypted_init_and_media_segments(

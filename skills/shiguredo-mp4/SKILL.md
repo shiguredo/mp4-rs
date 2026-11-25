@@ -120,7 +120,9 @@ while let Ok(Some(sample)) = demuxer.next_sample() {
 
 `Sample.data_offset` は `handle_media_segment()` に渡したバッファ先頭からの相対位置。
 
-`traf` に `senc` があれば `tenc` の `default_per_sample_iv_size` を使って SAI を復元し、`senc` が無ければ `saiz` / `saio` から復元して `Sample.encryption_info` に設定する。`senc` の version 0 以外、`seig` サンプルグループ (鍵ローテーション)、選択的暗号化は非対応でエラーになる。
+`traf` に `senc` があれば `tenc` の `default_per_sample_iv_size` を使って SAI を復元し、`senc` が無ければ `saiz` / `saio` から復元して `Sample.encryption_info` に設定する。`senc` の version 0 以外と選択的暗号化は非対応でエラーになる。
+
+鍵ローテーション (`seig` サンプルグループ) にも対応する。`traf` の `sbgp` の `group_description_index` を、track-level (`1..=0x10000`) または fragment-local (`0x10001` 以上) の `sgpd` のエントリーに解決し、サンプルごとの実効 KID を `Sample.encryption_info.kid` に設定する。`kid: None` は `tenc.default_kid` を使うことを表す。track-level の `sbgp` は対象外でエラーになる。`seig` による `is_protected` / IV サイズ / constant IV / パターン暗号化パラメーターの上書きは対象外でエラーになる。
 
 ```rust
 use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
@@ -184,7 +186,7 @@ while let Some(required) = detector.required_input() {
   - `sample_entry` は前のサンプルから変更がない場合 `None` (最初のサンプルは常に `Some`)
   - `timestamp` は DTS。PTS は `timestamp + composition_time_offset`
   - `data_offset` は file demuxer ではファイル先頭からの絶対位置、segment demuxer では入力バッファ先頭からの相対位置
-  - `encryption_info` は fMP4 の `senc` / `saiz` / `saio` から復元した CENC の SAI。`iv` は constant IV を使う場合は空、`subsamples` は空ならサンプル全体を暗号化する。暗号化されていないサンプルと `Mp4FileDemuxer` のサンプルは `None`
+  - `encryption_info` は fMP4 の `senc` / `saiz` / `saio` から復元した CENC の SAI。`iv` は constant IV を使う場合は空、`subsamples` は空ならサンプル全体を暗号化する。`kid` は `seig` サンプルグループから解決した実効 KID であり、`None` は `tenc.default_kid` を使うことを表す。暗号化されていないサンプルと `Mp4FileDemuxer` のサンプルは `None`
 
 ## マルチプレックス (mux)
 
@@ -220,7 +222,7 @@ while let Some(required) = detector.required_input() {
 | `composition_time_offset: Option<i64>` | PTS - DTS。負値は `i32::MIN..=-1`、非負値は `0..=u32::MAX` の範囲のみ |
 | `data_offset: u64` | ファイル内でのサンプルデータの開始位置。直前の `append_sample()` の位置と一致必須 (`PositionMismatch`) |
 | `data_size: usize` | サンプルデータのサイズ |
-| `encryption_info: Option<SampleEncryptionInfo>` | サンプル単位の CENC 暗号化情報。`Fmp4SegmentMuxer` は `tenc.default_is_protected = 1` のトラックで全サンプルに `Some` を要求して `senc` / `saiz` / `saio` を書き出し、`default_is_protected = 0` のトラックは `Some` を拒否する。`Mp4FileMuxer` は `Some` を拒否する |
+| `encryption_info: Option<SampleEncryptionInfo>` | サンプル単位の CENC 暗号化情報。`Fmp4SegmentMuxer` は `tenc.default_is_protected = 1` のトラックで全サンプルに `Some` を要求して `senc` / `saiz` / `saio` を書き出し、`default_is_protected = 0` のトラックは `Some` を拒否する。`kid: Some` は実効 KID が `tenc.default_kid` と異なる場合だけ指定し、`Some(tenc.default_kid)` は `None` に正規化される。KID が切り替わるサンプルには `sgpd` / `sbgp` を書き出す。`tenc` を持たないトラック、constant IV のトラック、`tenc` のパターン暗号化パラメーターが 0 以外のトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる (`tenc` version 1 で 0 / 0 の場合は受理する)。`Mp4FileMuxer` は `Some` を拒否する |
 
 注意点:
 
@@ -386,14 +388,18 @@ let mfra = muxer.mfra_bytes()?;
 | `SchiBox` | 保護スキーム固有の情報を保持するコンテナ (`tenc` + 未知ボックス) |
 | `TencBox` | トラック暗号化の既定値 (`default_is_protected` / `default_per_sample_iv_size` / `default_kid` / constant IV / パターン暗号化パラメーター) |
 | `SencBox` | サンプルごとの CENC SAI (ISO/IEC 23001-7 7.2.1)。version 0 と flags `0x000002` のみ対応。IV サイズを `tenc` から受け取る `decode_with_iv_size()` でデコードする |
+| `SencSample` | `senc` の 1 サンプル分の SAI (`iv` / `subsamples`)。`SencBox::samples` の要素型 |
 | `SaizBox` | SAI のサイズ (ISO/IEC 14496-12 8.7.8)。version 0 固定 |
 | `SaioBox` | SAI の位置 (ISO/IEC 14496-12 8.7.9 / 8.8.14)。version 0 / 1 |
 | `Subsample` | サブサンプル暗号化の 1 範囲 (`bytes_of_clear_data` / `bytes_of_protected_data`) |
-| `SampleEncryptionInfo` | サンプル単位の暗号化情報 (`iv` / `subsamples`)。`SencBox::samples` と `Sample.encryption_info` で使う |
+| `SampleEncryptionInfo` | サンプル単位の暗号化情報 (`iv` / `subsamples` / `kid`)。`Sample.encryption_info` で使う。`kid: None` は `tenc.default_kid` を使うことを表す |
+| `SbgpBox` / `SbgpEntry` | サンプルとサンプルグループの対応 (ISO/IEC 14496-12 8.9.2)。version 0 / 1 |
+| `SgpdBox` / `SgpdEntry` / `SeigEntry` | サンプルグループのエントリー (ISO/IEC 14496-12 8.9.3)。`seig` グループのエントリーが `SeigEntry`。version 0 / 1 |
 
 `PsshBox` は `MoovBox::pssh_boxes` に保持され、`Fmp4SegmentMuxer` の `SegmentMuxerOptions::pssh_boxes` から init segment に書き出せる。
-`SencBox` は IV サイズを持たないため、`Decode` は常に `ErrorKind::Unsupported` を返す。`tenc` の `default_per_sample_iv_size` (0 / 8 / 16) を渡す `SencBox::decode_with_iv_size(&bytes, iv_size)` を使う。
-`TrafBox` は `senc` / `saiz` / `saio` の型付きフィールドを持たず、`unknown_boxes` に保持する。`Fmp4SegmentDemuxer` がこれらを解釈して `Sample.encryption_info` に反映する。
+`SencBox` は IV サイズを持たないため、`Decode` は常に `ErrorKind::Unsupported` を返す。`tenc` の `default_per_sample_iv_size` (0 / 8 / 16) を渡す `SencBox::decode_with_iv_size(&bytes, iv_size)` を使う。`SencBox::samples` の要素型は `SencSample` であり、KID は持たない。
+`SgpdBox` の version 2 と、version 0 で `seig` 以外の `grouping_type` は `ErrorKind::Unsupported` を返す。`seig` 以外のサンプルグループのエントリーは、version 1 の `default_length` / `description_length` で切り出した生バイトとして `SgpdEntry::Unknown` に保持する。
+`TrafBox` は `senc` / `saiz` / `saio` / `sbgp` / `sgpd` の型付きフィールドを持たず、`unknown_boxes` に保持する。`Fmp4SegmentDemuxer` がこれらを解釈して `Sample.encryption_info` に反映する。
 `sinf` / `tenc` は `EncvBox` / `EncaBox` (`SampleEntry::Encv` / `SampleEntry::Enca`) の `sinf_box` から型付きで参照できる。
 `EncvBox` / `EncaBox` のエンコードには `schm` と `schi` 内の `tenc` が必要で、コーデック設定ボックスは `unknown_boxes` に保持される。
 `codec_string::from_sample_entry` は `Encv` / `Enca` でも `frma` と `unknown_boxes` から元のコーデック文字列を生成する。

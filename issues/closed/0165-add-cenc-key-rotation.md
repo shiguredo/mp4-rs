@@ -1,7 +1,7 @@
 # CENC の鍵ローテーション (`sbgp` / `sgpd` / `seig`) に対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-cenc-key-rotation
 - Polished: 2026-11-25
 
@@ -122,7 +122,7 @@ ISO/IEC 14496-12:2022 8.9.2.3 と 8.9.4 に従い、次の 3 通りに解釈す�
 - 次の場合は `MuxError::EncodeError(Error::invalid_input(...))` を返す
   - `tenc` を持たないトラックに `kid: Some` を指定した場合
   - `tenc.default_per_sample_iv_size` が 0 の場合 (constant IV)
-  - `tenc` にパターン暗号化パラメーターがある場合 (`seig` の 0 で上書きしてしまうため)
+  - `tenc` のパターン暗号化パラメーターが 0 以外の場合 (`seig` の 0 で上書きしてしまうため)。version 1 で 0 / 0 の場合は受理する
 - `senc` / `saiz` / `saio` の書き出しは既存の処理を使う。`SencBox` の要素型が `SencSample` になるため、`SampleEncryptionInfo` から `SencSample` への変換だけを追加する
 
 ### 8. 実装順序
@@ -145,8 +145,8 @@ ISO/IEC 14496-12:2022 8.9.2.3 と 8.9.4 に従い、次の 3 通りに解釈す�
 - `sbgp` の `sample_count` の合計がサンプル数より少ない場合、余りのサンプルが `tenc` の既定 KID (`kid: None`) になる
 - `sample_count` の合計がサンプル数より多い入力、`group_description_index` が範囲外の入力、参照先の `sgpd` が無い入力、`seig` の `sbgp` / `sgpd` が重複する入力が `InvalidData` になる
 - `multi_key_flag == 1`、`crypt_byte_block` / `skip_byte_block` が 0 以外の `seig` が `Unsupported` になる
-- `tenc` にパターン暗号化パラメーターを持つトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる
-- `tenc` にパターン暗号化パラメーターを持つトラックで、`seig` のパターン値が `tenc` と異なる入力が `Unsupported` になる
+- `tenc` のパターン暗号化パラメーターが 0 以外のトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる (`tenc` version 1 で 0 / 0 の場合は受理される)
+- `tenc` のパターン値が 0 以外のトラックで、`seig` のパターン値が `tenc` と異なる入力が `Unsupported` になる
 - `tenc` を持たないトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる
 - `tenc.default_per_sample_iv_size` が 0 のトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる
 - `sbgp` の version 1 で `grouping_type_parameter` が 0 以外の入力が `Unsupported` になる
@@ -174,6 +174,17 @@ ISO/IEC 14496-12:2022 8.9.2.3 と 8.9.4 に従い、次の 3 通りに解釈す�
 - `CHANGES.md` の `## develop` にある同じ開発サイクルの `[ADD]` エントリー (新しいボックと型) を更新し、`SbgpBox` / `SgpdBox` / `SeigEntry` / 鍵ローテーション対応と、`SencBox` が `SencSample` を使うことを含める。`SampleEncryptionInfo` は未リリースのため `[CHANGE]` は追加しない
 - `skills/shiguredo-mp4/SKILL.md` の「`seig` サンプルグループは非対応」という記述を削除・修正し、新しいボックス、`Sample` のフィールド表、`SampleEncryptionInfo` の説明に `kid` を追加する。`SencBox::samples` の要素型が `SencSample` になったことに合わせて、`SencBox` と `SampleEncryptionInfo` の説明も更新する
 - `issues/0071-other-position-timing-boxes-inventory.md` の `sbgp` / `sgpd` の行を実装済みに更新する
+
+## 解決方法
+
+- `src/boxes_cenc.rs` に `SbgpBox` / `SbgpEntry` / `SgpdBox` / `SgpdEntry` / `SeigEntry` / `SencSample` を追加した。`SeigEntry` は 20 バイトの固定前置と条件付きの constant IV を持ち、`decode` / `encode_to_vec` を用意した
+- `SgpdBox` は version 0 / 1 に対応し、version 2 は `Unsupported`、version 0 で `seig` 以外は `Unsupported` とした。`encode` で `grouping_type` と `SgpdEntry` の variant の整合を検査する
+- `SencBox::samples` の要素型を `SencSample` に変更し、`SampleEncryptionInfo` に `kid` を追加した
+- `src/demux_fmp4_segment.rs` で、初期化セグメントの `stbl` から track-level の `seig` `sgpd` を保持し、`traf` の `sbgp` の index からサンプルごとの実効 KID を解決するようにした。`has_seig_sample_group` による一律の `Unsupported` を削除した
+- `src/mux_fmp4_segment.rs` で、KID ごとに `sgpd` / `sbgp` を組み立てて `traf` に書くようにした。`sbgp` の index は `0x10000 + (1 始まりのエントリー番号)` とした
+- 対象外の構成 (パターン値が 0 以外の `tenc`、constant IV、`tenc` なし、track-level の `seig` `sbgp`、`sgpd` version 2、複数鍵) は mux で `InvalidInput`、demux で `Unsupported` / `InvalidData` として拒否する
+- テストは `tests/test_boxes_cenc.rs` / `pbt/tests/prop_boxes_cenc.rs` / `tests/test_demux_fmp4_segment.rs` / `tests/test_mux_fmp4_segment.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` に追加し、`seig_sample_group_is_unsupported` を置き換えた
+- `CHANGES.md` の `[ADD]` エントリーを更新し、`skills/shiguredo-mp4/SKILL.md` と `issues/0071-other-position-timing-boxes-inventory.md` を更新した
 
 ## 対象外
 

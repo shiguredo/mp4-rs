@@ -1,7 +1,7 @@
 # CMAF の構造ブランドと単一トラックのセグメント出力に対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-cmaf-segment-brand
 - Polished: 2026-11-25
 
@@ -93,6 +93,17 @@ CMAF の構造ブランドを宣言できるのは、次の条件を満たす場
 - `tests/test_demux_fmp4_segment.rs` に `styp()` の往復を追加する
 - `CHANGES.md` に `[ADD]` (`Brand` の CMAF 定数、CMAF 向け `ftyp` / `styp` 出力) と `[CHANGE]` (`SegmentMuxerOptions` のフィールド追加、`..Default::default()` を使わない構造体リテラルの修正が必要、wasm の JSON では指定不可) を記録する
 - `skills/shiguredo-mp4/SKILL.md` に CMAF ブランドと `SegmentMuxerOptions::cmaf` の説明、単一メディアトラックの制約を追記する
+
+## 解決方法
+
+- `src/boxes.rs` の `Brand` に `CMFC` と `CMFS` を追加し、各定数の rustdoc に使用ボックス・根拠・将来変更される可能性を書いた
+- `src/mux_fmp4_segment.rs` に `CmafTrackFileBrand` と `SegmentMuxerOptions::cmaf` を追加し、`build_ftyp` と `styp` の組み立てを CMAF 向けに切り替えた
+- `styp` の書き出しは 0163 の `styp` 出力経路をそのまま使い、互換 brand は `ftyp` の互換 brand に `cmfs` を加えた集合とした
+- `cmaf` と `styp` の同時指定を `with_options()` で拒否し、単一メディアトラックの検査を `build_media_segment_bytes` の状態変更前に置いた
+- `src/mux.rs` の再エクスポートに `CmafTrackFileBrand` を追加した
+- `crates/wasm/src/fmp4_segment_mux.rs` のリテラルに `cmaf: None` を追加し、公開 doc を更新した
+- テストは `tests/test_mux_fmp4_segment.rs` / `tests/test_demux_fmp4_segment.rs` / `tests/test_boxes.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` に追加した
+- `CHANGES.md` と `skills/shiguredo-mp4/SKILL.md` を更新した
 
 ## 対象外
 

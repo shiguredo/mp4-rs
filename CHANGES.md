@@ -333,6 +333,11 @@
 - [FIX] `SeigEntry::encode_to_vec()` が 4 bit を超えるパターン値と `u8::MAX` を超える constant IV を黙って切り詰めていたのを修正する
   - `Result<Vec<u8>>` を返し、範囲外は `InvalidInput` にする
   - @voluntas
+- [UPDATE] CENC の鍵ローテーションを書き出すときの探索とメモリ使用量を改善する
+  - `build_seig_sample_groups` の (KID, constant IV) のグループ探索を線形探索から `BTreeMap` に変え、サンプル数 × グループ数の比較をなくす
+  - `SgpdBox::encode` がエントリーをすべて `Vec<Vec<u8>>` に展開してから書き出していたのをやめ、長さを先に求めてから各エントリーを直接書く
+  - 出力バイト列は変わらない
+  - @voluntas
 
 ## 2026.5.0
 

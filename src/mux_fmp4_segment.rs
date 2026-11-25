@@ -54,7 +54,7 @@
 //! # Ok(())
 //! # }
 //! ```
-use alloc::{format, vec, vec::Vec};
+use alloc::{collections::BTreeMap, format, vec, vec::Vec};
 use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
@@ -1495,7 +1495,7 @@ fn compute_earliest_presentation_time(
 }
 
 /// `seig` のエントリーとして書き出す、実効 KID と実効 constant IV の組
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SeigGroupKey {
     /// 実効 KID
     kid: [u8; 16],
@@ -1532,8 +1532,10 @@ fn build_seig_sample_groups(
     let default_constant_iv = tenc_box.default_constant_iv.as_ref();
 
     // (実効 KID, 実効 constant IV) ごとのエントリー番号 (1 始まり) を、
-    // 最初に現れた順に割り当てる
+    // 最初に現れた順に割り当てる。サンプルごとに線形探索すると O(サンプル数 × グループ数)
+    // になるため、探索は `BTreeMap` で行う
     let mut groups: Vec<SeigGroupKey> = Vec::new();
+    let mut group_indices: BTreeMap<SeigGroupKey, usize> = BTreeMap::new();
     let mut group_description_indices = Vec::new();
     for sample in samples {
         // 正規化済みのため、`Some` は `tenc` の既定値と異なる実効値を表す
@@ -1559,11 +1561,13 @@ fn build_seig_sample_groups(
             None
         };
         let key = SeigGroupKey { kid, constant_iv };
-        let entry_index = match groups.iter().position(|known| *known == key) {
-            Some(index) => index,
+        let entry_index = match group_indices.get(&key) {
+            Some(&index) => index,
             None => {
-                groups.push(key);
-                groups.len() - 1
+                let index = groups.len();
+                groups.push(key.clone());
+                group_indices.insert(key, index);
+                index
             }
         };
         // fragment-local の `sgpd` を参照する index は

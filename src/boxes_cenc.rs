@@ -1411,6 +1411,16 @@ impl SeigEntry {
     /// constant IV の長さが `u8::MAX` を超える場合は [`crate::ErrorKind::InvalidInput`] を返す。
     /// パターン値をそのまま `u8` で計算すると上位ビットが黙って消えるため、ここで検査する。
     pub fn encode_to_vec(&self) -> Result<Vec<u8>> {
+        let mut bytes = vec![0u8; self.encoded_size()?];
+        let written = self.encode_into(&mut bytes)?;
+        debug_assert_eq!(written, bytes.len());
+        Ok(bytes)
+    }
+
+    /// エンコード後のバイト数を返す
+    ///
+    /// エンコードの前提条件を検査するため、不正な値では [`crate::ErrorKind::InvalidInput`] を返す。
+    pub fn encoded_size(&self) -> Result<usize> {
         if self.crypt_byte_block.get() > 0x0F {
             return Err(Error::invalid_input(
                 "SeigEntry crypt_byte_block exceeds 4 bits",
@@ -1421,17 +1431,39 @@ impl SeigEntry {
                 "SeigEntry skip_byte_block exceeds 4 bits",
             ));
         }
+        let constant_iv_size = match &self.constant_iv {
+            None => 0,
+            Some(constant_iv) => {
+                u8::try_from(constant_iv.len()).map_err(|_| {
+                    Error::invalid_input("SeigEntry constant IV length exceeds u8::MAX")
+                })?;
+                1 + constant_iv.len()
+            }
+        };
+        Ok(Self::FIXED_SIZE + constant_iv_size)
+    }
+
+    /// エンコード結果を `buf` の先頭に書き、書いたバイト数を返す
+    pub fn encode_into(&self, buf: &mut [u8]) -> Result<usize> {
+        let size = self.encoded_size()?;
+        Error::check_buffer_size(size, buf)?;
         let pattern = (self.crypt_byte_block.get() << 4) | self.skip_byte_block.get();
-        let mut bytes = vec![0x00, pattern, self.is_protected, self.per_sample_iv_size];
-        bytes.extend_from_slice(&self.kid);
+        buf[0] = 0x00;
+        buf[1] = pattern;
+        buf[2] = self.is_protected;
+        buf[3] = self.per_sample_iv_size;
+        buf[4..Self::FIXED_SIZE].copy_from_slice(&self.kid);
+        let mut offset = Self::FIXED_SIZE;
         if let Some(constant_iv) = &self.constant_iv {
-            let size = u8::try_from(constant_iv.len()).map_err(|_| {
+            let constant_iv_size = u8::try_from(constant_iv.len()).map_err(|_| {
                 Error::invalid_input("SeigEntry constant IV length exceeds u8::MAX")
             })?;
-            bytes.push(size);
-            bytes.extend_from_slice(constant_iv);
+            buf[offset] = constant_iv_size;
+            offset += 1;
+            buf[offset..offset + constant_iv.len()].copy_from_slice(constant_iv);
+            offset += constant_iv.len();
         }
-        Ok(bytes)
+        Ok(offset)
     }
 }
 
@@ -1596,18 +1628,16 @@ impl Encode for SgpdBox {
             }
         }
 
-        // エントリーを先にバイト列へ変換し、version 1 の固定長形式では
-        // すべてのエントリー長が default_length と一致することを検査する
-        let mut encoded_entries = Vec::new();
+        // エントリーをいったん `Vec<Vec<u8>>` に展開せず、長さだけを先に求めて
+        // `default_length` との整合を検査する。書き出しは各エントリーを直接 `buf` へ書く
+        let mut entry_sizes = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
             match entry {
                 SgpdEntry::Seig(seig_entry) => {
                     check_seig_entry_for_encode(seig_entry)?;
-                    encoded_entries.push(seig_entry.encode_to_vec()?);
+                    entry_sizes.push(seig_entry.encoded_size()?);
                 }
-                SgpdEntry::Unknown(bytes) => {
-                    encoded_entries.push(bytes.clone());
-                }
+                SgpdEntry::Unknown(bytes) => entry_sizes.push(bytes.len()),
             }
         }
         let fixed_entry_length =
@@ -1619,11 +1649,10 @@ impl Encode for SgpdBox {
                 _ => None,
             };
         if let Some(fixed_entry_length) = fixed_entry_length {
-            for encoded in &encoded_entries {
-                if encoded.len() != fixed_entry_length {
+            for size in &entry_sizes {
+                if *size != fixed_entry_length {
                     return Err(Error::invalid_input(format!(
-                        "SgpdBox entry length {} does not match default_length {fixed_entry_length}",
-                        encoded.len()
+                        "SgpdBox entry length {size} does not match default_length {fixed_entry_length}",
                     )));
                 }
             }
@@ -1639,16 +1668,24 @@ impl Encode for SgpdBox {
                 .expect("bug: SgpdBox version 1 requires default_length");
             offset += default_length.encode(&mut buf[offset..])?;
         }
-        let entry_count = u32::try_from(encoded_entries.len())
+        let entry_count = u32::try_from(self.entries.len())
             .map_err(|_| Error::invalid_input("SgpdBox entry count exceeds u32::MAX"))?;
         offset += entry_count.encode(&mut buf[offset..])?;
-        for encoded in &encoded_entries {
+        for (entry, size) in self.entries.iter().zip(&entry_sizes) {
             if self.version == 1 && fixed_entry_length.is_none() {
-                let description_length = u32::try_from(encoded.len())
+                let description_length = u32::try_from(*size)
                     .map_err(|_| Error::invalid_input("SgpdBox entry length exceeds u32::MAX"))?;
                 offset += description_length.encode(&mut buf[offset..])?;
             }
-            offset += encoded.encode(&mut buf[offset..])?;
+            match entry {
+                SgpdEntry::Seig(seig_entry) => {
+                    offset += seig_entry.encode_into(&mut buf[offset..])?;
+                }
+                SgpdEntry::Unknown(bytes) => {
+                    buf[offset..offset + bytes.len()].copy_from_slice(bytes);
+                    offset += bytes.len();
+                }
+            }
         }
         header.finalize_box_size(&mut buf[..offset])?;
         Ok(offset)

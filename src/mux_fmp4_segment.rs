@@ -44,6 +44,7 @@
 //!     composition_time_offset: None,
 //!     data_offset: 0,
 //!     data_size: 1024,
+//!     encryption_info: None,
 //! }];
 //! let segment_bytes = muxer.create_media_segment_metadata(&samples)?;
 //!
@@ -52,18 +53,19 @@
 //! # Ok(())
 //! # }
 //! ```
-use alloc::{vec, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
-    BoxHeader, BoxSize, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
+    BoxHeader, BoxSize, Decode, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
     TrackKind,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
-        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, PsshBox,
-        SampleEntry, SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox, StscBox, StsdBox,
-        StszBox, SttsBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox,
-        TrunBox, TrunSample, TrunSamples, VmhdBox,
+        MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, PsshBox, SaioBox,
+        SaizBox, SampleEncryptionInfo, SampleEntry, SencBox, SidxBox, SidxReference, SmhdBox,
+        StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox, SttsBox, TencBox, TfdtBox, TfhdBox,
+        TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, TrunSamples,
+        UnknownBox, VmhdBox,
     },
     boxes_moov_tree::EdtsBox,
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
@@ -140,6 +142,10 @@ struct ResolvedSegmentTrack {
     sample_description_index: Option<u32>,
     first_data_offset: u64,
     payload_end: u64,
+    /// `tenc.default_is_protected = 1` のトラックの、サンプル順の暗号化情報
+    ///
+    /// `senc` / `saiz` / `saio` を書き出すときに使う。暗号化されていないトラックは `None`。
+    encryption_samples: Option<Vec<SampleEncryptionInfo>>,
 }
 
 #[derive(Debug)]
@@ -149,6 +155,65 @@ struct ResolvedSegmentSample {
     // `TrunSample::composition_time_offset` に転写するため公開 API と同じ i64 で保持する
     composition_time_offset: Option<i64>,
     data_size: usize,
+    encryption_info: Option<SampleEncryptionInfo>,
+}
+
+/// サンプルエントリーから取り出した CENC のトラック暗号化情報
+#[derive(Debug, Clone)]
+struct TrackEncryption {
+    tenc_box: TencBox,
+}
+
+impl TrackEncryption {
+    /// サンプルエントリーから CENC のトラック暗号化情報を取り出す
+    ///
+    /// `Encv` / `Enca` 以外のサンプルエントリーと、`tenc` を持たないサンプルエントリーは `None` になる。
+    fn from_sample_entry(sample_entry: &SampleEntry) -> Option<Self> {
+        let sinf_box = match sample_entry {
+            SampleEntry::Encv(encv_box) => &encv_box.sinf_box,
+            SampleEntry::Enca(enca_box) => &enca_box.sinf_box,
+            _ => return None,
+        };
+        let tenc_box = sinf_box.schi_box.as_ref()?.tenc_box.clone()?;
+        Some(Self { tenc_box })
+    }
+
+    /// サンプルに付与された暗号化情報が `tenc` の既定値と整合するかを検査する
+    ///
+    /// 選択的暗号化 (ISO/IEC 23001-7:2023 3.1.9) は対象外である。そのため
+    /// `default_is_protected = 1` のトラックは全サンプルに暗号化情報を要求し、
+    /// `default_is_protected = 0` のトラックは暗号化情報を禁止する。
+    fn validate_sample_encryption(
+        &self,
+        encryption_info: Option<&SampleEncryptionInfo>,
+    ) -> Result<(), MuxError> {
+        if self.tenc_box.default_is_protected == 1 {
+            let Some(encryption_info) = encryption_info else {
+                return Err(MuxError::EncodeError(Error::invalid_input(
+                    "encrypted track requires sample encryption info for every sample",
+                )));
+            };
+            let expected_iv_size = usize::from(self.tenc_box.default_per_sample_iv_size);
+            if encryption_info.iv.len() != expected_iv_size {
+                return Err(MuxError::EncodeError(Error::invalid_input(format!(
+                    "sample IV size {} does not match tenc default_per_sample_iv_size {expected_iv_size}",
+                    encryption_info.iv.len(),
+                ))));
+            }
+            if encryption_info.subsamples.len() > usize::from(u16::MAX) {
+                return Err(MuxError::EncodeError(Error::invalid_input(
+                    "sample subsample count exceeds u16::MAX",
+                )));
+            }
+            Ok(())
+        } else if encryption_info.is_some() {
+            Err(MuxError::EncodeError(Error::invalid_input(
+                "clear track must not have sample encryption info",
+            )))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// fMP4 ファイルを生成するマルチプレックス処理を行うための構造体
@@ -432,18 +497,27 @@ impl Fmp4SegmentMuxer {
         let mdat_header = BoxHeader::new(MdatBox::TYPE, mdat_box_size);
         let mdat_header_bytes = mdat_header.encode_to_vec()?;
 
-        // moof のサイズを確定させるために、仮の data_offset=0 で一度エンコードする。
-        // data_offset は i32 固定長フィールドのため、値が変わっても moof のサイズは変わらない。
+        // moof のサイズを確定させるために、仮の data_offset=0 / saio offset=0 で一度エンコードする。
+        // data_offset (i32) と saio の offset (version 0 の u32) は固定長フィールドのため、
+        // 値が変わっても moof のサイズは変わらない。
         let placeholder_offsets = vec![0i32; next_tracks.len()];
-        let moof_size = self
-            .build_moof(
-                &next_tracks,
-                &resolved_tracks,
-                sequence_number,
-                &placeholder_offsets,
-            )?
-            .encode_to_vec()?
-            .len();
+        let placeholder_saio_offsets = vec![0u32; resolved_tracks.len()];
+        let placeholder_moof = self.build_moof(
+            &next_tracks,
+            &resolved_tracks,
+            sequence_number,
+            &placeholder_offsets,
+            &placeholder_saio_offsets,
+        )?;
+        let moof_size = placeholder_moof.encode_to_vec()?.len();
+
+        // `saio` の offset は、moof 先頭から、その traf の `senc` 内の最初のサンプル SAI 先頭
+        // (sample_count フィールドの直後) までのバイト数になる。
+        // 仮の moof のレイアウトから求める。実際の offset を入れても各ボックスの長さは変わらない。
+        let saio_offsets: Vec<u32> = compute_senc_sai_offsets(&placeholder_moof)?
+            .into_iter()
+            .map(|offset| offset.unwrap_or(0))
+            .collect();
 
         // 各トラックのサンプルデータの data_offset (moof 先頭からの相対値) を計算する
         let mut track_data_offsets = vec![0i32; next_tracks.len()];
@@ -465,14 +539,22 @@ impl Fmp4SegmentMuxer {
                 })?;
         }
 
-        // 正しい data_offset で moof を構築する
+        // 正しい data_offset / saio offset で moof を構築する
         let moof = self.build_moof(
             &next_tracks,
             &resolved_tracks,
             sequence_number,
             &track_data_offsets,
+            &saio_offsets,
         )?;
         let moof_bytes = moof.encode_to_vec()?;
+        // 2 パスで moof のサイズが変わっていないことを確認する。
+        // 変わっていた場合は data_offset の計算が成り立たない
+        if moof_bytes.len() != moof_size {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "moof size changed between the two encode passes",
+            )));
+        }
 
         // 返り値には moof + mdat ヘッダーのみを含める。
         let mut segment = moof_bytes;
@@ -815,11 +897,12 @@ impl Fmp4SegmentMuxer {
         resolved_tracks: &[ResolvedSegmentTrack],
         sequence_number: u32,
         data_offsets: &[i32],
+        saio_offsets: &[u32],
     ) -> Result<MoofBox, MuxError> {
         let mfhd_box = MfhdBox { sequence_number };
 
         let mut traf_boxes = Vec::new();
-        for resolved_track in resolved_tracks {
+        for (traf_index, resolved_track) in resolved_tracks.iter().enumerate() {
             let track = &tracks[resolved_track.track_index];
             let has_any_cto = resolved_track
                 .samples
@@ -873,11 +956,71 @@ impl Fmp4SegmentMuxer {
                 base_media_decode_time: track.decode_time,
             };
 
+            // 暗号化されたトラックには `senc` / `saiz` / `saio` を書き出す。
+            // `senc` だけでは `saiz` / `saio` を参照する実装が SAI を見つけられないため、
+            // 3 つを常に揃えて書く。
+            let mut unknown_boxes = Vec::new();
+            if let Some(encryption_samples) = &resolved_track.encryption_samples {
+                let senc_box = SencBox {
+                    samples: encryption_samples.clone(),
+                };
+                let subsample_encryption = senc_box
+                    .samples
+                    .iter()
+                    .any(|sample| !sample.subsamples.is_empty());
+
+                // `saiz` は `default_sample_info_size` を使わず、サンプルごとの SAI 長を並べる。
+                // 長さが u8 に収まらない場合は `saiz` で表現できないためエラーにする
+                let mut sample_info_sizes = Vec::new();
+                for sample in &senc_box.samples {
+                    let size = sample
+                        .aux_info_size(subsample_encryption)
+                        .ok_or(MuxError::Overflow)?;
+                    sample_info_sizes.push(u8::try_from(size).map_err(|_| {
+                        MuxError::EncodeError(Error::invalid_input(
+                            "sample auxiliary information size exceeds u8::MAX",
+                        ))
+                    })?);
+                }
+                // SAI を 1 バイトも持たない場合、デコード側は入力サイズからサンプル数を
+                // 制約できないため上限を設けている。デコードできない `senc` を書き出さないよう、
+                // ここでも同じ上限を検査する
+                if sample_info_sizes.iter().all(|size| *size == 0)
+                    && senc_box.samples.len() > crate::boxes_cenc::MAX_SAMPLES_WITHOUT_AUX_INFO
+                {
+                    return Err(MuxError::EncodeError(Error::invalid_input(
+                        "sample count exceeds maximum allowed when samples have no auxiliary information",
+                    )));
+                }
+                let sample_count = u32::try_from(senc_box.samples.len()).map_err(|_| {
+                    MuxError::EncodeError(Error::invalid_input(
+                        "sample auxiliary information sample count exceeds u32::MAX",
+                    ))
+                })?;
+                let saiz_box = SaizBox {
+                    // 省略時はトラックの保護スキームの 4CC が既定値になるため、mux では省略する
+                    aux_info_type: None,
+                    aux_info_type_parameter: 0,
+                    default_sample_info_size: 0,
+                    sample_count,
+                    sample_info_sizes,
+                };
+                let saio_box = SaioBox {
+                    version: 0,
+                    aux_info_type: None,
+                    aux_info_type_parameter: 0,
+                    offsets: vec![u64::from(saio_offsets[traf_index])],
+                };
+                unknown_boxes.push(encode_box_as_unknown_box(senc_box.encode_to_vec()?)?);
+                unknown_boxes.push(encode_box_as_unknown_box(saiz_box.encode_to_vec()?)?);
+                unknown_boxes.push(encode_box_as_unknown_box(saio_box.encode_to_vec()?)?);
+            }
+
             traf_boxes.push(TrafBox {
                 tfhd_box,
                 tfdt_box: Some(tfdt_box),
                 trun_boxes: vec![trun_box],
-                unknown_boxes: Vec::new(),
+                unknown_boxes,
             });
         }
 
@@ -887,6 +1030,63 @@ impl Fmp4SegmentMuxer {
             unknown_boxes: Vec::new(),
         })
     }
+}
+
+/// エンコード済みのボックスを [`UnknownBox`] に変換する
+///
+/// `TrafBox` は `senc` / `saiz` / `saio` の型付きフィールドを持たず、`unknown_boxes` に
+/// 未解釈のボックスとして保持するため、エンコードしたバイト列から [`UnknownBox`] を作る。
+fn encode_box_as_unknown_box(box_bytes: Vec<u8>) -> Result<UnknownBox, MuxError> {
+    let (unknown_box, size) = UnknownBox::decode(&box_bytes)?;
+    if size != box_bytes.len() {
+        return Err(MuxError::EncodeError(Error::invalid_input(
+            "encoded box bytes contain more than one box",
+        )));
+    }
+    Ok(unknown_box)
+}
+
+/// moof 内の各 traf について、`senc` 内の最初のサンプル SAI の先頭位置を返す
+///
+/// `senc` は `sample_count` フィールドの直後からサンプルごとの SAI が並ぶ
+/// (ISO/IEC 23001-7:2023 7.2.1)。そのため最初の SAI の先頭は、
+/// `senc` のボックスヘッダー (8 バイト) + FullBox ヘッダー (4 バイト) + `sample_count` (4 バイト)
+/// の直後になる。
+///
+/// 返り値は `resolved_tracks` と同じ並び (moof の `traf` の並び) であり、
+/// 暗号化されていないトラックは `None` になる。返り値の値は moof 先頭からのバイト数である。
+fn compute_senc_sai_offsets(moof: &MoofBox) -> Result<Vec<Option<u32>>, MuxError> {
+    // moof 自身のヘッダーは 8 バイト (U32) で、続けて mfhd が置かれる。
+    // moof のサイズが U32 に収まらない場合はエンコード時にエラーになるため、
+    // ここでは U32 ヘッダーだけを前提にする
+    let mut traf_start = BoxHeader::MIN_SIZE + moof.mfhd_box.encode_to_vec()?.len();
+    let mut offsets = Vec::new();
+    for traf_box in &moof.traf_boxes {
+        let mut child_start = traf_start + BoxHeader::MIN_SIZE;
+        child_start += traf_box.tfhd_box.encode_to_vec()?.len();
+        if let Some(tfdt_box) = &traf_box.tfdt_box {
+            child_start += tfdt_box.encode_to_vec()?.len();
+        }
+        for trun_box in &traf_box.trun_boxes {
+            child_start += trun_box.encode_to_vec()?.len();
+        }
+
+        let mut senc_sai_offset = None;
+        for unknown_box in &traf_box.unknown_boxes {
+            if unknown_box.box_type == SencBox::TYPE && senc_sai_offset.is_none() {
+                let offset = child_start.checked_add(16).ok_or(MuxError::Overflow)?;
+                senc_sai_offset = Some(u32::try_from(offset).map_err(|_| {
+                    MuxError::EncodeError(Error::invalid_input(
+                        "senc SAI offset exceeds u32::MAX; version 0 saio cannot represent it",
+                    ))
+                })?);
+            }
+            child_start += unknown_box.encode_to_vec()?.len();
+        }
+        offsets.push(senc_sai_offset);
+        traf_start = child_start;
+    }
+    Ok(offsets)
 }
 
 /// 参照トラックの各サンプルについて PTS を求め、その最小値と当該サンプルの `keyframe` を返す
@@ -960,6 +1160,9 @@ fn resolve_segment_tracks(
 
         let mut current_sample_entry_index = track.current_sample_entry_index;
         let mut segment_sample_entry_index = None;
+        // このセグメントで使うサンプルエントリーは 1 つに固定されるため、
+        // CENC のトラック暗号化情報も最初のサンプルで確定できる
+        let mut track_encryption: Option<TrackEncryption> = None;
         let mut resolved_samples = Vec::new();
         let mut total_duration = 0u64;
         let mut expected_next_data_offset: Option<u64> = None;
@@ -997,6 +1200,26 @@ fn resolve_segment_tracks(
                 }
             } else {
                 segment_sample_entry_index = Some(sample_entry_index);
+                let segment_sample_entry = track
+                    .sample_entries
+                    .get(sample_entry_index)
+                    .ok_or(MuxError::MissingSampleEntry { track_kind })?;
+                track_encryption = TrackEncryption::from_sample_entry(segment_sample_entry);
+            }
+
+            // 選択的暗号化は対象外なので、`tenc` の既定値とサンプルの暗号化情報の有無が
+            // 一致していること、IV 長が `tenc` の既定値と一致していることを検査する
+            match &track_encryption {
+                Some(track_encryption) => {
+                    track_encryption.validate_sample_encryption(sample.encryption_info.as_ref())?
+                }
+                None => {
+                    if sample.encryption_info.is_some() {
+                        return Err(MuxError::EncodeError(Error::invalid_input(
+                            "sample encryption info requires a CENC protected sample entry",
+                        )));
+                    }
+                }
             }
 
             current_sample_entry_index = Some(sample_entry_index);
@@ -1026,8 +1249,28 @@ fn resolve_segment_tracks(
                 keyframe: sample.keyframe,
                 composition_time_offset: sample.composition_time_offset,
                 data_size: sample.data_size,
+                encryption_info: sample.encryption_info.clone(),
             });
         }
+
+        // `default_is_protected = 1` のトラックは、`validate_sample_encryption()` により
+        // 全サンプルが暗号化情報を持つことが保証されている
+        let encryption_samples = match &track_encryption {
+            Some(track_encryption) if track_encryption.tenc_box.default_is_protected == 1 => {
+                let mut encryption_samples = Vec::new();
+                for resolved_sample in &resolved_samples {
+                    let encryption_info =
+                        resolved_sample.encryption_info.as_ref().ok_or_else(|| {
+                            MuxError::EncodeError(Error::invalid_input(
+                                "encrypted track requires sample encryption info for every sample",
+                            ))
+                        })?;
+                    encryption_samples.push(encryption_info.clone());
+                }
+                Some(encryption_samples)
+            }
+            _ => None,
+        };
 
         track.current_sample_entry_index = current_sample_entry_index;
         let sample_description_index = match segment_sample_entry_index {
@@ -1050,6 +1293,7 @@ fn resolve_segment_tracks(
             sample_description_index,
             first_data_offset: first_data_offset.expect("track must contain at least one sample"),
             payload_end,
+            encryption_samples,
         });
     }
 

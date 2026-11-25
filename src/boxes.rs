@@ -3,7 +3,10 @@ use alloc::{boxed::Box, format, vec::Vec};
 
 use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result};
 
-pub use crate::boxes_cenc::{FrmaBox, PsshBox, SchiBox, SchmBox, SinfBox, TencBox};
+pub use crate::boxes_cenc::{
+    FrmaBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SchiBox, SchmBox, SencBox, SinfBox,
+    Subsample, TencBox,
+};
 pub use crate::boxes_fmp4::{
     MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
     TfraEntry, TrafBox, TrunBox, TrunSample, TrunSamples,

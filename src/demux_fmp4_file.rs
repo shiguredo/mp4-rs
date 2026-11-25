@@ -70,7 +70,9 @@ use core::cmp::Ordering;
 
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
-    boxes::{FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, PsshBox, SampleEntry},
+    boxes::{
+        FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, PsshBox, SampleEncryptionInfo, SampleEntry,
+    },
     demux_fmp4_segment::Fmp4SegmentDemuxer,
     demux_mp4_file::{DemuxError, Input, RequiredInput, Sample, TrackInfo},
 };
@@ -101,6 +103,7 @@ struct PendingSample {
     data_size: usize,
     composition_time_offset: Option<i64>,
     sample_entry: Option<SampleEntry>,
+    encryption_info: Option<SampleEncryptionInfo>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -732,6 +735,7 @@ impl Fmp4FileDemuxer {
                 data_size: raw_sample.data_size,
                 composition_time_offset: raw_sample.composition_time_offset,
                 sample_entry: track_runtimes[track_index].inner_sample_entry.clone(),
+                encryption_info: raw_sample.encryption_info.clone(),
             });
         }
 
@@ -764,6 +768,7 @@ impl Fmp4FileDemuxer {
             data_size,
             composition_time_offset,
             sample_entry,
+            encryption_info,
         } = pending;
 
         // `sample_entry` を持つサンプルのときだけキャッシュを更新して参照する。
@@ -785,6 +790,7 @@ impl Fmp4FileDemuxer {
             data_offset,
             data_size,
             composition_time_offset,
+            encryption_info,
         }
     }
 }

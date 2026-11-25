@@ -28,11 +28,12 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
 use shiguredo_mp4::{
-    Decode, FixedPointNumber, TrackKind, Uint,
+    Decode, Encode, ErrorKind, FixedPointNumber, TrackKind, Uint,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, Brand, DopsBox, EncaBox, EncvBox, FrmaBox,
-        FtypBox, MoofBox, MoovBox, OpusBox, PsshBox, SampleEntry, SchiBox, SchmBox, SidxBox,
-        SinfBox, TencBox, VisualSampleEntryFields,
+        FtypBox, MoofBox, MoovBox, OpusBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo,
+        SampleEntry, SchiBox, SchmBox, SencBox, SidxBox, SinfBox, Subsample, TencBox,
+        VisualSampleEntryFields,
     },
     mux::{Fmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions},
 };
@@ -81,6 +82,7 @@ fn video_sample_with_timing(
     data_size: usize,
 ) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(sample_entry),
@@ -123,6 +125,7 @@ fn audio_sample_with_timing(
     data_size: usize,
 ) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Audio,
         timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(sample_entry),
@@ -764,6 +767,11 @@ fn drm_video_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usiz
         composition_time_offset: None,
         data_offset,
         data_size,
+        // `create_encv_sample_entry()` の `tenc` の `default_per_sample_iv_size` は 16
+        encryption_info: Some(SampleEncryptionInfo {
+            iv: vec![0x33; 16],
+            subsamples: Vec::new(),
+        }),
     }
 }
 
@@ -778,6 +786,11 @@ fn drm_audio_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usiz
         composition_time_offset: None,
         data_offset,
         data_size,
+        // `create_enca_sample_entry()` の `tenc` の `default_per_sample_iv_size` は 8
+        encryption_info: Some(SampleEncryptionInfo {
+            iv: vec![0x44; 8],
+            subsamples: Vec::new(),
+        }),
     }
 }
 
@@ -976,4 +989,382 @@ fn init_segment_contains_pssh_and_drm_sample_entries() {
         "av01 の encv がないのに AV01 ブランドが ftyp にある: {:?}",
         ftyp_box.compatible_brands
     );
+}
+
+// ===== サンプル補助情報 (senc / saiz / saio) の出力テスト =====
+
+/// `cenc` スキームの `tenc` を指定して `encv` のサンプルエントリーを組み立てる
+///
+/// 選択的暗号化と constant IV の検証で、`default_is_protected` / `default_per_sample_iv_size` を
+/// 差し替えられるようにしている。
+fn create_encv_sample_entry_with_tenc(
+    default_is_protected: u8,
+    default_per_sample_iv_size: u8,
+    default_constant_iv: Option<Vec<u8>>,
+) -> SampleEntry {
+    SampleEntry::Encv(EncvBox {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width: 320,
+            height: 240,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"hev1",
+            },
+            schm_box: Some(SchmBox {
+                // `cenc` はパターン暗号化を使わないスキーム
+                scheme_type: *b"cenc",
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected,
+                    default_per_sample_iv_size,
+                    default_kid: VIDEO_KID,
+                    default_constant_iv,
+                    default_crypt_byte_block: None,
+                    default_skip_byte_block: None,
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// 暗号化情報を指定できる映像サンプルを組み立てる
+fn encrypted_video_sample(
+    sample_entry: SampleEntry,
+    encryption_info: Option<SampleEncryptionInfo>,
+    data_offset: u64,
+    data_size: usize,
+) -> Sample {
+    Sample {
+        track_kind: TrackKind::Video,
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration: 3000,
+        keyframe: true,
+        composition_time_offset: None,
+        data_offset,
+        data_size,
+        encryption_info,
+    }
+}
+
+/// `traf` の `unknown_boxes` から指定された種別のボックスを 1 つ取り出す
+#[track_caller]
+fn find_traf_unknown_box(traf_box: &shiguredo_mp4::boxes::TrafBox, box_type: [u8; 4]) -> Vec<u8> {
+    traf_box
+        .unknown_boxes
+        .iter()
+        .find(|unknown_box| unknown_box.box_type.as_bytes() == box_type)
+        .unwrap_or_else(|| {
+            panic!(
+                "traf に {} が見つからない",
+                String::from_utf8_lossy(&box_type)
+            )
+        })
+        .encode_to_vec()
+        .expect("テスト用の UnknownBox はエンコードできる")
+}
+
+/// mux が暗号化されたサンプルのある `traf` に `senc` / `saiz` / `saio` を書き出すこと
+///
+/// `saio` の offset が moof 先頭から `senc` 内の最初の SAI 先頭までのバイト数と一致し、
+/// その位置にサンプルの IV とサブサンプルが実際に置かれていることも確認する。
+#[test]
+fn muxer_writes_senc_saiz_saio_for_encrypted_track() {
+    let sample_entry = create_encv_sample_entry(320, 240);
+    let iv16 = |value: u8| vec![value; 16];
+    let samples = [
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(SampleEncryptionInfo {
+                iv: iv16(0x11),
+                subsamples: vec![Subsample {
+                    bytes_of_clear_data: 5,
+                    bytes_of_protected_data: 10,
+                }],
+            }),
+            0,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry,
+            Some(SampleEncryptionInfo {
+                iv: iv16(0x22),
+                subsamples: Vec::new(),
+            }),
+            16,
+            16,
+        ),
+    ];
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("暗号化サンプルのメディアセグメントの作成に失敗した");
+
+    let (moof_box, moof_size) =
+        MoofBox::decode(&media_segment).expect("メディアセグメントからの moof デコードに失敗した");
+    assert_eq!(moof_box.traf_boxes.len(), 1);
+    let traf_box = &moof_box.traf_boxes[0];
+
+    // senc: サンプルごとの IV とサブサンプルが、入力のまま書き出されている
+    let senc_bytes = find_traf_unknown_box(traf_box, *b"senc");
+    let (senc_box, senc_size) =
+        SencBox::decode_with_iv_size(&senc_bytes, 16).expect("senc のデコードに失敗した");
+    assert_eq!(senc_size, senc_bytes.len());
+    assert_eq!(
+        senc_box.samples,
+        vec![
+            SampleEncryptionInfo {
+                iv: iv16(0x11),
+                subsamples: vec![Subsample {
+                    bytes_of_clear_data: 5,
+                    bytes_of_protected_data: 10,
+                }],
+            },
+            SampleEncryptionInfo {
+                iv: iv16(0x22),
+                subsamples: Vec::new(),
+            },
+        ],
+        "senc に書き出された暗号化情報が入力と一致しない"
+    );
+    // サブサンプルを持つサンプルがあるため、flags の 0x000002 が立つ
+    assert_eq!(
+        &senc_bytes[8..12],
+        &[0x00, 0x00, 0x00, 0x02],
+        "senc の flags にサブサンプル暗号化のビットが立っていない"
+    );
+
+    // saiz: サブサンプルフラグが立っているため、サブサンプルを持たないサンプルにも
+    // subsample_count の 2 バイトが加わる
+    let saiz_bytes = find_traf_unknown_box(traf_box, *b"saiz");
+    let (saiz_box, _) = SaizBox::decode(&saiz_bytes).expect("saiz のデコードに失敗した");
+    assert_eq!(
+        saiz_box.default_sample_info_size, 0,
+        "saiz の default_sample_info_size は使わない"
+    );
+    assert_eq!(saiz_box.sample_count, 2);
+    assert_eq!(
+        saiz_box.sample_info_sizes,
+        vec![16 + 2 + 6, 16 + 2],
+        "saiz の SAI 長が senc の内容と一致しない"
+    );
+
+    // saio: offset は moof 先頭から senc 内の最初の SAI 先頭まで
+    let saio_bytes = find_traf_unknown_box(traf_box, *b"saio");
+    let (saio_box, _) = SaioBox::decode(&saio_bytes).expect("saio のデコードに失敗した");
+    assert_eq!(saio_box.version, 0);
+    assert_eq!(saio_box.offsets.len(), 1, "saio の entry_count は 1");
+    // `senc` のボックス種別はボックス先頭から 4 バイト目にあり、最初の SAI は
+    // そこからさらに 12 バイト後ろ (ヘッダー 8 + FullBox 4 + sample_count 4) にある
+    let senc_type_position = media_segment
+        .windows(4)
+        .position(|window| window == b"senc")
+        .expect("media segment に senc のボックス種別が見つからない");
+    let expected_sai_offset = u64::try_from(senc_type_position - 4 + 16)
+        .expect("テスト用のセグメントサイズは u64 に収まる");
+    assert_eq!(
+        saio_box.offsets,
+        vec![expected_sai_offset],
+        "saio の offset が senc 内の最初の SAI 先頭を指していない"
+    );
+    let sai_offset = usize::try_from(expected_sai_offset).expect("u64 から usize への変換に失敗");
+    assert!(
+        sai_offset < moof_size,
+        "saio の offset が moof の範囲外を指している"
+    );
+    // 先頭サンプルの SAI は IV (16 バイト) + subsample_count (2 バイト) + サブサンプル (6 バイト)
+    let mut expected_sai = iv16(0x11);
+    expected_sai.extend_from_slice(&1u16.to_be_bytes());
+    expected_sai.extend_from_slice(&5u16.to_be_bytes());
+    expected_sai.extend_from_slice(&10u32.to_be_bytes());
+    assert_eq!(
+        &media_segment[sai_offset..sai_offset + expected_sai.len()],
+        expected_sai.as_slice(),
+        "saio の offset が指す位置に最初のサンプルの SAI がない"
+    );
+}
+
+/// サブサンプルを持たない暗号化サンプルでは `senc` の flags が 0 になること
+#[test]
+fn muxer_writes_senc_without_subsample_flag_for_full_sample_encryption() {
+    let sample = encrypted_video_sample(
+        create_encv_sample_entry(320, 240),
+        Some(SampleEncryptionInfo {
+            iv: vec![0x33; 16],
+            subsamples: Vec::new(),
+        }),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let media_segment = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect("暗号化サンプルのメディアセグメントの作成に失敗した");
+    let (moof_box, _) =
+        MoofBox::decode(&media_segment).expect("メディアセグメントからの moof デコードに失敗した");
+    let senc_bytes = find_traf_unknown_box(&moof_box.traf_boxes[0], *b"senc");
+    assert_eq!(
+        &senc_bytes[8..12],
+        &[0x00, 0x00, 0x00, 0x00],
+        "サブサンプルがない場合は senc の flags が 0 になる"
+    );
+    let saiz_bytes = find_traf_unknown_box(&moof_box.traf_boxes[0], *b"saiz");
+    let (saiz_box, _) = SaizBox::decode(&saiz_bytes).expect("saiz のデコードに失敗した");
+    assert_eq!(
+        saiz_box.sample_info_sizes,
+        vec![16],
+        "サブサンプルがない場合の SAI 長は IV 長だけになる"
+    );
+}
+
+/// `tenc.default_is_protected = 1` のトラックで `encryption_info` が `None` のサンプルが
+/// ある場合に InvalidInput になること
+#[test]
+fn muxer_rejects_missing_encryption_info_for_protected_track() {
+    let sample = encrypted_video_sample(create_encv_sample_entry(320, 240), None, 0, 16);
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("暗号化情報のない暗号化サンプルを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("encrypted track requires sample encryption info"),
+                "暗号化情報の有無の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `tenc.default_is_protected = 0` のトラックで `encryption_info` が `Some` のサンプルが
+/// ある場合に InvalidInput になること
+#[test]
+fn muxer_rejects_encryption_info_for_clear_track() {
+    let sample = encrypted_video_sample(
+        create_encv_sample_entry_with_tenc(0, 16, None),
+        Some(SampleEncryptionInfo {
+            iv: vec![0x44; 16],
+            subsamples: Vec::new(),
+        }),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("選択的暗号化のサンプルを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("clear track must not have sample encryption info"),
+                "選択的暗号化の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `tenc.default_per_sample_iv_size` と `encryption_info.iv` の長さが一致しない場合に
+/// InvalidInput になること
+#[test]
+fn muxer_rejects_iv_size_mismatch() {
+    let sample = encrypted_video_sample(
+        create_encv_sample_entry(320, 240),
+        Some(SampleEncryptionInfo {
+            iv: vec![0x55; 8],
+            subsamples: Vec::new(),
+        }),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("IV 長が tenc と一致しないサンプルを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("does not match tenc default_per_sample_iv_size"),
+                "IV 長の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `tenc` を持たないトラックに `encryption_info` を渡すと InvalidInput になること
+#[test]
+fn muxer_rejects_encryption_info_without_tenc() {
+    let sample = encrypted_video_sample(
+        create_avc1_sample_entry(320, 240),
+        Some(SampleEncryptionInfo {
+            iv: vec![0x66; 16],
+            subsamples: Vec::new(),
+        }),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("tenc を持たないトラックの暗号化サンプルを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("requires a CENC protected sample entry"),
+                "サンプルエントリーの検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
 }

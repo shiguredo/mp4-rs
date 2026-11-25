@@ -45,7 +45,7 @@ use core::{num::NonZeroU32, time::Duration};
 use crate::{
     BoxHeader, Decode, Error, TrackKind,
     aux::{SampleTableAccessor, SampleTableAccessorError},
-    boxes::{FtypBox, HdlrBox, MoovBox, SampleEntry, StblBox},
+    boxes::{FtypBox, HdlrBox, MoovBox, SampleEncryptionInfo, SampleEntry, StblBox},
     boxes_moov_tree::ElstBox,
 };
 
@@ -134,6 +134,16 @@ pub struct Sample<'a> {
     /// PTS = timestamp + composition_time_offset で計算できる。
     /// `ctts` ボックスがない場合は `None` となる。
     pub composition_time_offset: Option<i64>,
+
+    /// サンプル単位の暗号化情報
+    ///
+    /// fMP4 の `senc` / `saiz` / `saio` から復元した CENC の SAI を保持する。
+    /// 暗号化されていないサンプルと、fMP4 の初期化セグメントで `tenc` を持たないトラックの
+    /// サンプルは [`None`] になる。
+    ///
+    /// [`Mp4FileDemuxer`] は非 fragmented MP4 の暗号化に対応していないため、
+    /// 常に [`None`] を返す。
+    pub encryption_info: Option<SampleEncryptionInfo>,
 }
 
 /// デマルチプレックスに必要な入力データの情報を表す構造体
@@ -746,6 +756,8 @@ impl Mp4FileDemuxer {
             data_offset: sample_accessor.data_offset(),
             data_size: sample_accessor.data_size() as usize,
             composition_time_offset: sample_accessor.composition_time_offset(),
+            // 非 fragmented MP4 の暗号化には対応しないため、常に None を返す
+            encryption_info: None,
         }
     }
 

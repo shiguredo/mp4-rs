@@ -137,6 +137,7 @@ fn mux_subtitle() -> Result<Vec<u8>, MuxError> {
         composition_time_offset: None,
         data_offset,
         data_size: payload.len(),
+        encryption_info: None,
     };
     muxer.append_sample(&sample)?;
 

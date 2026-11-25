@@ -123,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let samples = vec![
                 Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Video,
                     timescale: video_timescale,
                     sample_entry: Some(video_sample_entry.clone()),
@@ -133,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     data_size: video_data.len(),
                 },
                 Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Audio,
                     timescale: audio_timescale,
                     sample_entry: Some(audio_sample_entry.clone()),
@@ -162,6 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_data = dummy_audio_frame(128);
     let sidx_samples = vec![
         Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             timescale: video_timescale,
             sample_entry: Some(video_sample_entry.clone()),
@@ -172,6 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data_size: video_data.len(),
         },
         Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             timescale: audio_timescale,
             sample_entry: Some(audio_sample_entry.clone()),

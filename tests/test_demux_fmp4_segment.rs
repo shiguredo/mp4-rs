@@ -41,10 +41,12 @@
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
-    Decode, Encode, Error, ErrorKind, FixedPointNumber, TrackKind, Uint,
+    BoxHeader, BoxSize, BoxType, Decode, Encode, Error, ErrorKind, FixedPointNumber, TrackKind,
+    Uint,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, EncaBox, EncvBox, FrmaBox, FtypBox, MoofBox,
-        MoovBox, PsshBox, SampleEntry, SchiBox, SchmBox, SidxBox, SinfBox, TencBox, TrunSamples,
+        MoovBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox,
+        SidxBox, SinfBox, Subsample, TencBox, TrunBox, TrunSamples, UnknownBox,
         VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4SegmentDemuxer},
@@ -86,6 +88,7 @@ fn create_avc1_sample_entry(width: u16, height: u16) -> SampleEntry {
 /// payload が `data_size` バイトの映像サンプル 1 個分の `Sample` を組み立てる
 fn create_video_sample(data_size: usize) -> Sample {
     Sample {
+        encryption_info: None,
         track_kind: TrackKind::Video,
         timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
         sample_entry: Some(create_avc1_sample_entry(320, 240)),
@@ -1332,6 +1335,11 @@ fn create_video_drm_sample(
         composition_time_offset: None,
         data_offset,
         data_size,
+        // `create_encv_sample_entry()` の `tenc` の `default_per_sample_iv_size` は 16
+        encryption_info: Some(SampleEncryptionInfo {
+            iv: vec![0x33; 16],
+            subsamples: Vec::new(),
+        }),
     }
 }
 
@@ -1350,6 +1358,11 @@ fn create_audio_drm_sample(
         composition_time_offset: None,
         data_offset,
         data_size,
+        // `create_enca_sample_entry()` の `tenc` の `default_per_sample_iv_size` は 8
+        encryption_info: Some(SampleEncryptionInfo {
+            iv: vec![0x44; 8],
+            subsamples: Vec::new(),
+        }),
     }
 }
 
@@ -1499,4 +1512,1542 @@ fn pssh_and_drm_sample_entries_are_available_from_init_and_media_segments() {
         has_video && has_audio,
         "映像トラックの Encv と音声トラックの Enca の両方を確認できていない"
     );
+}
+
+// ===== サンプル補助情報 (senc / saiz / saio) の読み取りテスト =====
+
+/// 保護スキームと `tenc` の既定値を指定して `encv` のサンプルエントリーを組み立てる
+fn create_encv_sample_entry_with_tenc(
+    scheme_type: [u8; 4],
+    default_is_protected: u8,
+    default_per_sample_iv_size: u8,
+    default_constant_iv: Option<Vec<u8>>,
+) -> SampleEntry {
+    SampleEntry::Encv(EncvBox {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width: 320,
+            height: 240,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"hev1",
+            },
+            schm_box: Some(SchmBox {
+                scheme_type,
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected,
+                    default_per_sample_iv_size,
+                    default_kid: VIDEO_KID,
+                    default_constant_iv,
+                    default_crypt_byte_block: None,
+                    default_skip_byte_block: None,
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// 暗号化情報を指定できる映像サンプルを組み立てる
+fn create_encrypted_video_sample(
+    sample_entry: SampleEntry,
+    encryption_info: Option<SampleEncryptionInfo>,
+    data_offset: u64,
+) -> Sample {
+    Sample {
+        track_kind: TrackKind::Video,
+        timescale: NonZeroU32::new(VIDEO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+        sample_entry: Some(sample_entry),
+        duration: 3000,
+        keyframe: true,
+        composition_time_offset: None,
+        data_offset,
+        data_size: ENCRYPTED_SAMPLE_DATA_SIZE,
+        encryption_info,
+    }
+}
+
+/// 暗号化テスト用のサンプルデータサイズ
+const ENCRYPTED_SAMPLE_DATA_SIZE: usize = 16;
+
+/// 暗号化されたサンプルを含む初期化セグメントとメディアセグメントを組み立てる
+///
+/// メディアセグメントには `mdat` の payload も含める。
+fn build_encrypted_init_and_media_segments(
+    sample_entry: SampleEntry,
+    encryption_infos: Vec<Option<SampleEncryptionInfo>>,
+) -> (Vec<u8>, Vec<u8>) {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let mut samples = Vec::new();
+    let mut payload = Vec::new();
+    for (index, encryption_info) in encryption_infos.into_iter().enumerate() {
+        let data_offset = (index * ENCRYPTED_SAMPLE_DATA_SIZE) as u64;
+        samples.push(create_encrypted_video_sample(
+            sample_entry.clone(),
+            encryption_info,
+            data_offset,
+        ));
+        // サンプルごとに区別できる payload を作る
+        payload.extend_from_slice(&[(index as u8).wrapping_add(0x10); ENCRYPTED_SAMPLE_DATA_SIZE]);
+    }
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("暗号化サンプルのメディアセグメントの作成に失敗した");
+    media_segment.extend_from_slice(&payload);
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("暗号化サンプルの init セグメントの作成に失敗した");
+    (init_segment, media_segment)
+}
+
+/// メディアセグメントの `moof` 直後にある `mdat` のヘッダーサイズと payload サイズを返す
+///
+/// テストで扱うセグメントは payload が小さいため、32 bit サイズの `mdat` だけを前提にする。
+fn mdat_header_and_payload_size(segment: &[u8], moof_size: usize) -> (usize, usize) {
+    let mdat_size_field = u32::from_be_bytes(
+        segment[moof_size..moof_size + 4]
+            .try_into()
+            .expect("mdat のサイズフィールドは 4 バイト"),
+    );
+    assert_ne!(
+        mdat_size_field, 1,
+        "テストでは 32 bit サイズの mdat のみを扱う"
+    );
+    let mdat_size = usize::try_from(mdat_size_field).expect("mdat のサイズは usize に収まる");
+    let header_size = BoxHeader::MIN_SIZE;
+    assert!(
+        mdat_size >= header_size,
+        "mdat のサイズがヘッダーより小さい"
+    );
+    (header_size, mdat_size - header_size)
+}
+
+/// 最初の `traf` の `senc` から、サンプルごとの SAI のバイト列を取り出す
+fn extract_senc_sai_bytes(segment: &[u8]) -> Vec<u8> {
+    let (moof_box, _) = MoofBox::decode(segment).expect("moof のデコードに失敗した");
+    let senc_box = moof_box.traf_boxes[0]
+        .unknown_boxes
+        .iter()
+        .find(|unknown_box| unknown_box.box_type.as_bytes() == b"senc")
+        .expect("traf に senc が見つからない");
+    let senc_bytes = senc_box
+        .encode_to_vec()
+        .expect("senc のエンコードに失敗した");
+    // senc のヘッダー 8 バイト + FullBox 4 バイト + sample_count 4 バイトの後ろが SAI
+    senc_bytes[16..].to_vec()
+}
+
+/// `senc` を削除し、SAI を `mdat` の payload の後ろに移したメディアセグメントを返す
+///
+/// `saio` の offset は、移動後の最初の SAI の位置に書き換える。
+/// `trun` の `data_offset` と `mdat` のサイズも、移動後のレイアウトに合わせて直す。
+fn relocate_sai_after_mdat(segment: &[u8]) -> Vec<u8> {
+    let (mut moof_box, old_moof_size) =
+        MoofBox::decode(segment).expect("moof のデコードに失敗した");
+    let (mdat_header_size, mdat_payload_size) =
+        mdat_header_and_payload_size(segment, old_moof_size);
+    let mdat_start = old_moof_size;
+    let payload_start = mdat_start + mdat_header_size;
+    let payload = &segment[payload_start..payload_start + mdat_payload_size];
+    let sai_bytes = extract_senc_sai_bytes(segment);
+
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        traf_box
+            .unknown_boxes
+            .retain(|unknown_box| unknown_box.box_type.as_bytes() != b"senc");
+    }
+
+    // 1 パス目: `senc` を削除した後の moof のサイズを求める
+    let new_moof_size = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した")
+        .len();
+    // `mdat` は削除したボックス分だけ前へ詰まるため、`trun` の data_offset をその分だけ減らす
+    let shift = i32::try_from(old_moof_size - new_moof_size).expect("差分は i32 に収まる");
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        for trun_box in &mut traf_box.trun_boxes {
+            if let Some(data_offset) = trun_box.data_offset {
+                trun_box.data_offset = Some(data_offset - shift);
+            }
+        }
+    }
+
+    // SAI は mdat の payload の後ろに置くため、最初の SAI は payload の末尾から始まる
+    let sai_offset = new_moof_size + mdat_header_size + mdat_payload_size;
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        let saio_index = traf_box
+            .unknown_boxes
+            .iter()
+            .position(|unknown_box| unknown_box.box_type.as_bytes() == b"saio")
+            .expect("traf に saio が見つからない");
+        let (mut saio_box, _) = SaioBox::decode(
+            &traf_box.unknown_boxes[saio_index]
+                .encode_to_vec()
+                .expect("saio のエンコードに失敗した"),
+        )
+        .expect("saio のデコードに失敗した");
+        saio_box.offsets = vec![u64::try_from(sai_offset).expect("SAI の位置は u64 に収まる")];
+        let encoded = saio_box
+            .encode_to_vec()
+            .expect("書き換えた saio のエンコードに失敗した");
+        let (new_unknown_box, _) =
+            UnknownBox::decode(&encoded).expect("書き換えた saio のデコードに失敗した");
+        traf_box.unknown_boxes[saio_index] = new_unknown_box;
+    }
+
+    let moof_bytes = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    assert_eq!(
+        moof_bytes.len(),
+        new_moof_size,
+        "saio の offset を書き換えても moof のサイズは変わらない"
+    );
+
+    // mdat のサイズに SAI の分を足す
+    let new_mdat_size = mdat_header_size + mdat_payload_size + sai_bytes.len();
+    let mut mdat_header = segment[mdat_start..mdat_start + mdat_header_size].to_vec();
+    mdat_header[..4].copy_from_slice(
+        &u32::try_from(new_mdat_size)
+            .expect("テスト用の mdat サイズは u32 に収まる")
+            .to_be_bytes(),
+    );
+
+    let mut result = moof_bytes;
+    result.extend_from_slice(&mdat_header);
+    result.extend_from_slice(payload);
+    result.extend_from_slice(&sai_bytes);
+    result
+}
+
+/// 最初の `traf` から `senc` / `saiz` / `saio` をすべて削除したメディアセグメントを返す
+///
+/// `trun` の `data_offset` は、詰まった分だけ減らす。
+fn remove_all_sample_aux_info(segment: &[u8]) -> Vec<u8> {
+    let (mut moof_box, old_moof_size) =
+        MoofBox::decode(segment).expect("moof のデコードに失敗した");
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        traf_box.unknown_boxes.retain(|unknown_box| {
+            let box_type = unknown_box.box_type.as_bytes();
+            box_type != b"senc" && box_type != b"saiz" && box_type != b"saio"
+        });
+    }
+    let new_moof_size = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した")
+        .len();
+    let shift = i32::try_from(old_moof_size - new_moof_size).expect("差分は i32 に収まる");
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        for trun_box in &mut traf_box.trun_boxes {
+            if let Some(data_offset) = trun_box.data_offset {
+                trun_box.data_offset = Some(data_offset - shift);
+            }
+        }
+    }
+    let moof_bytes = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    assert_eq!(
+        moof_bytes.len(),
+        new_moof_size,
+        "data_offset を書き換えても moof のサイズは変わらない"
+    );
+    let mut result = moof_bytes;
+    result.extend_from_slice(&segment[old_moof_size..]);
+    result
+}
+
+/// init セグメントの `tenc.default_is_protected` を書き換える
+fn rewrite_init_tenc_default_is_protected(
+    init_segment: &[u8],
+    default_is_protected: u8,
+) -> Vec<u8> {
+    let (ftyp_box, ftyp_size) =
+        FtypBox::decode(init_segment).expect("init セグメントからの ftyp デコードに失敗した");
+    let (mut moov_box, _) = MoovBox::decode(&init_segment[ftyp_size..])
+        .expect("init セグメントからの moov デコードに失敗した");
+    let stsd_box = &mut moov_box.trak_boxes[0].mdia_box.minf_box.stbl_box.stsd_box;
+    let SampleEntry::Encv(encv_box) = &mut stsd_box.entries[0] else {
+        panic!("テスト対象のサンプルエントリーが Encv でない");
+    };
+    let tenc_box = encv_box
+        .sinf_box
+        .schi_box
+        .as_mut()
+        .expect("encv の sinf に schi がある")
+        .tenc_box
+        .as_mut()
+        .expect("encv の schi に tenc がある");
+    tenc_box.default_is_protected = default_is_protected;
+
+    let mut result = ftyp_box
+        .encode_to_vec()
+        .expect("ftyp のエンコードに失敗した");
+    result.extend_from_slice(
+        &moov_box
+            .encode_to_vec()
+            .expect("moov のエンコードに失敗した"),
+    );
+    result
+}
+
+/// `senc` の version を書き換える
+///
+/// version は FullBox ヘッダーの先頭 1 バイトであり、サイズは変わらない。
+fn rewrite_senc_version(segment: &[u8], version: u8) -> Vec<u8> {
+    let (mut moof_box, old_moof_size) =
+        MoofBox::decode(segment).expect("moof のデコードに失敗した");
+    let senc_box = moof_box.traf_boxes[0]
+        .unknown_boxes
+        .iter_mut()
+        .find(|unknown_box| unknown_box.box_type.as_bytes() == b"senc")
+        .expect("traf に senc が見つからない");
+    senc_box.payload[0] = version;
+    let moof_bytes = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    assert_eq!(
+        moof_bytes.len(),
+        old_moof_size,
+        "version の書き換えで moof のサイズは変わらない"
+    );
+    let mut result = moof_bytes;
+    result.extend_from_slice(&segment[old_moof_size..]);
+    result
+}
+
+/// 任意のペイロードから `UnknownBox` を組み立てる
+fn build_unknown_box(box_type: [u8; 4], payload: Vec<u8>) -> UnknownBox {
+    let box_type = BoxType::Normal(box_type);
+    UnknownBox {
+        box_type,
+        box_size: BoxSize::with_payload_size(box_type, payload.len() as u64)
+            .expect("テスト用のペイロード長は総サイズが u64 に収まる"),
+        payload,
+    }
+}
+
+/// 最初の `traf` の指定された種別のボックスを置き換えたメディアセグメントを返す
+///
+/// 置き換え後のボックスのサイズが変わっても、demux が SAI の解決の途中でエラーになる
+/// テストにだけ使う。`trun` の `data_offset` は補正しない。
+fn replace_traf_unknown_box(segment: &[u8], box_type: [u8; 4], new_box: UnknownBox) -> Vec<u8> {
+    let (mut moof_box, old_moof_size) =
+        MoofBox::decode(segment).expect("moof のデコードに失敗した");
+    let traf_box = &mut moof_box.traf_boxes[0];
+    let index = traf_box
+        .unknown_boxes
+        .iter()
+        .position(|unknown_box| unknown_box.box_type.as_bytes() == box_type)
+        .unwrap_or_else(|| {
+            panic!(
+                "traf に {} が見つからない",
+                String::from_utf8_lossy(&box_type)
+            )
+        });
+    traf_box.unknown_boxes[index] = new_box;
+    let moof_bytes = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    let mut result = moof_bytes;
+    result.extend_from_slice(&segment[old_moof_size..]);
+    result
+}
+
+/// サブサンプル暗号化のサンプル 2 個分の暗号化情報を返す
+fn two_subsample_encryption_infos() -> Vec<Option<SampleEncryptionInfo>> {
+    vec![
+        Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: vec![Subsample {
+                bytes_of_clear_data: 5,
+                bytes_of_protected_data: 10,
+            }],
+        }),
+        Some(SampleEncryptionInfo {
+            iv: vec![0x22; 16],
+            subsamples: Vec::new(),
+        }),
+    ]
+}
+
+/// `senc` から暗号化情報を復元できること
+///
+/// サブサンプルを持つサンプルと持たないサンプルが混在していても、入力どおりに復元される。
+#[test]
+fn demuxes_encryption_info_from_senc() {
+    let encryption_infos = two_subsample_encryption_infos();
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        encryption_infos.clone(),
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("senc を含むメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2);
+    for (sample, expected) in samples.iter().zip(encryption_infos.iter()) {
+        assert_eq!(
+            sample.encryption_info.as_ref(),
+            expected.as_ref(),
+            "senc から復元した暗号化情報が入力と一致しない"
+        );
+    }
+}
+
+/// `senc` が無く `saiz` / `saio` だけの入力でも暗号化情報を復元できること
+///
+/// SAI を `mdat` の payload の後ろに移し、`saio` の offset をそこへ向けたセグメントを使う。
+#[test]
+fn demuxes_encryption_info_from_saiz_and_saio() {
+    let encryption_infos = two_subsample_encryption_infos();
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        encryption_infos.clone(),
+    );
+    let rewritten = relocate_sai_after_mdat(&media_segment);
+    // 書き換えたセグメントに senc が含まれていないことを確認する
+    let (moof_box, _) = MoofBox::decode(&rewritten).expect("書き換えた moof のデコードに失敗した");
+    assert!(
+        moof_box.traf_boxes[0]
+            .unknown_boxes
+            .iter()
+            .all(|unknown_box| unknown_box.box_type.as_bytes() != b"senc"),
+        "書き換えたセグメントに senc が残っている"
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("saiz / saio だけを含むメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2);
+    for (sample, expected) in samples.iter().zip(encryption_infos.iter()) {
+        assert_eq!(
+            sample.encryption_info.as_ref(),
+            expected.as_ref(),
+            "saiz / saio から復元した暗号化情報が入力と一致しない"
+        );
+    }
+}
+
+/// `tenc.default_is_protected = 0` で SAI が無い入力では暗号化情報が `None` になること
+#[test]
+fn clear_track_without_sai_returns_no_encryption_info() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc(*b"cenc", 0, 16, None),
+        vec![None],
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("暗号化されていないトラックのメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 1);
+    assert!(
+        samples[0].encryption_info.is_none(),
+        "暗号化されていないトラックのサンプルに暗号化情報が付いている"
+    );
+}
+
+/// `tenc.default_is_protected = 1` かつ `default_per_sample_iv_size = 0` で SAI が無い入力が、
+/// 空の `iv` / `subsamples` の暗号化情報として復元されること
+///
+/// constant IV によるサンプル全体の暗号化を表す。ISO/IEC 23001-7:2023 8.2.3 は
+/// counter mode (`cenc` / `cens`) で constant IV を使うことを禁じているため、
+/// constant IV を使える CBC のスキーム (`cbc1`) で組み立てる。
+#[test]
+fn constant_iv_without_sai_returns_empty_encryption_info() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc(*b"cbc1", 1, 0, Some(vec![0x77; 8])),
+        vec![Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+        })],
+    );
+    let rewritten = remove_all_sample_aux_info(&media_segment);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("constant IV のメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 1);
+    assert_eq!(
+        samples[0].encryption_info,
+        Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+        }),
+        "constant IV のサンプル全体暗号化として復元されていない"
+    );
+}
+
+/// `tenc.default_is_protected = 1` かつ per-sample IV が必要なのに SAI が無い入力が
+/// InvalidData になること
+#[test]
+fn missing_sai_with_per_sample_iv_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc(*b"cenc", 1, 8, None),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 8],
+            subsamples: Vec::new(),
+        })],
+    );
+    let rewritten = remove_all_sample_aux_info(&media_segment);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("SAI の無い per-sample IV のトラックを受け付けてしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("requires sample auxiliary information"),
+                "SAI の有無の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `tenc.default_is_protected = 0` のトラックに SAI がある入力 (選択的暗号化) が
+/// InvalidData になること
+#[test]
+fn selective_encryption_sai_with_clear_default_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    let init_segment = rewrite_init_tenc_default_is_protected(&init_segment, 0);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&media_segment)
+        .expect_err("選択的暗号化の入力を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("selective encryption is not supported"),
+                "選択的暗号化の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `grouping_type` が `seig` の `sbgp` / `sgpd` を持つ `traf` が Unsupported になること
+#[test]
+fn seig_sample_group_is_unsupported() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+
+    // `sbgp` と `sgpd` はどちらも、version 0, flags 0 の直後に grouping_type が 4 バイトで並ぶ。
+    // ここでは grouping_type 'seig', entry_count 0 のボックスを追加する
+    for (box_type, description) in [(*b"sbgp", "sbgp"), (*b"sgpd", "sgpd")] {
+        let mut payload = vec![0x00, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(b"seig");
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let rewritten = rewrite_media_segment_moof(&media_segment, move |moof_box| {
+            assert_eq!(moof_box.traf_boxes.len(), 1, "テストは 1 traf を前提にする");
+            moof_box.traf_boxes[0]
+                .unknown_boxes
+                .push(build_unknown_box(box_type, payload));
+        });
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_segment)
+            .expect("init セグメントの処理に失敗した");
+        let err = demuxer
+            .handle_media_segment(&rewritten)
+            .expect_err("seig サンプルグループを持つ入力を解釈してしまった");
+        match err {
+            DemuxError::DecodeError(error) => {
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::Unsupported,
+                    "{description} のエラー種別が Unsupported ではない (reason={})",
+                    error.reason,
+                );
+                assert!(
+                    error.reason.contains("seig sample group"),
+                    "{description} の seig の検査とは別のエラーである (reason={})",
+                    error.reason,
+                );
+            }
+            other => panic!("DecodeError を期待したが {other:?} だった"),
+        }
+    }
+}
+
+/// `senc` の version が 0 以外の入力が InvalidData になること
+#[test]
+fn senc_version_1_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    let rewritten = rewrite_senc_version(&media_segment, 1);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("version 1 の senc を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("Unsupported SencBox version"),
+                "senc のバージョンの検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `saiz` の `aux_info_type_parameter` が 0 以外の入力が InvalidData になること
+#[test]
+fn saiz_non_zero_aux_info_type_parameter_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    // version 0, flags 0x000001 (aux_info_type あり), aux_info_type 'cenc',
+    // aux_info_type_parameter 1
+    let mut payload = vec![0x00, 0x00, 0x00, 0x01];
+    payload.extend_from_slice(b"cenc");
+    payload.extend_from_slice(&1u32.to_be_bytes());
+    payload.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    let rewritten = replace_traf_unknown_box(
+        &media_segment,
+        *b"saiz",
+        build_unknown_box(*b"saiz", payload),
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("aux_info_type_parameter が 0 以外の saiz を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("aux_info_type_parameter must be 0"),
+                "パラメーターの検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `saio` の `aux_info_type_parameter` が 0 以外の入力が InvalidData になること
+#[test]
+fn saio_non_zero_aux_info_type_parameter_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    // version 0, flags 0x000001 (aux_info_type あり), aux_info_type 'cenc',
+    // aux_info_type_parameter 1, entry_count 0
+    let mut payload = vec![0x00, 0x00, 0x00, 0x01];
+    payload.extend_from_slice(b"cenc");
+    payload.extend_from_slice(&1u32.to_be_bytes());
+    payload.extend_from_slice(&0u32.to_be_bytes());
+    let rewritten = replace_traf_unknown_box(
+        &media_segment,
+        *b"saio",
+        build_unknown_box(*b"saio", payload),
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("aux_info_type_parameter が 0 以外の saio を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("aux_info_type_parameter must be 0"),
+                "パラメーターの検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// 複数の暗号化トラックがあるセグメントでも、`traf` ごとの `saio` offset が正しく解決されること
+///
+/// 映像 (IV 16 バイト) と音声 (IV 8 バイト) の `traf` が並ぶセグメントを作り、
+/// それぞれのサンプルに別々の暗号化情報が復元されることを確認する。
+#[test]
+fn demuxes_encryption_info_for_multiple_encrypted_tracks() {
+    let video_encryption = SampleEncryptionInfo {
+        iv: vec![0x11; 16],
+        subsamples: vec![Subsample {
+            bytes_of_clear_data: 5,
+            bytes_of_protected_data: 10,
+        }],
+    };
+    let audio_encryption = SampleEncryptionInfo {
+        iv: vec![0x22; 8],
+        subsamples: vec![Subsample {
+            bytes_of_clear_data: 3,
+            bytes_of_protected_data: 4,
+        }],
+    };
+    let video_size = 16usize;
+    let audio_size = 8usize;
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&[
+            create_encrypted_video_sample(
+                create_encv_sample_entry(320, 240),
+                Some(video_encryption.clone()),
+                0,
+            ),
+            Sample {
+                track_kind: TrackKind::Audio,
+                timescale: NonZeroU32::new(AUDIO_TIMESCALE).expect("タイムスケールは非ゼロ"),
+                sample_entry: Some(create_enca_sample_entry()),
+                duration: 960,
+                keyframe: true,
+                composition_time_offset: None,
+                data_offset: video_size as u64,
+                data_size: audio_size,
+                encryption_info: Some(audio_encryption.clone()),
+            },
+        ])
+        .expect("複数トラックの暗号化サンプルのメディアセグメントの作成に失敗した");
+    media_segment.extend_from_slice(&vec![0u8; video_size + audio_size]);
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("暗号化サンプルの init セグメントの作成に失敗した");
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("複数トラックの暗号化サンプルの処理に失敗した");
+    assert_eq!(samples.len(), 2);
+    for sample in &samples {
+        let expected = match sample.track.kind {
+            TrackKind::Video => &video_encryption,
+            TrackKind::Audio => &audio_encryption,
+            TrackKind::Subtitle => panic!("字幕トラックは作っていない"),
+        };
+        assert_eq!(
+            sample.encryption_info.as_ref(),
+            Some(expected),
+            "traf ごとの暗号化情報が正しく解決されていない (kind={:?})",
+            sample.track.kind,
+        );
+    }
+}
+
+/// `senc` があっても、`saiz` / `saio` を持つ `traf` に `base_data_offset` も
+/// `default_base_is_moof` も無い入力が InvalidData になること
+///
+/// 仕様上、`saiz` / `saio` の SAI の位置は `tfhd` の base data offset と同じ基準で解決するため、
+/// どちらの基準も無い入力は不正になる。
+#[test]
+fn saiz_saio_without_base_data_offset_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    let (mut moof_box, old_moof_size) =
+        MoofBox::decode(&media_segment).expect("moof のデコードに失敗した");
+    let traf_box = &mut moof_box.traf_boxes[0];
+    traf_box.tfhd_box.default_base_is_moof = false;
+    assert_eq!(
+        traf_box.tfhd_box.base_data_offset, None,
+        "mux は base_data_offset を明示しない"
+    );
+    let moof_bytes = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    assert_eq!(
+        moof_bytes.len(),
+        old_moof_size,
+        "フラグの書き換えで moof のサイズは変わらない"
+    );
+    let mut rewritten = moof_bytes;
+    rewritten.extend_from_slice(&media_segment[old_moof_size..]);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("base の無い saiz / saio を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("saiz/saio require base_data_offset or default_base_is_moof"),
+                "base の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+// ===== CENC 以外の保護スキームと汎用 SAI の扱い =====
+
+/// init セグメントの `encv` / `enca` 内の `schm.scheme_type` を書き換える
+///
+/// `schm` のペイロードは FullBox ヘッダー (4 バイト) の後に `scheme_type` (4 バイト) が
+/// 並ぶ。ボックス種別の 4 バイトの直後から数えて 8 バイト目が `scheme_type` になる。
+/// サイズは変わらないため、ほかのボックスの位置を補正する必要はない。
+fn rewrite_init_scheme_type(init_segment: &[u8], scheme_type: [u8; 4]) -> Vec<u8> {
+    let mut result = init_segment.to_vec();
+    let position = result
+        .windows(4)
+        .position(|window| window == b"schm")
+        .expect("init セグメントに schm が見つからない");
+    // `schm` のボックス種別 (4 バイト) + FullBox ヘッダー (4 バイト) の後ろ
+    let scheme_type_start = position + 8;
+    result[scheme_type_start..scheme_type_start + 4].copy_from_slice(&scheme_type);
+    result
+}
+
+/// `tenc` を持つが CENC 系以外の保護スキームのトラックが Unsupported になること
+///
+/// 平文として返すと、暗号化されたサンプルを復号せずに呼び出し元へ渡してしまう。
+#[test]
+fn non_cenc_protection_scheme_is_unsupported() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    // `EncvBox::encode` は CENC 系以外のスキームを書き出せないため、
+    // エンコード済みの init セグメントの `schm.scheme_type` だけを書き換える
+    let init_segment = rewrite_init_scheme_type(&init_segment, *b"piff");
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&media_segment)
+        .expect_err("CENC 以外の保護スキームを持つトラックを平文として解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::Unsupported,
+                "エラー種別が Unsupported ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("unsupported protection scheme"),
+                "保護スキームの検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// 保護されていないトラックの `saiz` / `saio` が、CENC 系以外の `aux_info_type` なら
+/// 無視されること
+///
+/// 汎用 SAI は CENC 以外の用途でも使われるため、`aux_info_type` が CENC 系でなければ
+/// エラーにせず、暗号化情報なしのサンプルとして返す。
+#[test]
+fn generic_sai_with_non_cenc_aux_info_type_is_ignored() {
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    // 汎用 SAI を表す `saiz` / `saio`。`aux_info_type` は CENC 系ではない 'abcd' にする
+    let saiz_box = SaizBox {
+        aux_info_type: Some(*b"abcd"),
+        aux_info_type_parameter: 0,
+        default_sample_info_size: 0,
+        sample_count: 1,
+        sample_info_sizes: vec![0],
+    };
+    let saio_box = SaioBox {
+        version: 0,
+        aux_info_type: Some(*b"abcd"),
+        aux_info_type_parameter: 0,
+        offsets: vec![0],
+    };
+    let rewritten = rewrite_media_segment_moof(&media_segment, move |moof_box| {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        traf_box.unknown_boxes.push(unknown_box_from_bytes(
+            saiz_box
+                .encode_to_vec()
+                .expect("saiz のエンコードに失敗した"),
+        ));
+        traf_box.unknown_boxes.push(unknown_box_from_bytes(
+            saio_box
+                .encode_to_vec()
+                .expect("saio のエンコードに失敗した"),
+        ));
+    });
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("汎用 SAI を持つ保護されていないトラックの処理に失敗した");
+    assert_eq!(samples.len(), 1, "サンプルが 1 つ返る");
+    assert!(
+        samples[0].encryption_info.is_none(),
+        "無視した汎用 SAI を暗号化情報として解釈してしまった"
+    );
+}
+
+// ===== 巨大な sample_count を宣言する入力 =====
+
+/// constant IV のトラックが巨大な `sample_count` を宣言していても、
+/// サンプル数分の暗号化情報を確保せずに InvalidData になること
+///
+/// 暗号化情報をサンプルごとの `Vec` で確保する実装では、この小さな入力から
+/// 数 GB のメモリを確保してしまう。constant IV は全サンプルで同じ暗号化情報を
+/// 共有できるため、`mdat` の範囲検査でエラーになることを固定する。
+#[test]
+fn constant_iv_with_huge_sample_count_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc(*b"cbc1", 1, 0, Some(vec![0x77; 8])),
+        vec![Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+        })],
+    );
+    // constant IV では SAI が無くても暗号化情報を復元できるため、SAI をすべて削除する
+    let no_sai_segment = remove_all_sample_aux_info(&media_segment);
+    let rewritten = rewrite_media_segment_moof(&no_sai_segment, |moof_box| {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        // サンプルサイズを `mdat` のサイズより大きくして、最初のサンプルの範囲検査でエラーにする
+        traf_box.tfhd_box.default_sample_size = Some(1_000_000);
+        let mut huge_trun_box = traf_box.trun_boxes[0].clone();
+        huge_trun_box.samples = TrunSamples::CountOnly(16_777_216);
+        // 合計 67,108,864 サンプルを宣言する小さな `moof` にする
+        traf_box.trun_boxes = vec![huge_trun_box; 4];
+    });
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("巨大な sample_count を宣言する入力を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("sample data range exceeds mdat boundary"),
+                "サンプルデータの範囲検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `saiz` / `saio` が入力サイズに比例しない `sample_count` を宣言した入力を、
+/// per-sample の SAI を確保せずに InvalidData にする上限があること
+#[test]
+fn per_sample_sai_with_huge_sample_count_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        vec![Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        })],
+    );
+    // `saiz` の `default_sample_info_size` を 1 にすると、`sample_info_sizes` を
+    // 持たなくてもサンプル数分の SAI 長を宣言できる
+    const HUGE_SAMPLE_COUNT: u32 = 16_777_216;
+    let rewritten = rewrite_media_segment_moof(&media_segment, |moof_box| {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        // `senc` を削除し、`saiz` / `saio` だけで SAI を指す構成にする
+        traf_box
+            .unknown_boxes
+            .retain(|unknown_box| unknown_box.box_type.as_bytes() != b"senc");
+        let mut huge_trun_box = traf_box.trun_boxes[0].clone();
+        huge_trun_box.samples = TrunSamples::CountOnly(HUGE_SAMPLE_COUNT);
+        traf_box.trun_boxes = vec![huge_trun_box];
+        let saiz_index = traf_box
+            .unknown_boxes
+            .iter()
+            .position(|unknown_box| unknown_box.box_type.as_bytes() == b"saiz")
+            .expect("traf に saiz が見つからない");
+        let saiz_box = SaizBox {
+            aux_info_type: None,
+            aux_info_type_parameter: 0,
+            default_sample_info_size: 1,
+            sample_count: HUGE_SAMPLE_COUNT,
+            sample_info_sizes: Vec::new(),
+        };
+        traf_box.unknown_boxes[saiz_index] = unknown_box_from_bytes(
+            saiz_box
+                .encode_to_vec()
+                .expect("saiz のエンコードに失敗した"),
+        );
+    });
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("入力サイズに比例しない sample_count を宣言する SAI を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("sample auxiliary information sample count"),
+                "サンプル数の上限の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+// ===== 複数の trun と saiz.default_sample_info_size =====
+
+/// `saiz` / `saio` を書き換えるときに `saio` へ書く offset の決め方
+#[derive(Debug, Clone, Copy)]
+enum SaioOffsetMode {
+    /// 全サンプルの SAI が連続していることを示す 1 個の offset
+    Single,
+
+    /// `trun` ごとの最初の SAI を指す offset
+    PerTrun,
+
+    /// `trun` の数と一致しない個数の offset (エラーパスのテスト用)
+    InvalidCount(usize),
+}
+
+/// `trun` に含まれるサンプル数を返す
+fn trun_sample_count(trun_box: &TrunBox) -> usize {
+    match &trun_box.samples {
+        TrunSamples::CountOnly(sample_count) => *sample_count as usize,
+        TrunSamples::PerSample(samples) => samples.len(),
+    }
+}
+
+/// エンコード済みのボックスバイト列を [`UnknownBox`] に変換する
+fn unknown_box_from_bytes(bytes: Vec<u8>) -> UnknownBox {
+    let (unknown_box, size) =
+        UnknownBox::decode(&bytes).expect("エンコード済みボックスのデコードに失敗した");
+    assert_eq!(
+        size,
+        bytes.len(),
+        "エンコード結果が複数のボックスを含んでいる"
+    );
+    unknown_box
+}
+
+/// 最初の `traf` の `saio` の offset を書き換える
+///
+/// offset の個数を変えないため、書き換えても `moof` のサイズは変わらない。
+fn replace_saio_offsets(moof_box: &mut MoofBox, offsets: &[usize]) {
+    let traf_box = &mut moof_box.traf_boxes[0];
+    let index = traf_box
+        .unknown_boxes
+        .iter()
+        .position(|unknown_box| unknown_box.box_type.as_bytes() == b"saio")
+        .expect("traf に saio が見つからない");
+    let (mut saio_box, _) = SaioBox::decode(
+        &traf_box.unknown_boxes[index]
+            .encode_to_vec()
+            .expect("saio のエンコードに失敗した"),
+    )
+    .expect("saio のデコードに失敗した");
+    saio_box.offsets = offsets
+        .iter()
+        .map(|offset| u64::try_from(*offset).expect("テスト用の offset は u64 に収まる"))
+        .collect();
+    traf_box.unknown_boxes[index] = unknown_box_from_bytes(
+        saio_box
+            .encode_to_vec()
+            .expect("saio のエンコードに失敗した"),
+    );
+}
+
+/// `senc` を削除して SAI を `mdat` の後ろへ移し、`trun` と `saiz` / `saio` を
+/// 指定どおりに書き換えたメディアセグメントを返す
+///
+/// - `split_truns`: `true` なら各サンプルを別々の `trun` に分ける
+/// - `default_sample_info_size`: `saiz` の既定 SAI 長。0 なら `sample_info_sizes` を並べる
+/// - `sample_info_sizes`: `default_sample_info_size` が 0 の場合の、サンプル順の SAI 長
+/// - `saio_offset_mode`: `saio` に書く offset の決め方
+///
+/// SAI の内容は `senc` のサンプルごとの領域をそのまま使う。
+fn rewrite_sai_layout(
+    segment: &[u8],
+    split_truns: bool,
+    default_sample_info_size: u8,
+    sample_info_sizes: &[u8],
+    saio_offset_mode: SaioOffsetMode,
+) -> Vec<u8> {
+    let (mut moof_box, old_moof_size) =
+        MoofBox::decode(segment).expect("moof のデコードに失敗した");
+    let (mdat_header_size, mdat_payload_size) =
+        mdat_header_and_payload_size(segment, old_moof_size);
+    let payload_start = old_moof_size + mdat_header_size;
+    let payload = &segment[payload_start..payload_start + mdat_payload_size];
+    let sai_bytes = extract_senc_sai_bytes(segment);
+
+    // `trun` をサンプルごとに分ける。`data_offset` は先頭の `trun` にだけ残し、
+    // それ以外は直前の run のデータ末尾から続くものとして省略する
+    if split_truns {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        assert_eq!(
+            traf_box.trun_boxes.len(),
+            1,
+            "テストは分割前の trun が 1 個であることを前提にする"
+        );
+        let trun_box = traf_box.trun_boxes[0].clone();
+        let TrunSamples::PerSample(rows) = &trun_box.samples else {
+            panic!("テストはサンプル行を持つ trun を前提にする");
+        };
+        let mut split_trun_boxes = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let mut split_trun_box = trun_box.clone();
+            split_trun_box.samples = TrunSamples::PerSample(vec![row.clone()]);
+            split_trun_box.data_offset = if index == 0 {
+                trun_box.data_offset
+            } else {
+                None
+            };
+            split_trun_boxes.push(split_trun_box);
+        }
+        traf_box.trun_boxes = split_trun_boxes;
+    }
+
+    let total_sample_count = moof_box.traf_boxes[0]
+        .trun_boxes
+        .iter()
+        .map(trun_sample_count)
+        .sum::<usize>();
+    assert!(
+        total_sample_count > 0,
+        "テストは 1 件以上のサンプルを前提にする"
+    );
+    let sample_sai_sizes: Vec<usize> = if default_sample_info_size == 0 {
+        sample_info_sizes
+            .iter()
+            .map(|size| usize::from(*size))
+            .collect()
+    } else {
+        vec![usize::from(default_sample_info_size); total_sample_count]
+    };
+    assert_eq!(
+        sample_sai_sizes.len(),
+        total_sample_count,
+        "sample_info_sizes の個数がサンプル数と一致しない"
+    );
+    let total_sai_size = sample_sai_sizes.iter().sum::<usize>();
+    assert_eq!(
+        total_sai_size,
+        sai_bytes.len(),
+        "SAI の長さが sample_info_sizes の合計と一致しない"
+    );
+
+    // `senc` / `saiz` / `saio` を削除し、書き換えた `saiz` / `saio` を末尾に追加する。
+    // `saio` の offset は、moof のサイズが確定した後に書き換える
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        traf_box.unknown_boxes.retain(|unknown_box| {
+            let box_type = unknown_box.box_type.as_bytes();
+            box_type != b"senc" && box_type != b"saiz" && box_type != b"saio"
+        });
+        let sample_count =
+            u32::try_from(total_sample_count).expect("テスト用のサンプル数は u32 に収まる");
+        let saiz_box = SaizBox {
+            aux_info_type: None,
+            aux_info_type_parameter: 0,
+            default_sample_info_size,
+            sample_count,
+            sample_info_sizes: if default_sample_info_size == 0 {
+                sample_info_sizes.to_vec()
+            } else {
+                Vec::new()
+            },
+        };
+        traf_box.unknown_boxes.push(unknown_box_from_bytes(
+            saiz_box
+                .encode_to_vec()
+                .expect("saiz のエンコードに失敗した"),
+        ));
+        let saio_offset_count = match saio_offset_mode {
+            SaioOffsetMode::Single => 1,
+            SaioOffsetMode::PerTrun => traf_box.trun_boxes.len(),
+            SaioOffsetMode::InvalidCount(count) => count,
+        };
+        let saio_box = SaioBox {
+            version: 0,
+            aux_info_type: None,
+            aux_info_type_parameter: 0,
+            offsets: vec![0; saio_offset_count],
+        };
+        traf_box.unknown_boxes.push(unknown_box_from_bytes(
+            saio_box
+                .encode_to_vec()
+                .expect("saio のエンコードに失敗した"),
+        ));
+    }
+
+    // 仮の値でエンコードして moof のサイズを確定する。`saio` の offset と `trun` の
+    // `data_offset` は固定長なので、値を書き換えてもサイズは変わらない
+    let new_moof_size = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した")
+        .len();
+    let sample_data_start = new_moof_size + mdat_header_size;
+    let sai_start = sample_data_start + mdat_payload_size;
+
+    // サンプルごとの SAI の開始位置を求める
+    let mut sample_sai_starts = Vec::new();
+    let mut cursor = sai_start;
+    for size in &sample_sai_sizes {
+        sample_sai_starts.push(cursor);
+        cursor += *size;
+    }
+    // `trun` ごとの最初のサンプルの SAI 開始位置を求める
+    let mut trun_sai_starts = Vec::new();
+    {
+        let mut sample_index = 0;
+        for trun_box in &moof_box.traf_boxes[0].trun_boxes {
+            trun_sai_starts.push(sample_sai_starts[sample_index]);
+            sample_index += trun_sample_count(trun_box);
+        }
+    }
+    let saio_offsets: Vec<usize> = match saio_offset_mode {
+        SaioOffsetMode::Single => vec![sample_sai_starts[0]],
+        SaioOffsetMode::PerTrun => trun_sai_starts,
+        // 個数が不正な場合は offset を使わないため、先頭から順に埋める
+        SaioOffsetMode::InvalidCount(count) => (0..count)
+            .map(|index| sample_sai_starts[index % sample_sai_starts.len()])
+            .collect(),
+    };
+    replace_saio_offsets(&mut moof_box, &saio_offsets);
+
+    // `trun` の `data_offset` を新しい `mdat` の位置に合わせる
+    {
+        let traf_box = &mut moof_box.traf_boxes[0];
+        for (index, trun_box) in traf_box.trun_boxes.iter_mut().enumerate() {
+            trun_box.data_offset = (index == 0).then_some(
+                i32::try_from(sample_data_start).expect("テスト用の data_offset は i32 に収まる"),
+            );
+        }
+    }
+
+    let moof_bytes = moof_box
+        .encode_to_vec()
+        .expect("moof のエンコードに失敗した");
+    assert_eq!(
+        moof_bytes.len(),
+        new_moof_size,
+        "offset を書き換えても moof のサイズは変わらない"
+    );
+
+    let new_mdat_size = mdat_header_size + mdat_payload_size + total_sai_size;
+    let mut mdat_header = segment[old_moof_size..payload_start].to_vec();
+    mdat_header[..4].copy_from_slice(
+        &u32::try_from(new_mdat_size)
+            .expect("テスト用の mdat サイズは u32 に収まる")
+            .to_be_bytes(),
+    );
+
+    let mut result = moof_bytes;
+    result.extend_from_slice(&mdat_header);
+    result.extend_from_slice(payload);
+    result.extend_from_slice(&sai_bytes);
+    result
+}
+
+/// サブサンプル暗号化のサンプル 2 個分の SAI 長を返す
+///
+/// 1 個目は IV 16 バイト + `subsample_count` 2 バイト + サブサンプル 1 個 (6 バイト)、
+/// 2 個目は IV 16 バイト + `subsample_count` 2 バイトになる。
+/// `senc` の flags は全サンプル共通なので、サブサンプルを持たないサンプルにも
+/// `subsample_count` が入る。
+fn subsample_sai_sizes() -> [u8; 2] {
+    [24, 18]
+}
+
+/// `trun` が 2 個あり `saio` の offset も 2 個ある場合に、`trun` ごとに SAI が
+/// 解決されること
+#[test]
+fn demuxes_encryption_info_from_two_truns_with_per_trun_saio_offsets() {
+    let encryption_infos = two_subsample_encryption_infos();
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        encryption_infos.clone(),
+    );
+    let rewritten = rewrite_sai_layout(
+        &media_segment,
+        true,
+        0,
+        &subsample_sai_sizes(),
+        SaioOffsetMode::PerTrun,
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("2 個の trun と 2 個の saio offset を持つセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2, "2 サンプルが返る");
+    for (sample, expected) in samples.iter().zip(encryption_infos.iter()) {
+        assert_eq!(
+            sample.encryption_info.as_ref(),
+            expected.as_ref(),
+            "trun ごとの saio offset から復元した暗号化情報が入力と一致しない"
+        );
+    }
+}
+
+/// `trun` が 2 個あり `saio` の offset が 1 個だけの場合に、全サンプルの SAI が
+/// 連続しているものとして解決されること
+#[test]
+fn demuxes_encryption_info_from_two_truns_with_single_saio_offset() {
+    let encryption_infos = two_subsample_encryption_infos();
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        encryption_infos.clone(),
+    );
+    let rewritten = rewrite_sai_layout(
+        &media_segment,
+        true,
+        0,
+        &subsample_sai_sizes(),
+        SaioOffsetMode::Single,
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("2 個の trun と 1 個の saio offset を持つセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2, "2 サンプルが返る");
+    for (sample, expected) in samples.iter().zip(encryption_infos.iter()) {
+        assert_eq!(
+            sample.encryption_info.as_ref(),
+            expected.as_ref(),
+            "連続した SAI から復元した暗号化情報が入力と一致しない"
+        );
+    }
+}
+
+/// `saio` の offset の個数が 1 でも `trun` の数でもない入力が InvalidData になること
+#[test]
+fn invalid_saio_offset_count_is_invalid_data() {
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        two_subsample_encryption_infos(),
+    );
+    let rewritten = rewrite_sai_layout(
+        &media_segment,
+        true,
+        0,
+        &subsample_sai_sizes(),
+        SaioOffsetMode::InvalidCount(3),
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let err = demuxer
+        .handle_media_segment(&rewritten)
+        .expect_err("saio の offset の個数が不正な入力を解釈してしまった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains(
+                    "saio offset count 3 must be 1 or equal to the number of trun boxes (2)"
+                ),
+                "offset の個数の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `saiz.default_sample_info_size` が 0 以外の場合に、サンプルごとの長さを
+/// 持たなくても暗号化情報が復元されること
+#[test]
+fn demuxes_encryption_info_with_default_sample_info_size() {
+    let encryption_infos = vec![
+        Some(SampleEncryptionInfo {
+            iv: vec![0x11; 16],
+            subsamples: Vec::new(),
+        }),
+        Some(SampleEncryptionInfo {
+            iv: vec![0x22; 16],
+            subsamples: Vec::new(),
+        }),
+    ];
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry(320, 240),
+        encryption_infos.clone(),
+    );
+    // IV 16 バイトを持つサンプルで、サブサンプル暗号化ではないため SAI 長は全サンプル 16 バイトになる
+    let rewritten = rewrite_sai_layout(&media_segment, false, 16, &[], SaioOffsetMode::Single);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("default_sample_info_size を持つセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2, "2 サンプルが返る");
+    for (sample, expected) in samples.iter().zip(encryption_infos.iter()) {
+        assert_eq!(
+            sample.encryption_info.as_ref(),
+            expected.as_ref(),
+            "default_sample_info_size から復元した暗号化情報が入力と一致しない"
+        );
+    }
 }

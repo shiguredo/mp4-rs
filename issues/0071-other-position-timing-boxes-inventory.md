@@ -22,7 +22,7 @@ MP4 / fMP4 の「位置調整系」および「時刻調整系」に分類でき
 | `cslg` | 実装済み | 常に `None` | 反映しない | `src/boxes_moov_tree.rs` |
 | `tfdt` | 実装済み | 生成する | `Fmp4SegmentDemuxer` で `base_media_decode_time` を反映 | `src/boxes_fmp4.rs` / `src/demux_fmp4_segment.rs` |
 | `prft` | 未実装 | - | - | - |
-| `saio` / `saiz` | 未実装 | - | - | - (CENC の初期化データ側は `sinf` / `tenc` / `encv` / `enca` / `pssh` に対応済み) |
+| `saio` / `saiz` | 実装済み | 暗号化されたサンプルのある `traf` に `senc` と合わせて生成する | `Fmp4SegmentDemuxer` が SAI を解決して `Sample::encryption_info` として露出する | `src/boxes_cenc.rs` / `src/mux_fmp4_segment.rs` / `src/demux_fmp4_segment.rs` |
 | `sbgp` / `sgpd` | 未実装 | - | - | - |
 | `stps` | 未実装 | - | - | - |
 | `stsh` | 未実装 | - | - | - |
@@ -44,7 +44,7 @@ fMP4 系のボックス (`prft` など) の対応は当面低優先度扱いと�
 | `edts` / `elst` の mux 生成 | 中〜低 (B-frame を含む映像を muxer で出力するときに書かないと再生互換性が落ちる。ただし `shiguredo_mp4` の現在の主用途では該当ケースが少ない可能性) | 要求が出た時点で個別 issue 化。demux 側 (`issues/pending/0070-add-edit-list-demux-support.md`) の設計選択肢と歩調を合わせる |
 | `cslg` の mux 生成 | 中〜低 (負値の `composition_time_offset` を書く場合の仕様上の推奨。mux 側で `edts` を書くようになるタイミングで併せて検討) | mux 側 `edts` 対応時に併せて判断 |
 | `prft` (Producer Reference Time) の parse/encode | 低 (fMP4 特化。CMAF ライブ配信で NTP / UTC 絶対時刻をメディア時刻に対応付ける用途) | 要求が出るまで見送り。fMP4 系は当面低優先度扱い |
-| `saio` / `saiz` (Sample Auxiliary Information Offset/Size) の parse/encode | 低 (実運用ではほぼ CENC 用途。初期化データ側の CENC 対応は始めたが、メディアセグメントのサンプル補助情報は未対応) | メディアセグメントの暗号化情報 (`senc` / `saiz` / `saio`) 対応の議論が発生した時点で再検討 |
+| `saio` / `saiz` (Sample Auxiliary Information Offset/Size) の parse/encode | 低 (実運用ではほぼ CENC 用途) | 実装済み。`senc` / `saiz` / `saio` を fMP4 の mux / demux で往復でき、`Sample::encryption_info` として露出する |
 | `sbgp` / `sgpd` (Sample Group) の parse/encode | 中 (Opus の pre-roll サンプル数指示は `roll` sample group によることになっており、Opus ISOBMFF 仕様 (opus_in_isobmff) の 4.3.6.2 では必須 (shall)。AAC / HEVC の open GOP ランダムアクセス精度にも効く) | Opus / AAC トラックのシーク精度改善要求が具体化した時点で個別 issue 化 |
 | `stps` (Partial Sync Sample) の parse/encode | 低 (open GOP のランダムアクセス点指示。近年は `sap` sample group での代替が主流化。プレイヤー側もあまり参照しない) | 要求が出るまで見送り |
 | `stsh` (Shadow Sync Sample) の parse/encode | 極低 (事実上デッド機能。生成する encoder も読む decoder もほぼない) | 対応する予定なし。情報として本 umbrella に記載のみ |

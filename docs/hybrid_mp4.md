@@ -80,6 +80,7 @@ fn mux_hybrid_mp4(
         composition_time_offset: None,
         data_offset,
         data_size: sample_payload.len(),
+        encryption_info: None,
     };
     muxer.append_sample(&sample)?;
 

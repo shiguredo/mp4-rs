@@ -39,6 +39,7 @@
 //!     composition_time_offset: None,
 //!     data_offset: initial_bytes.len() as u64,
 //!     data_size: sample_data.len(),
+//!     encryption_info: None,
 //! };
 //! muxer.append_sample(&sample)?;
 //!
@@ -61,8 +62,9 @@ use crate::{
     TrackKind, Utf8String,
     boxes::{
         Brand, Co64Box, CttsBox, CttsEntry, DinfBox, FreeBox, FtypBox, HdlrBox, MdatBox, MdhdBox,
-        MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEntry, StblBox, StcoBox, StscBox,
-        StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox, VmhdBox,
+        MdiaBox, MediaHeader, MinfBox, MoovBox, MvhdBox, SampleEncryptionInfo, SampleEntry,
+        StblBox, StcoBox, StscBox, StscEntry, StsdBox, StssBox, StszBox, SttsBox, TkhdBox, TrakBox,
+        VmhdBox,
     },
     boxes_moov_tree::{EdtsBox, ElstBox},
     mux_fmp4_segment::{TrakDerivation, derive_trak_attributes, subtitle_trak_attributes},
@@ -430,6 +432,20 @@ pub struct Sample {
 
     /// サンプルデータのサイズ（バイト単位）
     pub data_size: usize,
+
+    /// サンプル単位の暗号化情報
+    ///
+    /// [`crate::mux::Fmp4SegmentMuxer`] では、CENC で保護されたトラック
+    /// (`Encv` / `Enca` のサンプルエントリー) のサンプルにこの値が [`Some`] であることを要求し、
+    /// `senc` / `saiz` / `saio` を `traf` に書き出す。
+    /// `tenc` の `default_is_protected` が 1 のトラックでは全サンプルに、
+    /// 0 のトラックでは全サンプルに [`None`] を指定する必要がある (選択的暗号化は非対応)。
+    /// `iv` の長さは `tenc` の `default_per_sample_iv_size` と一致している必要がある。
+    ///
+    /// [`Mp4FileMuxer`] は非 fragmented MP4 の暗号化に対応していないため、
+    /// [`Mp4FileMuxer::append_sample()`] に [`Some`] を渡すと
+    /// [`MuxError::EncodeError`] を返す。
+    pub encryption_info: Option<SampleEncryptionInfo>,
 }
 
 /// マルチプレックス処理中に発生するエラー
@@ -737,6 +753,13 @@ impl Mp4FileMuxer {
     pub fn append_sample(&mut self, sample: &Sample) -> Result<(), MuxError> {
         if self.finalized_boxes.is_some() {
             return Err(MuxError::AlreadyFinalized);
+        }
+        // 非 fragmented MP4 にはサンプル単位の暗号化情報を格納できない。
+        // 黙って無視すると復号できないファイルを出力するため、拒否する
+        if sample.encryption_info.is_some() {
+            return Err(MuxError::EncodeError(Error::invalid_input(
+                "Mp4FileMuxer does not support encrypted samples",
+            )));
         }
         if self.next_position != sample.data_offset {
             return Err(MuxError::PositionMismatch {
@@ -1558,6 +1581,7 @@ mod tests {
 
         // H.264 ビデオサンプルを作成
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1573,6 +1597,7 @@ mod tests {
 
         // 別のサンプルを追加
         let sample2 = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: None,
             keyframe: false,
@@ -1599,6 +1624,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1623,6 +1649,7 @@ mod tests {
 
         // サンプルエントリーなしの最初のサンプルは失敗するはず
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: None,
             keyframe: false,
@@ -1654,6 +1681,7 @@ mod tests {
 
         // 新規音声トラックの初回サンプルで sample_entry = None を渡し MissingSampleEntry を発生させる
         let bad_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: None,
             keyframe: false,
@@ -1673,6 +1701,7 @@ mod tests {
         // ここで別 timescale を持つ Sample を再投入する。
         // 内部状態が不変であれば TimescaleMismatch は発生せず、新規トラックとして受け入れられる
         let good_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: false,
@@ -1694,6 +1723,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1710,6 +1740,7 @@ mod tests {
 
         // ファイナライズ後に別のサンプルを追加しようとする
         let sample2 = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: None,
             keyframe: false,
@@ -1736,6 +1767,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1764,6 +1796,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1789,6 +1822,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1819,6 +1853,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let bad_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1834,6 +1869,7 @@ mod tests {
 
         // エラー後でも next_position は初期値のままなので、同じ data_offset で再投入できる
         let good_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1863,6 +1899,7 @@ mod tests {
         let first_size = 1024usize;
 
         let first_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1884,6 +1921,7 @@ mod tests {
 
         // data_size = 100 では overflow_offset + 100 が u64::MAX を超える
         let overflowing_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: None,
             keyframe: false,
@@ -1914,6 +1952,7 @@ mod tests {
 
         let fitting_size = 5usize;
         let fitting_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: None,
             keyframe: false,
@@ -1951,6 +1990,7 @@ mod tests {
         let first_size = 1024usize;
 
         let first_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -1972,6 +2012,7 @@ mod tests {
 
         // timescale 不一致かつ加算オーバーフローする入力
         let conflicting_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: None,
             keyframe: false,
@@ -2020,6 +2061,7 @@ mod tests {
         // チャンク 1: キーフレーム
         muxer
             .append_sample(&Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: Some(create_avc1_sample_entry()),
                 keyframe: true,
@@ -2041,6 +2083,7 @@ mod tests {
         // チャンク 2: 非キーフレーム（stss を出させる）
         muxer
             .append_sample(&Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: None,
                 keyframe: false,
@@ -2061,6 +2104,7 @@ mod tests {
         // チャンク 3: キーフレーム
         muxer
             .append_sample(&Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: None,
                 keyframe: true,
@@ -2117,6 +2161,7 @@ mod tests {
         avc1.visual.height = height;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(entry),
             keyframe: true,
@@ -2193,6 +2238,7 @@ mod tests {
 
         // ビデオサンプルを追加
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -2208,6 +2254,7 @@ mod tests {
 
         // オーディオサンプルを追加
         let audio_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: false,
@@ -2233,6 +2280,7 @@ mod tests {
 
         // 映像サンプルを追加
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -2248,6 +2296,7 @@ mod tests {
 
         // 音声サンプルを追加
         let audio_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: false,
@@ -2263,6 +2312,7 @@ mod tests {
 
         // 字幕サンプルを追加
         let subtitle_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(create_stpp_sample_entry()),
             keyframe: true,
@@ -2295,6 +2345,7 @@ mod tests {
         for i in 0..3 {
             muxer
                 .append_sample(&Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Audio,
                     sample_entry: (i == 0).then(create_opus_sample_entry),
                     keyframe: false,
@@ -2331,6 +2382,7 @@ mod tests {
         for i in 0..3 {
             muxer
                 .append_sample(&Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Subtitle,
                     sample_entry: (i == 0).then(create_stpp_sample_entry),
                     keyframe: false,
@@ -2367,6 +2419,7 @@ mod tests {
         for i in 0..3 {
             muxer
                 .append_sample(&Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Video,
                     sample_entry: (i == 0).then(create_avc1_sample_entry),
                     keyframe: false,
@@ -2397,6 +2450,7 @@ mod tests {
     /// 字幕トラック用の [`Sample`] を組み立てる
     fn subtitle_sample(sample_entry: SampleEntry, data_offset: u64) -> Sample {
         Sample {
+            encryption_info: None,
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(sample_entry),
             keyframe: true,
@@ -2502,6 +2556,7 @@ mod tests {
 
         for (i, entry) in [first, second].into_iter().enumerate() {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: Some(entry),
                 keyframe: true,
@@ -2535,6 +2590,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -2549,6 +2605,7 @@ mod tests {
             .expect("failed to append video sample");
 
         let audio_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: false,
@@ -2598,6 +2655,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -2612,6 +2670,7 @@ mod tests {
             .expect("failed to append video sample");
 
         let audio_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry()),
             keyframe: false,
@@ -2662,6 +2721,7 @@ mod tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry()),
             keyframe: true,
@@ -2688,6 +2748,7 @@ mod tests {
         let mut sample_entry = Some(create_avc1_sample_entry());
         for i in 0..5 {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: sample_entry.take(),
                 keyframe: i % 2 == 0,

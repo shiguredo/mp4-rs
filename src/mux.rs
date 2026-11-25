@@ -19,6 +19,7 @@
 //!     composition_time_offset: None,
 //!     data_offset: 0,
 //!     data_size: 0,
+//!     encryption_info: None,
 //! };
 //! let _ = (&mut muxer, sample);
 //! ```

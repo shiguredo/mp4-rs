@@ -5,10 +5,10 @@
 use std::num::NonZeroU32;
 
 use shiguredo_mp4::{
-    FixedPointNumber, FullBox, TrackKind, Uint,
+    ErrorKind, FixedPointNumber, FullBox, TrackKind, Uint,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, DopsBox, ElstBox, ElstEntry, OpusBox,
-        SampleEntry, VisualSampleEntryFields,
+        SampleEncryptionInfo, SampleEntry, VisualSampleEntryFields,
     },
     demux::{Input, Mp4FileDemuxer},
     mux::{
@@ -111,6 +111,7 @@ mod mux_mp4_file_boundary_tests {
         let data_offset = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(640, 480)),
             keyframe: true,
@@ -145,6 +146,54 @@ mod mux_mp4_file_boundary_tests {
             .expect("sample が無い");
         assert!(sample.keyframe);
         assert_eq!(sample.data_size, 100);
+        assert!(
+            sample.encryption_info.is_none(),
+            "Mp4FileDemuxer は常に encryption_info: None を返す"
+        );
+    }
+
+    /// `encryption_info: Some` を渡すと MuxError::EncodeError(InvalidInput) になること
+    ///
+    /// 非 fragmented MP4 にはサンプル単位の暗号化情報を格納できないため、
+    /// 黙って無視せずに拒否する。
+    #[test]
+    fn append_sample_with_encryption_info_is_rejected() {
+        let mut muxer = Mp4FileMuxer::new().expect("muxer の作成に失敗した");
+        let data_offset = muxer.initial_boxes_bytes().len() as u64;
+
+        let sample = Sample {
+            track_kind: TrackKind::Video,
+            sample_entry: Some(create_avc1_sample_entry(640, 480)),
+            keyframe: true,
+            timescale: NonZeroU32::new(30).expect("30 は非ゼロ"),
+            duration: 1,
+            composition_time_offset: None,
+            data_offset,
+            data_size: 100,
+            encryption_info: Some(SampleEncryptionInfo {
+                iv: vec![0x11; 16],
+                subsamples: Vec::new(),
+            }),
+        };
+        let err = muxer
+            .append_sample(&sample)
+            .expect_err("暗号化サンプルを追加できてしまった");
+        match err {
+            MuxError::EncodeError(error) => {
+                assert_eq!(
+                    error.kind,
+                    ErrorKind::InvalidInput,
+                    "エラー種別が InvalidInput ではない (reason={})",
+                    error.reason,
+                );
+                assert!(
+                    error.reason.contains("does not support encrypted samples"),
+                    "暗号化サンプルの検査とは別のエラーである (reason={})",
+                    error.reason,
+                );
+            }
+            other => panic!("EncodeError を期待したが {other:?} だった"),
+        }
     }
 
     /// faststart が有効な場合の roundtrip
@@ -158,6 +207,7 @@ mod mux_mp4_file_boundary_tests {
         let data_offset = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(1920, 1080)),
             keyframe: true,
@@ -234,6 +284,7 @@ mod mux_error_tests {
 
         // 最初のサンプル (timescale = 30)
         let sample1 = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(super::create_avc1_sample_entry(1920, 1080)),
             keyframe: true,
@@ -247,6 +298,7 @@ mod mux_error_tests {
 
         // 2番目のサンプル (timescale = 60) - 不一致
         let sample2 = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: None,
             keyframe: false,
@@ -274,6 +326,7 @@ mod mux_error_tests {
 
         // 最初のサンプル (timescale = 48000)
         let sample1 = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(super::create_opus_sample_entry(2)),
             keyframe: false,
@@ -287,6 +340,7 @@ mod mux_error_tests {
 
         // 2番目のサンプル (timescale = 44100) - 不一致
         let sample2 = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: None,
             keyframe: false,
@@ -381,6 +435,7 @@ mod mux_error_tests {
         let initial_size = muxer.initial_boxes_bytes().len() as u64;
 
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(super::create_avc1_sample_entry(1920, 1080)),
             keyframe: true,
@@ -423,6 +478,7 @@ mod edit_list_tests {
     /// 音声 1 サンプルを追加する
     fn append_audio_sample(muxer: &mut Mp4FileMuxer, data_offset: u64) {
         let sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry(2)),
             keyframe: true,
@@ -622,6 +678,7 @@ mod edit_list_tests {
         let mut muxer = Mp4FileMuxer::with_options(options).expect("muxer の作成に失敗した");
         let data_offset = muxer.initial_boxes_bytes().len() as u64;
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(320, 240)),
             keyframe: true,
@@ -694,6 +751,7 @@ mod edit_list_tests {
         let mut muxer = Mp4FileMuxer::with_options(options).expect("muxer の作成に失敗した");
         let data_offset = muxer.initial_boxes_bytes().len() as u64;
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(320, 240)),
             keyframe: true,

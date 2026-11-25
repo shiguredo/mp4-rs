@@ -391,6 +391,7 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
         let mut total_data_size = 0usize;
 
         let video_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Video,
             sample_entry: Some(create_avc1_sample_entry(320, 240)),
             keyframe: true,
@@ -407,6 +408,7 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
         total_data_size += 128;
 
         let audio_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Audio,
             sample_entry: Some(create_opus_sample_entry(2)),
             keyframe: true,
@@ -423,6 +425,7 @@ fn track_metadata_roundtrip() -> noprop::TestResult {
         total_data_size += 64;
 
         let subtitle_sample = Sample {
+            encryption_info: None,
             track_kind: TrackKind::Subtitle,
             sample_entry: Some(create_stpp_sample_entry()),
             keyframe: true,
@@ -521,6 +524,7 @@ fn mux_demux_video_only_roundtrip() -> noprop::TestResult {
         let mut total_data_size = 0usize;
         for sample_info in &samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: sample_entry.take(),
                 keyframe: sample_info.keyframe,
@@ -601,6 +605,7 @@ fn mux_demux_audio_only_roundtrip() -> noprop::TestResult {
         let mut total_data_size = 0usize;
         for sample_info in &samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Audio,
                 sample_entry: sample_entry.take(),
                 keyframe: false,
@@ -688,6 +693,7 @@ fn mux_demux_subtitle_only_roundtrip() -> noprop::TestResult {
         let mut total_data_size = 0usize;
         for sample_info in &samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: sample_entry.take(),
                 keyframe: true,
@@ -789,6 +795,7 @@ fn mux_demux_video_composition_time_offset_roundtrip() -> noprop::TestResult {
             .zip(0..)
         {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: sample_entry.take(),
                 keyframe: index == 0,
@@ -852,6 +859,7 @@ fn mux_video_composition_time_offset_out_of_i32_range_for_ctts_v1() -> noprop::T
 
         muxer
             .append_sample(&Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: Some(sample_entry.clone()),
                 keyframe: true,
@@ -865,6 +873,7 @@ fn mux_video_composition_time_offset_out_of_i32_range_for_ctts_v1() -> noprop::T
 
         muxer
             .append_sample(&Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: None,
                 keyframe: false,
@@ -910,6 +919,7 @@ fn mux_demux_video_audio_roundtrip() -> noprop::TestResult {
         let mut video_sample_entry = Some(create_avc1_sample_entry(width, height));
         for sample_info in &video_samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: video_sample_entry.take(),
                 keyframe: sample_info.keyframe,
@@ -931,6 +941,7 @@ fn mux_demux_video_audio_roundtrip() -> noprop::TestResult {
         let mut audio_sample_entry = Some(create_opus_sample_entry(channel_count));
         for sample_info in &audio_samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Audio,
                 sample_entry: audio_sample_entry.take(),
                 keyframe: false,
@@ -1030,6 +1041,7 @@ fn mux_demux_video_audio_subtitle_roundtrip() -> noprop::TestResult {
         let mut video_sample_entry = Some(create_avc1_sample_entry(width, height));
         for sample_info in &video_samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: video_sample_entry.take(),
                 keyframe: sample_info.keyframe,
@@ -1049,6 +1061,7 @@ fn mux_demux_video_audio_subtitle_roundtrip() -> noprop::TestResult {
         let mut audio_sample_entry = Some(create_opus_sample_entry(channel_count));
         for sample_info in &audio_samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Audio,
                 sample_entry: audio_sample_entry.take(),
                 // 正規は true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
@@ -1069,6 +1082,7 @@ fn mux_demux_video_audio_subtitle_roundtrip() -> noprop::TestResult {
         let mut subtitle_sample_entry = Some(create_stpp_sample_entry());
         for sample_info in &subtitle_samples {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Subtitle,
                 sample_entry: subtitle_sample_entry.take(),
                 keyframe: true,
@@ -1288,6 +1302,7 @@ fn prev_sample_reverses_next_sample_across_tracks() -> noprop::TestResult {
             let mut sample_entry = Some(sample_entry);
             for (keyframe, duration, data_size) in samples {
                 let sample = Sample {
+                    encryption_info: None,
                     track_kind,
                     sample_entry: sample_entry.take(),
                     keyframe,
@@ -1445,6 +1460,7 @@ fn compatible_brands_follow_used_sample_entries() -> noprop::TestResult {
         let append_video_sample =
             |muxer: &mut Mp4FileMuxer, data_offset: u64, sample_entry: SampleEntry| {
                 let sample = Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Video,
                     sample_entry: Some(sample_entry),
                     keyframe: true,
@@ -1461,6 +1477,7 @@ fn compatible_brands_follow_used_sample_entries() -> noprop::TestResult {
 
         if codec_mask == 0 {
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Audio,
                 sample_entry: Some(create_opus_sample_entry(2)),
                 keyframe: false,
@@ -1577,6 +1594,7 @@ fn mux_demux_video_with_advance_position_roundtrip() -> noprop::TestResult {
 
             let cto = composition_time_offsets.get(i).copied().flatten();
             let sample = Sample {
+                encryption_info: None,
                 track_kind: TrackKind::Video,
                 sample_entry: sample_entry.take(),
                 keyframe: sample_info.keyframe,
@@ -1707,6 +1725,7 @@ fn mux_demux_video_audio_with_advance_position_roundtrip() -> noprop::TestResult
 
                 let cto = video_ctos.get(i).copied().flatten();
                 let sample = Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Video,
                     sample_entry: video_entry.take(),
                     keyframe: vs.keyframe,
@@ -1737,6 +1756,7 @@ fn mux_demux_video_audio_with_advance_position_roundtrip() -> noprop::TestResult
                 }
 
                 let sample = Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Audio,
                     sample_entry: audio_entry.take(),
                     // 正規は true だが、全 false でも空 stss を出さず省略する契約を検証するため false を固定する
@@ -1941,6 +1961,7 @@ mod estimate_moov_size_tests {
             let mut video_entry = Some(create_avc1_sample_entry(1920, 1080));
             for _ in 0..video_sample_count {
                 let sample = Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Video,
                     sample_entry: video_entry.take(),
                     keyframe: true,
@@ -1960,6 +1981,7 @@ mod estimate_moov_size_tests {
             let mut audio_entry = Some(create_opus_sample_entry(2));
             for _ in 0..audio_sample_count {
                 let sample = Sample {
+                    encryption_info: None,
                     track_kind: TrackKind::Audio,
                     sample_entry: audio_entry.take(),
                     keyframe: false,

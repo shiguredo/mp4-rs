@@ -13,7 +13,7 @@ Sans I/O 設計に基づく MP4 (ISO Base Media File Format) の mux/demux ラ�
 - **`no_std` 対応**: `std` 非依存 (`alloc` クレートは必要)
 - **Sans I/O**: I/O を完全に分離した設計。ファイル読み書きは利用側の責務
 - **高レベル API**: `Mp4FileMuxer` / `Mp4FileDemuxer` / `Fmp4SegmentMuxer` / `Fmp4SegmentDemuxer` による mux/demux
-- **ボックス単位の API**: 全ボックスが `Encode` / `Decode` を実装し、直接エンコード/デコード可能
+- **ボックス単位の API**: 全ボックスが `Encode` / `Decode` を実装し、直接エンコード/デコード可能 (例外: `SencBox` は IV サイズを `tenc` から受け取る必要があるため `Decode` が常に `Unsupported` を返し、`SencBox::decode_with_iv_size()` を使う)
 - **WebAssembly API**: `crates/wasm` で提供
 
 ## バージョン情報
@@ -119,6 +119,8 @@ while let Ok(Some(sample)) = demuxer.next_sample() {
 
 `Sample.data_offset` は `handle_media_segment()` に渡したバッファ先頭からの相対位置。
 
+`traf` に `senc` があれば `tenc` の `default_per_sample_iv_size` を使って SAI を復元し、`senc` が無ければ `saiz` / `saio` から復元して `Sample.encryption_info` に設定する。`senc` の version 0 以外、`seig` サンプルグループ (鍵ローテーション)、選択的暗号化は非対応でエラーになる。
+
 ```rust
 use shiguredo_mp4::demux::Fmp4SegmentDemuxer;
 
@@ -177,10 +179,11 @@ while let Some(required) = detector.required_input() {
   - fMP4 では `duration` は init segment 由来で 0 になることが多い
   - `movie_timescale` は `mvhd` のタイムスケール。`edit_list` の `edit_duration` はこの単位
   - `edit_list` は demux のタイムスタンプには反映されない。mux するときは `EditList` に詰め替えて `TrackMetadata.edit_list` に渡すと保持できる
-- `Sample<'a>`: `{ track: &'a TrackInfo, sample_entry: Option<&'a SampleEntry>, keyframe: bool, timestamp: u64, duration: u32, data_offset: u64, data_size: usize, composition_time_offset: Option<i64> }`
+- `Sample<'a>`: `{ track: &'a TrackInfo, sample_entry: Option<&'a SampleEntry>, keyframe: bool, timestamp: u64, duration: u32, data_offset: u64, data_size: usize, composition_time_offset: Option<i64>, encryption_info: Option<SampleEncryptionInfo> }`
   - `sample_entry` は前のサンプルから変更がない場合 `None` (最初のサンプルは常に `Some`)
   - `timestamp` は DTS。PTS は `timestamp + composition_time_offset`
   - `data_offset` は file demuxer ではファイル先頭からの絶対位置、segment demuxer では入力バッファ先頭からの相対位置
+  - `encryption_info` は fMP4 の `senc` / `saiz` / `saio` から復元した CENC の SAI。`iv` は constant IV を使う場合は空、`subsamples` は空ならサンプル全体を暗号化する。暗号化されていないサンプルと `Mp4FileDemuxer` のサンプルは `None`
 
 ## マルチプレックス (mux)
 
@@ -216,12 +219,14 @@ while let Some(required) = detector.required_input() {
 | `composition_time_offset: Option<i64>` | PTS - DTS。負値は `i32::MIN..=-1`、非負値は `0..=u32::MAX` の範囲のみ |
 | `data_offset: u64` | ファイル内でのサンプルデータの開始位置。直前の `append_sample()` の位置と一致必須 (`PositionMismatch`) |
 | `data_size: usize` | サンプルデータのサイズ |
+| `encryption_info: Option<SampleEncryptionInfo>` | サンプル単位の CENC 暗号化情報。`Fmp4SegmentMuxer` は `tenc.default_is_protected = 1` のトラックで全サンプルに `Some` を要求して `senc` / `saiz` / `saio` を書き出し、`default_is_protected = 0` のトラックは `Some` を拒否する。`Mp4FileMuxer` は `Some` を拒否する |
 
 注意点:
 
 - MP4 はサンプルのタイムスタンプを直接指定できず、累積尺で表現する。タイムスタンプのギャップは利用側で補完する (映像: 黒画像や尺調整 / 音声: 無音補完)
 - 映像トラックの全サンプルが `keyframe = false` だと `finalize()` が `NoSyncSamples` を返す
 - `composition_time_offset` は `ctts` ボックスに書き出される
+- `encryption_info: Some` を渡すと `MuxError::EncodeError` (`ErrorKind::InvalidInput`) になる。非 fragmented MP4 の暗号化には対応しない
 - 詳細な制御が必要な場合は muxer を使わずボックスを直接構築する
 
 ```rust
@@ -240,6 +245,7 @@ let sample = Sample {
     composition_time_offset: None,
     data_offset: initial_bytes.len() as u64,
     data_size: 1024,
+    encryption_info: None,
 };
 muxer.append_sample(&sample)?;
 
@@ -284,6 +290,8 @@ faststart 形式になる (`FinalizedBoxes::is_faststart_enabled()` で判定)�
 注意点:
 
 - 初期化セグメントの `moov` に `pssh` を書き出す場合は `SegmentMuxerOptions::pssh_boxes` に指定する
+- サンプルエントリーが `Encv` / `Enca` のトラックでは `Sample.encryption_info` の有無と `tenc` の `default_is_protected` を一致させる。`default_is_protected = 1` のトラックでは全サンプルに `Some` が必要で、`iv` の長さは `tenc` の `default_per_sample_iv_size` と一致させる。選択的暗号化 (`default_is_protected = 0` のトラックに `Some`) は拒否する
+- 暗号化されたサンプルのある `traf` には `senc` / `saiz` / `saio` を書き出す。`saio` の offset は `moof` 先頭から `senc` 内の最初の SAI 先頭まで
 - `Sample.data_offset` は「ファイル全体の絶対位置」ではなく「今回のセグメントの `mdat` payload 領域の先頭からの相対位置」
 - 同一セグメント内の同一トラックのサンプルは `data_offset` 昇順で連続配置する必要がある (1 track = 1 traf = 1 trun 前提)
 - `composition_time_offset` は `trun` に書くため `i32::MIN..=i32::MAX` の範囲に限られる。負値と `> i32::MAX` の値の混在はエラー
@@ -371,8 +379,15 @@ let mfra = muxer.mfra_bytes()?;
 | `SchmBox` | 保護スキームの種類とバージョン (`scheme_type` / `scheme_version` / `scheme_uri`) |
 | `SchiBox` | 保護スキーム固有の情報を保持するコンテナ (`tenc` + 未知ボックス) |
 | `TencBox` | トラック暗号化の既定値 (`default_is_protected` / `default_per_sample_iv_size` / `default_kid` / constant IV / パターン暗号化パラメーター) |
+| `SencBox` | サンプルごとの CENC SAI (ISO/IEC 23001-7 7.2.1)。version 0 と flags `0x000002` のみ対応。IV サイズを `tenc` から受け取る `decode_with_iv_size()` でデコードする |
+| `SaizBox` | SAI のサイズ (ISO/IEC 14496-12 8.7.8)。version 0 固定 |
+| `SaioBox` | SAI の位置 (ISO/IEC 14496-12 8.7.9 / 8.8.14)。version 0 / 1 |
+| `Subsample` | サブサンプル暗号化の 1 範囲 (`bytes_of_clear_data` / `bytes_of_protected_data`) |
+| `SampleEncryptionInfo` | サンプル単位の暗号化情報 (`iv` / `subsamples`)。`SencBox::samples` と `Sample.encryption_info` で使う |
 
 `PsshBox` は `MoovBox::pssh_boxes` に保持され、`Fmp4SegmentMuxer` の `SegmentMuxerOptions::pssh_boxes` から init segment に書き出せる。
+`SencBox` は IV サイズを持たないため、`Decode` は常に `ErrorKind::Unsupported` を返す。`tenc` の `default_per_sample_iv_size` (0 / 8 / 16) を渡す `SencBox::decode_with_iv_size(&bytes, iv_size)` を使う。
+`TrafBox` は `senc` / `saiz` / `saio` の型付きフィールドを持たず、`unknown_boxes` に保持する。`Fmp4SegmentDemuxer` がこれらを解釈して `Sample.encryption_info` に反映する。
 `sinf` / `tenc` は `EncvBox` / `EncaBox` (`SampleEntry::Encv` / `SampleEntry::Enca`) の `sinf_box` から型付きで参照できる。
 `EncvBox` / `EncaBox` のエンコードには `schm` と `schi` 内の `tenc` が必要で、コーデック設定ボックスは `unknown_boxes` に保持される。
 `codec_string::from_sample_entry` は `Encv` / `Enca` でも `frma` と `unknown_boxes` から元のコーデック文字列を生成する。

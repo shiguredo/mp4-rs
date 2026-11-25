@@ -114,7 +114,8 @@ while let Ok(Some(sample)) = demuxer.next_sample() {
 | `new()` | インスタンス生成 |
 | `handle_init_segment(&[u8])` | 初期化セグメントを処理する (2 回目以降は `InvalidState`) |
 | `tracks()` | 初期化済みトラック情報 `&[TrackInfo]` を返す |
-| `handle_media_segment(&[u8])` | メディアセグメントを処理し `Vec<Sample>` を返す。`moof` より前、`moof` と `mdat` の間、`mdat` の後ろのトップレベルボックス (`styp` / `sidx` / `ssix` / `prft` / `free` 等) は読み飛ばす。1 回の呼び出しで 1 つの `moof` + `mdat` ペアのみ (`moof` の後ろで `mdat` より先に別の `moof` が出る場合や、`mdat` の後ろの `moof` はエラー)。エラー時は内部状態が変わらない (同じインスタンスを使い続けられる) |
+| `handle_media_segment(&[u8])` | メディアセグメントを処理し `Vec<Sample>` を返す。`moof` より前、`moof` と `mdat` の間、`mdat` の後ろのトップレベルボックス (`sidx` / `ssix` / `prft` / `free` 等) は中身を解釈せずに読み飛ばす。ただし、先頭の `styp` だけは型付きで読む。1 回の呼び出しで 1 つの `moof` + `mdat` ペアのみ (`moof` の後ろで `mdat` より先に別の `moof` が出る場合や、`mdat` の後ろの `moof` はエラー)。エラー時は内部状態が変わらない (同じインスタンスを使い続けられる) |
+| `styp()` | 直前の成功したメディアセグメントの先頭にあった `styp` ボックスを `Option<&StypBox>` で返す。`styp` がない場合、2 個目以降の `styp`、`mdat` の後ろの `styp`、デコードに失敗した `styp` は返さない。処理前は `None` |
 | `pssh_boxes()` | 初期化セグメントの `moov` に含まれる `pssh` ボックス群を `&[PsshBox]` で返す。処理前は空 |
 
 `Sample.data_offset` は `handle_media_segment()` に渡したバッファ先頭からの相対位置。
@@ -282,14 +283,15 @@ faststart 形式になる (`FinalizedBoxes::is_faststart_enabled()` で判定)�
 | メソッド | 説明 |
 |---------|------|
 | `new()` / `with_options(SegmentMuxerOptions)` | インスタンス生成 |
-| `create_media_segment_metadata(&[Sample])` | メディアセグメントの先頭メタデータ (`moof` + `mdat` ヘッダー) を生成。`mdat` ペイロードは含まない。サンプルの track 情報と sample entry を内部に蓄積する |
-| `create_media_segment_metadata_with_sidx(&[Sample])` | 先頭に `sidx` ボックスを付加したメディアセグメントを生成 (DASH 等向け) |
+| `create_media_segment_metadata(&[Sample])` | メディアセグメントの先頭メタデータ (`styp` 指定時は `styp` + `moof` + `mdat` ヘッダー) を生成。`mdat` ペイロードは含まない。サンプルの track 情報と sample entry を内部に蓄積する |
+| `create_media_segment_metadata_with_sidx(&[Sample])` | 先頭に `sidx` ボックスを付加したメディアセグメントを生成 (DASH 等向け)。`styp` 指定時は `styp` + `sidx` + `moof` + `mdat` ヘッダーの順になる |
 | `init_segment_bytes()` | その時点までに観測した内容を反映した初期化セグメントを返す。未観測なら `EmptyTracks` |
 | `mfra_bytes()` | ランダムアクセスインデックス (`mfra`) のバイト列を生成。ファイル末尾に付加 |
 
 注意点:
 
 - 初期化セグメントの `moov` に `pssh` を書き出す場合は `SegmentMuxerOptions::pssh_boxes` に指定する
+- メディアセグメントの先頭に `styp` を書き出す場合は `SegmentMuxerOptions::styp` に `StypBox` を指定する。`styp` を指定しない場合の出力バイト列は変わらない。`sidx` を付ける場合も `styp` は `sidx` より前に置くため、`sidx.referenced_size` は `moof` と `mdat` の合計のままである
 - サンプルエントリーが `Encv` / `Enca` のトラックでは `Sample.encryption_info` の有無と `tenc` の `default_is_protected` を一致させる。`default_is_protected = 1` のトラックでは全サンプルに `Some` が必要で、`iv` の長さは `tenc` の `default_per_sample_iv_size` と一致させる。選択的暗号化 (`default_is_protected = 0` のトラックに `Some`) は拒否する
 - 暗号化されたサンプルのある `traf` には `senc` / `saiz` / `saio` を書き出す。`saio` の offset は `moof` 先頭から `senc` 内の最初の SAI 先頭まで
 - `Sample.data_offset` は「ファイル全体の絶対位置」ではなく「今回のセグメントの `mdat` payload 領域の先頭からの相対位置」
@@ -363,6 +365,7 @@ let mfra = muxer.mfra_bytes()?;
 | `TrunBox` | トラックフラグメントラン (`data_offset: Option<i32>` + `first_sample_flags: Option<SampleFlags>` + `samples: TrunSamples`) |
 | `TrunSamples` | `CountOnly(u32)` (サンプルごとのフィールドがない run の件数だけ) / `PerSample(Vec<TrunSample>)` |
 | `TrunSample` | `duration` / `size` / `flags` / `composition_time_offset` (すべて `Option`) |
+| `StypBox` | セグメント種別 (`major_brand` / `minor_version` / `compatible_brands`)。`ftyp` と同じ構造で、`SegmentMuxerOptions::styp` からメディアセグメント先頭に書き出せる |
 | `SidxBox` / `SidxReference` | セグメントインデックス (DASH 用) |
 | `MfraBox` / `TfraBox` / `TfraEntry` / `MfroBox` | ムービーフラグメントランダムアクセス |
 

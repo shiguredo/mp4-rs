@@ -9,6 +9,7 @@
 //!
 //! - **初期化セグメント**: `ftyp` + `moov` (サンプルテーブルの代わりに `mvex/trex` を含む)
 //! - **メディアセグメント**: `moof` + `mdat` のペア（繰り返し）
+//!   - セグメントの先頭に `styp` や `sidx` が付くことがある
 //!
 //! # `Mp4FileMuxer` との主な違い
 //!
@@ -63,9 +64,9 @@ use crate::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, PsshBox, SaioBox,
         SaizBox, SampleEncryptionInfo, SampleEntry, SencBox, SidxBox, SidxReference, SmhdBox,
-        StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox, SttsBox, TencBox, TfdtBox, TfhdBox,
-        TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, TrunSamples,
-        UnknownBox, VmhdBox,
+        StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox, SttsBox, StypBox, TencBox, TfdtBox,
+        TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample,
+        TrunSamples, UnknownBox, VmhdBox,
     },
     boxes_moov_tree::EdtsBox,
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
@@ -99,6 +100,14 @@ pub struct SegmentMuxerOptions {
     ///
     /// DRM システムごとの初期化データを指定する。複数指定できる。
     pub pssh_boxes: Vec<PsshBox>,
+
+    /// メディアセグメントの先頭に書き出す `styp` ボックス
+    ///
+    /// 指定した場合は、[`create_media_segment_metadata()`](Fmp4SegmentMuxer::create_media_segment_metadata)
+    /// と [`create_media_segment_metadata_with_sidx()`](Fmp4SegmentMuxer::create_media_segment_metadata_with_sidx)
+    /// が返すバイト列の先頭に `styp` を含める。
+    /// 既定値は `None` で、指定しない場合の出力バイト列は変わらない。
+    pub styp: Option<StypBox>,
 }
 
 impl SegmentMuxerOptions {
@@ -132,6 +141,21 @@ struct TfraSegmentEntry {
     moof_relative_offset: u64,
     /// moof 内でのこのトラックの traf の 1 ベースインデックス
     traf_number: u32,
+}
+
+/// [`Fmp4SegmentMuxer::build_media_segment_bytes()`] の結果
+#[derive(Debug)]
+struct BuiltMediaSegment {
+    /// `moof` + `mdat` ヘッダーのバイト列（`styp` は含まない）
+    ///
+    /// `sidx` を付ける場合、呼び出し側は `styp` の後ろ、このバイト列の前に `sidx` を置く。
+    metadata: Vec<u8>,
+
+    /// `styp` ボックスのバイト列（[`SegmentMuxerOptions::styp`] が `None` の場合は空）
+    styp: Vec<u8>,
+
+    /// `mdat` payload のバイト数
+    mdat_payload_size: u64,
 }
 
 #[derive(Debug)]
@@ -281,14 +305,17 @@ impl Fmp4SegmentMuxer {
         Ok(bytes)
     }
 
-    /// メディアセグメント先頭のメタデータ（`moof` + `mdat` ヘッダー）のバイト列を生成する
+    /// メディアセグメント先頭のメタデータ（`styp` + `moof` + `mdat` ヘッダー）のバイト列を生成する
+    ///
+    /// [`SegmentMuxerOptions::styp`] を指定した場合は、返り値の先頭に `styp` ボックスを含める。
+    /// 指定しない場合の出力順は `moof` + `mdat` ヘッダーである。
     ///
     /// `samples` に含まれるサンプルは `track_kind` でグループ化して扱われる。
     /// 同一セグメント内の同一トラックのサンプルは、`data_offset` の昇順で
     /// `mdat` payload 領域内に連続して配置されている必要がある。
     /// トラック間の payload 配置順は `data_offset` に従って決定される。
     ///
-    /// 返り値に含まれるのは `moof` と `mdat` ヘッダーのみであり、
+    /// 返り値に含まれるのは `styp`（指定時のみ）と `moof` と `mdat` ヘッダーのみであり、
     /// `mdat` payload そのものは含まれない。
     /// 呼び出し側は、返り値の直後に `samples` が参照する payload 群を
     /// `data_offset` / `data_size` の指定どおりに配置する必要がある。
@@ -313,14 +340,22 @@ impl Fmp4SegmentMuxer {
         &mut self,
         samples: &[Sample],
     ) -> Result<Vec<u8>, MuxError> {
-        let (segment, _) = self.build_media_segment_bytes(samples)?;
-        Ok(segment)
+        let media_segment = self.build_media_segment_bytes(samples)?;
+        // セグメントの先頭に `styp` を置く。`styp` を指定しない場合は空なので、
+        // 既存の出力バイト列は変わらない
+        let mut result = media_segment.styp;
+        result.extend_from_slice(&media_segment.metadata);
+        Ok(result)
     }
 
     /// `sidx` ボックスを先頭に付加したメディアセグメント先頭メタデータを生成する
     ///
     /// `sidx` はセグメントインデックスボックスであり、
     /// MPEG-DASH などのアダプティブストリーミングで利用される。
+    ///
+    /// [`SegmentMuxerOptions::styp`] を指定した場合は、出力順は `styp` + `sidx` + `moof` + `mdat` ヘッダーになる。
+    /// `styp` は `sidx` より前にあるため `sidx` の参照範囲には入らず、
+    /// `sidx` の `referenced_size` は `moof` と `mdat` の合計、`first_offset` は 0 になる。
     ///
     /// `sidx` の `reference_id` は最初のサンプルのトラック種別に対応する track_id を使用する。
     ///
@@ -340,7 +375,8 @@ impl Fmp4SegmentMuxer {
     /// 観測したトラック情報と sample entry を内部に蓄積する。
     ///
     /// このメソッドで生成した sidx 付きセグメントを初期化セグメントの後ろに並べたファイル配置において、
-    /// [`mfra_bytes()`](Self::mfra_bytes) が返す `tfra.moof_offset` は sidx を含む実際の `moof` 位置と整合する。
+    /// [`mfra_bytes()`](Self::mfra_bytes) が返す `tfra.moof_offset` は、
+    /// `styp` を指定した場合はそのサイズも含めた実際の `moof` 位置と整合する。
     pub fn create_media_segment_metadata_with_sidx(
         &mut self,
         samples: &[Sample],
@@ -383,10 +419,15 @@ impl Fmp4SegmentMuxer {
             .map(|entries| entries.len())
             .collect();
 
-        let (media_segment, mdat_payload_size) = self.build_media_segment_bytes(samples)?;
+        let media_segment = self.build_media_segment_bytes(samples)?;
+        // `sidx` の参照範囲は `sidx` の直後から始まる。`styp` は `sidx` より前にあるため、
+        // `referenced_size` には `moof` と `mdat` の合計だけを含める。
         let media_segment_size = media_segment
+            .metadata
             .len()
-            .checked_add(usize::try_from(mdat_payload_size).map_err(|_| MuxError::Overflow)?)
+            .checked_add(
+                usize::try_from(media_segment.mdat_payload_size).map_err(|_| MuxError::Overflow)?,
+            )
             .ok_or(MuxError::Overflow)?;
         let reference_track = self
             .tracks
@@ -449,19 +490,36 @@ impl Fmp4SegmentMuxer {
 
         self.media_bytes_written = new_media_bytes_written;
 
-        let mut result = sidx_bytes;
-        result.extend_from_slice(&media_segment);
+        // 出力順は `styp`（指定時のみ）+ `sidx` + `moof` + `mdat` ヘッダーになる
+        let mut result = media_segment.styp;
+        result.extend_from_slice(&sidx_bytes);
+        result.extend_from_slice(&media_segment.metadata);
         Ok(result)
     }
 
     fn build_media_segment_bytes(
         &mut self,
         samples: &[Sample],
-    ) -> Result<(Vec<u8>, u64), MuxError> {
+    ) -> Result<BuiltMediaSegment, MuxError> {
         if samples.is_empty() {
             return Err(MuxError::EmptySamples);
         }
-        let moof_relative_offset = self.media_bytes_written;
+        // `styp` はセグメントの先頭に置く。エンコードに失敗した場合は
+        // 以降で内部状態を変更しないよう、先に済ませておく
+        let styp = self
+            .options
+            .styp
+            .as_ref()
+            .map(|styp_box| styp_box.encode_to_vec())
+            .transpose()?
+            .unwrap_or_default();
+        let styp_size = styp.len() as u64;
+        // `moof` は `styp` の直後に置くため、`styp` を指定した場合は
+        // そのサイズの分だけ `moof_relative_offset` が後ろになる
+        let moof_relative_offset = self
+            .media_bytes_written
+            .checked_add(styp_size)
+            .ok_or(MuxError::Overflow)?;
         let sequence_number = self.sequence_number.checked_add(1).ok_or_else(|| {
             MuxError::EncodeError(Error::invalid_data("sequence number overflow"))
         })?;
@@ -556,7 +614,7 @@ impl Fmp4SegmentMuxer {
             )));
         }
 
-        // 返り値には moof + mdat ヘッダーのみを含める。
+        // 返り値の metadata には moof + mdat ヘッダーのみを含める（styp は別に返す）。
         let mut segment = moof_bytes;
         segment.extend_from_slice(&mdat_header_bytes);
 
@@ -585,13 +643,18 @@ impl Fmp4SegmentMuxer {
 
         self.media_bytes_written = self
             .media_bytes_written
-            .checked_add(segment.len() as u64)
+            .checked_add(styp_size)
+            .and_then(|written| written.checked_add(segment.len() as u64))
             .and_then(|written| written.checked_add(mdat_payload_size))
             .ok_or(MuxError::Overflow)?;
         self.sequence_number = sequence_number;
         self.tracks = next_tracks;
         self.tfra_entries = next_tfra_entries;
-        Ok((segment, mdat_payload_size))
+        Ok(BuiltMediaSegment {
+            metadata: segment,
+            styp,
+            mdat_payload_size,
+        })
     }
 
     /// ランダムアクセスインデックス（`mfra`）のバイト列を生成する
@@ -602,6 +665,7 @@ impl Fmp4SegmentMuxer {
     /// `mfra` 内の `tfra.moof_offset` は、
     /// このメソッドを呼んだ時点での [`init_segment_bytes()`](Self::init_segment_bytes)
     /// のサイズを先頭オフセットとして計算される。
+    /// `styp` や `sidx` を付けたメディアセグメントでは、それらのサイズも加算した実際の `moof` 位置になる。
     ///
     /// したがって、`mfra` を実際に付加するファイルでは、
     /// このメソッドで前提にした init segment を先頭に配置する必要がある。

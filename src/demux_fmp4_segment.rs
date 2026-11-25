@@ -43,8 +43,8 @@ use crate::{
     BoxHeader, BoxSize, BoxType, Decode, Encode, Error, TrackKind,
     boxes::{
         FtypBox, HdlrBox, MdatBox, MoofBox, MoovBox, PsshBox, SaioBox, SaizBox,
-        SampleEncryptionInfo, SampleEntry, SencBox, Subsample, TencBox, TfhdBox, TrafBox, TrexBox,
-        TrunBox, TrunSample, TrunSamples, UnknownBox,
+        SampleEncryptionInfo, SampleEntry, SencBox, StypBox, Subsample, TencBox, TfhdBox, TrafBox,
+        TrexBox, TrunBox, TrunSample, TrunSamples, UnknownBox,
     },
     demux_mp4_file::{DemuxError, Sample, TrackInfo},
 };
@@ -95,6 +95,8 @@ pub struct Fmp4SegmentDemuxer {
     track_runtimes: Option<Vec<TrackRuntime>>,
     skipped_tracks: Vec<SkippedTrack>,
     pssh_boxes: Vec<PsshBox>,
+    /// 直前の成功したメディアセグメントの先頭にあった `styp` ボックス
+    styp: Option<StypBox>,
 }
 
 impl Fmp4SegmentDemuxer {
@@ -106,6 +108,7 @@ impl Fmp4SegmentDemuxer {
             track_runtimes: None,
             skipped_tracks: Vec::new(),
             pssh_boxes: Vec::new(),
+            styp: None,
         }
     }
 
@@ -238,6 +241,21 @@ impl Fmp4SegmentDemuxer {
         &self.pssh_boxes
     }
 
+    /// 直前の成功したメディアセグメントの先頭にあった `styp` ボックスを返す
+    ///
+    /// 次のいずれかに該当する場合は `None` を返す。
+    ///
+    /// - [`handle_init_segment()`](Self::handle_init_segment) を呼ぶ前
+    /// - 直前の成功したメディアセグメントの先頭に `styp` がない場合
+    /// - 先頭の `styp` をデコードできなかった場合（その `styp` は読み飛ばす）
+    ///
+    /// 2 個目以降の `styp` と、`mdat` の後ろにある `styp` は無視する。
+    /// [`handle_media_segment()`](Self::handle_media_segment) がエラーを返した場合、
+    /// この値は直前の成功した呼び出しのまま変わらない。
+    pub fn styp(&self) -> Option<&StypBox> {
+        self.styp.as_ref()
+    }
+
     /// 初期化済みのトラック情報を返す
     pub fn tracks(&self) -> Result<&[TrackInfo], DemuxError> {
         if self.track_runtimes.is_none() {
@@ -251,7 +269,12 @@ impl Fmp4SegmentDemuxer {
     /// メディアセグメント（`moof` + `mdat`）を処理してサンプルのリストを返す
     ///
     /// `moof` より前、`moof` と `mdat` の間、`mdat` の後ろにあるトップレベルボックス
-    /// （`styp` / `sidx` / `ssix` / `prft` / `free` など）は、種別を問わず中身を解釈せずに読み飛ばす。
+    /// （`sidx` / `ssix` / `prft` / `free` など）は、種別を問わず中身を解釈せずに読み飛ばす。
+    /// 例外として、メディアセグメントの先頭にある `styp` だけは型付きで読み、
+    /// [`styp()`](Self::styp) から取得できるようにする。
+    /// ただし、保持するのはボックス全体が入力内にあり、デコードに成功した場合だけである。
+    /// デコードに失敗した場合は従来どおり読み飛ばしてエラーにしない。
+    /// 2 個目以降の `styp` と `mdat` の後ろにある `styp` は無視する。
     /// `moof` より前にある `ftyp` / `moov` / `mdat` も同じく読み飛ばし、`moov` があってもその内容は反映しない。
     /// トラックの設定には、常に [`handle_init_segment()`](Self::handle_init_segment) で処理した内容を使う。
     ///
@@ -305,6 +328,7 @@ impl Fmp4SegmentDemuxer {
     /// そのため、エラーの後も同じインスタンスを使い続けられる。
     /// その後に渡したメディアセグメントで `sample_entry` が `Some` になるサンプルは、
     /// エラーを返した呼び出しがなかった場合と同じになる。
+    /// [`styp()`](Self::styp) が返す値も、エラーを返した呼び出しの前後で変わらない。
     pub fn handle_media_segment(&mut self, data: &[u8]) -> Result<Vec<Sample<'_>>, DemuxError> {
         self.handle_media_segment_inner(data, None)
     }
@@ -337,8 +361,12 @@ impl Fmp4SegmentDemuxer {
         // `styp` (8.16.2) / `sidx` (8.16.3、複数可) / `ssix` (8.16.4) / `prft` (8.16.5) が置かれ得る。
         // `free` / `skip` (8.1.2) も置かれ得るうえ、未知のボックスは無視して読み飛ばすことになっている (4.2.2)。
         // そのため、これらを種別ごとに列挙せず、`moof` が出るまで汎用的に読み飛ばす。
-        // `styp` が先頭にあるかどうかも検証しない (8.16.2 では、先頭にない `styp` は無視してよい)。
+        // ただし、先頭の `styp` だけは型付きで読む。8.16.2 は `styp` をセグメントの先頭ボックスと定めており、
+        // 先頭以外の `styp` は無視してよいため、位置が 0 のものだけを対象にする。
+        // ボックス全体が入力内にあり、デコードに成功した場合だけ保持し、失敗した場合は読み飛ばす
+        // （壊れた `styp` を持つセグメントをエラーにしない）。
         // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+        let mut styp = None;
         let mut offset = 0;
         loop {
             if offset >= data.len() {
@@ -349,6 +377,12 @@ impl Fmp4SegmentDemuxer {
             let (header, _) = BoxHeader::decode(&data[offset..])?;
             if header.box_type == MoofBox::TYPE {
                 break;
+            }
+            if offset == 0
+                && header.box_type == StypBox::TYPE
+                && let Ok((styp_box, _)) = StypBox::decode(&data[offset..])
+            {
+                styp = Some(styp_box);
             }
             let box_size = usize::try_from(header.box_size.get()).map_err(|_| {
                 DemuxError::DecodeError(Error::invalid_data("box size exceeds usize::MAX"))
@@ -671,6 +705,9 @@ impl Fmp4SegmentDemuxer {
         {
             track_runtime.current_sample_description_index = sample_description_index;
         }
+        // 先頭の `styp` も、すべての検証が通った後にまとめて書き戻す。
+        // これにより、エラーを返した呼び出しの前後で `styp()` の値が変わらない
+        self.styp = styp;
 
         Ok(pending_samples
             .into_iter()

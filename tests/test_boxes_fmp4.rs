@@ -3,6 +3,113 @@
 //! 正常系のラウンドトリップは `pbt/tests/prop_fmp4_boxes.rs` が担う。
 //! 本ファイルは PBT で安定して狙いにくい境界・不整合入力のエラーパスを固定する。
 
+/// `StypBox` の既知バイト列と意図的なエラーパスに関するテスト
+///
+/// ISO/IEC 14496-12:2022 8.16.2 は `styp` の構文を `ftyp` と同じ
+/// major_brand (4 バイト) + minor_version (4 バイト) + compatible_brands の列と定めている。
+/// 本モジュールは、その構文どおりのバイト列になることと、
+/// 種別違い・compatible_brands の端数という 2 つの不整合入力を拒否することを固定する。
+mod styp_box {
+    use shiguredo_mp4::{
+        BaseBox, BoxType, Decode, Encode, ErrorKind,
+        boxes::{Brand, StypBox},
+    };
+
+    /// `StypBox` のエンコード結果が既知のバイト列になり、そのバイト列をデコードし直すと元の値に戻ること
+    #[test]
+    fn styp_box_known_bytes() {
+        let styp = StypBox {
+            major_brand: Brand::ISO6,
+            minor_version: 0,
+            compatible_brands: vec![Brand::ISO6, Brand::new(*b"cmff")],
+        };
+        let encoded = styp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 (ヘッダー) + 4 (major_brand) + 4 (minor_version) + 4 * 2 (compatible_brands)
+        expected.extend_from_slice(&24u32.to_be_bytes());
+        expected.extend_from_slice(b"styp");
+        expected.extend_from_slice(b"iso6");
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(b"iso6");
+        expected.extend_from_slice(b"cmff");
+        assert_eq!(
+            encoded, expected,
+            "StypBox のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, size) = StypBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StypBox は必ずデコードできる");
+        assert_eq!(
+            size,
+            encoded.len(),
+            "decode の消費バイト数がエンコード結果の長さと一致しない"
+        );
+        assert_eq!(
+            decoded, styp,
+            "デコードした StypBox がエンコード前の値と一致しない"
+        );
+        assert_eq!(
+            decoded.box_type(),
+            BoxType::Normal(*b"styp"),
+            "StypBox の box 種別が styp でない"
+        );
+    }
+
+    /// ボックス種別が `styp` でない入力を `InvalidData` で拒否すること
+    ///
+    /// `styp` と `ftyp` は構文が同じなので、種別だけを `ftyp` にした入力を渡す。
+    #[test]
+    fn styp_box_rejects_other_box_type() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&16u32.to_be_bytes());
+        buf.extend_from_slice(b"ftyp");
+        buf.extend_from_slice(b"iso6");
+        buf.extend_from_slice(&0u32.to_be_bytes());
+
+        let err = StypBox::decode(&buf).expect_err("box 種別が styp でない入力は拒否される");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "box 種別違いのエラー種別が InvalidData でない: {:?}",
+            err.kind
+        );
+        assert_eq!(
+            err.box_type,
+            Some(StypBox::TYPE),
+            "エラーに StypBox の box 種別が設定されていない"
+        );
+    }
+
+    /// `compatible_brands` のバイト数が 4 の倍数でない入力を `InvalidData` で拒否すること
+    ///
+    /// `Brand` は 4 バイトなので、端数がある入力をブランドの列として解釈できない。
+    #[test]
+    fn styp_box_rejects_partial_compatible_brand() {
+        let mut buf = Vec::new();
+        // size = 8 (ヘッダー) + 4 (major_brand) + 4 (minor_version) + 3 (端数)
+        buf.extend_from_slice(&19u32.to_be_bytes());
+        buf.extend_from_slice(b"styp");
+        buf.extend_from_slice(b"iso6");
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(b"iso");
+
+        let err =
+            StypBox::decode(&buf).expect_err("compatible_brands に端数がある入力は拒否される");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "端数のエラー種別が InvalidData でない: {:?}",
+            err.kind
+        );
+        assert!(
+            err.reason.contains("multiple of 4"),
+            "エラー理由に 4 の倍数でないことが含まれない: {}",
+            err.reason
+        );
+    }
+}
+
 /// `TfraBox::encode` のバッファ境界検査に関する回帰テスト
 ///
 /// `encode_variable_uint`（`src/boxes_fmp4.rs` 内の private 関数）は

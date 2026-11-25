@@ -174,6 +174,7 @@ mod mux_mp4_file_boundary_tests {
                 iv: vec![0x11; 16],
                 subsamples: Vec::new(),
                 kid: None,
+                constant_iv: None,
             }),
         };
         let err = muxer

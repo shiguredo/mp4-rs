@@ -530,7 +530,8 @@ fn saio_box_roundtrip() -> noprop::TestResult {
 
 /// `seig` エントリーを生成する
 ///
-/// constant IV は `is_protected == 1 && per_sample_iv_size == 0` の場合だけ持たせる。
+/// パターン値は 4 bit の任意値にし、constant IV は
+/// `is_protected == 1 && per_sample_iv_size == 0` の場合だけ持たせる。
 fn arb_seig_entry(ctx: &mut TestCaseContext) -> SeigEntry {
     let is_protected: u8 = noprop::sample_u64_in(ctx, 0..=1) as u8;
     let per_sample_iv_size = match noprop::sample_u64_in(ctx, 0..=2) {
@@ -545,6 +546,9 @@ fn arb_seig_entry(ctx: &mut TestCaseContext) -> SeigEntry {
         None
     };
     SeigEntry {
+        // 4 bit に収まる任意のパターン値を生成する
+        crypt_byte_block: Uint::new(noprop::sample_u64_in(ctx, 0..=0x0F) as u8),
+        skip_byte_block: Uint::new(noprop::sample_u64_in(ctx, 0..=0x0F) as u8),
         is_protected,
         per_sample_iv_size,
         kid: arb_kid(ctx),
@@ -557,6 +561,8 @@ fn arb_seig_entry(ctx: &mut TestCaseContext) -> SeigEntry {
 /// constant IV を持てないため、`per_sample_iv_size` は 8 / 16 に限る。
 fn arb_fixed_length_seig_entry(ctx: &mut TestCaseContext) -> SeigEntry {
     SeigEntry {
+        crypt_byte_block: Uint::new(noprop::sample_u64_in(ctx, 0..=0x0F) as u8),
+        skip_byte_block: Uint::new(noprop::sample_u64_in(ctx, 0..=0x0F) as u8),
         is_protected: noprop::sample_u64_in(ctx, 0..=1) as u8,
         per_sample_iv_size: if noprop::sample_bool(ctx) { 8 } else { 16 },
         kid: arb_kid(ctx),

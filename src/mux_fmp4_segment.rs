@@ -58,8 +58,8 @@ use alloc::{format, vec, vec::Vec};
 use core::{num::NonZeroU32, time::Duration};
 
 use crate::{
-    BoxHeader, BoxSize, Decode, Either, Encode, Error, FixedPointNumber, Mp4FileTime, SampleFlags,
-    TrackKind,
+    BoxHeader, BoxSize, BoxType, Decode, Either, Encode, Error, FixedPointNumber, Mp4FileTime,
+    SampleFlags, TrackKind, Uint,
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, PsshBox, SaioBox,
@@ -215,20 +215,22 @@ struct ResolvedSegmentTrack {
     /// `senc` / `saiz` / `saio` を書き出すときに使う。暗号化されていないトラックは `None`。
     encryption_samples: Option<Vec<SampleEncryptionInfo>>,
 
-    /// `seig` サンプルグループで KID を切り替える場合に `traf` へ書き出すボックス群
+    /// `seig` サンプルグループで KID または constant IV を切り替える場合に
+    /// `traf` へ書き出すボックス群
     ///
-    /// すべてのサンプルの実効 KID が `tenc.default_kid` と同じ場合は `None` になり、
-    /// `sgpd` / `sbgp` を書き出さない。
+    /// すべてのサンプルの実効 KID と実効 constant IV が `tenc` の既定値と同じ場合は
+    /// `None` になり、`sgpd` / `sbgp` を書き出さない。
     seig_sample_groups: Option<SeigSampleGroups>,
 }
 
-/// `seig` サンプルグループで KID を切り替えるときに `traf` に書くボックス群
+/// `seig` サンプルグループで KID または constant IV を切り替えるときに
+/// `traf` に書くボックス群
 #[derive(Debug, Clone)]
 struct SeigSampleGroups {
-    /// KID ごとの `seig` エントリーを持つ `sgpd`
+    /// (実効 KID, 実効 constant IV) ごとの `seig` エントリーを持つ `sgpd`
     sgpd_box: SgpdBox,
 
-    /// 連続する同一 KID ごとの `sbgp`
+    /// 連続する同一グループごとの `sbgp`
     sbgp_box: SbgpBox,
 }
 
@@ -245,21 +247,29 @@ struct ResolvedSegmentSample {
 /// サンプルエントリーから取り出した CENC のトラック暗号化情報
 #[derive(Debug, Clone)]
 struct TrackEncryption {
+    /// 保護スキームの 4CC (`schm.scheme_type`)
+    scheme_type: [u8; 4],
+
     tenc_box: TencBox,
 }
 
 impl TrackEncryption {
     /// サンプルエントリーから CENC のトラック暗号化情報を取り出す
     ///
-    /// `Encv` / `Enca` 以外のサンプルエントリーと、`tenc` を持たないサンプルエントリーは `None` になる。
+    /// `Encv` / `Enca` 以外のサンプルエントリーと、`schm` または `tenc` を持たない
+    /// サンプルエントリーは `None` になる。
     fn from_sample_entry(sample_entry: &SampleEntry) -> Option<Self> {
         let sinf_box = match sample_entry {
             SampleEntry::Encv(encv_box) => &encv_box.sinf_box,
             SampleEntry::Enca(enca_box) => &enca_box.sinf_box,
             _ => return None,
         };
+        let scheme_type = sinf_box.schm_box.as_ref()?.scheme_type;
         let tenc_box = sinf_box.schi_box.as_ref()?.tenc_box.clone()?;
-        Some(Self { tenc_box })
+        Some(Self {
+            scheme_type,
+            tenc_box,
+        })
     }
 
     /// サンプルに付与された暗号化情報が `tenc` の既定値と整合するかを検査する
@@ -267,6 +277,16 @@ impl TrackEncryption {
     /// 選択的暗号化 (ISO/IEC 23001-7:2023 3.1.9) は対象外である。そのため
     /// `default_is_protected = 1` のトラックは全サンプルに暗号化情報を要求し、
     /// `default_is_protected = 0` のトラックは暗号化情報を禁止する。
+    ///
+    /// `kid` / `constant_iv` は、`tenc` の既定値と異なる実効値の指定であり、
+    /// 次の構成だけを受け付ける。
+    ///
+    /// - `kid`: per-sample IV (8 / 16) を使い `tenc` にパターン値を持たないトラックと、
+    ///   `cbcs` の constant IV トラック (`default_per_sample_iv_size == 0`)
+    /// - `constant_iv`: `cbcs` の constant IV トラックだけ
+    ///
+    /// なお、ここでの扱いは ISO/IEC 23001-7:2023 6 と同 8.2 に基づくものであり、
+    /// 将来の改訂で変わる可能性がある。
     fn validate_sample_encryption(
         &self,
         encryption_info: Option<&SampleEncryptionInfo>,
@@ -277,7 +297,8 @@ impl TrackEncryption {
                     "encrypted track requires sample encryption info for every sample",
                 )));
             };
-            let expected_iv_size = usize::from(self.tenc_box.default_per_sample_iv_size);
+            let default_per_sample_iv_size = self.tenc_box.default_per_sample_iv_size;
+            let expected_iv_size = usize::from(default_per_sample_iv_size);
             if encryption_info.iv.len() != expected_iv_size {
                 return Err(MuxError::EncodeError(Error::invalid_input(format!(
                     "sample IV size {} does not match tenc default_per_sample_iv_size {expected_iv_size}",
@@ -289,20 +310,29 @@ impl TrackEncryption {
                     "sample subsample count exceeds u16::MAX",
                 )));
             }
-            if encryption_info.kid.is_some() {
-                // KID の切り替えは per-sample IV のトラックだけを対象とする。
-                // constant IV のトラックでは `seig` の IV サイズの上書きになり、
-                // `senc` では表現できない
-                if self.tenc_box.default_per_sample_iv_size == 0 {
+            if let Some(constant_iv) = &encryption_info.constant_iv {
+                // constant IV は constant IV のトラックでしか意味を持たない
+                if default_per_sample_iv_size != 0 {
                     return Err(MuxError::EncodeError(Error::invalid_input(
-                        "sample KID rotation requires per-sample IV",
+                        "sample constant IV requires a tenc constant IV track",
                     )));
                 }
-                // `seig` のパターン暗号化パラメーターは常に 0 / 0 であり、`tenc` に
-                // 0 以外のパターン値がある場合はそれを上書きして復号結果が変わってしまう。
-                // version 1 の 0 / 0 はパターン暗号化を使わないことを表すため、
-                // demux 側の `check_seig_entry_against_tenc()` と同じく値で判定する。
-                // version 0 は `None` なので 0 として扱い、従来どおり KID を切り替えられる。
+                // `cbcs` 以外のスキーム定義では constant IV が認められていない
+                if self.scheme_type != *b"cbcs" {
+                    return Err(MuxError::EncodeError(Error::invalid_input(format!(
+                        "sample constant IV is only supported for the 'cbcs' scheme, got '{}'",
+                        BoxType::Normal(self.scheme_type),
+                    ))));
+                }
+                if constant_iv.len() != 8 && constant_iv.len() != 16 {
+                    return Err(MuxError::EncodeError(Error::invalid_input(
+                        "sample constant IV must be 8 or 16 bytes",
+                    )));
+                }
+            }
+            if encryption_info.kid.is_some() {
+                // `tenc` version 1 の 0 / 0 はパターン暗号化を使わないことを表すため、
+                // demux 側の `check_seig_entry_against_tenc()` と同じく値で判定する
                 let crypt_byte_block = self
                     .tenc_box
                     .default_crypt_byte_block
@@ -313,9 +343,15 @@ impl TrackEncryption {
                     .default_skip_byte_block
                     .map(|value| value.get())
                     .unwrap_or(0);
-                if crypt_byte_block != 0 || skip_byte_block != 0 {
+                let has_pattern = crypt_byte_block != 0 || skip_byte_block != 0;
+                // per-sample IV の鍵ローテーション (既存の対応) と、
+                // `cbcs` の constant IV トラックでの鍵ローテーションだけを許可する
+                let per_sample_iv_rotation = default_per_sample_iv_size != 0 && !has_pattern;
+                let constant_iv_rotation =
+                    default_per_sample_iv_size == 0 && self.scheme_type == *b"cbcs";
+                if !per_sample_iv_rotation && !constant_iv_rotation {
                     return Err(MuxError::EncodeError(Error::invalid_input(
-                        "sample KID rotation is not supported for tracks with tenc pattern encryption parameters",
+                        "sample KID rotation is only supported for per-sample IV tracks without tenc pattern encryption parameters and for 'cbcs' constant IV tracks",
                     )));
                 }
             }
@@ -1458,50 +1494,91 @@ fn compute_earliest_presentation_time(
     Ok((min_pts, sap_at_ept))
 }
 
-/// `seig` サンプルグループで KID を切り替える `sgpd` / `sbgp` を組み立てる
+/// `seig` のエントリーとして書き出す、実効 KID と実効 constant IV の組
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SeigGroupKey {
+    /// 実効 KID
+    kid: [u8; 16],
+
+    /// 実効 constant IV
+    ///
+    /// constant IV のトラックの場合だけ `Some` になる。
+    constant_iv: Option<Vec<u8>>,
+}
+
+/// `seig` サンプルグループで KID または constant IV を切り替える `sgpd` / `sbgp` を組み立てる
 ///
-/// KID ごとに `sgpd` の `seig` エントリーを 1 つ作り、連続する同一 KID ごとに
-/// `sbgp` のエントリーを作る。`sbgp` の `group_description_index` は
-/// `0x10000 + (1 始まりのエントリー番号)` であり、1 番目のエントリーが `0x10001` になる。
-/// 既定 KID を使うサンプルは index `0` にする。
+/// (実効 KID, 実効 constant IV) ごとに `sgpd` の `seig` エントリーを 1 つ作り、
+/// 連続する同一グループごとに `sbgp` のエントリーを作る。`sbgp` の
+/// `group_description_index` は `0x10000 + (1 始まりのエントリー番号)` であり、
+/// 1 番目のエントリーが `0x10001` になる。`tenc` の既定値を使うサンプルは index `0` にする。
 ///
-/// すべてのサンプルの実効 KID が `tenc.default_kid` と同じ場合は [`None`] を返し、
-/// `sgpd` / `sbgp` を書き出さない。なお、ここでの扱いは
+/// `seig` エントリーには `tenc` と同じパターン値と、constant IV のトラックでは実効値を
+/// 常に [`Some`] で書く (ワイヤ形式上、`Per_Sample_IV_Size == 0` のとき constant IV は
+/// 必須である)。`sgpd` の `default_length` は、全エントリーの長さが同じならその値、
+/// 異なる場合は 0 にして各エントリーに `description_length` を書く。
+///
+/// すべてのサンプルの実効 KID と実効 constant IV が `tenc` の既定値と同じ場合は
+/// [`None`] を返し、`sgpd` / `sbgp` を書き出さない。なお、ここでの扱いは
 /// ISO/IEC 23001-7:2023 6 と ISO/IEC 14496-12:2022 8.9.4 に基づくものであり、
 /// 将来の改訂で変わる可能性がある。
 fn build_seig_sample_groups(
     tenc_box: &TencBox,
     samples: &[SampleEncryptionInfo],
 ) -> Result<Option<SeigSampleGroups>, MuxError> {
-    // KID ごとのエントリー番号 (1 始まり) を、最初に現れた順に割り当てる
-    let mut kids: Vec<[u8; 16]> = Vec::new();
+    let default_kid = tenc_box.default_kid;
+    // constant IV のトラックでは、サンプルの実効 constant IV を省略した場合に
+    // `tenc` の既定 constant IV を使う
+    let default_constant_iv = tenc_box.default_constant_iv.as_ref();
+
+    // (実効 KID, 実効 constant IV) ごとのエントリー番号 (1 始まり) を、
+    // 最初に現れた順に割り当てる
+    let mut groups: Vec<SeigGroupKey> = Vec::new();
     let mut group_description_indices = Vec::new();
     for sample in samples {
-        let group_description_index = match sample.kid {
-            None => 0,
-            Some(kid) => {
-                let entry_index = match kids.iter().position(|known| *known == kid) {
-                    Some(index) => index,
-                    None => {
-                        kids.push(kid);
-                        kids.len() - 1
-                    }
-                };
-                // fragment-local の `sgpd` を参照する index は
-                // 0x10000 + (1 始まりのエントリー番号) になる
-                let entry_number = u32::try_from(entry_index + 1).map_err(|_| {
-                    MuxError::EncodeError(Error::invalid_input("seig entry count exceeds u32::MAX"))
-                })?;
-                0x1_0000u32.checked_add(entry_number).ok_or_else(|| {
+        // 正規化済みのため、`Some` は `tenc` の既定値と異なる実効値を表す
+        if sample.kid.is_none() && sample.constant_iv.is_none() {
+            group_description_indices.push(0u32);
+            continue;
+        }
+        let kid = sample.kid.unwrap_or(default_kid);
+        let constant_iv = if tenc_box.default_per_sample_iv_size == 0 {
+            // `seig` の `Per_Sample_IV_Size` が 0 のとき、constant IV は必須である
+            let constant_iv = sample
+                .constant_iv
+                .clone()
+                .or_else(|| default_constant_iv.cloned())
+                .ok_or_else(|| {
                     MuxError::EncodeError(Error::invalid_input(
-                        "seig group_description_index overflow",
+                        "seig entry requires a constant IV when per-sample IV size is 0",
                     ))
-                })?
+                })?;
+            Some(constant_iv)
+        } else {
+            // per-sample IV のトラックは constant IV を持たない
+            None
+        };
+        let key = SeigGroupKey { kid, constant_iv };
+        let entry_index = match groups.iter().position(|known| *known == key) {
+            Some(index) => index,
+            None => {
+                groups.push(key);
+                groups.len() - 1
             }
         };
+        // fragment-local の `sgpd` を参照する index は
+        // 0x10000 + (1 始まりのエントリー番号) になる
+        let entry_number = u32::try_from(entry_index + 1).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_input("seig entry count exceeds u32::MAX"))
+        })?;
+        let group_description_index = 0x1_0000u32.checked_add(entry_number).ok_or_else(|| {
+            MuxError::EncodeError(Error::invalid_input(
+                "seig group_description_index overflow",
+            ))
+        })?;
         group_description_indices.push(group_description_index);
     }
-    if kids.is_empty() {
+    if groups.is_empty() {
         return Ok(None);
     }
 
@@ -1523,23 +1600,52 @@ fn build_seig_sample_groups(
         }
     }
 
+    let seig_entries: Vec<SeigEntry> = groups
+        .into_iter()
+        .map(|group| SeigEntry {
+            // `seig` のパターン値は `tenc` と一致させる。`tenc` にパターン値が
+            // 無い場合は 0 / 0 を書く
+            crypt_byte_block: tenc_box.default_crypt_byte_block.unwrap_or(Uint::new(0)),
+            skip_byte_block: tenc_box.default_skip_byte_block.unwrap_or(Uint::new(0)),
+            is_protected: 1,
+            per_sample_iv_size: tenc_box.default_per_sample_iv_size,
+            kid: group.kid,
+            constant_iv: group.constant_iv,
+        })
+        .collect();
+    // 全エントリーの長さが同じ場合はその値を `default_length` にし、
+    // 異なる場合は 0 にして各エントリーに `description_length` を書かせる。
+    // ここで `SeigEntry::encode_to_vec()` は呼ばない。`tenc` の既定 constant IV の長さが
+    // 不正な場合に `encode_to_vec()` がパニックするため、長さは仕様どおりに計算し、
+    // 値の検査は `SgpdBox` のエンコードに任せる
+    let entry_lengths: Vec<usize> = seig_entries
+        .iter()
+        .map(|entry| {
+            SeigEntry::FIXED_SIZE
+                + entry
+                    .constant_iv
+                    .as_ref()
+                    .map_or(0, |constant_iv| 1 + constant_iv.len())
+        })
+        .collect();
+    let first_entry_length = entry_lengths
+        .first()
+        .expect("bug: groups is not empty, so seig_entries is not empty");
+    let default_length = if entry_lengths
+        .iter()
+        .all(|length| length == first_entry_length)
+    {
+        u32::try_from(*first_entry_length).map_err(|_| {
+            MuxError::EncodeError(Error::invalid_input("seig entry length exceeds u32::MAX"))
+        })?
+    } else {
+        0
+    };
     let sgpd_box = SgpdBox {
         version: 1,
         grouping_type: SEIG_GROUPING_TYPE,
-        default_length: Some(
-            u32::try_from(SeigEntry::FIXED_SIZE).expect("SeigEntry::FIXED_SIZE fits in u32"),
-        ),
-        entries: kids
-            .into_iter()
-            .map(|kid| {
-                SgpdEntry::Seig(SeigEntry {
-                    is_protected: 1,
-                    per_sample_iv_size: tenc_box.default_per_sample_iv_size,
-                    kid,
-                    constant_iv: None,
-                })
-            })
-            .collect(),
+        default_length: Some(default_length),
+        entries: seig_entries.into_iter().map(SgpdEntry::Seig).collect(),
     };
     let sbgp_box = SbgpBox {
         version: 0,
@@ -1622,19 +1728,25 @@ fn resolve_segment_tracks(
                 track_encryption = TrackEncryption::from_sample_entry(segment_sample_entry);
             }
 
-            // 実効 KID が `tenc` の既定 KID と同じ場合は `None` に正規化する。
-            // `Some(tenc.default_kid)` は「既定 KID を使う」と同じ意味であり、
-            // `sgpd` / `sbgp` を書き出す必要はない
+            // 実効 KID / 実効 constant IV が `tenc` の既定値と同じ場合は `None` に
+            // 正規化する。`Some(tenc.default_kid)` / `Some(tenc.default_constant_iv)` は
+            // 「既定値を使う」と同じ意味であり、`sgpd` / `sbgp` を書き出す必要はない
             let mut encryption_info = sample.encryption_info.clone();
             match &track_encryption {
                 Some(track_encryption) => {
-                    if let Some(info) = &mut encryption_info
-                        && info.kid == Some(track_encryption.tenc_box.default_kid)
-                    {
-                        info.kid = None;
+                    if let Some(info) = &mut encryption_info {
+                        if info.kid == Some(track_encryption.tenc_box.default_kid) {
+                            info.kid = None;
+                        }
+                        if info.constant_iv.as_ref()
+                            == track_encryption.tenc_box.default_constant_iv.as_ref()
+                        {
+                            info.constant_iv = None;
+                        }
                     }
                     // 選択的暗号化は対象外なので、`tenc` の既定値とサンプルの暗号化情報の
-                    // 有無が一致していること、IV 長と KID の切り替えが対象の構成かを検査する
+                    // 有無が一致していること、IV 長と KID / constant IV の切り替えが
+                    // 対象の構成かを検査する
                     track_encryption.validate_sample_encryption(encryption_info.as_ref())?;
                 }
                 None => {

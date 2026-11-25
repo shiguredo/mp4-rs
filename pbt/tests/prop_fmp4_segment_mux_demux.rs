@@ -5283,6 +5283,7 @@ fn arb_sample_encryption_info(ctx: &mut TestCaseContext, iv_size: usize) -> Samp
         iv,
         subsamples,
         kid: None,
+        constant_iv: None,
     }
 }
 
@@ -5411,6 +5412,7 @@ fn encrypted_video_with_kid_rotation_roundtrip() -> noprop::TestResult {
                 iv: noprop::sample_bytes_vec(ctx, usize::from(iv_size)),
                 subsamples: Vec::new(),
                 kid,
+                constant_iv: None,
             });
         }
 
@@ -5497,6 +5499,196 @@ fn encrypted_video_with_kid_rotation_roundtrip() -> noprop::TestResult {
         assert_eq!(
             file_kids, expected_kids,
             "Fmp4FileDemuxer が返す実効 KID が一致しない"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// `cbcs` の constant IV トラックの `encv` サンプルエントリーを組み立てる
+///
+/// パターン暗号化パラメーターは (1, 9) にする。`default_constant_iv` は 8 / 16 バイトの
+/// いずれかである。
+fn create_cbcs_constant_iv_encv_sample_entry_for_test(default_constant_iv: &[u8]) -> SampleEntry {
+    SampleEntry::Encv(EncvBox {
+        visual: VisualSampleEntryFields {
+            data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
+            width: 320,
+            height: 240,
+            horizresolution: VisualSampleEntryFields::DEFAULT_HORIZRESOLUTION,
+            vertresolution: VisualSampleEntryFields::DEFAULT_VERTRESOLUTION,
+            frame_count: VisualSampleEntryFields::DEFAULT_FRAME_COUNT,
+            compressorname: VisualSampleEntryFields::NULL_COMPRESSORNAME,
+            depth: VisualSampleEntryFields::DEFAULT_DEPTH,
+        },
+        sinf_box: SinfBox {
+            frma_box: FrmaBox {
+                data_format: *b"hev1",
+            },
+            schm_box: Some(SchmBox {
+                scheme_type: *b"cbcs",
+                scheme_version: 0x0001_0000,
+                scheme_uri: None,
+            }),
+            schi_box: Some(SchiBox {
+                tenc_box: Some(TencBox {
+                    default_is_protected: 1,
+                    default_per_sample_iv_size: 0,
+                    default_kid: [0x11; 16],
+                    default_constant_iv: Some(default_constant_iv.to_vec()),
+                    default_crypt_byte_block: Some(Uint::new(1)),
+                    default_skip_byte_block: Some(Uint::new(9)),
+                }),
+                unknown_boxes: vec![],
+            }),
+            unknown_boxes: vec![],
+        },
+        unknown_boxes: vec![],
+    })
+}
+
+/// `cbcs` の constant IV トラックで KID と constant IV が切り替わる
+/// mux → demux roundtrip
+///
+/// サンプルごとの実効 KID と実効 constant IV が mux に渡した値 (tenc の既定値と同じ
+/// 場合は None に正規化) と一致することを `Fmp4SegmentDemuxer` と `Fmp4FileDemuxer` の
+/// 両方で確認する。`sgpd` / `sbgp` は、いずれかのサンプルで実効値が既定値と異なる
+/// 場合だけ書かれることも確認する。
+#[test]
+fn encrypted_video_with_constant_iv_rotation_roundtrip() -> noprop::TestResult {
+    const DEFAULT_KID: [u8; 16] = [0x11; 16];
+    const ROTATED_KID: [u8; 16] = [0xAA; 16];
+
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let default_constant_iv = vec![0x77; if noprop::sample_bool(ctx) { 8 } else { 16 }];
+        let sample_entry = create_cbcs_constant_iv_encv_sample_entry_for_test(&default_constant_iv);
+        let sample_count = noprop::sample_usize_in(ctx, 1..5);
+        let mut encryption_infos = Vec::new();
+        let mut expected_values = Vec::new();
+        for _ in 0..sample_count {
+            let kid = match noprop::sample_u64_in(ctx, 0..=2) {
+                0 => None,
+                1 => Some(DEFAULT_KID),
+                _ => Some(ROTATED_KID),
+            };
+            // 既定値と同じ constant IV を指定した場合も None に正規化される
+            let constant_iv = match noprop::sample_u64_in(ctx, 0..=3) {
+                0 => None,
+                1 => Some(default_constant_iv.clone()),
+                2 => Some(vec![0x88; 8]),
+                _ => Some(vec![0x99; 16]),
+            };
+            let expected_kid = if kid == Some(DEFAULT_KID) { None } else { kid };
+            let expected_constant_iv = if constant_iv.as_ref() == Some(&default_constant_iv) {
+                None
+            } else {
+                constant_iv.clone()
+            };
+            expected_values.push((expected_kid, expected_constant_iv));
+            encryption_infos.push(SampleEncryptionInfo {
+                iv: Vec::new(),
+                subsamples: Vec::new(),
+                kid,
+                constant_iv,
+            });
+        }
+
+        let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+        let mut fmp4_samples = Vec::new();
+        let mut payloads = Vec::new();
+        for (index, encryption_info) in encryption_infos.iter().enumerate() {
+            let test_sample = TestSample {
+                track_index: 0,
+                duration: 3000,
+                keyframe: true,
+                data: vec![u8::try_from(index).unwrap_or(0xAA); 16],
+            };
+            let mut sample = video_segment_sample(&sample_entry, &test_sample, None);
+            sample.encryption_info = Some(encryption_info.clone());
+            fmp4_samples.push(sample);
+            payloads.push(test_sample.data);
+        }
+        let payload_refs: Vec<&[u8]> = payloads.iter().map(|payload| payload.as_slice()).collect();
+        let segment_bytes = build_complete_media_segment(&mut muxer, &fmp4_samples, &payload_refs);
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // 実効値が既定値と異なるサンプルがある場合だけ sgpd / sbgp が書かれる
+        let (moof_box, _) = MoofBox::decode(&segment_bytes).expect("moof のデコードに失敗した");
+        let traf_box = &moof_box.traf_boxes[0];
+        let has_sgpd = traf_box
+            .unknown_boxes
+            .iter()
+            .any(|unknown_box| unknown_box.box_type.as_bytes() == b"sgpd");
+        let has_sbgp = traf_box
+            .unknown_boxes
+            .iter()
+            .any(|unknown_box| unknown_box.box_type.as_bytes() == b"sbgp");
+        let expects_rotation = expected_values
+            .iter()
+            .any(|(kid, constant_iv)| kid.is_some() || constant_iv.is_some());
+        assert_eq!(
+            has_sgpd, expects_rotation,
+            "実効値の切り替えの有無と sgpd の有無が一致しない"
+        );
+        assert_eq!(
+            has_sbgp, expects_rotation,
+            "実効値の切り替えの有無と sbgp の有無が一致しない"
+        );
+
+        // segment demuxer でサンプルごとの実効値が一致すること
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let decoded_samples = demuxer
+            .handle_media_segment(&segment_bytes)
+            .expect("constant IV が切り替わるメディアセグメントの処理に失敗した");
+        assert_eq!(decoded_samples.len(), expected_values.len());
+        for (index, (sample, expected)) in decoded_samples
+            .iter()
+            .zip(expected_values.iter())
+            .enumerate()
+        {
+            let info = sample
+                .encryption_info
+                .as_ref()
+                .expect("暗号化されたサンプルに encryption_info が無い");
+            assert!(info.iv.is_empty(), "{index} 番目のサンプルの iv が空でない");
+            assert_eq!(
+                (info.kid, info.constant_iv.clone()),
+                *expected,
+                "{index} 番目のサンプルの実効 KID / constant IV が一致しない"
+            );
+        }
+
+        // file demuxer でも同じ実効値が取り出せること
+        let mut file_data = init_bytes;
+        file_data.extend_from_slice(&segment_bytes);
+        let mut file_demuxer = Fmp4FileDemuxer::new();
+        feed_fmp4_file_demuxer(&mut file_demuxer, &file_data);
+        let mut file_values = Vec::new();
+        loop {
+            match file_demuxer.next_sample() {
+                Ok(Some(sample)) => {
+                    let info = sample
+                        .encryption_info
+                        .as_ref()
+                        .expect("暗号化されたサンプルに encryption_info が無い");
+                    file_values.push((info.kid, info.constant_iv.clone()));
+                }
+                Ok(None) => break,
+                Err(DemuxError::InputRequired(_)) => {
+                    feed_fmp4_file_demuxer(&mut file_demuxer, &file_data)
+                }
+                Err(error) => panic!("next_sample エラー: {error}"),
+            }
+        }
+        assert_eq!(
+            file_values, expected_values,
+            "Fmp4FileDemuxer が返す実効 KID / constant IV が一致しない"
         );
         Ok(())
     })?;

@@ -1343,6 +1343,7 @@ fn create_video_drm_sample(
             iv: vec![0x33; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }),
     }
 }
@@ -1367,6 +1368,7 @@ fn create_audio_drm_sample(
             iv: vec![0x44; 8],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }),
     }
 }
@@ -1528,6 +1530,26 @@ fn create_encv_sample_entry_with_tenc(
     default_per_sample_iv_size: u8,
     default_constant_iv: Option<Vec<u8>>,
 ) -> SampleEntry {
+    create_encv_sample_entry_with_tenc_and_pattern(
+        scheme_type,
+        default_is_protected,
+        default_per_sample_iv_size,
+        default_constant_iv,
+        None,
+        None,
+    )
+}
+
+/// 保護スキームと `tenc` のパターン暗号化パラメーターを指定して `encv` の
+/// サンプルエントリーを組み立てる
+fn create_encv_sample_entry_with_tenc_and_pattern(
+    scheme_type: [u8; 4],
+    default_is_protected: u8,
+    default_per_sample_iv_size: u8,
+    default_constant_iv: Option<Vec<u8>>,
+    default_crypt_byte_block: Option<u8>,
+    default_skip_byte_block: Option<u8>,
+) -> SampleEntry {
     SampleEntry::Encv(EncvBox {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -1554,8 +1576,8 @@ fn create_encv_sample_entry_with_tenc(
                     default_per_sample_iv_size,
                     default_kid: VIDEO_KID,
                     default_constant_iv,
-                    default_crypt_byte_block: None,
-                    default_skip_byte_block: None,
+                    default_crypt_byte_block: default_crypt_byte_block.map(Uint::new),
+                    default_skip_byte_block: default_skip_byte_block.map(Uint::new),
                 }),
                 unknown_boxes: vec![],
             }),
@@ -1886,11 +1908,13 @@ fn two_subsample_encryption_infos() -> Vec<Option<SampleEncryptionInfo>> {
                 bytes_of_protected_data: 10,
             }],
             kid: None,
+            constant_iv: None,
         }),
         Some(SampleEncryptionInfo {
             iv: vec![0x22; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }),
     ]
 }
@@ -1997,6 +2021,7 @@ fn constant_iv_without_sai_returns_empty_encryption_info() {
             iv: Vec::new(),
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     let rewritten = remove_all_sample_aux_info(&media_segment);
@@ -2015,6 +2040,7 @@ fn constant_iv_without_sai_returns_empty_encryption_info() {
             iv: Vec::new(),
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }),
         "constant IV のサンプル全体暗号化として復元されていない"
     );
@@ -2030,6 +2056,7 @@ fn missing_sai_with_per_sample_iv_is_invalid_data() {
             iv: vec![0x11; 8],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     let rewritten = remove_all_sample_aux_info(&media_segment);
@@ -2071,6 +2098,7 @@ fn selective_encryption_sai_with_clear_default_is_invalid_data() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     let init_segment = rewrite_init_tenc_default_is_protected(&init_segment, 0);
@@ -2112,15 +2140,34 @@ const ROTATED_KID_B: [u8; 16] = [0xBB; 16];
 
 /// `seig` エントリーのバイト列を組み立てる
 ///
-/// 20 バイトの固定前置 (`multi_key_flag` / reserved / パターン値 / `is_protected` /
-/// `Per_Sample_IV_Size` / KID) に、条件付きで constant IV を続ける。
+/// パターン暗号化パラメーターを持たない (`0 / 0` の) エントリーを作る。
 fn build_seig_entry(
     is_protected: u8,
     per_sample_iv_size: u8,
     kid: [u8; 16],
     constant_iv: Option<&[u8]>,
 ) -> Vec<u8> {
-    let mut entry = vec![0x00, 0x00, is_protected, per_sample_iv_size];
+    build_seig_entry_with_pattern(0, 0, is_protected, per_sample_iv_size, kid, constant_iv)
+}
+
+/// パターン暗号化パラメーターを指定して `seig` エントリーのバイト列を組み立てる
+///
+/// 20 バイトの固定前置 (`multi_key_flag` / reserved / パターン値 / `is_protected` /
+/// `Per_Sample_IV_Size` / KID) に、条件付きで constant IV を続ける。
+fn build_seig_entry_with_pattern(
+    crypt_byte_block: u8,
+    skip_byte_block: u8,
+    is_protected: u8,
+    per_sample_iv_size: u8,
+    kid: [u8; 16],
+    constant_iv: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut entry = vec![
+        0x00,
+        (crypt_byte_block << 4) | skip_byte_block,
+        is_protected,
+        per_sample_iv_size,
+    ];
     entry.extend_from_slice(&kid);
     if let Some(constant_iv) = constant_iv {
         entry.push(u8::try_from(constant_iv.len()).expect("テスト用の constant IV は u8 に収まる"));
@@ -2237,12 +2284,44 @@ fn build_cenc_encrypted_segments(sample_count: usize) -> (Vec<u8>, Vec<u8>) {
             ],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }));
     }
     build_encrypted_init_and_media_segments(
         create_encv_sample_entry_with_tenc(*b"cenc", 1, 16, None),
         encryption_infos,
     )
+}
+
+/// `cbcs` の constant IV トラックの init セグメント / メディアセグメントを組み立てる
+///
+/// すべてのサンプルの `encryption_info` は、`tenc` の既定 KID と既定 constant IV を
+/// 使うことを表す空の情報にする。`seig` サンプルグループのテストでは、ここで作った
+/// セグメントの SAI を削除したうえで `sgpd` / `sbgp` を追加する。
+fn build_cbcs_constant_iv_segments(
+    sample_count: usize,
+    default_constant_iv: &[u8],
+    crypt_byte_block: u8,
+    skip_byte_block: u8,
+) -> (Vec<u8>, Vec<u8>) {
+    let sample_entry = create_encv_sample_entry_with_tenc_and_pattern(
+        *b"cbcs",
+        1,
+        0,
+        Some(default_constant_iv.to_vec()),
+        Some(crypt_byte_block),
+        Some(skip_byte_block),
+    );
+    let mut encryption_infos = Vec::new();
+    for _ in 0..sample_count {
+        encryption_infos.push(Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: None,
+            constant_iv: None,
+        }));
+    }
+    build_encrypted_init_and_media_segments(sample_entry, encryption_infos)
 }
 
 /// メディアセグメントを処理してサンプルごとの `kid` を返す
@@ -2570,42 +2649,257 @@ fn seig_per_sample_iv_size_mismatch_is_unsupported() {
     );
 }
 
-/// `constant_iv` を持つ `seig` の入力が Unsupported になること
+/// `cbcs` の constant IV トラックで、`seig` により KID と constant IV が
+/// 切り替わること
 ///
-/// 本実装は per-sample IV を使うトラックだけを対象とするため、constant IV の
-/// 上書きは表現できない。
+/// `senc` / `saiz` / `saio` を持たないセグメントに `sgpd` / `sbgp` を追加するため、
+/// `TrafEncryptionInfos::Constant` から `Runs` を構築する経路を通る。
+/// `sbgp` の `sample_count` の合計をサンプル数より少なくし、余りのサンプルが
+/// `tenc` の既定値 (KID と constant IV) になることも確認する。
 #[test]
-fn seig_constant_iv_is_unsupported() {
-    let constant_iv = vec![0x77; 8];
-    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
-        create_encv_sample_entry_with_tenc(*b"cbc1", 1, 0, Some(constant_iv.clone())),
-        vec![Some(SampleEncryptionInfo {
+fn demuxes_kid_and_constant_iv_from_cbcs_seig() {
+    let default_constant_iv = vec![0x77; 8];
+    let (init_segment, media_segment) =
+        build_cbcs_constant_iv_segments(3, &default_constant_iv, 1, 9);
+    let rotated_constant_iv_a = vec![0xAA; 8];
+    let rotated_constant_iv_b = vec![0xBB; 16];
+    let sgpd = build_seig_sgpd(
+        &[
+            build_seig_entry_with_pattern(1, 9, 1, 0, ROTATED_KID_A, Some(&rotated_constant_iv_a)),
+            build_seig_entry_with_pattern(1, 9, 1, 0, ROTATED_KID_B, Some(&rotated_constant_iv_b)),
+        ],
+        None,
+    );
+    let sbgp = build_seig_sbgp(&[(1, 0x1_0001), (1, 0x1_0002)]);
+    let media_segment = remove_all_sample_aux_info(&media_segment);
+    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&rewritten)
+        .expect("cbcs の constant IV トラックの seig を持つセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 3, "3 サンプルが返る");
+    assert_eq!(
+        samples[0].encryption_info,
+        Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: Some(ROTATED_KID_A),
+            constant_iv: Some(rotated_constant_iv_a),
+        }),
+        "1 番目のサンプルの実効 KID / constant IV が seig と一致しない"
+    );
+    assert_eq!(
+        samples[1].encryption_info,
+        Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: Some(ROTATED_KID_B),
+            constant_iv: Some(rotated_constant_iv_b),
+        }),
+        "2 番目のサンプルの実効 KID / constant IV が seig と一致しない"
+    );
+    assert_eq!(
+        samples[2].encryption_info,
+        Some(SampleEncryptionInfo {
             iv: Vec::new(),
             subsamples: Vec::new(),
             kid: None,
-        })],
-    );
-    let sgpd = build_seig_sgpd(
-        &[build_seig_entry(1, 0, ROTATED_KID_A, Some(&constant_iv))],
-        None,
-    );
-    let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
-    let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
-
-    let err = demux_sample_kids(&init_segment, &rewritten)
-        .expect_err("constant IV を持つ seig を解釈してしまった");
-    assert_demux_decode_error(
-        err,
-        ErrorKind::Unsupported,
-        "constant IV",
-        "constant IV を持つ seig",
+            constant_iv: None,
+        }),
+        "sbgp の範囲外のサンプルが tenc の既定値になっていない"
     );
 }
 
-/// `tenc` にパターン暗号化パラメーターを持つトラックで `seig` を参照する入力が
-/// Unsupported になること
+/// `cbcs` の constant IV トラックで、`senc` を持つ場合でもサンプルごとの
+/// 実効 KID と constant IV が設定されること
 ///
-/// `seig` のパターン値は常に 0 / 0 であり、`tenc` のパターン値を上書きしてしまう。
+/// mux が `senc` / `saiz` / `saio` と `sgpd` / `sbgp` を書き出したセグメントを
+/// そのまま demux し、`TrafEncryptionInfos::PerSample` の経路で実効値が反映される
+/// ことを確認する。
+#[test]
+fn demuxes_kid_and_constant_iv_from_senc_on_cbcs_constant_iv_track() {
+    let default_constant_iv = vec![0x77; 8];
+    let rotated_constant_iv = vec![0xBB; 16];
+    let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+        create_encv_sample_entry_with_tenc_and_pattern(
+            *b"cbcs",
+            1,
+            0,
+            Some(default_constant_iv),
+            Some(1),
+            Some(9),
+        ),
+        vec![
+            Some(SampleEncryptionInfo {
+                iv: Vec::new(),
+                subsamples: Vec::new(),
+                kid: Some(ROTATED_KID_A),
+                constant_iv: None,
+            }),
+            Some(SampleEncryptionInfo {
+                iv: Vec::new(),
+                subsamples: Vec::new(),
+                kid: Some(ROTATED_KID_B),
+                constant_iv: Some(rotated_constant_iv.clone()),
+            }),
+        ],
+    );
+    // mux が書き出した `senc` / `saiz` / `saio` をそのまま使う
+    assert!(
+        MoofBox::decode(&media_segment)
+            .expect("mux が書き出した moof のデコードに失敗した")
+            .0
+            .traf_boxes[0]
+            .unknown_boxes
+            .iter()
+            .any(|unknown_box| unknown_box.box_type.as_bytes() == b"senc"),
+        "mux が senc を書き出していない"
+    );
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("cbcs の constant IV トラックの senc を持つセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 2, "2 サンプルが返る");
+    assert_eq!(
+        samples[0].encryption_info,
+        Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: Some(ROTATED_KID_A),
+            // `tenc` の既定 constant IV と同じ値は None に正規化される
+            constant_iv: None,
+        }),
+        "senc を持つ経路で 1 番目のサンプルの実効値が一致しない"
+    );
+    assert_eq!(
+        samples[1].encryption_info,
+        Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: Some(ROTATED_KID_B),
+            constant_iv: Some(rotated_constant_iv),
+        }),
+        "senc を持つ経路で 2 番目のサンプルの実効値が一致しない"
+    );
+}
+
+/// `cbcs` 以外のスキームで `seig` の constant IV を持つ入力が Unsupported になること
+///
+/// `cenc` / `cbc1` / `cens` のスキーム定義では constant IV が認められていない。
+#[test]
+fn seig_constant_iv_with_non_cbcs_scheme_is_unsupported() {
+    let default_constant_iv = vec![0x77; 8];
+    for (scheme_type, pattern) in [
+        (*b"cenc", None),
+        (*b"cbc1", None),
+        // `cens` はパターン暗号化を使うスキームなので `tenc` にパターン値が必要
+        (*b"cens", Some((1u8, 9u8))),
+    ] {
+        let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+            create_encv_sample_entry_with_tenc_and_pattern(
+                scheme_type,
+                1,
+                0,
+                Some(default_constant_iv.clone()),
+                pattern.map(|pattern| pattern.0),
+                pattern.map(|pattern| pattern.1),
+            ),
+            vec![Some(SampleEncryptionInfo {
+                iv: Vec::new(),
+                subsamples: Vec::new(),
+                kid: None,
+                constant_iv: None,
+            })],
+        );
+        let (crypt_byte_block, skip_byte_block) = pattern.unwrap_or((0, 0));
+        let sgpd = build_seig_sgpd(
+            &[build_seig_entry_with_pattern(
+                crypt_byte_block,
+                skip_byte_block,
+                1,
+                0,
+                ROTATED_KID_A,
+                Some(&default_constant_iv),
+            )],
+            None,
+        );
+        let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+        let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+        let err = demux_sample_kids(&init_segment, &rewritten)
+            .expect_err("cbcs 以外のスキームの seig の constant IV を解釈してしまった");
+        assert_demux_decode_error(
+            err,
+            ErrorKind::Unsupported,
+            "'cbcs' scheme",
+            "cbcs 以外のスキームの constant IV",
+        );
+    }
+}
+
+/// per-sample IV かつ `tenc` にパターン値を持つトラックで `seig` の KID が
+/// 切り替わる入力が Unsupported になること
+///
+/// `cens` と `cbcs` の per-sample IV はパターン暗号化を使うため、`seig` の KID の
+/// 切り替えは対象外である。
+#[test]
+fn seig_kid_rotation_with_pattern_per_sample_tenc_is_unsupported() {
+    for scheme_type in [*b"cens", *b"cbcs"] {
+        let (init_segment, media_segment) = build_encrypted_init_and_media_segments(
+            create_encv_sample_entry_with_tenc_and_pattern(
+                scheme_type,
+                1,
+                16,
+                None,
+                Some(1),
+                Some(9),
+            ),
+            vec![Some(SampleEncryptionInfo {
+                iv: vec![0x11; 16],
+                subsamples: Vec::new(),
+                kid: None,
+                constant_iv: None,
+            })],
+        );
+        // パターン値は `tenc` と一致させ、KID の切り替えだけを対象外にする
+        let sgpd = build_seig_sgpd(
+            &[build_seig_entry_with_pattern(
+                1,
+                9,
+                1,
+                16,
+                ROTATED_KID_A,
+                None,
+            )],
+            Some(20),
+        );
+        let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
+        let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
+
+        let err = demux_sample_kids(&init_segment, &rewritten).expect_err(
+            "パターン暗号化を使う per-sample IV トラックの KID 切り替えを解釈してしまった",
+        );
+        assert_demux_decode_error(
+            err,
+            ErrorKind::Unsupported,
+            "KID rotation",
+            "パターン暗号化を使う per-sample IV トラックの KID 切り替え",
+        );
+    }
+}
+
+/// `tenc` にパターン暗号化パラメーターを持つトラックで、`seig` のパターン値が
+/// `tenc` と異なる入力が Unsupported になること
+///
+/// `seig` のパターン値は `tenc` と一致しなければならず、上書きは対象外である。
 #[test]
 fn seig_pattern_override_is_unsupported() {
     // `create_encv_sample_entry()` の `tenc` は `cbcs` かつパターン値 (1, 9) を持つ
@@ -2615,18 +2909,20 @@ fn seig_pattern_override_is_unsupported() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
+    // `tenc` のパターン値 (1, 9) に対して 0 / 0 を書いた `seig` を作る
     let sgpd = build_seig_sgpd(&[build_seig_entry(1, 16, ROTATED_KID_A, None)], Some(20));
     let sbgp = build_seig_sbgp(&[(1, 0x1_0001)]);
     let rewritten = add_traf_sample_group_boxes(&media_segment, vec![sgpd, sbgp]);
 
     let err = demux_sample_kids(&init_segment, &rewritten)
-        .expect_err("パターン暗号化パラメーターを持つトラックの seig を解釈してしまった");
+        .expect_err("パターン暗号化パラメーターを上書きする seig を解釈してしまった");
     assert_demux_decode_error(
         err,
         ErrorKind::Unsupported,
-        "pattern encryption parameters",
+        "do not match tenc",
         "パターン暗号化パラメーターの上書き",
     );
 }
@@ -2640,6 +2936,7 @@ fn senc_version_1_is_invalid_data() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     let rewritten = rewrite_senc_version(&media_segment, 1);
@@ -2678,6 +2975,7 @@ fn saiz_non_zero_aux_info_type_parameter_is_invalid_data() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     // version 0, flags 0x000001 (aux_info_type あり), aux_info_type 'cenc',
@@ -2726,6 +3024,7 @@ fn saio_non_zero_aux_info_type_parameter_is_invalid_data() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     // version 0, flags 0x000001 (aux_info_type あり), aux_info_type 'cenc',
@@ -2778,6 +3077,7 @@ fn demuxes_encryption_info_for_multiple_encrypted_tracks() {
             bytes_of_protected_data: 10,
         }],
         kid: None,
+        constant_iv: None,
     };
     let audio_encryption = SampleEncryptionInfo {
         iv: vec![0x22; 8],
@@ -2786,6 +3086,7 @@ fn demuxes_encryption_info_for_multiple_encrypted_tracks() {
             bytes_of_protected_data: 4,
         }],
         kid: None,
+        constant_iv: None,
     };
     let video_size = 16usize;
     let audio_size = 8usize;
@@ -2851,6 +3152,7 @@ fn saiz_saio_without_base_data_offset_is_invalid_data() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     let (mut moof_box, old_moof_size) =
@@ -2929,6 +3231,7 @@ fn non_cenc_protection_scheme_is_unsupported() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     // `EncvBox::encode` は CENC 系以外のスキームを書き出せないため、
@@ -3027,6 +3330,7 @@ fn constant_iv_with_huge_sample_count_is_invalid_data() {
             iv: Vec::new(),
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     // constant IV では SAI が無くても暗号化情報を復元できるため、SAI をすべて削除する
@@ -3078,6 +3382,7 @@ fn per_sample_sai_with_huge_sample_count_is_invalid_data() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         })],
     );
     // `saiz` の `default_sample_info_size` を 1 にすると、`sample_info_sizes` を
@@ -3522,11 +3827,13 @@ fn demuxes_encryption_info_with_default_sample_info_size() {
             iv: vec![0x11; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }),
         Some(SampleEncryptionInfo {
             iv: vec![0x22; 16],
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         }),
     ];
     let (init_segment, media_segment) = build_encrypted_init_and_media_segments(

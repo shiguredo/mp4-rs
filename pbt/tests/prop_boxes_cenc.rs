@@ -7,8 +7,8 @@ use noprop::TestCaseContext;
 use shiguredo_mp4::{
     BoxSize, BoxType, Decode, Encode, Uint, Utf8String,
     boxes::{
-        FrmaBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SchiBox, SchmBox, SencBox,
-        SinfBox, Subsample, TencBox, UnknownBox,
+        FrmaBox, PsshBox, SaioBox, SaizBox, SbgpBox, SbgpEntry, SchiBox, SchmBox, SeigEntry,
+        SencBox, SencSample, SgpdBox, SgpdEntry, SinfBox, Subsample, TencBox, UnknownBox,
     },
 };
 
@@ -370,10 +370,10 @@ fn arb_subsample(ctx: &mut TestCaseContext) -> Subsample {
     }
 }
 
-/// 指定された IV サイズの `SampleEncryptionInfo` を生成する
+/// 指定された IV サイズの `SencSample` を生成する
 ///
 /// IV サイズ 0 は constant IV を使うサンプルを表すため、`iv` は空になる。
-fn arb_sample_encryption_info(ctx: &mut TestCaseContext, iv_size: usize) -> SampleEncryptionInfo {
+fn arb_senc_sample(ctx: &mut TestCaseContext, iv_size: usize) -> SencSample {
     let iv = if iv_size == 0 {
         Vec::new()
     } else {
@@ -384,7 +384,7 @@ fn arb_sample_encryption_info(ctx: &mut TestCaseContext, iv_size: usize) -> Samp
     for _ in 0..subsample_count {
         subsamples.push(arb_subsample(ctx));
     }
-    SampleEncryptionInfo { iv, subsamples }
+    SencSample { iv, subsamples }
 }
 
 /// `SencBox` と、そのサンプルに使った IV サイズを生成する
@@ -400,7 +400,7 @@ fn arb_senc_box(ctx: &mut TestCaseContext) -> (SencBox, u8) {
     let sample_count = noprop::sample_usize_in(ctx, 0..=5);
     let mut samples = Vec::new();
     for _ in 0..sample_count {
-        samples.push(arb_sample_encryption_info(ctx, usize::from(iv_size)));
+        samples.push(arb_senc_sample(ctx, usize::from(iv_size)));
     }
     (SencBox { samples }, iv_size)
 }
@@ -521,6 +521,211 @@ fn saio_box_roundtrip() -> noprop::TestResult {
 
         assert_eq!(size, encoded.len());
         assert_eq!(decoded, saio);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== サンプルグループ (sbgp / sgpd / seig) のサンプラー =====
+
+/// `seig` エントリーを生成する
+///
+/// constant IV は `is_protected == 1 && per_sample_iv_size == 0` の場合だけ持たせる。
+fn arb_seig_entry(ctx: &mut TestCaseContext) -> SeigEntry {
+    let is_protected: u8 = noprop::sample_u64_in(ctx, 0..=1) as u8;
+    let per_sample_iv_size = match noprop::sample_u64_in(ctx, 0..=2) {
+        0 => 0u8,
+        1 => 8u8,
+        _ => 16u8,
+    };
+    let constant_iv = if is_protected == 1 && per_sample_iv_size == 0 {
+        let size = if noprop::sample_bool(ctx) { 8 } else { 16 };
+        Some(noprop::sample_bytes_vec(ctx, size))
+    } else {
+        None
+    };
+    SeigEntry {
+        is_protected,
+        per_sample_iv_size,
+        kid: arb_kid(ctx),
+        constant_iv,
+    }
+}
+
+/// 固定長 (20 バイト) の `seig` エントリーを生成する
+///
+/// constant IV を持てないため、`per_sample_iv_size` は 8 / 16 に限る。
+fn arb_fixed_length_seig_entry(ctx: &mut TestCaseContext) -> SeigEntry {
+    SeigEntry {
+        is_protected: noprop::sample_u64_in(ctx, 0..=1) as u8,
+        per_sample_iv_size: if noprop::sample_bool(ctx) { 8 } else { 16 },
+        kid: arb_kid(ctx),
+        constant_iv: None,
+    }
+}
+
+/// `SbgpBox` を生成する
+///
+/// version 0 と 1 の両方を生成する。version 0 は `grouping_type_parameter` を持たない。
+fn arb_sbgp_box(ctx: &mut TestCaseContext) -> SbgpBox {
+    let version = noprop::sample_u64_in(ctx, 0..=1) as u8;
+    let entry_count = noprop::sample_usize_in(ctx, 0..=5);
+    let mut entries = Vec::new();
+    for _ in 0..entry_count {
+        entries.push(SbgpEntry {
+            sample_count: noprop::sample_u32(ctx),
+            group_description_index: noprop::sample_u32(ctx),
+        });
+    }
+    SbgpBox {
+        version,
+        grouping_type: noprop::sample_bytes::<4>(ctx),
+        grouping_type_parameter: if version == 1 {
+            Some(noprop::sample_u32(ctx))
+        } else {
+            None
+        },
+        entries,
+    }
+}
+
+/// `SgpdBox` を生成する
+///
+/// version 0 (`seig` のみ)、version 1 の固定長 `seig`、version 1 の可変長 `seig`、
+/// version 1 の `seig` 以外の生バイト (可変長 / 固定長) を生成する。
+fn arb_sgpd_box(ctx: &mut TestCaseContext) -> SgpdBox {
+    match noprop::sample_u64_in(ctx, 0..=4) {
+        0 => {
+            // version 0 は `seig` のみ
+            let entry_count = noprop::sample_usize_in(ctx, 0..=3);
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(SgpdEntry::Seig(arb_seig_entry(ctx)));
+            }
+            SgpdBox {
+                version: 0,
+                grouping_type: *b"seig",
+                default_length: None,
+                entries,
+            }
+        }
+        1 => {
+            // version 1 の固定長 `seig` エントリー
+            let entry_count = noprop::sample_usize_in(ctx, 0..=3);
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(SgpdEntry::Seig(arb_fixed_length_seig_entry(ctx)));
+            }
+            SgpdBox {
+                version: 1,
+                grouping_type: *b"seig",
+                default_length: Some(20),
+                entries,
+            }
+        }
+        2 => {
+            // version 1 の可変長 `seig` エントリー
+            let entry_count = noprop::sample_usize_in(ctx, 0..=3);
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(SgpdEntry::Seig(arb_seig_entry(ctx)));
+            }
+            SgpdBox {
+                version: 1,
+                grouping_type: *b"seig",
+                default_length: Some(0),
+                entries,
+            }
+        }
+        3 => {
+            // version 1 の `seig` 以外の生バイト (可変長)
+            let entry_count = noprop::sample_usize_in(ctx, 0..=3);
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(SgpdEntry::Unknown(sample_bytes_vec_in(ctx, 0..=16)));
+            }
+            SgpdBox {
+                version: 1,
+                grouping_type: *b"roll",
+                default_length: Some(0),
+                entries,
+            }
+        }
+        _ => {
+            // version 1 の `seig` 以外の生バイト (固定長)
+            let entry_length = noprop::sample_usize_in(ctx, 1..=8);
+            let entry_count = noprop::sample_usize_in(ctx, 0..=3);
+            let mut entries = Vec::new();
+            for _ in 0..entry_count {
+                entries.push(SgpdEntry::Unknown(noprop::sample_bytes_vec(
+                    ctx,
+                    entry_length,
+                )));
+            }
+            SgpdBox {
+                version: 1,
+                grouping_type: *b"roll",
+                default_length: Some(
+                    u32::try_from(entry_length).expect("テスト用のエントリー長は u32 に収まる"),
+                ),
+                entries,
+            }
+        }
+    }
+}
+
+// ===== サンプルグループ (sbgp / sgpd / seig) のテスト =====
+
+/// SeigEntry の encode / decode roundtrip
+///
+/// constant IV あり・なし、`is_protected` 0 / 1、IV サイズ 0 / 8 / 16 の
+/// 組み合わせを検証する。デコードした結果が消費バイト数と一致することも確認する。
+#[test]
+fn seig_entry_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let entry = arb_seig_entry(ctx);
+        let encoded = entry.encode_to_vec();
+        let (decoded, consumed) = SeigEntry::decode(&encoded)
+            .expect("直前にエンコードした有効な SeigEntry は必ずデコードできる");
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded, entry);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// SbgpBox の encode / decode roundtrip
+///
+/// version 0 / 1 の両方を検証する。
+#[test]
+fn sbgp_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let sbgp = arb_sbgp_box(ctx);
+        let encoded = sbgp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SbgpBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SbgpBox は必ずデコードできる");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sbgp);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// SgpdBox の encode / decode roundtrip
+///
+/// version 0、version 1 の固定長 / 可変長、`seig` 以外の生バイトを検証する。
+#[test]
+fn sgpd_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let sgpd = arb_sgpd_box(ctx);
+        let encoded = sgpd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let (decoded, size) = SgpdBox::decode(&encoded)
+            .expect("直前にエンコードした有効な SgpdBox は必ずデコードできる");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sgpd);
         Ok(())
     })?;
     Ok(())

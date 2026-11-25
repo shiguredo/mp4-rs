@@ -63,11 +63,12 @@ use crate::{
     boxes::{
         Brand, DinfBox, FtypBox, HdlrBox, MdatBox, MdhdBox, MdiaBox, MediaHeader, MehdBox, MfhdBox,
         MfraBox, MfroBox, MinfBox, MoofBox, MoovBox, MvexBox, MvhdBox, NmhdBox, PsshBox, SaioBox,
-        SaizBox, SampleEncryptionInfo, SampleEntry, SencBox, SidxBox, SidxReference, SmhdBox,
-        StblBox, StcoBox, SthdBox, StscBox, StsdBox, StszBox, SttsBox, StypBox, TencBox, TfdtBox,
-        TfhdBox, TfraBox, TfraEntry, TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample,
-        TrunSamples, UnknownBox, VmhdBox,
+        SaizBox, SampleEncryptionInfo, SampleEntry, SbgpBox, SbgpEntry, SeigEntry, SencBox,
+        SencSample, SgpdBox, SgpdEntry, SidxBox, SidxReference, SmhdBox, StblBox, StcoBox, SthdBox,
+        StscBox, StsdBox, StszBox, SttsBox, StypBox, TencBox, TfdtBox, TfhdBox, TfraBox, TfraEntry,
+        TkhdBox, TrafBox, TrakBox, TrexBox, TrunBox, TrunSample, TrunSamples, UnknownBox, VmhdBox,
     },
+    boxes_cenc::SEIG_GROUPING_TYPE,
     boxes_moov_tree::EdtsBox,
     mux_mp4_file::{MuxError, Sample, TrackMetadata},
 };
@@ -213,6 +214,22 @@ struct ResolvedSegmentTrack {
     ///
     /// `senc` / `saiz` / `saio` を書き出すときに使う。暗号化されていないトラックは `None`。
     encryption_samples: Option<Vec<SampleEncryptionInfo>>,
+
+    /// `seig` サンプルグループで KID を切り替える場合に `traf` へ書き出すボックス群
+    ///
+    /// すべてのサンプルの実効 KID が `tenc.default_kid` と同じ場合は `None` になり、
+    /// `sgpd` / `sbgp` を書き出さない。
+    seig_sample_groups: Option<SeigSampleGroups>,
+}
+
+/// `seig` サンプルグループで KID を切り替えるときに `traf` に書くボックス群
+#[derive(Debug, Clone)]
+struct SeigSampleGroups {
+    /// KID ごとの `seig` エントリーを持つ `sgpd`
+    sgpd_box: SgpdBox,
+
+    /// 連続する同一 KID ごとの `sbgp`
+    sbgp_box: SbgpBox,
 }
 
 #[derive(Debug)]
@@ -271,6 +288,36 @@ impl TrackEncryption {
                 return Err(MuxError::EncodeError(Error::invalid_input(
                     "sample subsample count exceeds u16::MAX",
                 )));
+            }
+            if encryption_info.kid.is_some() {
+                // KID の切り替えは per-sample IV のトラックだけを対象とする。
+                // constant IV のトラックでは `seig` の IV サイズの上書きになり、
+                // `senc` では表現できない
+                if self.tenc_box.default_per_sample_iv_size == 0 {
+                    return Err(MuxError::EncodeError(Error::invalid_input(
+                        "sample KID rotation requires per-sample IV",
+                    )));
+                }
+                // `seig` のパターン暗号化パラメーターは常に 0 / 0 であり、`tenc` に
+                // 0 以外のパターン値がある場合はそれを上書きして復号結果が変わってしまう。
+                // version 1 の 0 / 0 はパターン暗号化を使わないことを表すため、
+                // demux 側の `check_seig_entry_against_tenc()` と同じく値で判定する。
+                // version 0 は `None` なので 0 として扱い、従来どおり KID を切り替えられる。
+                let crypt_byte_block = self
+                    .tenc_box
+                    .default_crypt_byte_block
+                    .map(|value| value.get())
+                    .unwrap_or(0);
+                let skip_byte_block = self
+                    .tenc_box
+                    .default_skip_byte_block
+                    .map(|value| value.get())
+                    .unwrap_or(0);
+                if crypt_byte_block != 0 || skip_byte_block != 0 {
+                    return Err(MuxError::EncodeError(Error::invalid_input(
+                        "sample KID rotation is not supported for tracks with tenc pattern encryption parameters",
+                    )));
+                }
             }
             Ok(())
         } else if encryption_info.is_some() {
@@ -1224,8 +1271,10 @@ impl Fmp4SegmentMuxer {
             // 3 つを常に揃えて書く。
             let mut unknown_boxes = Vec::new();
             if let Some(encryption_samples) = &resolved_track.encryption_samples {
+                // `senc` は KID を持たないため、`SampleEncryptionInfo` から
+                // `SencSample` に変換して書き出す
                 let senc_box = SencBox {
-                    samples: encryption_samples.clone(),
+                    samples: encryption_samples.iter().map(SencSample::from).collect(),
                 };
                 let subsample_encryption = senc_box
                     .samples
@@ -1277,6 +1326,17 @@ impl Fmp4SegmentMuxer {
                 unknown_boxes.push(encode_box_as_unknown_box(senc_box.encode_to_vec()?)?);
                 unknown_boxes.push(encode_box_as_unknown_box(saiz_box.encode_to_vec()?)?);
                 unknown_boxes.push(encode_box_as_unknown_box(saio_box.encode_to_vec()?)?);
+            }
+
+            // KID が切り替わるトラックには `sgpd` / `sbgp` を書き出す。
+            // すべてのサンプルが `tenc.default_kid` と同じ場合は書き出さない
+            if let Some(seig_sample_groups) = &resolved_track.seig_sample_groups {
+                unknown_boxes.push(encode_box_as_unknown_box(
+                    seig_sample_groups.sgpd_box.encode_to_vec()?,
+                )?);
+                unknown_boxes.push(encode_box_as_unknown_box(
+                    seig_sample_groups.sbgp_box.encode_to_vec()?,
+                )?);
             }
 
             traf_boxes.push(TrafBox {
@@ -1398,6 +1458,98 @@ fn compute_earliest_presentation_time(
     Ok((min_pts, sap_at_ept))
 }
 
+/// `seig` サンプルグループで KID を切り替える `sgpd` / `sbgp` を組み立てる
+///
+/// KID ごとに `sgpd` の `seig` エントリーを 1 つ作り、連続する同一 KID ごとに
+/// `sbgp` のエントリーを作る。`sbgp` の `group_description_index` は
+/// `0x10000 + (1 始まりのエントリー番号)` であり、1 番目のエントリーが `0x10001` になる。
+/// 既定 KID を使うサンプルは index `0` にする。
+///
+/// すべてのサンプルの実効 KID が `tenc.default_kid` と同じ場合は [`None`] を返し、
+/// `sgpd` / `sbgp` を書き出さない。なお、ここでの扱いは
+/// ISO/IEC 23001-7:2023 6 と ISO/IEC 14496-12:2022 8.9.4 に基づくものであり、
+/// 将来の改訂で変わる可能性がある。
+fn build_seig_sample_groups(
+    tenc_box: &TencBox,
+    samples: &[SampleEncryptionInfo],
+) -> Result<Option<SeigSampleGroups>, MuxError> {
+    // KID ごとのエントリー番号 (1 始まり) を、最初に現れた順に割り当てる
+    let mut kids: Vec<[u8; 16]> = Vec::new();
+    let mut group_description_indices = Vec::new();
+    for sample in samples {
+        let group_description_index = match sample.kid {
+            None => 0,
+            Some(kid) => {
+                let entry_index = match kids.iter().position(|known| *known == kid) {
+                    Some(index) => index,
+                    None => {
+                        kids.push(kid);
+                        kids.len() - 1
+                    }
+                };
+                // fragment-local の `sgpd` を参照する index は
+                // 0x10000 + (1 始まりのエントリー番号) になる
+                let entry_number = u32::try_from(entry_index + 1).map_err(|_| {
+                    MuxError::EncodeError(Error::invalid_input("seig entry count exceeds u32::MAX"))
+                })?;
+                0x1_0000u32.checked_add(entry_number).ok_or_else(|| {
+                    MuxError::EncodeError(Error::invalid_input(
+                        "seig group_description_index overflow",
+                    ))
+                })?
+            }
+        };
+        group_description_indices.push(group_description_index);
+    }
+    if kids.is_empty() {
+        return Ok(None);
+    }
+
+    // 連続する同一 index ごとに 1 エントリーへまとめる
+    let mut sbgp_entries: Vec<SbgpEntry> = Vec::new();
+    for group_description_index in group_description_indices {
+        match sbgp_entries.last_mut() {
+            Some(last) if last.group_description_index == group_description_index => {
+                last.sample_count = last.sample_count.checked_add(1).ok_or_else(|| {
+                    MuxError::EncodeError(Error::invalid_input(
+                        "sbgp sample_count exceeds u32::MAX",
+                    ))
+                })?;
+            }
+            _ => sbgp_entries.push(SbgpEntry {
+                sample_count: 1,
+                group_description_index,
+            }),
+        }
+    }
+
+    let sgpd_box = SgpdBox {
+        version: 1,
+        grouping_type: SEIG_GROUPING_TYPE,
+        default_length: Some(
+            u32::try_from(SeigEntry::FIXED_SIZE).expect("SeigEntry::FIXED_SIZE fits in u32"),
+        ),
+        entries: kids
+            .into_iter()
+            .map(|kid| {
+                SgpdEntry::Seig(SeigEntry {
+                    is_protected: 1,
+                    per_sample_iv_size: tenc_box.default_per_sample_iv_size,
+                    kid,
+                    constant_iv: None,
+                })
+            })
+            .collect(),
+    };
+    let sbgp_box = SbgpBox {
+        version: 0,
+        grouping_type: SEIG_GROUPING_TYPE,
+        grouping_type_parameter: None,
+        entries: sbgp_entries,
+    };
+    Ok(Some(SeigSampleGroups { sgpd_box, sbgp_box }))
+}
+
 fn resolve_segment_tracks(
     tracks: &mut Vec<TrackEntry>,
     samples: &[Sample],
@@ -1470,14 +1622,23 @@ fn resolve_segment_tracks(
                 track_encryption = TrackEncryption::from_sample_entry(segment_sample_entry);
             }
 
-            // 選択的暗号化は対象外なので、`tenc` の既定値とサンプルの暗号化情報の有無が
-            // 一致していること、IV 長が `tenc` の既定値と一致していることを検査する
+            // 実効 KID が `tenc` の既定 KID と同じ場合は `None` に正規化する。
+            // `Some(tenc.default_kid)` は「既定 KID を使う」と同じ意味であり、
+            // `sgpd` / `sbgp` を書き出す必要はない
+            let mut encryption_info = sample.encryption_info.clone();
             match &track_encryption {
                 Some(track_encryption) => {
-                    track_encryption.validate_sample_encryption(sample.encryption_info.as_ref())?
+                    if let Some(info) = &mut encryption_info
+                        && info.kid == Some(track_encryption.tenc_box.default_kid)
+                    {
+                        info.kid = None;
+                    }
+                    // 選択的暗号化は対象外なので、`tenc` の既定値とサンプルの暗号化情報の
+                    // 有無が一致していること、IV 長と KID の切り替えが対象の構成かを検査する
+                    track_encryption.validate_sample_encryption(encryption_info.as_ref())?;
                 }
                 None => {
-                    if sample.encryption_info.is_some() {
+                    if encryption_info.is_some() {
                         return Err(MuxError::EncodeError(Error::invalid_input(
                             "sample encryption info requires a CENC protected sample entry",
                         )));
@@ -1512,7 +1673,7 @@ fn resolve_segment_tracks(
                 keyframe: sample.keyframe,
                 composition_time_offset: sample.composition_time_offset,
                 data_size: sample.data_size,
-                encryption_info: sample.encryption_info.clone(),
+                encryption_info,
             });
         }
 
@@ -1531,6 +1692,16 @@ fn resolve_segment_tracks(
                     encryption_samples.push(encryption_info.clone());
                 }
                 Some(encryption_samples)
+            }
+            _ => None,
+        };
+
+        // KID が切り替わるサンプルがあれば、`sgpd` / `sbgp` に書き出す内容を組み立てる
+        let seig_sample_groups = match (&track_encryption, &encryption_samples) {
+            (Some(track_encryption), Some(encryption_samples))
+                if track_encryption.tenc_box.default_is_protected == 1 =>
+            {
+                build_seig_sample_groups(&track_encryption.tenc_box, encryption_samples)?
             }
             _ => None,
         };
@@ -1557,6 +1728,7 @@ fn resolve_segment_tracks(
             first_data_offset: first_data_offset.expect("track must contain at least one sample"),
             payload_end,
             encryption_samples,
+            seig_sample_groups,
         });
     }
 

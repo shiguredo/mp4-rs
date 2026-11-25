@@ -1077,7 +1077,7 @@ mod sinf_tests {
 mod sample_aux_info_known_bytes_tests {
     use shiguredo_mp4::{
         Encode,
-        boxes::{SaioBox, SaizBox, SampleEncryptionInfo, SencBox, Subsample},
+        boxes::{SaioBox, SaizBox, SencBox, SencSample, Subsample},
     };
 
     /// SencBox: サブサンプル暗号化フラグとサンプルごとの SAI が仕様どおりに並ぶこと
@@ -1088,14 +1088,14 @@ mod sample_aux_info_known_bytes_tests {
     fn senc_box_encode_known_bytes() {
         let senc = SencBox {
             samples: vec![
-                SampleEncryptionInfo {
+                SencSample {
                     iv: vec![0x01; 8],
                     subsamples: vec![Subsample {
                         bytes_of_clear_data: 5,
                         bytes_of_protected_data: 10,
                     }],
                 },
-                SampleEncryptionInfo {
+                SencSample {
                     iv: vec![0x02; 8],
                     subsamples: Vec::new(),
                 },
@@ -1214,7 +1214,7 @@ mod sample_aux_info_known_bytes_tests {
 mod senc_error_tests {
     use shiguredo_mp4::{
         Decode, Encode, ErrorKind,
-        boxes::{SampleEncryptionInfo, SencBox, Subsample},
+        boxes::{SencBox, SencSample, Subsample},
     };
 
     use super::build_box;
@@ -1223,7 +1223,7 @@ mod senc_error_tests {
     #[test]
     fn senc_box_decode_is_unsupported() {
         let senc = SencBox {
-            samples: vec![SampleEncryptionInfo {
+            samples: vec![SencSample {
                 iv: vec![0x11; 8],
                 subsamples: Vec::new(),
             }],
@@ -1404,11 +1404,11 @@ mod senc_error_tests {
     fn senc_box_mixed_iv_sizes_encode_is_invalid_input() {
         let senc = SencBox {
             samples: vec![
-                SampleEncryptionInfo {
+                SencSample {
                     iv: vec![0x11; 8],
                     subsamples: Vec::new(),
                 },
-                SampleEncryptionInfo {
+                SencSample {
                     iv: vec![0x22; 16],
                     subsamples: Vec::new(),
                 },
@@ -1435,7 +1435,7 @@ mod senc_error_tests {
     #[test]
     fn senc_box_invalid_iv_size_encode_is_invalid_input() {
         let senc = SencBox {
-            samples: vec![SampleEncryptionInfo {
+            samples: vec![SencSample {
                 iv: vec![0x11; 4],
                 subsamples: Vec::new(),
             }],
@@ -1467,7 +1467,7 @@ mod senc_error_tests {
             usize::from(u16::MAX) + 1
         ];
         let senc = SencBox {
-            samples: vec![SampleEncryptionInfo {
+            samples: vec![SencSample {
                 iv: vec![0x11; 8],
                 subsamples,
             }],
@@ -1908,6 +1908,720 @@ mod senc_sample_count_limit_tests {
                 "sample count exceeds maximum allowed when samples have no auxiliary information"
             ),
             "サンプル数の上限の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+}
+
+// ===== `seig` / `sbgp` / `sgpd` の既知バイト列でのエンコード検証 =====
+
+mod sample_group_known_bytes_tests {
+    use shiguredo_mp4::{
+        Decode, Encode,
+        boxes::{SbgpBox, SbgpEntry, SeigEntry, SgpdBox, SgpdEntry},
+    };
+
+    /// テスト用の KID
+    const KID: [u8; 16] = [0x11; 16];
+
+    /// `seig` エントリーの固定前置を組み立てる
+    ///
+    /// 20 バイトの固定前置は、`multi_key_flag` 1 bit + reserved 7 bit、
+    /// `crypt_byte_block` 4 bit + `skip_byte_block` 4 bit、`is_protected` 8 bit、
+    /// `Per_Sample_IV_Size` 8 bit、KID 16 バイトの順に並ぶ。
+    fn seig_fixed_prefix(is_protected: u8, per_sample_iv_size: u8, kid: [u8; 16]) -> Vec<u8> {
+        let mut bytes = vec![0x00, 0x00, is_protected, per_sample_iv_size];
+        bytes.extend_from_slice(&kid);
+        bytes
+    }
+
+    /// SeigEntry: 20 バイトの固定前置が仕様どおりにエンコードされ、デコードできること
+    #[test]
+    fn seig_entry_fixed_prefix_known_bytes() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 16,
+            kid: KID,
+            constant_iv: None,
+        };
+        let encoded = entry.encode_to_vec();
+        let expected = seig_fixed_prefix(1, 16, KID);
+        assert_eq!(
+            encoded, expected,
+            "SeigEntry の固定前置のエンコード結果が既知のバイト列と一致しない"
+        );
+        assert_eq!(encoded.len(), SeigEntry::FIXED_SIZE);
+
+        let (decoded, consumed) =
+            SeigEntry::decode(&encoded).expect("直前にエンコードした SeigEntry をデコードできない");
+        assert_eq!(consumed, SeigEntry::FIXED_SIZE);
+        assert_eq!(decoded, entry);
+    }
+
+    /// SeigEntry: 定義済みフィールドの後ろに追加バイトがあっても無視すること
+    ///
+    /// 仕様では将来の拡張を読み飛ばす必要があるため、消費バイト数は固定前置の
+    /// 20 バイトのままになる。
+    #[test]
+    fn seig_entry_ignores_trailing_bytes() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 8,
+            kid: KID,
+            constant_iv: None,
+        };
+        let mut payload = entry.encode_to_vec();
+        payload.extend_from_slice(&[0xFF, 0xEE, 0xDD]);
+
+        let (decoded, consumed) = SeigEntry::decode(&payload)
+            .expect("追加バイトを持つ SeigEntry の定義済みフィールドをデコードできない");
+        assert_eq!(
+            consumed,
+            SeigEntry::FIXED_SIZE,
+            "追加バイトを消費してしまった"
+        );
+        assert_eq!(decoded, entry);
+    }
+
+    /// SeigEntry: constant IV が固定前置の後ろに続くこと
+    #[test]
+    fn seig_entry_constant_iv_known_bytes() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 0,
+            kid: KID,
+            constant_iv: Some(vec![0xAA; 8]),
+        };
+        let encoded = entry.encode_to_vec();
+
+        let mut expected = seig_fixed_prefix(1, 0, KID);
+        expected.push(8);
+        expected.extend_from_slice(&[0xAA; 8]);
+        // 固定前置 20 バイト + constant_IV_size 1 バイト + constant IV 8 バイト
+        assert_eq!(encoded.len(), 29);
+        assert_eq!(
+            encoded, expected,
+            "SeigEntry の constant IV のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, consumed) =
+            SeigEntry::decode(&encoded).expect("constant IV を持つ SeigEntry をデコードできない");
+        assert_eq!(consumed, 29);
+        assert_eq!(decoded, entry);
+    }
+
+    /// SgpdBox (version 0): `grouping_type` と `entry_count` の後ろに `seig` エントリーが並ぶこと
+    #[test]
+    fn sgpd_box_version_0_known_bytes() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 16,
+            kid: KID,
+            constant_iv: None,
+        };
+        let sgpd = SgpdBox {
+            version: 0,
+            grouping_type: *b"seig",
+            default_length: None,
+            entries: vec![SgpdEntry::Seig(entry.clone())],
+        };
+        let encoded = sgpd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 (ヘッダー) + 4 (FullBox) + 4 (grouping_type) + 4 (entry_count) + 20 (entry)
+        expected.extend_from_slice(&40u32.to_be_bytes());
+        expected.extend_from_slice(b"sgpd");
+        // version 0, flags 0
+        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(b"seig");
+        expected.extend_from_slice(&1u32.to_be_bytes());
+        expected.extend_from_slice(&seig_fixed_prefix(1, 16, KID));
+        assert_eq!(
+            encoded, expected,
+            "SgpdBox version 0 のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, size) =
+            SgpdBox::decode(&encoded).expect("SgpdBox version 0 をデコードできない");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sgpd);
+    }
+
+    /// SgpdBox (version 1, `default_length` あり): エントリーの前に長さが入らないこと
+    #[test]
+    fn sgpd_box_version_1_fixed_length_known_bytes() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 8,
+            kid: KID,
+            constant_iv: None,
+        };
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(20),
+            entries: vec![SgpdEntry::Seig(entry.clone())],
+        };
+        let encoded = sgpd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 + 4 (FullBox) + 4 (grouping_type) + 4 (default_length) + 4 (entry_count) + 20
+        expected.extend_from_slice(&44u32.to_be_bytes());
+        expected.extend_from_slice(b"sgpd");
+        // version 1, flags 0
+        expected.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(b"seig");
+        expected.extend_from_slice(&20u32.to_be_bytes());
+        expected.extend_from_slice(&1u32.to_be_bytes());
+        expected.extend_from_slice(&seig_fixed_prefix(1, 8, KID));
+        assert_eq!(
+            encoded, expected,
+            "SgpdBox version 1 (default_length あり) のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, size) = SgpdBox::decode(&encoded)
+            .expect("SgpdBox version 1 (default_length あり) をデコードできない");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sgpd);
+    }
+
+    /// SgpdBox (version 1, `default_length == 0`):
+    /// 各エントリーの前に `description_length` が入ること
+    #[test]
+    fn sgpd_box_version_1_variable_length_known_bytes() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 0,
+            kid: KID,
+            constant_iv: Some(vec![0xAA; 8]),
+        };
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Seig(entry.clone())],
+        };
+        let encoded = sgpd.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 + 4 + 4 + 4 + 4 (entry_count) + 4 (description_length) + 29 (entry)
+        expected.extend_from_slice(&57u32.to_be_bytes());
+        expected.extend_from_slice(b"sgpd");
+        // version 1, flags 0
+        expected.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(b"seig");
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&1u32.to_be_bytes());
+        expected.extend_from_slice(&29u32.to_be_bytes());
+        expected.extend_from_slice(&seig_fixed_prefix(1, 0, KID));
+        expected.push(8);
+        expected.extend_from_slice(&[0xAA; 8]);
+        assert_eq!(
+            encoded, expected,
+            "SgpdBox version 1 (default_length 0) のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, size) = SgpdBox::decode(&encoded)
+            .expect("SgpdBox version 1 (default_length 0) をデコードできない");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sgpd);
+    }
+
+    /// SbgpBox (version 0): サンプル数と group_description_index が並ぶこと
+    #[test]
+    fn sbgp_box_version_0_known_bytes() {
+        let sbgp = SbgpBox {
+            version: 0,
+            grouping_type: *b"seig",
+            grouping_type_parameter: None,
+            entries: vec![
+                SbgpEntry {
+                    sample_count: 3,
+                    group_description_index: 0,
+                },
+                SbgpEntry {
+                    sample_count: 2,
+                    group_description_index: 0x1_0001,
+                },
+            ],
+        };
+        let encoded = sbgp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 + 4 (FullBox) + 4 (grouping_type) + 4 (entry_count) + 8 * 2
+        expected.extend_from_slice(&36u32.to_be_bytes());
+        expected.extend_from_slice(b"sbgp");
+        // version 0, flags 0
+        expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(b"seig");
+        expected.extend_from_slice(&2u32.to_be_bytes());
+        expected.extend_from_slice(&3u32.to_be_bytes());
+        expected.extend_from_slice(&0u32.to_be_bytes());
+        expected.extend_from_slice(&2u32.to_be_bytes());
+        expected.extend_from_slice(&0x1_0001u32.to_be_bytes());
+        assert_eq!(
+            encoded, expected,
+            "SbgpBox version 0 のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, size) =
+            SbgpBox::decode(&encoded).expect("SbgpBox version 0 をデコードできない");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sbgp);
+    }
+
+    /// SbgpBox (version 1): `grouping_type_parameter` が grouping_type の後ろに入ること
+    #[test]
+    fn sbgp_box_version_1_known_bytes() {
+        let sbgp = SbgpBox {
+            version: 1,
+            grouping_type: *b"seig",
+            grouping_type_parameter: Some(0x0000_0005),
+            entries: vec![SbgpEntry {
+                sample_count: 1,
+                group_description_index: 0x1_0002,
+            }],
+        };
+        let encoded = sbgp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+
+        let mut expected = Vec::new();
+        // size = 8 + 4 (FullBox) + 4 (grouping_type) + 4 (parameter)
+        //      + 4 (entry_count) + 8 (entry)
+        expected.extend_from_slice(&32u32.to_be_bytes());
+        expected.extend_from_slice(b"sbgp");
+        // version 1, flags 0
+        expected.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]);
+        expected.extend_from_slice(b"seig");
+        expected.extend_from_slice(&5u32.to_be_bytes());
+        expected.extend_from_slice(&1u32.to_be_bytes());
+        expected.extend_from_slice(&1u32.to_be_bytes());
+        expected.extend_from_slice(&0x1_0002u32.to_be_bytes());
+        assert_eq!(
+            encoded, expected,
+            "SbgpBox version 1 のエンコード結果が既知のバイト列と一致しない"
+        );
+
+        let (decoded, size) =
+            SbgpBox::decode(&encoded).expect("SbgpBox version 1 をデコードできない");
+        assert_eq!(size, encoded.len());
+        assert_eq!(decoded, sbgp);
+    }
+}
+
+// ===== `seig` / `sbgp` / `sgpd` のエラーパステスト =====
+
+mod sample_group_error_tests {
+    use shiguredo_mp4::{
+        Decode, Encode, ErrorKind,
+        boxes::{SbgpBox, SbgpEntry, SeigEntry, SgpdBox, SgpdEntry},
+    };
+
+    use super::build_box;
+
+    /// テスト用の KID
+    const KID: [u8; 16] = [0x11; 16];
+
+    /// `seig` エントリーの 20 バイトの固定前置を組み立てる
+    fn seig_fixed_prefix(
+        first: u8,
+        second: u8,
+        is_protected: u8,
+        per_sample_iv_size: u8,
+    ) -> Vec<u8> {
+        let mut bytes = vec![first, second, is_protected, per_sample_iv_size];
+        bytes.extend_from_slice(&KID);
+        bytes
+    }
+
+    /// SeigEntry: `multi_key_flag == 1` のデコードが Unsupported になること
+    #[test]
+    fn seig_entry_multi_key_flag_is_unsupported() {
+        let payload = seig_fixed_prefix(0x80, 0x00, 1, 16);
+        let err = SeigEntry::decode(&payload).expect_err("multi_key_flag == 1 を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::Unsupported,
+            "エラー種別が Unsupported ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("multi_key_flag"),
+            "multi_key_flag の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SeigEntry: `crypt_byte_block` / `skip_byte_block` が 0 以外のデコードが
+    /// Unsupported になること
+    #[test]
+    fn seig_entry_pattern_parameters_are_unsupported() {
+        for (second, description) in [(0x10, "crypt_byte_block"), (0x01, "skip_byte_block")] {
+            let payload = seig_fixed_prefix(0x00, second, 1, 16);
+            let err = SeigEntry::decode(&payload)
+                .expect_err("crypt_byte_block / skip_byte_block が 0 以外の入力を受理してしまった");
+            assert_eq!(
+                err.kind,
+                ErrorKind::Unsupported,
+                "{description} のエラー種別が Unsupported ではない (reason={})",
+                err.reason,
+            );
+            assert!(
+                err.reason.contains("crypt_byte_block and skip_byte_block"),
+                "{description} のパターン値の検査とは別のエラーである (reason={})",
+                err.reason,
+            );
+        }
+    }
+
+    /// SeigEntry: `is_protected` が 0 / 1 以外のデコードが InvalidData になること
+    #[test]
+    fn seig_entry_invalid_is_protected_is_invalid_data() {
+        let payload = seig_fixed_prefix(0x00, 0x00, 2, 16);
+        let err = SeigEntry::decode(&payload).expect_err("is_protected == 2 を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("is_protected"),
+            "is_protected の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SeigEntry: `Per_Sample_IV_Size` が 0 / 8 / 16 以外のデコードが InvalidData になること
+    #[test]
+    fn seig_entry_invalid_per_sample_iv_size_is_invalid_data() {
+        let payload = seig_fixed_prefix(0x00, 0x00, 1, 12);
+        let err =
+            SeigEntry::decode(&payload).expect_err("Per_Sample_IV_Size == 12 を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("per_sample_iv_size"),
+            "IV サイズの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SeigEntry: 固定前置が切り詰められたデコードが InvalidData になること
+    #[test]
+    fn seig_entry_truncated_prefix_is_invalid_data() {
+        let payload = vec![0x00; SeigEntry::FIXED_SIZE - 1];
+        let err =
+            SeigEntry::decode(&payload).expect_err("20 バイト未満の SeigEntry を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SeigEntry: constant IV が切り詰められたデコードが InvalidData になること
+    #[test]
+    fn seig_entry_truncated_constant_iv_is_invalid_data() {
+        let mut payload = seig_fixed_prefix(0x00, 0x00, 1, 0);
+        // constant_IV_size = 8 だが IV のバイト列がない
+        payload.push(8);
+        let err = SeigEntry::decode(&payload)
+            .expect_err("constant IV が切り詰められた SeigEntry を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: version 2 のデコードが Unsupported になること
+    #[test]
+    fn sgpd_box_version_2_decode_is_unsupported() {
+        // version 2, flags 0 だけで、デコードはバージョン検査で拒否する
+        let buf = build_box(*b"sgpd", &[0x02, 0x00, 0x00, 0x00]);
+        let err = SgpdBox::decode(&buf).expect_err("SgpdBox version 2 を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::Unsupported,
+            "エラー種別が Unsupported ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("SgpdBox version"),
+            "バージョンの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: version 0 で `grouping_type` が `seig` 以外のデコードが Unsupported に
+    /// なること
+    ///
+    /// version 0 は `default_length` を持たないため、エントリー長を決められない。
+    #[test]
+    fn sgpd_box_version_0_non_seig_decode_is_unsupported() {
+        let mut payload = vec![0x00, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(b"roll");
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"sgpd", &payload);
+        let err =
+            SgpdBox::decode(&buf).expect_err("version 0 で 'roll' の SgpdBox を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::Unsupported,
+            "エラー種別が Unsupported ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("grouping type other than 'seig'"),
+            "grouping_type の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: version 2 のエンコードが Unsupported になること
+    #[test]
+    fn sgpd_box_version_2_encode_is_unsupported() {
+        let sgpd = SgpdBox {
+            version: 2,
+            grouping_type: *b"seig",
+            default_length: None,
+            entries: Vec::new(),
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("SgpdBox version 2 をエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::Unsupported,
+            "エラー種別が Unsupported ではない (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `default_length` がエントリー長と一致しないエンコードが InvalidInput に
+    /// なること
+    #[test]
+    fn sgpd_box_default_length_mismatch_encode_is_invalid_input() {
+        let entry = SeigEntry {
+            is_protected: 1,
+            per_sample_iv_size: 16,
+            kid: KID,
+            constant_iv: None,
+        };
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(24),
+            entries: vec![SgpdEntry::Seig(entry)],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("default_length と一致しない長さのエントリーをエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("default_length"),
+            "default_length の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: エントリーが切り詰められたデコードが InvalidData になること
+    #[test]
+    fn sgpd_box_truncated_entries_is_invalid_data() {
+        // version 1, flags 0, grouping_type 'seig', default_length 20,
+        // entry_count 2 だが 1 エントリー分 (20 バイト) しかない
+        let mut payload = vec![0x01, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(b"seig");
+        payload.extend_from_slice(&20u32.to_be_bytes());
+        payload.extend_from_slice(&2u32.to_be_bytes());
+        payload.extend_from_slice(&seig_fixed_prefix(0x00, 0x00, 1, 16));
+        let buf = build_box(*b"sgpd", &payload);
+
+        let err = SgpdBox::decode(&buf).expect_err("切り詰められた sgpd を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("truncated"),
+            "切り詰めの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: version 0 で `seig` 以外のエントリーを指定したエンコードが InvalidInput に
+    /// なること
+    ///
+    /// `grouping_type` が `seig` なので `SgpdEntry::Seig` だけを許可する。
+    #[test]
+    fn sgpd_box_version_0_unknown_entry_encode_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 0,
+            grouping_type: *b"seig",
+            default_length: None,
+            entries: vec![SgpdEntry::Unknown(vec![0x00; 20])],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("version 0 で Unknown エントリーをエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("requires 'seig' entries"),
+            "grouping_type とエントリーの整合の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `grouping_type` が `seig` 以外なのに `SgpdEntry::Seig` を持つ
+    /// version 1 のエンコードが InvalidInput になること
+    ///
+    /// デコードは `grouping_type` だけでエントリーの variant を決めるため、
+    /// 不一致のまま書き出すとエンコードとデコードの往復契約が壊れる。
+    #[test]
+    fn sgpd_box_non_seig_grouping_type_with_seig_entry_encode_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"roll",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Seig(SeigEntry {
+                is_protected: 1,
+                per_sample_iv_size: 16,
+                kid: KID,
+                constant_iv: None,
+            })],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("grouping_type が 'roll' なのに Seig エントリーをエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason
+                .contains("'seig' entries require grouping_type 'seig'"),
+            "grouping_type とエントリーの整合の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `grouping_type` が `seig` なのに `SgpdEntry::Unknown` を持つ
+    /// version 1 のエンコードが InvalidInput になること
+    ///
+    /// `seig` のエントリーは `SeigEntry` として解釈できる必要があるため、
+    /// 生バイトのまま書き出すことはできない。
+    #[test]
+    fn sgpd_box_seig_grouping_type_with_unknown_entry_encode_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Unknown(vec![0x00; 20])],
+        };
+        let err = sgpd.encode_to_vec().expect_err(
+            "grouping_type が 'seig' なのに Unknown エントリーをエンコードできてしまった",
+        );
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("requires 'seig' entries"),
+            "grouping_type とエントリーの整合の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SbgpBox: version 2 のデコードが InvalidData になること
+    #[test]
+    fn sbgp_box_version_2_decode_is_invalid_data() {
+        let buf = build_box(*b"sbgp", &[0x02, 0x00, 0x00, 0x00]);
+        let err = SbgpBox::decode(&buf).expect_err("SbgpBox version 2 を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("SbgpBox version"),
+            "バージョンの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SbgpBox: エントリーが切り詰められたデコードが InvalidData になること
+    #[test]
+    fn sbgp_box_truncated_entries_is_invalid_data() {
+        // entry_count 2 だが 1 エントリー分 (8 バイト) しかない
+        let mut payload = vec![0x00, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(b"seig");
+        payload.extend_from_slice(&2u32.to_be_bytes());
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        payload.extend_from_slice(&0u32.to_be_bytes());
+        let buf = build_box(*b"sbgp", &payload);
+
+        let err = SbgpBox::decode(&buf).expect_err("切り詰められた sbgp を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("truncated"),
+            "切り詰めの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SbgpBox: version 0 に `grouping_type_parameter` を指定したエンコードが
+    /// InvalidInput になること
+    #[test]
+    fn sbgp_box_version_0_with_parameter_encode_is_invalid_input() {
+        let sbgp = SbgpBox {
+            version: 0,
+            grouping_type: *b"seig",
+            grouping_type_parameter: Some(1),
+            entries: vec![SbgpEntry {
+                sample_count: 1,
+                group_description_index: 1,
+            }],
+        };
+        let err = sbgp
+            .encode_to_vec()
+            .expect_err("version 0 で grouping_type_parameter をエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("grouping_type_parameter"),
+            "grouping_type_parameter の検査とは別のエラーである (reason={})",
             err.reason,
         );
     }

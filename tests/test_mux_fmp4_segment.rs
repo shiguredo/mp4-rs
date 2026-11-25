@@ -49,8 +49,9 @@ use shiguredo_mp4::{
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, Brand, DopsBox, EncaBox, EncvBox, FrmaBox,
         FtypBox, MfraBox, MoofBox, MoovBox, OpusBox, PsshBox, SaioBox, SaizBox,
-        SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox, SencBox, SidxBox, SinfBox, StypBox,
-        Subsample, TencBox, VisualSampleEntryFields,
+        SampleEncryptionInfo, SampleEntry, SbgpBox, SbgpEntry, SchiBox, SchmBox, SeigEntry,
+        SencBox, SencSample, SgpdBox, SgpdEntry, SidxBox, SinfBox, StypBox, Subsample, TencBox,
+        VisualSampleEntryFields,
     },
     demux::Fmp4SegmentDemuxer,
     mux::{CmafTrackFileBrand, Fmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions},
@@ -789,6 +790,7 @@ fn drm_video_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usiz
         encryption_info: Some(SampleEncryptionInfo {
             iv: vec![0x33; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
     }
 }
@@ -808,6 +810,7 @@ fn drm_audio_sample(sample_entry: SampleEntry, data_offset: u64, data_size: usiz
         encryption_info: Some(SampleEncryptionInfo {
             iv: vec![0x44; 8],
             subsamples: Vec::new(),
+            kid: None,
         }),
     }
 }
@@ -1011,15 +1014,11 @@ fn init_segment_contains_pssh_and_drm_sample_entries() {
 
 // ===== サンプル補助情報 (senc / saiz / saio) の出力テスト =====
 
-/// `cenc` スキームの `tenc` を指定して `encv` のサンプルエントリーを組み立てる
+/// 指定した保護スキームと `tenc` を持つ `encv` のサンプルエントリーを組み立てる
 ///
-/// 選択的暗号化と constant IV の検証で、`default_is_protected` / `default_per_sample_iv_size` を
-/// 差し替えられるようにしている。
-fn create_encv_sample_entry_with_tenc(
-    default_is_protected: u8,
-    default_per_sample_iv_size: u8,
-    default_constant_iv: Option<Vec<u8>>,
-) -> SampleEntry {
+/// `tenc` の内容だけを差し替えられるようにし、サンプルエントリーの共通部分を
+/// 1 か所にまとめる。
+fn create_encv_sample_entry_from_tenc(scheme_type: [u8; 4], tenc_box: TencBox) -> SampleEntry {
     SampleEntry::Encv(EncvBox {
         visual: VisualSampleEntryFields {
             data_reference_index: VisualSampleEntryFields::DEFAULT_DATA_REFERENCE_INDEX,
@@ -1036,26 +1035,61 @@ fn create_encv_sample_entry_with_tenc(
                 data_format: *b"hev1",
             },
             schm_box: Some(SchmBox {
-                // `cenc` はパターン暗号化を使わないスキーム
-                scheme_type: *b"cenc",
+                scheme_type,
                 scheme_version: 0x0001_0000,
                 scheme_uri: None,
             }),
             schi_box: Some(SchiBox {
-                tenc_box: Some(TencBox {
-                    default_is_protected,
-                    default_per_sample_iv_size,
-                    default_kid: VIDEO_KID,
-                    default_constant_iv,
-                    default_crypt_byte_block: None,
-                    default_skip_byte_block: None,
-                }),
+                tenc_box: Some(tenc_box),
                 unknown_boxes: vec![],
             }),
             unknown_boxes: vec![],
         },
         unknown_boxes: vec![],
     })
+}
+
+/// `cenc` スキームの `tenc` を指定して `encv` のサンプルエントリーを組み立てる
+///
+/// 選択的暗号化と constant IV の検証で、`default_is_protected` / `default_per_sample_iv_size` を
+/// 差し替えられるようにしている。
+fn create_encv_sample_entry_with_tenc(
+    default_is_protected: u8,
+    default_per_sample_iv_size: u8,
+    default_constant_iv: Option<Vec<u8>>,
+) -> SampleEntry {
+    create_encv_sample_entry_from_tenc(
+        // `cenc` はパターン暗号化を使わないスキーム
+        *b"cenc",
+        TencBox {
+            default_is_protected,
+            default_per_sample_iv_size,
+            default_kid: VIDEO_KID,
+            default_constant_iv,
+            default_crypt_byte_block: None,
+            default_skip_byte_block: None,
+        },
+    )
+}
+
+/// `tenc` version 1 でパターン暗号化パラメーターが 0 / 0 の `encv` のサンプルエントリーを
+/// 組み立てる
+///
+/// `cbcs` はパターン暗号化を使うスキームなので `tenc` は version 1 でなければならない。
+/// version 1 の 0 / 0 はパターン暗号化を使わないことを表す。`seig` のパターン値も
+/// 0 / 0 であるため、KID の切り替えで復号結果は変わらない。
+fn create_encv_sample_entry_with_zero_pattern_tenc() -> SampleEntry {
+    create_encv_sample_entry_from_tenc(
+        *b"cbcs",
+        TencBox {
+            default_is_protected: 1,
+            default_per_sample_iv_size: 16,
+            default_kid: VIDEO_KID,
+            default_constant_iv: None,
+            default_crypt_byte_block: Some(Uint::new(0)),
+            default_skip_byte_block: Some(Uint::new(0)),
+        },
+    )
 }
 
 /// 暗号化情報を指定できる映像サンプルを組み立てる
@@ -1112,6 +1146,7 @@ fn muxer_writes_senc_saiz_saio_for_encrypted_track() {
                     bytes_of_clear_data: 5,
                     bytes_of_protected_data: 10,
                 }],
+                kid: None,
             }),
             0,
             16,
@@ -1121,6 +1156,7 @@ fn muxer_writes_senc_saiz_saio_for_encrypted_track() {
             Some(SampleEncryptionInfo {
                 iv: iv16(0x22),
                 subsamples: Vec::new(),
+                kid: None,
             }),
             16,
             16,
@@ -1144,14 +1180,14 @@ fn muxer_writes_senc_saiz_saio_for_encrypted_track() {
     assert_eq!(
         senc_box.samples,
         vec![
-            SampleEncryptionInfo {
+            SencSample {
                 iv: iv16(0x11),
                 subsamples: vec![Subsample {
                     bytes_of_clear_data: 5,
                     bytes_of_protected_data: 10,
                 }],
             },
-            SampleEncryptionInfo {
+            SencSample {
                 iv: iv16(0x22),
                 subsamples: Vec::new(),
             },
@@ -1223,6 +1259,7 @@ fn muxer_writes_senc_without_subsample_flag_for_full_sample_encryption() {
         Some(SampleEncryptionInfo {
             iv: vec![0x33; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
         0,
         16,
@@ -1286,6 +1323,7 @@ fn muxer_rejects_encryption_info_for_clear_track() {
         Some(SampleEncryptionInfo {
             iv: vec![0x44; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
         0,
         16,
@@ -1323,6 +1361,7 @@ fn muxer_rejects_iv_size_mismatch() {
         Some(SampleEncryptionInfo {
             iv: vec![0x55; 8],
             subsamples: Vec::new(),
+            kid: None,
         }),
         0,
         16,
@@ -1359,6 +1398,7 @@ fn muxer_rejects_encryption_info_without_tenc() {
         Some(SampleEncryptionInfo {
             iv: vec![0x66; 16],
             subsamples: Vec::new(),
+            kid: None,
         }),
         0,
         16,
@@ -1385,6 +1425,394 @@ fn muxer_rejects_encryption_info_without_tenc() {
         }
         other => panic!("EncodeError を期待したが {other:?} だった"),
     }
+}
+
+// ===== 鍵ローテーション (`seig` サンプルグループ) の出力テスト =====
+
+/// 鍵ローテーションテスト用の KID A
+const ROTATED_KID_A: [u8; 16] = [0xAA; 16];
+
+/// 鍵ローテーションテスト用の KID B
+const ROTATED_KID_B: [u8; 16] = [0xBB; 16];
+
+/// IV 16 バイトの暗号化情報を KID 付きで組み立てる
+fn kid_encryption_info(iv: u8, kid: Option<[u8; 16]>) -> SampleEncryptionInfo {
+    SampleEncryptionInfo {
+        iv: vec![iv; 16],
+        subsamples: Vec::new(),
+        kid,
+    }
+}
+
+/// `traf` の `unknown_boxes` に指定種別のボックスがあるかを返す
+fn has_traf_unknown_box(traf_box: &shiguredo_mp4::boxes::TrafBox, box_type: [u8; 4]) -> bool {
+    traf_box
+        .unknown_boxes
+        .iter()
+        .any(|unknown_box| unknown_box.box_type.as_bytes() == box_type)
+}
+
+/// KID が切り替わるサンプルに対して `sgpd` / `sbgp` を書き出すこと
+///
+/// `sgpd` は version 1、`grouping_type = seig`、`default_length = 20` で KID ごとに
+/// 1 エントリーを持ち、`sbgp` は version 0 で連続する同一 KID ごとに 1 エントリーを
+/// 持つ。1 番目の KID の index が `0x10001`、2 番目が `0x10002` になり、既定 KID を
+/// 使うサンプルは index 0 になることを、デコードした値で確認する。
+#[test]
+fn muxer_writes_sgpd_and_sbgp_for_kid_rotation() {
+    let sample_entry = create_encv_sample_entry_with_tenc(1, 16, None);
+    let samples = [
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x11, Some(ROTATED_KID_A))),
+            0,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x22, Some(ROTATED_KID_A))),
+            16,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x33, Some(ROTATED_KID_B))),
+            32,
+            16,
+        ),
+        encrypted_video_sample(sample_entry, Some(kid_encryption_info(0x44, None)), 48, 16),
+    ];
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("KID が切り替わるメディアセグメントの作成に失敗した");
+    let (moof_box, _) =
+        MoofBox::decode(&media_segment).expect("メディアセグメントからの moof デコードに失敗した");
+    assert_eq!(moof_box.traf_boxes.len(), 1, "テストは 1 traf を前提にする");
+    let traf_box = &moof_box.traf_boxes[0];
+
+    // sgpd: version 1、seig、default_length 20 で KID ごとに 1 エントリー
+    let sgpd_bytes = find_traf_unknown_box(traf_box, *b"sgpd");
+    let (sgpd_box, sgpd_size) = SgpdBox::decode(&sgpd_bytes).expect("sgpd のデコードに失敗した");
+    assert_eq!(sgpd_size, sgpd_bytes.len());
+    assert_eq!(sgpd_box.version, 1, "sgpd の version が 1 ではない");
+    assert_eq!(
+        sgpd_box.grouping_type, *b"seig",
+        "sgpd の grouping_type が 'seig' ではない"
+    );
+    assert_eq!(
+        sgpd_box.default_length,
+        Some(20),
+        "sgpd の default_length が 20 ではない"
+    );
+    assert_eq!(
+        sgpd_box.entries,
+        vec![
+            SgpdEntry::Seig(SeigEntry {
+                is_protected: 1,
+                per_sample_iv_size: 16,
+                kid: ROTATED_KID_A,
+                constant_iv: None,
+            }),
+            SgpdEntry::Seig(SeigEntry {
+                is_protected: 1,
+                per_sample_iv_size: 16,
+                kid: ROTATED_KID_B,
+                constant_iv: None,
+            }),
+        ],
+        "sgpd に書き出された KID のエントリーが入力と一致しない"
+    );
+
+    // sbgp: version 0、連続する同一 KID ごとに 1 エントリー
+    let sbgp_bytes = find_traf_unknown_box(traf_box, *b"sbgp");
+    let (sbgp_box, sbgp_size) = SbgpBox::decode(&sbgp_bytes).expect("sbgp のデコードに失敗した");
+    assert_eq!(sbgp_size, sbgp_bytes.len());
+    assert_eq!(sbgp_box.version, 0, "sbgp の version が 0 ではない");
+    assert_eq!(
+        sbgp_box.grouping_type, *b"seig",
+        "sbgp の grouping_type が 'seig' ではない"
+    );
+    assert_eq!(
+        sbgp_box.grouping_type_parameter, None,
+        "sbgp version 0 は grouping_type_parameter を持たない"
+    );
+    assert_eq!(
+        sbgp_box.entries,
+        vec![
+            SbgpEntry {
+                sample_count: 2,
+                group_description_index: 0x1_0001,
+            },
+            SbgpEntry {
+                sample_count: 1,
+                group_description_index: 0x1_0002,
+            },
+            SbgpEntry {
+                sample_count: 1,
+                group_description_index: 0,
+            },
+        ],
+        "sbgp の group_description_index が KID の並びと一致しない"
+    );
+}
+
+/// すべてのサンプルの実効 KID が `tenc.default_kid` と同じ場合は
+/// `sgpd` / `sbgp` を書き出さないこと
+///
+/// `Some(tenc.default_kid)` は `None` に正規化されるため、これも既定 KID とみなす。
+#[test]
+fn muxer_does_not_write_sample_groups_when_all_kids_are_default() {
+    let sample_entry = create_encv_sample_entry_with_tenc(1, 16, None);
+    let samples = [
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x11, Some(VIDEO_KID))),
+            0,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x22, None)),
+            16,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry,
+            Some(kid_encryption_info(0x33, Some(VIDEO_KID))),
+            32,
+            16,
+        ),
+    ];
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("既定 KID のみのメディアセグメントの作成に失敗した");
+    let (moof_box, _) =
+        MoofBox::decode(&media_segment).expect("メディアセグメントからの moof デコードに失敗した");
+    let traf_box = &moof_box.traf_boxes[0];
+    assert!(
+        !has_traf_unknown_box(traf_box, *b"sgpd"),
+        "既定 KID のみなのに sgpd を書き出している"
+    );
+    assert!(
+        !has_traf_unknown_box(traf_box, *b"sbgp"),
+        "既定 KID のみなのに sbgp を書き出している"
+    );
+}
+
+/// `tenc` にパターン暗号化パラメーターを持つトラックに `kid: Some` を渡すと
+/// InvalidInput になること
+///
+/// `seig` のパターン値は常に 0 / 0 であり、`tenc` のパターン値を上書きしてしまう。
+#[test]
+fn muxer_rejects_kid_rotation_with_pattern_tenc() {
+    // `create_encv_sample_entry()` の `tenc` は `cbcs` かつパターン値 (1, 9) を持つ
+    let sample = encrypted_video_sample(
+        create_encv_sample_entry(320, 240),
+        Some(kid_encryption_info(0x11, Some(ROTATED_KID_A))),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("パターン暗号化パラメーターを持つトラックの KID 切り替えを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("pattern encryption parameters"),
+                "パターン暗号化パラメーターの検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `tenc.default_per_sample_iv_size` が 0 (constant IV) のトラックに `kid: Some` を
+/// 渡すと InvalidInput になること
+#[test]
+fn muxer_rejects_kid_rotation_with_constant_iv() {
+    let sample = encrypted_video_sample(
+        create_encv_sample_entry_with_tenc(1, 0, Some(vec![0x77; 8])),
+        Some(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: Some(ROTATED_KID_A),
+        }),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("constant IV のトラックの KID 切り替えを受け付けてしまった");
+    match err {
+        MuxError::EncodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidInput,
+                "エラー種別が InvalidInput ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error.reason.contains("per-sample IV"),
+                "per-sample IV の検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+/// `tenc` を持たないトラックに `kid: Some` を渡すと InvalidInput になること
+#[test]
+fn muxer_rejects_kid_rotation_without_tenc() {
+    let sample = encrypted_video_sample(
+        create_avc1_sample_entry(320, 240),
+        Some(kid_encryption_info(0x11, Some(ROTATED_KID_A))),
+        0,
+        16,
+    );
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let err = muxer
+        .create_media_segment_metadata(&[sample])
+        .expect_err("tenc を持たないトラックの KID 切り替えを受け付けてしまった");
+    assert!(
+        matches!(err, MuxError::EncodeError(_)),
+        "EncodeError を期待したが {err:?} だった"
+    );
+}
+
+/// mux → demux の往復で、サンプルごとの実効 KID が一致すること
+///
+/// `Some(tenc.default_kid)` を入力すると `None` に正規化されることも確認する。
+#[test]
+fn kid_rotation_roundtrip_preserves_effective_kid() {
+    let sample_entry = create_encv_sample_entry_with_tenc(1, 16, None);
+    let samples = [
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x11, Some(ROTATED_KID_A))),
+            0,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x22, None)),
+            16,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x33, Some(VIDEO_KID))),
+            32,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry,
+            Some(kid_encryption_info(0x44, Some(ROTATED_KID_B))),
+            48,
+            16,
+        ),
+    ];
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("KID が切り替わるメディアセグメントの作成に失敗した");
+    // demux が mdat の範囲を検査できるよう、サンプルデータ分の payload を付ける
+    media_segment.extend_from_slice(&[0u8; 64]);
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let decoded_samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("KID が切り替わるメディアセグメントの処理に失敗した");
+    let kids: Vec<Option<[u8; 16]>> = decoded_samples
+        .iter()
+        .map(|sample| sample.encryption_info.as_ref().and_then(|info| info.kid))
+        .collect();
+    assert_eq!(
+        kids,
+        vec![Some(ROTATED_KID_A), None, None, Some(ROTATED_KID_B)],
+        "mux → demux の往復で実効 KID が一致しない (Some(default_kid) の正規化を含む)"
+    );
+}
+
+/// `tenc` version 1 でパターン暗号化パラメーターが 0 / 0 のトラックでも、KID を
+/// 切り替えると `sgpd` / `sbgp` を書き出し、demux で実効 KID が一致すること
+///
+/// `tenc` version 1 の 0 / 0 はパターン暗号化を使わないことを表すため、`seig` の
+/// 0 / 0 に上書きされても復号結果は変わらない。mux がパターン値の有無ではなく値で
+/// 判定し、demux と同じ基準で KID の切り替えを受理することを確認する。
+#[test]
+fn muxer_writes_sample_groups_for_zero_pattern_tenc() {
+    let sample_entry = create_encv_sample_entry_with_zero_pattern_tenc();
+    let samples = [
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x11, Some(ROTATED_KID_A))),
+            0,
+            16,
+        ),
+        encrypted_video_sample(
+            sample_entry.clone(),
+            Some(kid_encryption_info(0x22, Some(ROTATED_KID_B))),
+            16,
+            16,
+        ),
+        encrypted_video_sample(sample_entry, Some(kid_encryption_info(0x33, None)), 32, 16),
+    ];
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("パターン値 0 / 0 のトラックの KID 切り替えに失敗した");
+    let (moof_box, _) =
+        MoofBox::decode(&media_segment).expect("メディアセグメントからの moof デコードに失敗した");
+    assert_eq!(moof_box.traf_boxes.len(), 1, "テストは 1 traf を前提にする");
+    let traf_box = &moof_box.traf_boxes[0];
+    assert!(
+        has_traf_unknown_box(traf_box, *b"sgpd"),
+        "KID が切り替わるのに sgpd を書き出していない"
+    );
+    assert!(
+        has_traf_unknown_box(traf_box, *b"sbgp"),
+        "KID が切り替わるのに sbgp を書き出していない"
+    );
+
+    // demux が mdat の範囲を検査できるよう、サンプルデータ分の payload を付ける
+    media_segment.extend_from_slice(&[0u8; 48]);
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let decoded_samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("KID が切り替わるメディアセグメントの処理に失敗した");
+    let kids: Vec<Option<[u8; 16]>> = decoded_samples
+        .iter()
+        .map(|sample| sample.encryption_info.as_ref().and_then(|info| info.kid))
+        .collect();
+    assert_eq!(
+        kids,
+        vec![Some(ROTATED_KID_A), Some(ROTATED_KID_B), None],
+        "パターン値 0 / 0 のトラックで mux → demux の実効 KID が一致しない"
+    );
 }
 
 // ===== styp (セグメント種別ボックス) のテスト =====

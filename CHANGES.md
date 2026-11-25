@@ -271,10 +271,13 @@
   - `Fmp4SegmentMuxer` は `tenc` の `default_is_protected` と `encryption_info` の有無が一致しないサンプルを拒否する
   - `Mp4FileMuxer::append_sample()` は `encryption_info: Some` を `MuxError::EncodeError` で拒否する
   - @voluntas
-- [ADD] fMP4 の暗号化メディアセグメントのサンプル補助情報 (senc / saiz / saio) に対応する
-  - `SencBox` / `SaizBox` / `SaioBox` / `Subsample` / `SampleEncryptionInfo` を追加する
+- [ADD] fMP4 の暗号化メディアセグメントのサンプル補助情報 (senc / saiz / saio) と鍵ローテーション (sbgp / sgpd / seig) に対応する
+  - `SencBox` / `SencSample` / `SaizBox` / `SaioBox` / `Subsample` / `SampleEncryptionInfo` を追加する
+  - `SbgpBox` / `SbgpEntry` / `SgpdBox` / `SgpdEntry` / `SeigEntry` を追加する
+  - `SencBox::samples` の要素型は `SencSample` になる。`senc` は KID を持たないため、実効 KID は `SampleEncryptionInfo::kid` で扱う
+  - `SampleEncryptionInfo` に `kid` を追加する。`kid: None` は `tenc.default_kid` を使うことを表し、実効 KID が既定 KID と同じ場合は `None` に正規化する
   - `Fmp4SegmentMuxer` が暗号化されたサンプルのある `traf` に `senc` / `saiz` / `saio` を書き出す
-  - `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` がサンプルごとの `encryption_info` を返す
+  - `Fmp4SegmentMuxer` が KID の切り替わる `traf` に `sgpd` / `sbgp` を書き出し、`Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` がサンプルごとの実効 KID を `SampleEncryptionInfo::kid` として返す
   - `SencBox` は IV サイズを `tenc` から受け取る `SencBox::decode_with_iv_size()` でデコードする
   - wasm の暗号化情報の JSON 対応は対象外
   - @voluntas

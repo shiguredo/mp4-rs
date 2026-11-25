@@ -173,6 +173,7 @@ mod mux_mp4_file_boundary_tests {
             encryption_info: Some(SampleEncryptionInfo {
                 iv: vec![0x11; 16],
                 subsamples: Vec::new(),
+                kid: None,
             }),
         };
         let err = muxer

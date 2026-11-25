@@ -122,7 +122,7 @@ ISO/IEC 14496-12:2022 8.9.2.3 と 8.9.4 に従い、次の 3 通りに解釈す�
 - 次の場合は `MuxError::EncodeError(Error::invalid_input(...))` を返す
   - `tenc` を持たないトラックに `kid: Some` を指定した場合
   - `tenc.default_per_sample_iv_size` が 0 の場合 (constant IV)
-  - `tenc` にパターン暗号化パラメーターがある場合 (`seig` の 0 で上書きしてしまうため)
+  - `tenc` のパターン暗号化パラメーターが 0 以外の場合 (`seig` の 0 で上書きしてしまうため)。version 1 で 0 / 0 の場合は受理する
 - `senc` / `saiz` / `saio` の書き出しは既存の処理を使う。`SencBox` の要素型が `SencSample` になるため、`SampleEncryptionInfo` から `SencSample` への変換だけを追加する
 
 ### 8. 実装順序
@@ -145,8 +145,8 @@ ISO/IEC 14496-12:2022 8.9.2.3 と 8.9.4 に従い、次の 3 通りに解釈す�
 - `sbgp` の `sample_count` の合計がサンプル数より少ない場合、余りのサンプルが `tenc` の既定 KID (`kid: None`) になる
 - `sample_count` の合計がサンプル数より多い入力、`group_description_index` が範囲外の入力、参照先の `sgpd` が無い入力、`seig` の `sbgp` / `sgpd` が重複する入力が `InvalidData` になる
 - `multi_key_flag == 1`、`crypt_byte_block` / `skip_byte_block` が 0 以外の `seig` が `Unsupported` になる
-- `tenc` にパターン暗号化パラメーターを持つトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる
-- `tenc` にパターン暗号化パラメーターを持つトラックで、`seig` のパターン値が `tenc` と異なる入力が `Unsupported` になる
+- `tenc` のパターン暗号化パラメーターが 0 以外のトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる (`tenc` version 1 で 0 / 0 の場合は受理される)
+- `tenc` のパターン値が 0 以外のトラックで、`seig` のパターン値が `tenc` と異なる入力が `Unsupported` になる
 - `tenc` を持たないトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる
 - `tenc.default_per_sample_iv_size` が 0 のトラックに `kid: Some` を渡すと `MuxError::EncodeError` になる
 - `sbgp` の version 1 で `grouping_type_parameter` が 0 以外の入力が `Unsupported` になる

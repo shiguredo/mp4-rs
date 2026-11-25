@@ -4,8 +4,8 @@ use alloc::{boxed::Box, format, vec::Vec};
 use crate::{BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, Result};
 
 pub use crate::boxes_cenc::{
-    FrmaBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SchiBox, SchmBox, SencBox, SinfBox,
-    Subsample, TencBox,
+    FrmaBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SbgpBox, SbgpEntry, SchiBox, SchmBox,
+    SeigEntry, SencBox, SencSample, SgpdBox, SgpdEntry, SinfBox, Subsample, TencBox,
 };
 pub use crate::boxes_fmp4::{
     MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, StypBox, TfdtBox, TfhdBox, TfraBox,

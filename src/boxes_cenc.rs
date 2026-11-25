@@ -1407,21 +1407,31 @@ impl SeigEntry {
     /// [`SeigEntry::constant_iv`] は、`is_protected == 1 && per_sample_iv_size == 0`
     /// の場合だけ設定すること。
     ///
-    /// [`Uint::new()`] は値を検証しないため、パターン値が 4 bit、constant IV の長さが
-    /// 8 / 16 バイトであることは呼び出し側が保証すること。定型的な検査は
-    /// [`SgpdBox`] のエンコード時に行われる。constant IV の長さが `u8::MAX` を
-    /// 超える場合はパニックする。
-    pub fn encode_to_vec(&self) -> Vec<u8> {
+    /// [`Uint::new()`] は値を検証しないため、パターン値が 4 bit を超える場合と、
+    /// constant IV の長さが `u8::MAX` を超える場合は [`crate::ErrorKind::InvalidInput`] を返す。
+    /// パターン値をそのまま `u8` で計算すると上位ビットが黙って消えるため、ここで検査する。
+    pub fn encode_to_vec(&self) -> Result<Vec<u8>> {
+        if self.crypt_byte_block.get() > 0x0F {
+            return Err(Error::invalid_input(
+                "SeigEntry crypt_byte_block exceeds 4 bits",
+            ));
+        }
+        if self.skip_byte_block.get() > 0x0F {
+            return Err(Error::invalid_input(
+                "SeigEntry skip_byte_block exceeds 4 bits",
+            ));
+        }
         let pattern = (self.crypt_byte_block.get() << 4) | self.skip_byte_block.get();
         let mut bytes = vec![0x00, pattern, self.is_protected, self.per_sample_iv_size];
         bytes.extend_from_slice(&self.kid);
         if let Some(constant_iv) = &self.constant_iv {
-            let size = u8::try_from(constant_iv.len())
-                .expect("constant IV length must fit in u8; validate it before encoding");
+            let size = u8::try_from(constant_iv.len()).map_err(|_| {
+                Error::invalid_input("SeigEntry constant IV length exceeds u8::MAX")
+            })?;
             bytes.push(size);
             bytes.extend_from_slice(constant_iv);
         }
-        bytes
+        Ok(bytes)
     }
 }
 
@@ -1593,7 +1603,7 @@ impl Encode for SgpdBox {
             match entry {
                 SgpdEntry::Seig(seig_entry) => {
                     check_seig_entry_for_encode(seig_entry)?;
-                    encoded_entries.push(seig_entry.encode_to_vec());
+                    encoded_entries.push(seig_entry.encode_to_vec()?);
                 }
                 SgpdEntry::Unknown(bytes) => {
                     encoded_entries.push(bytes.clone());

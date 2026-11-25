@@ -326,6 +326,13 @@
   - `Mp4FileMuxer` についても、負値と `i32::MAX` を超える値を同じトラックに混在させられないことを書き加える
   - 挙動は変わらない
   - @voluntas
+- [FIX] fMP4 の `traf` にある切り詰められた `sbgp` / `sgpd` を黙って無視していたのを修正する
+  - payload が 8 バイト未満だと `grouping_type` を読めないため「該当するボックスが無い」と扱われ、`seig` による KID / constant IV の切り替えが失われていた
+  - 8 バイト未満の `sbgp` / `sgpd` は `InvalidData` を返すようにする
+  - @voluntas
+- [FIX] `SeigEntry::encode_to_vec()` が 4 bit を超えるパターン値と `u8::MAX` を超える constant IV を黙って切り詰めていたのを修正する
+  - `Result<Vec<u8>>` を返し、範囲外は `InvalidInput` にする
+  - @voluntas
 
 ## 2026.5.0
 

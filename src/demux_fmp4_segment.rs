@@ -967,9 +967,18 @@ fn find_seig_sample_group_box<'a>(
 ) -> Result<Option<&'a UnknownBox>, DemuxError> {
     let mut found = None;
     for unknown_box in unknown_boxes {
-        if unknown_box.box_type == box_type
-            && unknown_box.payload.get(4..8) == Some(&SEIG_GROUPING_TYPE[..])
-        {
+        if unknown_box.box_type != box_type {
+            continue;
+        }
+        // `grouping_type` は FullBox ヘッダーの直後にあるため、payload が 8 バイト未満なら読めない。
+        // ここで読み飛ばすと、切り詰められた `sbgp` / `sgpd` を「該当なし」として扱うことになり、
+        // `seig` による KID / constant IV の切り替えが黙って失われる
+        let Some(grouping_type) = unknown_box.payload.get(4..8) else {
+            return Err(DemuxError::DecodeError(Error::invalid_data(format!(
+                "'{box_type}' payload is shorter than 8 bytes in {context}",
+            ))));
+        };
+        if grouping_type == &SEIG_GROUPING_TYPE[..] {
             if found.is_some() {
                 return Err(DemuxError::DecodeError(Error::invalid_data(format!(
                     "multiple '{box_type}' boxes for the 'seig' grouping type in {context}",
@@ -1871,6 +1880,33 @@ fn check_aux_info_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 切り詰められた `sbgp` / `sgpd` を「該当なし」として無視せず、エラーにすること
+    ///
+    /// `grouping_type` を payload の 4..8 バイトで判定していたため、payload が
+    /// 8 バイト未満のボックスは読み飛ばされ、`seig` による KID の切り替えが
+    /// 黙って失われていた。
+    #[test]
+    fn truncated_seig_sample_group_box_is_invalid_data() {
+        let unknown_box = UnknownBox {
+            box_type: SbgpBox::TYPE,
+            box_size: BoxSize::U32(8 + 4),
+            payload: vec![0x00, 0x00, 0x00, 0x00],
+        };
+        let error =
+            find_seig_sample_group_box(core::slice::from_ref(&unknown_box), SbgpBox::TYPE, "traf")
+                .expect_err("切り詰められた sbgp を受理してしまった");
+        assert!(
+            matches!(
+                &error,
+                DemuxError::DecodeError(Error {
+                    kind: ErrorKind::InvalidData,
+                    ..
+                })
+            ),
+            "エラー種別が InvalidData ではない (error={error:?})"
+        );
+    }
 
     use crate::{
         ErrorKind,

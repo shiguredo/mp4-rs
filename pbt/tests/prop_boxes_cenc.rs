@@ -691,7 +691,7 @@ fn seig_entry_roundtrip() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
     noprop::Runner::new(seed).run(CASES, |ctx| {
         let entry = arb_seig_entry(ctx);
-        let encoded = entry.encode_to_vec();
+        let encoded = entry.encode_to_vec().expect("Vec への書き込みは失敗しない");
         let (decoded, consumed) = SeigEntry::decode(&encoded)
             .expect("直前にエンコードした有効な SeigEntry は必ずデコードできる");
         assert_eq!(consumed, encoded.len());

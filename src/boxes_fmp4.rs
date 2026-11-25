@@ -7,7 +7,7 @@ use crate::{
     BaseBox, BoxHeader, BoxSize, BoxType, Decode, Encode, Error, FullBox, FullBoxFlags,
     FullBoxHeader, Result, SampleFlags,
     basic_types::as_box_object,
-    boxes::{UnknownBox, with_box_type},
+    boxes::{Brand, UnknownBox, with_box_type},
 };
 
 /// [ISO/IEC 14496-12] MovieFragmentBox class
@@ -1006,6 +1006,97 @@ pub struct TrunSample {
     /// 表現力を [`crate::boxes::CttsEntry::sample_offset`] と揃えるため `i64` で保持する。
     /// encode 時に版を自動選択し、両版いずれでも表現できない値が含まれる場合はエラーになる。
     pub composition_time_offset: Option<i64>,
+}
+
+/// [ISO/IEC 14496-12] SegmentTypeBox class
+///
+/// メディアセグメントの種別とブランドを示すボックス。
+/// フィールドの構成は `ftyp` と同じで、セグメントの先頭に置く。
+///
+/// # NOTE
+///
+/// ISO/IEC 14496-12:2022 8.16.2 は、`styp` をセグメントの先頭ボックスと定め、
+/// 先頭以外に現れた `styp` は受信側が無視してよいとしている。
+/// なお、この扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StypBox {
+    /// このセグメントの主要な準拠仕様を示すブランド
+    pub major_brand: Brand,
+
+    /// `major_brand` のマイナーバージョン
+    pub minor_version: u32,
+
+    /// このセグメントが同時に満たすブランド群（`major_brand` を含めた列挙）
+    pub compatible_brands: Vec<Brand>,
+}
+
+impl StypBox {
+    /// ボックス種別
+    pub const TYPE: BoxType = BoxType::Normal(*b"styp");
+}
+
+impl Encode for StypBox {
+    fn encode(&self, buf: &mut [u8]) -> Result<usize> {
+        // フィールドの並びは ISO/IEC 14496-12:2022 8.16.2 が定める styp の構文
+        // （major_brand / minor_version / compatible_brands）に従う。
+        // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+        let header = BoxHeader::new_variable_size(Self::TYPE);
+        let mut offset = header.encode(buf)?;
+        offset += self.major_brand.encode(&mut buf[offset..])?;
+        offset += self.minor_version.encode(&mut buf[offset..])?;
+        for brand in &self.compatible_brands {
+            offset += brand.encode(&mut buf[offset..])?;
+        }
+        header.finalize_box_size(&mut buf[..offset])?;
+        Ok(offset)
+    }
+}
+
+impl Decode for StypBox {
+    fn decode(buf: &[u8]) -> Result<(Self, usize)> {
+        with_box_type(Self::TYPE, || {
+            let (header, payload) = BoxHeader::decode_header_and_payload(buf)?;
+            header.box_type.expect(Self::TYPE)?;
+
+            let mut offset = 0;
+            let major_brand = Brand::decode_at(payload, &mut offset)?;
+            let minor_version = u32::decode_at(payload, &mut offset)?;
+
+            // ISO/IEC 14496-12:2022 8.16.2 の compatible_brands は 4 バイトのブランドの列である。
+            // 端数がある場合はブランドの列として解釈できないため、
+            // `Brand` のデコードが返す InsufficientBuffer ではなく InvalidData にする。
+            // なお、ここでの扱いは ISO/IEC 14496-12:2022 に基づくものであり、将来の改訂で変わる可能性がある。
+            if (payload.len() - offset) % 4 != 0 {
+                return Err(Error::invalid_data(
+                    "styp compatible_brands size is not a multiple of 4",
+                ));
+            }
+
+            let mut compatible_brands = Vec::new();
+            while offset < payload.len() {
+                compatible_brands.push(Brand::decode_at(payload, &mut offset)?);
+            }
+
+            Ok((
+                Self {
+                    major_brand,
+                    minor_version,
+                    compatible_brands,
+                },
+                header.external_size() + payload.len(),
+            ))
+        })
+    }
+}
+
+impl BaseBox for StypBox {
+    fn box_type(&self) -> BoxType {
+        Self::TYPE
+    }
+
+    fn children<'a>(&'a self) -> Box<dyn 'a + Iterator<Item = &'a dyn BaseBox>> {
+        Box::new(core::iter::empty())
+    }
 }
 
 /// [ISO/IEC 14496-12] SegmentIndexBox class

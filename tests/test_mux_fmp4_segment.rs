@@ -16,6 +16,12 @@
 //!   - 非参照トラックの `keyframe` に引きずられないこと
 //!   - PTS 同値時は samples[] 内で先出現のサンプルの `keyframe` が採られること
 //!
+//! - `SegmentMuxerOptions::styp` を指定したときの出力
+//!   - 出力順が `styp` + `moof` + `mdat`、および `styp` + `sidx` + `moof` + `mdat` になること
+//!   - `styp` を指定しない場合の出力が `moof`（または `sidx`）から始まること
+//!   - `sidx.referenced_size` が `moof` + `mdat` の合計で、`first_offset` が 0 になること
+//!   - `mfra` の `tfra.moof_offset` が実際の `moof` 位置と一致すること
+//!
 //! - CENC (DRM) の `pssh` / `encv` / `enca` を含む init セグメントの生成
 //!   - `create_media_segment_metadata` が `Encv` / `Enca` のサンプルエントリーを受け付けること
 //!   - `SegmentMuxerOptions::pssh_boxes` の `pssh` が `moov` にそのまま出力されること
@@ -28,12 +34,12 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
 use shiguredo_mp4::{
-    Decode, Encode, ErrorKind, FixedPointNumber, TrackKind, Uint,
+    BoxHeader, BoxType, Decode, Encode, ErrorKind, FixedPointNumber, TrackKind, Uint,
     boxes::{
         AudioSampleEntryFields, Avc1Box, AvccBox, Brand, DopsBox, EncaBox, EncvBox, FrmaBox,
-        FtypBox, MoofBox, MoovBox, OpusBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo,
-        SampleEntry, SchiBox, SchmBox, SencBox, SidxBox, SinfBox, Subsample, TencBox,
-        VisualSampleEntryFields,
+        FtypBox, MfraBox, MoofBox, MoovBox, OpusBox, PsshBox, SaioBox, SaizBox,
+        SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox, SencBox, SidxBox, SinfBox, StypBox,
+        Subsample, TencBox, VisualSampleEntryFields,
     },
     mux::{Fmp4SegmentMuxer, MuxError, Sample, SegmentMuxerOptions},
 };
@@ -1366,5 +1372,312 @@ fn muxer_rejects_encryption_info_without_tenc() {
             );
         }
         other => panic!("EncodeError を期待したが {other:?} だった"),
+    }
+}
+
+// ===== styp (セグメント種別ボックス) のテスト =====
+
+/// テスト用の `styp` を組み立てる
+///
+/// ISO/IEC 14496-12:2022 8.16.2 の `styp` は、`ftyp` と同じく
+/// major_brand / minor_version / compatible_brands を持つ。
+fn create_styp() -> StypBox {
+    StypBox {
+        major_brand: Brand::ISO6,
+        minor_version: 0,
+        compatible_brands: vec![Brand::ISO6, Brand::new(*b"cmff")],
+    }
+}
+
+/// メディアセグメント先頭から `moof` ボックスのバイト位置を求める
+///
+/// `styp` / `sidx` などの読み飛ばすボックスが前にあっても、`moof` の位置を返す。
+/// 位置の計算を muxer の実装から独立させるため、`BoxHeader` を順にデコードして求める。
+fn find_moof_offset(segment: &[u8]) -> usize {
+    let mut offset = 0;
+    loop {
+        let (header, _) = BoxHeader::decode(&segment[offset..])
+            .expect("メディアセグメントのボックスヘッダーのデコードに失敗した");
+        if header.box_type == MoofBox::TYPE {
+            return offset;
+        }
+        offset += usize::try_from(header.box_size.get()).expect("ボックスサイズは usize に収まる");
+    }
+}
+
+/// `styp` を指定した `create_media_segment_metadata` の出力順が `styp` + `moof` + `mdat` ヘッダーになること
+#[test]
+fn create_media_segment_metadata_writes_styp_first() {
+    let styp = create_styp();
+    let styp_size = styp
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない")
+        .len();
+    let options = SegmentMuxerOptions {
+        styp: Some(styp.clone()),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    let samples = [video_sample_with_timing(entry, 3000, None, 0, 16)];
+
+    let mut segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("styp 付きのメディアセグメントの作成に失敗した");
+    // `mdat` payload まで含めた完全なメディアセグメントにする
+    segment.extend_from_slice(&[0u8; 16]);
+
+    // 先頭は styp ボックスである
+    let (decoded_styp, decoded_styp_size) =
+        StypBox::decode(&segment).expect("セグメント先頭からの styp デコードに失敗した");
+    assert_eq!(
+        decoded_styp_size, styp_size,
+        "styp の消費バイト数がエンコード結果の長さと一致しない"
+    );
+    assert_eq!(
+        decoded_styp, styp,
+        "出力された styp が指定した値と一致しない"
+    );
+
+    // styp の直後は moof ボックスである
+    let (_, moof_size) =
+        MoofBox::decode(&segment[styp_size..]).expect("styp の直後からの moof デコードに失敗した");
+
+    // moof の直後は mdat ヘッダーである
+    let (mdat_header, _) = BoxHeader::decode(&segment[styp_size + moof_size..])
+        .expect("moof の直後からの mdat ヘッダーデコードに失敗した");
+    assert_eq!(
+        mdat_header.box_type,
+        BoxType::Normal(*b"mdat"),
+        "moof の直後が mdat ヘッダーでない"
+    );
+}
+
+/// `styp` を指定した `create_media_segment_metadata_with_sidx` の出力順が
+/// `styp` + `sidx` + `moof` + `mdat` ヘッダーになること
+#[test]
+fn create_media_segment_metadata_with_sidx_writes_styp_first() {
+    let styp = create_styp();
+    let styp_size = styp
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない")
+        .len();
+    let options = SegmentMuxerOptions {
+        styp: Some(styp.clone()),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    let samples = [video_sample_with_timing(entry, 3000, None, 0, 16)];
+
+    let mut segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("styp 付きの sidx 入りメディアセグメントの作成に失敗した");
+    // `mdat` payload まで含めた完全なメディアセグメントにする
+    segment.extend_from_slice(&[0u8; 16]);
+
+    // 先頭は styp ボックスである
+    let (decoded_styp, decoded_styp_size) =
+        StypBox::decode(&segment).expect("セグメント先頭からの styp デコードに失敗した");
+    assert_eq!(
+        decoded_styp_size, styp_size,
+        "styp の消費バイト数がエンコード結果の長さと一致しない"
+    );
+    assert_eq!(
+        decoded_styp, styp,
+        "出力された styp が指定した値と一致しない"
+    );
+
+    // styp の直後は sidx ボックスである
+    let (sidx_box, sidx_size) =
+        SidxBox::decode(&segment[styp_size..]).expect("styp の直後からの sidx デコードに失敗した");
+
+    // sidx の直後は moof ボックスである
+    let (_, moof_size) = MoofBox::decode(&segment[styp_size + sidx_size..])
+        .expect("sidx の直後からの moof デコードに失敗した");
+
+    // moof の直後は mdat ヘッダーである
+    let (mdat_header, _) = BoxHeader::decode(&segment[styp_size + sidx_size + moof_size..])
+        .expect("moof の直後からの mdat ヘッダーデコードに失敗した");
+    assert_eq!(
+        mdat_header.box_type,
+        BoxType::Normal(*b"mdat"),
+        "moof の直後が mdat ヘッダーでない"
+    );
+
+    // sidx の参照範囲は sidx より後ろ（moof + mdat）だけであり、styp を含めない
+    let reference = sidx_box
+        .references
+        .first()
+        .expect("sidx の参照が 1 つもない");
+    assert_eq!(
+        usize::try_from(reference.referenced_size).expect("referenced_size は usize に収まる"),
+        segment.len() - (styp_size + sidx_size),
+        "sidx.referenced_size が moof + mdat の合計と一致しない"
+    );
+    assert_eq!(
+        sidx_box.first_offset, 0,
+        "sidx の直後が moof であるため first_offset は 0 になる"
+    );
+}
+
+/// `styp` を指定しない場合の出力が既存どおり `moof`（または `sidx`）から始まること
+///
+/// 既定値 (`styp: None`) では `styp` を書き出さないため、既存の出力バイト列は変わらない。
+/// `styp` が先頭に混入していれば `MoofBox` / `SidxBox` のデコードが種別違いで失敗する。
+#[test]
+fn create_media_segment_metadata_without_styp_does_not_write_styp() {
+    let mut muxer = Fmp4SegmentMuxer::new().expect("Fmp4SegmentMuxer::new に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+    let samples = [video_sample_with_timing(entry, 3000, None, 0, 16)];
+
+    let mut segment = muxer
+        .create_media_segment_metadata(&samples)
+        .expect("メディアセグメントの作成に失敗した");
+    // `mdat` payload まで含めた完全なメディアセグメントにする
+    segment.extend_from_slice(&[0u8; 16]);
+    let (_, moof_size) =
+        MoofBox::decode(&segment).expect("styp を指定しないセグメントが moof から始まっていない");
+    let (mdat_header, _) = BoxHeader::decode(&segment[moof_size..])
+        .expect("moof の直後からの mdat ヘッダーデコードに失敗した");
+    assert_eq!(
+        mdat_header.box_type,
+        BoxType::Normal(*b"mdat"),
+        "moof の直後が mdat ヘッダーでない"
+    );
+    assert_eq!(
+        segment.len(),
+        moof_size + BoxHeader::MIN_SIZE + 16,
+        "styp を指定しない場合の出力が moof + mdat ヘッダー + payload だけになっていない"
+    );
+
+    let mut segment = muxer
+        .create_media_segment_metadata_with_sidx(&samples)
+        .expect("sidx 入りメディアセグメントの作成に失敗した");
+    // `mdat` payload まで含めた完全なメディアセグメントにする
+    segment.extend_from_slice(&[0u8; 16]);
+    let (sidx_box, sidx_size) =
+        SidxBox::decode(&segment).expect("styp を指定しないセグメントが sidx から始まっていない");
+    let (_, moof_size) =
+        MoofBox::decode(&segment[sidx_size..]).expect("sidx の直後からの moof デコードに失敗した");
+    let (mdat_header, _) = BoxHeader::decode(&segment[sidx_size + moof_size..])
+        .expect("moof の直後からの mdat ヘッダーデコードに失敗した");
+    assert_eq!(
+        mdat_header.box_type,
+        BoxType::Normal(*b"mdat"),
+        "moof の直後が mdat ヘッダーでない"
+    );
+    let reference = sidx_box
+        .references
+        .first()
+        .expect("sidx の参照が 1 つもない");
+    assert_eq!(
+        usize::try_from(reference.referenced_size).expect("referenced_size は usize に収まる"),
+        segment.len() - sidx_size,
+        "sidx.referenced_size が moof + mdat の合計と一致しない"
+    );
+    assert_eq!(
+        sidx_box.first_offset, 0,
+        "sidx の直後が moof であるため first_offset は 0 になる"
+    );
+}
+
+/// `styp` を指定したとき、`sidx` あり/なしのどちらでも
+/// `mfra` の `tfra.moof_offset` が実際の `moof` 位置と一致すること
+#[test]
+fn mfra_moof_offset_matches_actual_position_with_styp() {
+    let styp = create_styp();
+    let styp_size = styp
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない")
+        .len();
+    let options = SegmentMuxerOptions {
+        styp: Some(styp),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let entry = create_avc1_sample_entry(320, 240);
+
+    // `sidx` なし、`sidx` ありの順に 2 セグメントを作り、
+    // セグメント先頭からの実際の `moof` 位置とセグメント全体のサイズを記録する
+    let mut segments = Vec::new();
+    let mut moof_offsets = Vec::new();
+    for with_sidx in [false, true] {
+        let samples = [video_sample_with_timing(entry.clone(), 3000, None, 0, 16)];
+        let mut segment = if with_sidx {
+            muxer
+                .create_media_segment_metadata_with_sidx(&samples)
+                .expect("sidx 入りメディアセグメントの作成に失敗した")
+        } else {
+            muxer
+                .create_media_segment_metadata(&samples)
+                .expect("メディアセグメントの作成に失敗した")
+        };
+        // `mdat` payload まで含めた完全なメディアセグメントにする
+        segment.extend_from_slice(&[0u8; 16]);
+
+        // `styp` は常に先頭にある
+        let (_, decoded_styp_size) =
+            StypBox::decode(&segment).expect("セグメント先頭からの styp デコードに失敗した");
+        assert_eq!(
+            decoded_styp_size, styp_size,
+            "styp の消費バイト数がエンコード結果の長さと一致しない"
+        );
+
+        let moof_offset = find_moof_offset(&segment);
+        if with_sidx {
+            // `styp` と `moof` の間には `sidx` がある
+            let (_, sidx_size) = SidxBox::decode(&segment[styp_size..])
+                .expect("styp の直後からの sidx デコードに失敗した");
+            assert_eq!(
+                moof_offset,
+                styp_size + sidx_size,
+                "sidx ありの場合の moof 位置が styp + sidx の直後になっていない"
+            );
+        } else {
+            // `styp` の直後が `moof` である
+            assert_eq!(
+                moof_offset, styp_size,
+                "sidx なしの場合の moof 位置が styp の直後になっていない"
+            );
+        }
+
+        moof_offsets.push(moof_offset);
+        segments.push(segment);
+    }
+
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+    let mfra = muxer.mfra_bytes().expect("mfra の作成に失敗した");
+    let (mfra_box, _) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
+
+    // 映像トラック 1 本なので tfra は 1 つで、エントリー数はセグメント数と一致する
+    assert_eq!(mfra_box.tfra_boxes.len(), 1, "tfra の数が 1 でない");
+    let entries = &mfra_box.tfra_boxes[0].entries;
+    assert_eq!(
+        entries.len(),
+        segments.len(),
+        "tfra のエントリー数がセグメント数と一致しない"
+    );
+
+    // tfra.moof_offset は、init セグメントの後ろに各セグメントを並べたときの実際の moof 位置になる
+    let mut segment_head = u64::try_from(init_segment.len()).expect("init サイズは u64 に収まる");
+    for (index, ((entry, segment), moof_offset)) in entries
+        .iter()
+        .zip(segments.iter())
+        .zip(moof_offsets.iter())
+        .enumerate()
+    {
+        let expected =
+            segment_head + u64::try_from(*moof_offset).expect("moof 位置は u64 に収まる");
+        assert_eq!(
+            entry.moof_offset, expected,
+            "{index} 番目のセグメントの tfra.moof_offset が実際の moof 位置と一致しない"
+        );
+        segment_head += u64::try_from(segment.len()).expect("セグメントサイズは u64 に収まる");
     }
 }

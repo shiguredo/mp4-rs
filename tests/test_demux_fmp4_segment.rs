@@ -29,6 +29,8 @@
 //! - 読み飛ばすトラックの `TrunSamples::CountOnly` の `trun` で、データ末尾が `usize` に収まらないデータ
 //!
 //! `moof` の前後にあるボックスを読み飛ばせる正常系は PBT で検証する。
+//! 先頭の `styp` だけは型付きで読むため、`styp()` の値、`styp` なしの場合、
+//! 2 個目以降の `styp` の無視、壊れた `styp` の読み飛ばし、エラー時の値の不変も単体テストで固定する。
 //! 意図的なエラーパスは固定入力で契約を検証するため、PBT ではなく単体テストとして置く。
 //!
 //! 読み飛ばすトラックのデータ末尾の計算のように、`Fmp4SegmentMuxer` の出力を書き換えないと作れない
@@ -44,9 +46,9 @@ use shiguredo_mp4::{
     BoxHeader, BoxSize, BoxType, Decode, Encode, Error, ErrorKind, FixedPointNumber, TrackKind,
     Uint,
     boxes::{
-        AudioSampleEntryFields, Avc1Box, AvccBox, EncaBox, EncvBox, FrmaBox, FtypBox, MoofBox,
-        MoovBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox,
-        SidxBox, SinfBox, Subsample, TencBox, TrunBox, TrunSamples, UnknownBox,
+        AudioSampleEntryFields, Avc1Box, AvccBox, Brand, EncaBox, EncvBox, FrmaBox, FtypBox,
+        MoofBox, MoovBox, PsshBox, SaioBox, SaizBox, SampleEncryptionInfo, SampleEntry, SchiBox,
+        SchmBox, SidxBox, SinfBox, StypBox, Subsample, TencBox, TrunBox, TrunSamples, UnknownBox,
         VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4SegmentDemuxer},
@@ -314,7 +316,7 @@ fn decode_error_moof_not_found_after_styp() {
 
     // size=24 + 種別 `styp` + major_brand + minor_version + compatible_brands (2 個)
     //
-    // ブランドは demuxer が解釈しないため任意の値でよいが、
+    // 先頭の `styp` は demuxer が型付きで読むため、構文的に正しいブランドを並べる。
     // DASH のメディアセグメントでよく使われる `msdh` / `msix` にしておく
     let mut styp = Vec::new();
     styp.extend_from_slice(&24u32.to_be_bytes());
@@ -3050,4 +3052,235 @@ fn demuxes_encryption_info_with_default_sample_info_size() {
             "default_sample_info_size から復元した暗号化情報が入力と一致しない"
         );
     }
+}
+
+// ===== styp (セグメント種別ボックス) のテスト =====
+
+/// テスト用の `styp` を組み立てる
+///
+/// `major_brand` を変えた値を複数作り、どの `styp` が採用されたかを区別できるようにする。
+fn create_styp(major_brand: [u8; 4]) -> StypBox {
+    StypBox {
+        major_brand: Brand::new(major_brand),
+        minor_version: 0,
+        compatible_brands: vec![Brand::new(major_brand)],
+    }
+}
+
+/// `styp` を指定してメディアセグメントを作り、init セグメントとともに返す
+fn build_segments_with_styp(styp: &StypBox) -> (Vec<u8>, Vec<u8>) {
+    let payload = [0u8; 16];
+    let options = SegmentMuxerOptions {
+        styp: Some(styp.clone()),
+        ..Default::default()
+    };
+    let mut muxer =
+        Fmp4SegmentMuxer::with_options(options).expect("Fmp4SegmentMuxer::with_options に失敗した");
+    let mut media_segment = muxer
+        .create_media_segment_metadata(&[create_video_sample(payload.len())])
+        .expect("styp 付き media セグメントの作成に失敗した");
+    media_segment.extend_from_slice(&payload);
+    let init_segment = muxer
+        .init_segment_bytes()
+        .expect("init セグメントの作成に失敗した");
+    (init_segment, media_segment)
+}
+
+/// `styp` を指定したメディアセグメントを処理すると `styp()` からその値が取得できること
+///
+/// init セグメントの処理前とメディアセグメントの処理前は `None` になることも確認する。
+#[test]
+fn styp_value_is_available_after_media_segment() {
+    let styp = create_styp(*b"msdh");
+    let (init_segment, media_segment) = build_segments_with_styp(&styp);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    assert!(
+        demuxer.styp().is_none(),
+        "init セグメントの処理前の styp() は None であるべき"
+    );
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    assert!(
+        demuxer.styp().is_none(),
+        "メディアセグメントの処理前の styp() は None であるべき"
+    );
+
+    let samples = demuxer
+        .handle_media_segment(&media_segment)
+        .expect("styp 付きメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 1, "サンプルが 1 つ返る");
+    assert_eq!(
+        demuxer.styp(),
+        Some(&styp),
+        "処理したメディアセグメントの先頭の styp が取得できない"
+    );
+}
+
+/// `styp` を持たないメディアセグメントを処理すると `styp()` が `None` になること
+///
+/// 直前の成功したメディアセグメントの値をそのまま残さず、
+/// `styp` を持たないセグメントを処理した後は `None` に戻ることを確認する。
+#[test]
+fn styp_is_none_when_segment_has_no_styp() {
+    let styp = create_styp(*b"msdh");
+    let (init_segment, media_segment_with_styp) = build_segments_with_styp(&styp);
+    let (_, media_segment_without_styp) = build_init_and_media_segments();
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+
+    demuxer
+        .handle_media_segment(&media_segment_with_styp)
+        .expect("styp 付きメディアセグメントの処理に失敗した");
+    assert_eq!(
+        demuxer.styp(),
+        Some(&styp),
+        "styp 付きメディアセグメントの styp が取得できない"
+    );
+
+    demuxer
+        .handle_media_segment(&media_segment_without_styp)
+        .expect("styp なしメディアセグメントの処理に失敗した");
+    assert!(
+        demuxer.styp().is_none(),
+        "styp を持たないメディアセグメントを処理した後の styp() は None であるべき"
+    );
+}
+
+/// 先頭以外の `styp` を無視すること
+///
+/// 先頭の `styp` だけを型付きで読むため、2 個目の `styp` は採用しない。
+#[test]
+fn second_styp_is_ignored() {
+    let first_styp = create_styp(*b"msdh");
+    let second_styp = create_styp(*b"cmff");
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    // 先頭に 2 個の `styp` を置く。どちらも構文的には正しい `styp` である
+    let mut data = first_styp
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない");
+    data.extend_from_slice(
+        &second_styp
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない"),
+    );
+    data.extend_from_slice(&media_segment);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&data)
+        .expect("2 個の styp を持つメディアセグメントの処理に失敗した");
+    assert_eq!(samples.len(), 1, "サンプルが 1 つ返る");
+    assert_eq!(
+        demuxer.styp(),
+        Some(&first_styp),
+        "先頭の styp ではなく 2 個目の styp が採用された"
+    );
+}
+
+/// 壊れた `styp` を読み飛ばし、メディアセグメントの処理をエラーにしないこと
+///
+/// `compatible_brands` に 4 バイト未満の端数がある `styp` はデコードできないが、
+/// 読み飛ばす対象のボックスとして扱い、`styp()` には反映しない。
+#[test]
+fn invalid_styp_is_skipped() {
+    let (init_segment, media_segment) = build_init_and_media_segments();
+
+    // size=19 + 種別 `styp` + major_brand + minor_version + 3 バイトの端数
+    let mut invalid_styp = Vec::new();
+    invalid_styp.extend_from_slice(&19u32.to_be_bytes());
+    invalid_styp.extend_from_slice(b"styp");
+    invalid_styp.extend_from_slice(b"msdh");
+    invalid_styp.extend_from_slice(&0u32.to_be_bytes());
+    invalid_styp.extend_from_slice(b"msx");
+
+    let mut data = invalid_styp;
+    data.extend_from_slice(&media_segment);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    let samples = demuxer
+        .handle_media_segment(&data)
+        .expect("壊れた styp を読み飛ばせずにエラーになった");
+    assert_eq!(samples.len(), 1, "サンプルが 1 つ返る");
+    assert!(
+        demuxer.styp().is_none(),
+        "デコードに失敗した壊れた styp を保持してしまった"
+    );
+}
+
+/// `styp` を保持した後にメディアセグメントのデコードが失敗しても `styp()` が変わらないこと
+///
+/// 先頭の `styp` は保持するが、そのセグメントの後半の検証でエラーになった場合に、
+/// 直前の成功した呼び出しで保持した `styp` を書き換えないことを確認する。
+#[test]
+fn styp_is_unchanged_when_media_segment_decoding_fails() {
+    let kept_styp = create_styp(*b"msdh");
+    let rejected_styp = create_styp(*b"cmff");
+    let (init_segment, media_segment) = build_segments_with_styp(&kept_styp);
+
+    let mut demuxer = Fmp4SegmentDemuxer::new();
+    demuxer
+        .handle_init_segment(&init_segment)
+        .expect("init セグメントの処理に失敗した");
+    demuxer
+        .handle_media_segment(&media_segment)
+        .expect("styp 付きメディアセグメントの処理に失敗した");
+    assert_eq!(
+        demuxer.styp(),
+        Some(&kept_styp),
+        "最初のメディアセグメントの styp が取得できない"
+    );
+
+    // 正常なセグメントのサンプルサイズを `mdat` より大きくして、
+    // `styp` を読んだ後のサンプルデータ範囲の検査でエラーにする
+    let (_, invalid_segment) = build_init_and_media_segments();
+    let invalid_segment = rewrite_media_segment_moof(&invalid_segment, |moof_box| {
+        let trun_box = &mut moof_box.traf_boxes[0].trun_boxes[0];
+        let TrunSamples::PerSample(samples) = &mut trun_box.samples else {
+            panic!("muxer の trun はサンプル行を持つ");
+        };
+        samples[0].size = Some(1_000_000);
+    });
+    let mut data = rejected_styp
+        .encode_to_vec()
+        .expect("Vec への書き込みは失敗しない");
+    data.extend_from_slice(&invalid_segment);
+
+    let err = demuxer
+        .handle_media_segment(&data)
+        .expect_err("サンプルデータが mdat を超える入力がエラーにならなかった");
+    match err {
+        DemuxError::DecodeError(error) => {
+            assert_eq!(
+                error.kind,
+                ErrorKind::InvalidData,
+                "エラー種別が InvalidData ではない (reason={})",
+                error.reason,
+            );
+            assert!(
+                error
+                    .reason
+                    .contains("sample data range exceeds mdat boundary"),
+                "サンプルデータの範囲検査とは別のエラーである (reason={})",
+                error.reason,
+            );
+        }
+        other => panic!("DecodeError を期待したが {other:?} だった"),
+    }
+    assert_eq!(
+        demuxer.styp(),
+        Some(&kept_styp),
+        "エラーを返した呼び出しで styp() の値が変わった"
+    );
 }

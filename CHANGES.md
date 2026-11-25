@@ -11,6 +11,15 @@
 
 ## develop
 
+- [CHANGE] `SegmentMuxerOptions` に `styp` フィールドを追加する
+  - `..Default::default()` を使わずに構造体リテラルを構築している箇所は、`styp: None` の追加が必要になる
+  - wasm の JSON API では `styp` を指定できない
+  - @voluntas
+- [ADD] fMP4 のメディアセグメントの `styp` (セグメント種別ボックス) に対応する
+  - `StypBox` を追加する。`ftyp` と同じ `major_brand` / `minor_version` / `compatible_brands` を持ち、`Encode` / `Decode` / `BaseBox` を実装する
+  - `SegmentMuxerOptions::styp` を指定すると、`create_media_segment_metadata()` が `styp` + `moof` + `mdat`、`create_media_segment_metadata_with_sidx()` が `styp` + `sidx` + `moof` + `mdat` の順で書き出す。`sidx.referenced_size` は `moof` と `mdat` の合計のままで、`mfra` の `tfra.moof_offset` には `styp` のサイズが加算される
+  - `Fmp4SegmentDemuxer::styp()` を追加する。直前の成功したメディアセグメントの先頭にある `styp` だけを型付きで読み、`styp` がない場合、先頭以外にある `styp`、デコードに失敗した `styp` は保持しない
+  - @voluntas
 - [ADD] fMP4 の CENC (DRM) 向け初期化データのボックスに対応する
   - `PsshBox` / `FrmaBox` / `SchmBox` / `SchiBox` / `SinfBox` / `TencBox` を追加する
   - `SampleEntry` に `Encv` / `Enca` を追加し、`sinf` / `tenc` を型付きで扱えるようにする
@@ -118,7 +127,7 @@
   - @voluntas
 - [FIX] `Fmp4SegmentDemuxer::handle_media_segment` が `moof` より前の `styp` などのトップレベルボックスを読み飛ばすようにする
   - これまでは先頭の `sidx` を 1 個だけ読み飛ばしていたため、`styp` + `moof` + `mdat` や `sidx` + `sidx` + `moof` + `mdat` など ISO/IEC 14496-12 で有効なメディアセグメントをエラーにしていた
-  - 読み飛ばすボックスの中身は種別を問わず解釈しない。`data_offset` はこれまでどおり渡したデータの先頭を基準にする
+  - 読み飛ばすボックスの中身は種別を問わず解釈しない。ただし、先頭の `styp` だけは型付きで読む。`data_offset` はこれまでどおり渡したデータの先頭を基準にする
   - `moof` より前のボックスを読み飛ばした結果、`moof` が見つからないまま入力の末尾に達した場合は `DemuxError::DecodeError`（`ErrorKind::InvalidData`、C API は `MP4_ERROR_INVALID_DATA`）を返す
   - このため、先頭の `sidx` のペイロードの途中または直後で入力が終わる場合に返るエラー種別が、`ErrorKind::InvalidInput`（C API は `MP4_ERROR_INVALID_INPUT`）から `ErrorKind::InvalidData`（C API は `MP4_ERROR_INVALID_DATA`）に変わる
   - @voluntas

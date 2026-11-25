@@ -11,8 +11,9 @@ use shiguredo_mp4::{
     boxes::{
         AudioSampleEntryFields, Av01Box, Av1cBox, Avc1Box, AvccBox, Brand, DopsBox, EncvBox,
         FrmaBox, FtypBox, Hev1Box, Hvc1Box, HvccBox, MfraBox, MoofBox, MoovBox, OpusBox, PsshBox,
-        SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox, SidxBox, SinfBox, StppBox, Subsample,
-        TencBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples, VisualSampleEntryFields,
+        SampleEncryptionInfo, SampleEntry, SchiBox, SchmBox, SidxBox, SinfBox, StppBox, StypBox,
+        Subsample, TencBox, TfdtBox, TfhdBox, TrunBox, TrunSample, TrunSamples,
+        VisualSampleEntryFields,
     },
     demux::{DemuxError, Fmp4FileDemuxer, Fmp4SegmentDemuxer, Input, TrackInfo},
     mux::{Fmp4SegmentMuxer, Sample, SegmentMuxerOptions},
@@ -190,6 +191,25 @@ fn arb_pssh_box(ctx: &mut TestCaseContext) -> PsshBox {
         system_id: noprop::sample_bytes::<16>(ctx),
         kids,
         data: noprop::sample_bytes_vec(ctx, data_len),
+    }
+}
+
+/// 任意の `styp` を生成する
+///
+/// ISO/IEC 14496-12:2022 8.16.2 の `styp` は `ftyp` と同じく
+/// major_brand / minor_version / compatible_brands を持つ。
+/// `compatible_brands` は 1 件以上にし、`major_brand` と同じ値を先頭に含める。
+fn arb_styp(ctx: &mut TestCaseContext) -> StypBox {
+    let major_brand = Brand::new(noprop::sample_bytes::<4>(ctx));
+    let mut compatible_brands = vec![major_brand];
+    let count = noprop::sample_usize_in(ctx, 0..3);
+    for _ in 0..count {
+        compatible_brands.push(Brand::new(noprop::sample_bytes::<4>(ctx)));
+    }
+    StypBox {
+        major_brand,
+        minor_version: noprop::sample_u32(ctx),
+        compatible_brands,
     }
 }
 
@@ -1639,6 +1659,234 @@ fn sidx_roundtrip() -> noprop::TestResult {
     Ok(())
 }
 
+/// `styp` を付けたメディアセグメントを mux して demux し直すと、`styp()` から同じ値が取得できることを確認する
+///
+/// `sidx` あり / なしの両方を生成し、`styp` が先頭にあってもサンプルが正しく取り出せることを確認する。
+#[test]
+fn styp_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let styp = arb_styp(ctx);
+        let width = noprop::sample_u64_in(ctx, 64..1921) as u16;
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+        let with_sidx = noprop::sample_bool(ctx);
+
+        let sample_entry = create_avc1_sample_entry(width, 240);
+        let options = SegmentMuxerOptions {
+            styp: Some(styp.clone()),
+            ..Default::default()
+        };
+        let mut muxer = Fmp4SegmentMuxer::with_options(options)
+            .expect("Fmp4SegmentMuxer::with_options に失敗した");
+        let fmp4_samples: Vec<Sample> = samples
+            .iter()
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
+            .collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
+        let segment_bytes = if with_sidx {
+            build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads)
+        } else {
+            build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads)
+        };
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+
+        // 先頭の `styp` は指定した値のまま出力される
+        let (output_styp, _) =
+            StypBox::decode(&segment_bytes).expect("セグメント先頭からの styp デコードに失敗した");
+        assert_eq!(output_styp, styp, "mux した styp が入力と一致しない");
+
+        let mut demuxer = Fmp4SegmentDemuxer::new();
+        demuxer
+            .handle_init_segment(&init_bytes)
+            .expect("init セグメントの処理に失敗した");
+        let demuxed = demuxer
+            .handle_media_segment(&segment_bytes)
+            .expect("styp 付きセグメントの処理に失敗した");
+        // 戻り値は demuxer を借用し続けるため、比較用の所有データに変換して借用を終わらせる。
+        // こうしないと、この後で demuxer の `styp()` を呼べない
+        let demuxed = to_comparable_samples(&demuxed);
+
+        assert_eq!(
+            demuxer.styp(),
+            Some(&styp),
+            "demux した styp が mux した値と一致しない"
+        );
+        assert_eq!(demuxed.len(), samples.len(), "サンプル数が一致しない");
+        for (orig, ds) in samples.iter().zip(demuxed.iter()) {
+            assert_eq!(ds.duration, orig.duration);
+            assert_eq!(ds.keyframe, orig.keyframe);
+            assert_eq!(ds.data_size, orig.data.len());
+
+            let actual =
+                &segment_bytes[ds.data_offset as usize..ds.data_offset as usize + ds.data_size];
+            assert_eq!(actual, orig.data.as_slice(), "サンプルデータが一致しない");
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// `styp` を付けたセグメントでも、`mfra` の `tfra.moof_offset` が実際の `moof` 位置を指すことを確認する
+///
+/// `styp` はセグメントの先頭に置かれるため、`tfra.moof_offset` には `styp` のサイズも含める必要がある。
+/// `sidx` あり / なしを混在させ、`sidx` を付けた場合はそのサイズも含める。
+#[test]
+fn mfra_moof_offset_with_styp() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let styp = arb_styp(ctx);
+        let styp_size = styp
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない")
+            .len() as u64;
+        let segments = sample_vec(ctx, 1..5, |ctx| {
+            let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+            let with_sidx = noprop::sample_bool(ctx);
+            (samples, with_sidx)
+        });
+
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let options = SegmentMuxerOptions {
+            styp: Some(styp.clone()),
+            ..Default::default()
+        };
+        let mut muxer = Fmp4SegmentMuxer::with_options(options)
+            .expect("Fmp4SegmentMuxer::with_options に失敗した");
+
+        // 各セグメントについて (セグメント先頭からの moof 位置, セグメント全体のバイト数) を記録する
+        let mut segment_layouts: Vec<(u64, u64)> = Vec::new();
+        for (segment_samples, with_sidx) in &segments {
+            let fmp4_samples: Vec<Sample> = segment_samples
+                .iter()
+                .map(|sample| video_segment_sample(&sample_entry, sample, None))
+                .collect();
+            let payloads: Vec<&[u8]> = segment_samples
+                .iter()
+                .map(|sample| sample.data.as_slice())
+                .collect();
+            let segment = if *with_sidx {
+                build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads)
+            } else {
+                build_complete_media_segment(&mut muxer, &fmp4_samples, &payloads)
+            };
+
+            // 先頭の `styp` のサイズは、実際に出力されたボックスをデコードして求める
+            let (_, decoded_styp_size) =
+                StypBox::decode(&segment).expect("セグメント先頭からの styp デコードに失敗した");
+            assert_eq!(
+                decoded_styp_size as u64, styp_size,
+                "styp の消費バイト数がエンコード結果の長さと一致しない"
+            );
+
+            // `sidx` ありの場合の `moof` 位置は `styp` + `sidx` の直後になる
+            let moof_position = if *with_sidx {
+                let (_, sidx_size) = SidxBox::decode(&segment[decoded_styp_size..])
+                    .expect("styp の直後からの sidx デコードに失敗した");
+                styp_size + sidx_size as u64
+            } else {
+                styp_size
+            };
+            // `styp` の直後、または `sidx` の直後が `moof` である
+            MoofBox::decode(
+                &segment[usize::try_from(moof_position).expect("moof 位置は usize に収まる")..],
+            )
+            .expect("実際の moof 位置からの moof デコードに失敗した");
+
+            segment_layouts.push((moof_position, segment.len() as u64));
+        }
+
+        let init_bytes = muxer
+            .init_segment_bytes()
+            .expect("init セグメントの構築に失敗した");
+        let mfra = muxer.mfra_bytes().expect("mfra の構築に失敗した");
+
+        let (mfra_box, decoded_size) = MfraBox::decode(&mfra).expect("mfra のデコードに失敗した");
+        assert_eq!(decoded_size, mfra.len());
+
+        // 単一映像トラックのみのため tfra_box は 1 つ、エントリ数はセグメント数と一致する
+        assert_eq!(mfra_box.tfra_boxes.len(), 1);
+        let entries = &mfra_box.tfra_boxes[0].entries;
+        assert_eq!(entries.len(), segments.len());
+
+        let init_size = init_bytes.len() as u64;
+        let mut segment_head = init_size;
+        for (entry, (moof_position, segment_size)) in entries.iter().zip(segment_layouts.iter()) {
+            assert_eq!(
+                entry.moof_offset,
+                segment_head + moof_position,
+                "tfra.moof_offset が実際の moof 位置と一致しない"
+            );
+            segment_head += segment_size;
+        }
+
+        assert_eq!(mfra_box.mfro_box.size, mfra.len() as u32);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// `styp` を付けた sidx 付きセグメントでも、`sidx.referenced_size` が `moof` + `mdat` の合計で
+/// `first_offset` が 0 になることを確認する
+///
+/// `styp` は `sidx` より前にあるため、`sidx` の参照範囲には含めない。
+#[test]
+fn sidx_referenced_size_with_styp() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let styp = arb_styp(ctx);
+        let styp_size = styp
+            .encode_to_vec()
+            .expect("Vec への書き込みは失敗しない")
+            .len();
+        let samples = sample_vec(ctx, 1..5, |ctx| arb_video_sample(ctx, 0));
+
+        let sample_entry = create_avc1_sample_entry(320, 240);
+        let options = SegmentMuxerOptions {
+            styp: Some(styp),
+            ..Default::default()
+        };
+        let mut muxer = Fmp4SegmentMuxer::with_options(options)
+            .expect("Fmp4SegmentMuxer::with_options に失敗した");
+        let fmp4_samples: Vec<Sample> = samples
+            .iter()
+            .map(|sample| video_segment_sample(&sample_entry, sample, None))
+            .collect();
+        let payloads: Vec<&[u8]> = samples
+            .iter()
+            .map(|sample| sample.data.as_slice())
+            .collect();
+        let segment_bytes =
+            build_complete_media_segment_with_sidx(&mut muxer, &fmp4_samples, &payloads);
+
+        let (_, decoded_styp_size) =
+            StypBox::decode(&segment_bytes).expect("セグメント先頭からの styp デコードに失敗した");
+        assert_eq!(decoded_styp_size, styp_size);
+
+        let (sidx_box, sidx_size) = SidxBox::decode(&segment_bytes[styp_size..])
+            .expect("styp の直後からの sidx デコードに失敗した");
+        let reference = sidx_box
+            .references
+            .first()
+            .expect("sidx の参照が 1 つもない");
+        assert_eq!(
+            usize::try_from(reference.referenced_size).expect("referenced_size は usize に収まる"),
+            segment_bytes.len() - styp_size - sidx_size,
+            "sidx.referenced_size が moof + mdat の合計と一致しない"
+        );
+        assert_eq!(
+            sidx_box.first_offset, 0,
+            "sidx の直後が moof であるため first_offset は 0 になる"
+        );
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// 読み飛ばせるトップレベルボックスの種別の候補
 ///
 /// ISO/IEC 14496-12:2022 では、`styp` (8.16.2) / `sidx` (8.16.3) / `ssix` (8.16.4) / `prft` (8.16.5) が
@@ -1659,6 +1907,8 @@ fn arb_leading_box(ctx: &mut TestCaseContext) -> (Vec<u8>, bool) {
 ///
 /// 種別は [`SKIPPABLE_BOX_TYPES`] と、`moof` / `uuid` 以外の任意の 4CC から引く。
 /// demuxer はこれらのボックスの中身を解釈しないため、ペイロードは任意のバイト列でよい。
+/// ただし、先頭の `styp` だけは型付きで読む。デコードに成功した `styp` は `styp()` に保持され、
+/// 失敗した場合は読み飛ばされる（どちらでもサンプルの抽出結果は変わらない）。
 /// ヘッダーは 32 ビットの size と、size=1 + 種別に続く 64 ビットの largesize の両方の形式を使う。
 ///
 /// `excluded_types` の種別は候補から外す。`mdat` を置けない位置で使う。

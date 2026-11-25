@@ -8,7 +8,7 @@ pub use crate::boxes_cenc::{
     Subsample, TencBox,
 };
 pub use crate::boxes_fmp4::{
-    MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, TfdtBox, TfhdBox, TfraBox,
+    MfhdBox, MfraBox, MfroBox, MoofBox, SidxBox, SidxReference, StypBox, TfdtBox, TfhdBox, TfraBox,
     TfraEntry, TrafBox, TrunBox, TrunSample, TrunSamples,
 };
 pub use crate::boxes_moov_tree::{
@@ -170,9 +170,10 @@ impl BaseBox for UnknownBox {
     }
 }
 
-/// [`FtypBox`] で使われるブランド定義
+/// [`FtypBox`] と [`StypBox`] で使われるブランド定義
 ///
-/// ブランドは、対象の MP4 ファイルを読み込んで処理する際に必要となる要件（登場する可能性があるボックス群やハンドリングすべきフラグなど）を指定する
+/// ブランドは、対象のファイルやメディアセグメントを読み込んで処理する際に必要となる要件（登場する可能性があるボックス群やハンドリングすべきフラグなど）を指定する。
+/// [`FtypBox`] はファイル全体のブランドを、[`StypBox`] はメディアセグメントのブランドを示す。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Brand([u8; 4]);
 

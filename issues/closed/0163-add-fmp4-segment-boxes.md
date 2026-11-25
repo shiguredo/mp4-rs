@@ -1,7 +1,7 @@
 # fMP4 のセグメント種別ボックス (`styp`) に対応する
 
 - Created: 2026-11-25
-- Completed: {YYYY-MM-DD}
+- Completed: 2026-11-25
 - Branch: feature/add-fmp4-segment-boxes
 - Polished: 2026-11-25
 
@@ -115,6 +115,17 @@ ISO/IEC 14496-12:2022 8.16.2 の `styp` は `ftyp` と同じ構造で、Containe
 - `CHANGES.md` に `[ADD]` (`StypBox` / `SegmentMuxerOptions::styp` / `Fmp4SegmentDemuxer::styp()`) を記録し、`[CHANGE]` に `SegmentMuxerOptions` のフィールド追加と移行手順、wasm の JSON では指定できないことを書く。`## develop` の既存 `[FIX]` にある「読み飛ばすボックスの中身は種別を問わず解釈しない」という記述を、`styp` だけは型付きで読む旨に更新する
 - `skills/shiguredo-mp4/SKILL.md` の fMP4 ボックス一覧に `StypBox` を、`Fmp4SegmentDemuxer` の API 表に `styp()` を、`SegmentMuxerOptions` の説明に `styp` を追加する。`Fmp4SegmentMuxer` のメソッド表にある `create_media_segment_metadata` / `create_media_segment_metadata_with_sidx` の出力説明を `styp` を含む形に更新し、`handle_media_segment` の説明を「`styp` は先頭のみ型付きで読む」に更新する
 - `src/boxes.rs` の `Brand` の doc を、`FtypBox` と `StypBox` の両方で使うことが分かる記述に更新する
+
+## 解決方法
+
+- `src/boxes_fmp4.rs` に `StypBox` (`major_brand` / `minor_version` / `compatible_brands`) を追加し、`compatible_brands` の端数を `InvalidData` で拒否するようにした
+- `src/boxes.rs` の再エクスポートに追加し、`Brand` の doc を `FtypBox` と `StypBox` の両方で使う旨に更新した
+- `src/mux_fmp4_segment.rs` の `SegmentMuxerOptions` に `styp` を追加し、`create_media_segment_metadata` 系でセグメント先頭に書き出すようにした。`styp` のサイズは `moof_relative_offset` と `media_bytes_written` に加算し、`sidx.referenced_size` は `moof` + `mdat`、`first_offset` は 0 のままとした
+- `mfra_bytes()` の `tfra.moof_offset` が `styp` を含む実際の `moof` 位置と一致するようにした
+- `src/demux_fmp4_segment.rs` で先頭の `styp` だけを型付きで読み、`styp()` を追加した。デコードに失敗した場合は従来どおり読み飛ばし、状態の更新は検証成功後にまとめて行う
+- `crates/wasm/src/fmp4_segment_mux.rs` のリテラルに `styp: None` を追加し、公開 doc を更新した
+- テストは `tests/test_boxes_fmp4.rs` / `pbt/tests/prop_fmp4_boxes.rs` / `tests/test_mux_fmp4_segment.rs` / `tests/test_demux_fmp4_segment.rs` / `pbt/tests/prop_fmp4_segment_mux_demux.rs` に追加した
+- `CHANGES.md` と `skills/shiguredo-mp4/SKILL.md` を更新した
 
 ## 対象外
 

@@ -70,6 +70,7 @@ impl Fmp4SegmentMuxer {
             audio_track: parsed.audio_track,
             subtitle_track: parsed.subtitle_track,
             pssh_boxes: Vec::new(),
+            styp: None,
         };
         Self::from_options(options)
     }
@@ -81,7 +82,9 @@ impl Fmp4SegmentMuxer {
         Ok(Self { inner })
     }
 
-    /// メディアセグメント全体 (`styp` を含む場合はそれを先頭に、`moof` と `mdat`) を返す
+    /// メディアセグメント全体 (`moof` と `mdat`) を返す
+    ///
+    /// wasm では `styp` を指定できないため、返り値に `styp` は含まれない。
     ///
     /// `samplesJson` の出現順に並んだペイロードを muxer の要求順に並べ替え、
     /// メタデータの後ろに連結したものを返す。したがって返り値をそのまま書き込めば

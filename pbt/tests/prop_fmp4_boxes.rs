@@ -1,14 +1,15 @@
 //! Fragmented MP4 (fMP4) ボックスの Property-Based Testing
 //!
-//! MoofBox, MfhdBox, TrafBox, TfhdBox, TrunBox, TfdtBox, SidxBox,
+//! MoofBox, MfhdBox, TrafBox, TfhdBox, TrunBox, TfdtBox, SidxBox, StypBox,
 //! MvexBox, TrexBox, MehdBox, TfraBox, MfraBox のテスト
 
 use noprop::TestCaseContext;
 use shiguredo_mp4::{
     Decode, Encode, ErrorKind, SampleFlags,
     boxes::{
-        FreeBox, MehdBox, MfhdBox, MfraBox, MfroBox, MoofBox, MvexBox, SidxBox, SidxReference,
-        TfdtBox, TfhdBox, TfraBox, TfraEntry, TrafBox, TrexBox, TrunBox, TrunSample, TrunSamples,
+        Brand, FreeBox, MehdBox, MfhdBox, MfraBox, MfroBox, MoofBox, MvexBox, SidxBox,
+        SidxReference, StypBox, TfdtBox, TfhdBox, TfraBox, TfraEntry, TrafBox, TrexBox, TrunBox,
+        TrunSample, TrunSamples,
     },
 };
 
@@ -34,6 +35,11 @@ fn sample_vec<T>(
 /// SampleFlags を生成する
 fn arb_sample_flags(ctx: &mut TestCaseContext) -> SampleFlags {
     SampleFlags::new(noprop::sample_u32(ctx))
+}
+
+/// 任意の 4 バイトのブランドを生成する
+fn arb_brand(ctx: &mut TestCaseContext) -> Brand {
+    Brand::new(noprop::sample_bytes::<4>(ctx))
 }
 
 /// TrexBox を生成する
@@ -1167,6 +1173,60 @@ fn mfra_box_decode_encode_rewrites_mfro_size() -> noprop::TestResult {
             .encode(&mut short)
             .expect_err("出力より 1 バイト短いバッファへのエンコードは必ず失敗する");
         assert_eq!(err.kind, ErrorKind::InsufficientBuffer);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+// ===== StypBox のテスト =====
+
+/// StypBox の encode/decode roundtrip
+///
+/// ISO/IEC 14496-12:2022 8.16.2 の `styp` は `ftyp` と同じ構造
+/// (major_brand / minor_version / compatible_brands) を持つ。
+/// 任意の値でエンコードし、デコードし直すと元の値に戻ることを確認する。
+/// あわせて、ヘッダーの size がボックス全体のバイト数と一致することも確認する。
+#[test]
+fn styp_box_roundtrip() -> noprop::TestResult {
+    let seed = noprop::seed_from_env_or_time("MP4_RS_PBT_SEED")?;
+    noprop::Runner::new(seed).run(CASES, |ctx| {
+        let major_brand = arb_brand(ctx);
+        let minor_version = noprop::sample_u32(ctx);
+        let compatible_brands_len = noprop::sample_usize_in(ctx, 0..5);
+        let mut compatible_brands = Vec::new();
+        for _ in 0..compatible_brands_len {
+            compatible_brands.push(arb_brand(ctx));
+        }
+        let styp = StypBox {
+            major_brand,
+            minor_version,
+            compatible_brands,
+        };
+
+        let encoded = styp.encode_to_vec().expect("Vec への書き込みは失敗しない");
+        let encoded_size = u32::try_from(encoded.len()).expect("StypBox のサイズは u32 に収まる");
+        assert_eq!(
+            &encoded[..4],
+            &encoded_size.to_be_bytes(),
+            "styp のヘッダーの size がボックス全体のバイト数と一致しない"
+        );
+        assert_eq!(
+            &encoded[4..8],
+            b"styp",
+            "styp のヘッダーの box 種別が styp でない"
+        );
+
+        let (decoded, size) = StypBox::decode(&encoded)
+            .expect("直前にエンコードした有効な StypBox は必ずデコードできる");
+        assert_eq!(
+            size,
+            encoded.len(),
+            "decode の消費バイト数がエンコード結果の長さと一致しない"
+        );
+        assert_eq!(
+            decoded, styp,
+            "デコードした StypBox がエンコード前の値と一致しない"
+        );
         Ok(())
     })?;
     Ok(())

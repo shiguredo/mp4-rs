@@ -276,8 +276,12 @@
   - `SbgpBox` / `SbgpEntry` / `SgpdBox` / `SgpdEntry` / `SeigEntry` を追加する
   - `SencBox::samples` の要素型は `SencSample` になる。`senc` は KID を持たないため、実効 KID は `SampleEncryptionInfo::kid` で扱う
   - `SampleEncryptionInfo` に `kid` を追加する。`kid: None` は `tenc.default_kid` を使うことを表し、実効 KID が既定 KID と同じ場合は `None` に正規化する
+  - `SeigEntry` に `crypt_byte_block` / `skip_byte_block` を追加し、`seig` のパターン暗号化パラメーターを保持できるようにする。`seig` のパターン値は `tenc` と一致することを要求し、異なる場合は対象外として拒否する
+  - `SampleEncryptionInfo` に `constant_iv` を追加する。`constant_iv: None` は `tenc.default_constant_iv` を使うことを表し、実効 constant IV が既定値と同じ場合は `None` に正規化する
   - `Fmp4SegmentMuxer` が暗号化されたサンプルのある `traf` に `senc` / `saiz` / `saio` を書き出す
-  - `Fmp4SegmentMuxer` が KID の切り替わる `traf` に `sgpd` / `sbgp` を書き出し、`Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` がサンプルごとの実効 KID を `SampleEncryptionInfo::kid` として返す
+  - `Fmp4SegmentMuxer` が KID または constant IV の切り替わる `traf` に、`tenc` と同じパターン値と実効 constant IV を持つ `sgpd` / `sbgp` を書き出す。`sgpd` の `default_length` は全エントリーの長さが同じならその値、異なる場合は 0 にする
+  - `Fmp4SegmentMuxer` は、per-sample IV かつ `tenc` にパターン値を持たないトラックと `cbcs` の constant IV トラックだけで KID の切り替えを受け付ける。constant IV は `cbcs` の constant IV トラックだけで受け付ける
+  - `Fmp4SegmentDemuxer` / `Fmp4FileDemuxer` が `seig` サンプルグループからサンプルごとの実効 KID と実効 constant IV を解決し、`SampleEncryptionInfo::kid` / `SampleEncryptionInfo::constant_iv` として返す。`cbcs` 以外のスキームで `seig` の constant IV を持つ入力と、`seig` のパターン値が `tenc` と異なる入力は対象外として拒否する
   - `SencBox` は IV サイズを `tenc` から受け取る `SencBox::decode_with_iv_size()` でデコードする
   - wasm の暗号化情報の JSON 対応は対象外
   - @voluntas

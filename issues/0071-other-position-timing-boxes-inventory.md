@@ -23,7 +23,7 @@ MP4 / fMP4 の「位置調整系」および「時刻調整系」に分類でき
 | `tfdt` | 実装済み | 生成する | `Fmp4SegmentDemuxer` で `base_media_decode_time` を反映 | `src/boxes_fmp4.rs` / `src/demux_fmp4_segment.rs` |
 | `prft` | 未実装 | - | - | - |
 | `saio` / `saiz` | 実装済み | 暗号化されたサンプルのある `traf` に `senc` と合わせて生成する | `Fmp4SegmentDemuxer` が SAI を解決して `Sample::encryption_info` として露出する | `src/boxes_cenc.rs` / `src/mux_fmp4_segment.rs` / `src/demux_fmp4_segment.rs` |
-| `sbgp` / `sgpd` | 実装済み | `seig` サンプルグループで KID が切り替わる `traf` に `sgpd` / `sbgp` を生成する | `Fmp4SegmentDemuxer` が `sbgp` の `group_description_index` から `seig` のエントリーを解決し、サンプルごとの実効 KID を `SampleEncryptionInfo::kid` として露出する | `src/boxes_cenc.rs` / `src/mux_fmp4_segment.rs` / `src/demux_fmp4_segment.rs` |
+| `sbgp` / `sgpd` | 実装済み | `seig` サンプルグループで KID または constant IV が切り替わる `traf` に、`tenc` と同じパターン値と実効 constant IV を持つ `sgpd` / `sbgp` を生成する | `Fmp4SegmentDemuxer` が `sbgp` の `group_description_index` から `seig` のエントリーを解決し、サンプルごとの実効 KID と実効 constant IV を `SampleEncryptionInfo::kid` / `SampleEncryptionInfo::constant_iv` として露出する | `src/boxes_cenc.rs` / `src/mux_fmp4_segment.rs` / `src/demux_fmp4_segment.rs` |
 | `stps` | 未実装 | - | - | - |
 | `stsh` | 未実装 | - | - | - |
 | `stdp` | 未実装 | - | - | - |
@@ -45,7 +45,7 @@ fMP4 系のボックス (`prft` など) の対応は当面低優先度扱いと�
 | `cslg` の mux 生成 | 中〜低 (負値の `composition_time_offset` を書く場合の仕様上の推奨。mux 側で `edts` を書くようになるタイミングで併せて検討) | mux 側 `edts` 対応時に併せて判断 |
 | `prft` (Producer Reference Time) の parse/encode | 低 (fMP4 特化。CMAF ライブ配信で NTP / UTC 絶対時刻をメディア時刻に対応付ける用途) | 要求が出るまで見送り。fMP4 系は当面低優先度扱い |
 | `saio` / `saiz` (Sample Auxiliary Information Offset/Size) の parse/encode | 低 (実運用ではほぼ CENC 用途) | 実装済み。`senc` / `saiz` / `saio` を fMP4 の mux / demux で往復でき、`Sample::encryption_info` として露出する |
-| `sbgp` / `sgpd` (Sample Group) の parse/encode | 中 (Opus の pre-roll サンプル数指示は `roll` sample group によることになっており、Opus ISOBMFF 仕様 (opus_in_isobmff) の 4.3.6.2 では必須 (shall)。AAC / HEVC の open GOP ランダムアクセス精度にも効く) | 実装済み。`seig` サンプルグループによる KID の切り替えに対応し、`SampleEncryptionInfo::kid` として露出する。`seig` 以外の `grouping_type` は version 1 の生バイトとして保持するだけであり、意味の解釈は要求が出た時点で個別 issue 化する |
+| `sbgp` / `sgpd` (Sample Group) の parse/encode | 中 (Opus の pre-roll サンプル数指示は `roll` sample group によることになっており、Opus ISOBMFF 仕様 (opus_in_isobmff) の 4.3.6.2 では必須 (shall)。AAC / HEVC の open GOP ランダムアクセス精度にも効く) | 実装済み。`seig` サンプルグループによる KID と constant IV の切り替えに対応し、サンプルごとの実効値を `SampleEncryptionInfo::kid` / `SampleEncryptionInfo::constant_iv` として露出する。`seig` のパターン暗号化パラメーターは `tenc` と一致することを要求し、`cbcs` の constant IV トラックにも対応する。`seig` 以外の `grouping_type` は version 1 の生バイトとして保持するだけであり、意味の解釈は要求が出た時点で個別 issue 化する |
 | `stps` (Partial Sync Sample) の parse/encode | 低 (open GOP のランダムアクセス点指示。近年は `sap` sample group での代替が主流化。プレイヤー側もあまり参照しない) | 要求が出るまで見送り |
 | `stsh` (Shadow Sync Sample) の parse/encode | 極低 (事実上デッド機能。生成する encoder も読む decoder もほぼない) | 対応する予定なし。情報として本 umbrella に記載のみ |
 | `stdp` (Degradation Priority) の parse/encode | 極低 (帯域絞り時のサンプル破棄優先度ヒント。実装している encoder / decoder をほぼ見ない) | 対応する予定なし。情報として本 umbrella に記載のみ |

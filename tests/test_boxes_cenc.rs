@@ -1917,7 +1917,7 @@ mod senc_sample_count_limit_tests {
 
 mod sample_group_known_bytes_tests {
     use shiguredo_mp4::{
-        Decode, Encode,
+        Decode, Encode, Uint,
         boxes::{SbgpBox, SbgpEntry, SeigEntry, SgpdBox, SgpdEntry},
     };
 
@@ -1929,23 +1929,38 @@ mod sample_group_known_bytes_tests {
     /// 20 バイトの固定前置は、`multi_key_flag` 1 bit + reserved 7 bit、
     /// `crypt_byte_block` 4 bit + `skip_byte_block` 4 bit、`is_protected` 8 bit、
     /// `Per_Sample_IV_Size` 8 bit、KID 16 バイトの順に並ぶ。
-    fn seig_fixed_prefix(is_protected: u8, per_sample_iv_size: u8, kid: [u8; 16]) -> Vec<u8> {
-        let mut bytes = vec![0x00, 0x00, is_protected, per_sample_iv_size];
+    fn seig_fixed_prefix(
+        crypt_byte_block: u8,
+        skip_byte_block: u8,
+        is_protected: u8,
+        per_sample_iv_size: u8,
+        kid: [u8; 16],
+    ) -> Vec<u8> {
+        let mut bytes = vec![
+            0x00,
+            (crypt_byte_block << 4) | skip_byte_block,
+            is_protected,
+            per_sample_iv_size,
+        ];
         bytes.extend_from_slice(&kid);
         bytes
     }
 
     /// SeigEntry: 20 バイトの固定前置が仕様どおりにエンコードされ、デコードできること
+    ///
+    /// `crypt_byte_block` / `skip_byte_block` は 4 bit ずつ 2 バイト目にパックされる。
     #[test]
     fn seig_entry_fixed_prefix_known_bytes() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(1),
+            skip_byte_block: Uint::new(9),
             is_protected: 1,
             per_sample_iv_size: 16,
             kid: KID,
             constant_iv: None,
         };
         let encoded = entry.encode_to_vec();
-        let expected = seig_fixed_prefix(1, 16, KID);
+        let expected = seig_fixed_prefix(1, 9, 1, 16, KID);
         assert_eq!(
             encoded, expected,
             "SeigEntry の固定前置のエンコード結果が既知のバイト列と一致しない"
@@ -1965,6 +1980,8 @@ mod sample_group_known_bytes_tests {
     #[test]
     fn seig_entry_ignores_trailing_bytes() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(0),
+            skip_byte_block: Uint::new(0),
             is_protected: 1,
             per_sample_iv_size: 8,
             kid: KID,
@@ -1987,6 +2004,8 @@ mod sample_group_known_bytes_tests {
     #[test]
     fn seig_entry_constant_iv_known_bytes() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(0),
+            skip_byte_block: Uint::new(0),
             is_protected: 1,
             per_sample_iv_size: 0,
             kid: KID,
@@ -1994,7 +2013,7 @@ mod sample_group_known_bytes_tests {
         };
         let encoded = entry.encode_to_vec();
 
-        let mut expected = seig_fixed_prefix(1, 0, KID);
+        let mut expected = seig_fixed_prefix(0, 0, 1, 0, KID);
         expected.push(8);
         expected.extend_from_slice(&[0xAA; 8]);
         // 固定前置 20 バイト + constant_IV_size 1 バイト + constant IV 8 バイト
@@ -2014,6 +2033,8 @@ mod sample_group_known_bytes_tests {
     #[test]
     fn sgpd_box_version_0_known_bytes() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(0),
+            skip_byte_block: Uint::new(0),
             is_protected: 1,
             per_sample_iv_size: 16,
             kid: KID,
@@ -2035,7 +2056,7 @@ mod sample_group_known_bytes_tests {
         expected.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         expected.extend_from_slice(b"seig");
         expected.extend_from_slice(&1u32.to_be_bytes());
-        expected.extend_from_slice(&seig_fixed_prefix(1, 16, KID));
+        expected.extend_from_slice(&seig_fixed_prefix(0, 0, 1, 16, KID));
         assert_eq!(
             encoded, expected,
             "SgpdBox version 0 のエンコード結果が既知のバイト列と一致しない"
@@ -2051,6 +2072,8 @@ mod sample_group_known_bytes_tests {
     #[test]
     fn sgpd_box_version_1_fixed_length_known_bytes() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(0),
+            skip_byte_block: Uint::new(0),
             is_protected: 1,
             per_sample_iv_size: 8,
             kid: KID,
@@ -2073,7 +2096,7 @@ mod sample_group_known_bytes_tests {
         expected.extend_from_slice(b"seig");
         expected.extend_from_slice(&20u32.to_be_bytes());
         expected.extend_from_slice(&1u32.to_be_bytes());
-        expected.extend_from_slice(&seig_fixed_prefix(1, 8, KID));
+        expected.extend_from_slice(&seig_fixed_prefix(0, 0, 1, 8, KID));
         assert_eq!(
             encoded, expected,
             "SgpdBox version 1 (default_length あり) のエンコード結果が既知のバイト列と一致しない"
@@ -2090,6 +2113,8 @@ mod sample_group_known_bytes_tests {
     #[test]
     fn sgpd_box_version_1_variable_length_known_bytes() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(0),
+            skip_byte_block: Uint::new(0),
             is_protected: 1,
             per_sample_iv_size: 0,
             kid: KID,
@@ -2113,7 +2138,7 @@ mod sample_group_known_bytes_tests {
         expected.extend_from_slice(&0u32.to_be_bytes());
         expected.extend_from_slice(&1u32.to_be_bytes());
         expected.extend_from_slice(&29u32.to_be_bytes());
-        expected.extend_from_slice(&seig_fixed_prefix(1, 0, KID));
+        expected.extend_from_slice(&seig_fixed_prefix(0, 0, 1, 0, KID));
         expected.push(8);
         expected.extend_from_slice(&[0xAA; 8]);
         assert_eq!(
@@ -2212,7 +2237,7 @@ mod sample_group_known_bytes_tests {
 
 mod sample_group_error_tests {
     use shiguredo_mp4::{
-        Decode, Encode, ErrorKind,
+        Decode, Encode, ErrorKind, Uint,
         boxes::{SbgpBox, SbgpEntry, SeigEntry, SgpdBox, SgpdEntry},
     };
 
@@ -2251,26 +2276,69 @@ mod sample_group_error_tests {
         );
     }
 
-    /// SeigEntry: `crypt_byte_block` / `skip_byte_block` が 0 以外のデコードが
-    /// Unsupported になること
+    /// SeigEntry: `crypt_byte_block` / `skip_byte_block` が 4 bit の値として
+    /// デコードされること
     #[test]
-    fn seig_entry_pattern_parameters_are_unsupported() {
-        for (second, description) in [(0x10, "crypt_byte_block"), (0x01, "skip_byte_block")] {
+    fn seig_entry_pattern_values_are_decoded() {
+        for (second, crypt_byte_block, skip_byte_block) in
+            [(0x19, 1, 9), (0xF0, 0x0F, 0), (0x0F, 0, 0x0F)]
+        {
             let payload = seig_fixed_prefix(0x00, second, 1, 16);
-            let err = SeigEntry::decode(&payload)
-                .expect_err("crypt_byte_block / skip_byte_block が 0 以外の入力を受理してしまった");
+            let (entry, _) =
+                SeigEntry::decode(&payload).expect("パターン値を持つ seig をデコードできない");
             assert_eq!(
-                err.kind,
-                ErrorKind::Unsupported,
-                "{description} のエラー種別が Unsupported ではない (reason={})",
-                err.reason,
+                entry.crypt_byte_block.get(),
+                crypt_byte_block,
+                "crypt_byte_block が 2 バイト目の上位 4 bit から復元されていない"
             );
-            assert!(
-                err.reason.contains("crypt_byte_block and skip_byte_block"),
-                "{description} のパターン値の検査とは別のエラーである (reason={})",
-                err.reason,
+            assert_eq!(
+                entry.skip_byte_block.get(),
+                skip_byte_block,
+                "skip_byte_block が 2 バイト目の下位 4 bit から復元されていない"
             );
         }
+    }
+
+    /// SeigEntry: constant IV の長さが 8 / 16 以外のデコードが InvalidData になること
+    #[test]
+    fn seig_entry_invalid_constant_iv_size_is_invalid_data() {
+        // constant_IV_size = 12 は仕様上あり得ない長さ
+        let mut payload = seig_fixed_prefix(0x00, 0x00, 1, 0);
+        payload.push(12);
+        payload.extend_from_slice(&[0xAA; 12]);
+        let err = SeigEntry::decode(&payload)
+            .expect_err("constant IV の長さが 12 バイトの SeigEntry を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("constant_IV_size must be 8 or 16"),
+            "constant IV の長さの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SeigEntry: `is_protected == 1 && per_sample_iv_size == 0` なのに
+    /// constant IV が無いデコードが InvalidData になること
+    #[test]
+    fn seig_entry_missing_constant_iv_is_invalid_data() {
+        let payload = seig_fixed_prefix(0x00, 0x00, 1, 0);
+        let err = SeigEntry::decode(&payload)
+            .expect_err("constant IV が無い SeigEntry を受理してしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidData,
+            "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("constant_IV_size is missing"),
+            "constant IV の必須検査とは別のエラーである (reason={})",
+            err.reason,
+        );
     }
 
     /// SeigEntry: `is_protected` が 0 / 1 以外のデコードが InvalidData になること
@@ -2336,6 +2404,140 @@ mod sample_group_error_tests {
             err.kind,
             ErrorKind::InvalidData,
             "エラー種別が InvalidData ではない (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `seig` エントリーの `crypt_byte_block` が 4 bit を超える場合の
+    /// エンコードが InvalidInput になること
+    ///
+    /// `Uint::new()` は範囲を検証しないため、エンコード側で `InvalidInput` にする。
+    #[test]
+    fn sgpd_box_seig_crypt_byte_block_exceeding_four_bits_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Seig(SeigEntry {
+                crypt_byte_block: Uint::new(0x10),
+                skip_byte_block: Uint::new(0),
+                is_protected: 1,
+                per_sample_iv_size: 16,
+                kid: KID,
+                constant_iv: None,
+            })],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("crypt_byte_block が 4 bit を超える seig をエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("crypt_byte_block exceeds 4 bits"),
+            "crypt_byte_block の範囲の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `seig` エントリーの `skip_byte_block` が 4 bit を超える場合の
+    /// エンコードが InvalidInput になること
+    #[test]
+    fn sgpd_box_seig_skip_byte_block_exceeding_four_bits_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Seig(SeigEntry {
+                crypt_byte_block: Uint::new(0),
+                skip_byte_block: Uint::new(0x10),
+                is_protected: 1,
+                per_sample_iv_size: 16,
+                kid: KID,
+                constant_iv: None,
+            })],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("skip_byte_block が 4 bit を超える seig をエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("skip_byte_block exceeds 4 bits"),
+            "skip_byte_block の範囲の検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `seig` エントリーの constant IV の長さが 8 / 16 以外の場合の
+    /// エンコードが InvalidInput になること
+    #[test]
+    fn sgpd_box_seig_invalid_constant_iv_size_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Seig(SeigEntry {
+                crypt_byte_block: Uint::new(0),
+                skip_byte_block: Uint::new(0),
+                is_protected: 1,
+                per_sample_iv_size: 0,
+                kid: KID,
+                constant_iv: Some(vec![0xAA; 12]),
+            })],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("constant IV の長さが 12 バイトの seig をエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("constant_iv must be 8 or 16 bytes"),
+            "constant IV の長さの検査とは別のエラーである (reason={})",
+            err.reason,
+        );
+    }
+
+    /// SgpdBox: `is_protected == 1 && per_sample_iv_size == 0` なのに constant IV が
+    /// 無い `seig` エントリーのエンコードが InvalidInput になること
+    #[test]
+    fn sgpd_box_seig_missing_constant_iv_is_invalid_input() {
+        let sgpd = SgpdBox {
+            version: 1,
+            grouping_type: *b"seig",
+            default_length: Some(0),
+            entries: vec![SgpdEntry::Seig(SeigEntry {
+                crypt_byte_block: Uint::new(0),
+                skip_byte_block: Uint::new(0),
+                is_protected: 1,
+                per_sample_iv_size: 0,
+                kid: KID,
+                constant_iv: None,
+            })],
+        };
+        let err = sgpd
+            .encode_to_vec()
+            .expect_err("constant IV が無い seig をエンコードできてしまった");
+        assert_eq!(
+            err.kind,
+            ErrorKind::InvalidInput,
+            "エラー種別が InvalidInput ではない (reason={})",
+            err.reason,
+        );
+        assert!(
+            err.reason.contains("constant_iv is required"),
+            "constant IV の必須検査とは別のエラーである (reason={})",
             err.reason,
         );
     }
@@ -2409,6 +2611,8 @@ mod sample_group_error_tests {
     #[test]
     fn sgpd_box_default_length_mismatch_encode_is_invalid_input() {
         let entry = SeigEntry {
+            crypt_byte_block: Uint::new(0),
+            skip_byte_block: Uint::new(0),
             is_protected: 1,
             per_sample_iv_size: 16,
             kid: KID,
@@ -2502,6 +2706,8 @@ mod sample_group_error_tests {
             grouping_type: *b"roll",
             default_length: Some(0),
             entries: vec![SgpdEntry::Seig(SeigEntry {
+                crypt_byte_block: Uint::new(0),
+                skip_byte_block: Uint::new(0),
                 is_protected: 1,
                 per_sample_iv_size: 16,
                 kid: KID,

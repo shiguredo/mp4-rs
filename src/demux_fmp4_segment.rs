@@ -568,6 +568,10 @@ impl Fmp4SegmentDemuxer {
                 let mut traf_data_end = base_data_offset;
                 let mut prev_trun_data_end: Option<usize> = None;
                 let mut traf_sample_index = 0usize;
+                // `TrafEncryptionInfos::Runs` をサンプル順にたどるための位置。
+                // サンプルごとに run を先頭から走査しないよう、状態を保持して進める
+                let mut encryption_run_index = 0usize;
+                let mut encryption_run_start = 0usize;
 
                 for trun in &traf.trun_boxes {
                     let trun_data_start =
@@ -618,7 +622,29 @@ impl Fmp4SegmentDemuxer {
                             )));
                         }
 
-                        let encryption_info = encryption_infos.get(traf_sample_index).cloned();
+                        // このサンプルの実効暗号化情報を、`TrafEncryptionInfos` の 4 状態に
+                        // 応じて決める。`Runs` は run 単位で保持しているため、
+                        // サンプル順に run を進めながら該当する run を選ぶ
+                        let encryption_info = match &encryption_infos {
+                            TrafEncryptionInfos::None => None,
+                            TrafEncryptionInfos::Constant(info) => Some(info.clone()),
+                            TrafEncryptionInfos::Runs { base, runs } => loop {
+                                let Some(run) = runs.get(encryption_run_index) else {
+                                    // `sbgp` の範囲外のサンプルは `tenc` の既定値を使う
+                                    break Some(base.clone());
+                                };
+                                let run_end =
+                                    encryption_run_start.saturating_add(run.sample_count as usize);
+                                if traf_sample_index < run_end {
+                                    break Some(run.info.clone());
+                                }
+                                encryption_run_start = run_end;
+                                encryption_run_index += 1;
+                            },
+                            TrafEncryptionInfos::PerSample(infos) => {
+                                infos.get(traf_sample_index).cloned()
+                            }
+                        };
                         traf_sample_index += 1;
 
                         pending_samples.push(PendingSample {
@@ -982,31 +1008,36 @@ fn track_level_seig_sgpd(
     }
 }
 
-/// `sbgp` の 1 エントリーが適用されるサンプル範囲と、その実効 KID
-#[derive(Debug, Clone, Copy)]
-struct SeigSampleRun {
+/// `sbgp` の 1 エントリーに対応する、連続するサンプルの実効暗号化情報
+///
+/// [`TrafEncryptionInfos::Runs`] の要素である。`sbgp` のエントリー数は入力サイズに
+/// 比例するため、サンプル数分の [`SampleEncryptionInfo`] を確保せず、run 単位で保持する。
+#[derive(Debug, Clone)]
+struct EncryptionRun {
     /// この run が適用されるサンプル数
     sample_count: u32,
 
-    /// 実効 KID (`None` は `tenc` の既定 KID を使う)
-    kid: Option<[u8; 16]>,
+    /// この run が適用されるサンプルの実効 KID と実効 constant IV
+    ///
+    /// `iv` / `subsamples` は SAI から解決した値を使うため、ここでは空にする。
+    info: SampleEncryptionInfo,
 }
 
-/// `traf` の `seig` サンプルグループからサンプルごとの実効 KID を解決する
+/// `traf` の `seig` サンプルグループからサンプルごとの実効暗号化情報を解決する
 ///
 /// 返り値は `sbgp` のエントリー順の run である。`sbgp` が無い場合は [`None`] を返し、
-/// すべてのサンプルは `tenc` の既定 KID を使う。`sbgp` の `sample_count` の合計が
+/// すべてのサンプルは `tenc` の既定値を使う。`sbgp` の `sample_count` の合計が
 /// `traf` のサンプル数より少ない場合、余りのサンプルは index `0` として扱う
 /// (ISO/IEC 14496-12:2022 8.9.4)。
 ///
-/// サンプルごとの実効 KID の解決は SAI の解釈とは独立して行う。`seig` 以外の
-/// サンプルグループ種別は解釈しない。
+/// サンプルごとの実効 KID と実効 constant IV の解決は SAI の解釈とは独立して行う。
+/// `seig` 以外のサンプルグループ種別は解釈しない。
 fn resolve_seig_sample_group(
     traf: &TrafBox,
     track_seig_sgpd: Option<&SgpdBox>,
     track_encryption: Option<&TrackEncryption>,
     sample_count: usize,
-) -> Result<Option<Vec<SeigSampleRun>>, DemuxError> {
+) -> Result<Option<Vec<EncryptionRun>>, DemuxError> {
     let sbgp_unknown_box = find_seig_sample_group_box(&traf.unknown_boxes, SbgpBox::TYPE, "traf")?;
     let sgpd_unknown_box = find_seig_sample_group_box(&traf.unknown_boxes, SgpdBox::TYPE, "traf")?;
     // `sbgp` が参照していなくても、壊れた `seig` の `sgpd` は早期に拒否する
@@ -1057,33 +1088,42 @@ fn resolve_seig_sample_group(
 
     let mut runs = Vec::new();
     for entry in &sbgp_box.entries {
-        let kid = resolve_sbgp_group_description_index(
+        let info = resolve_sbgp_group_description_index(
             entry.group_description_index,
             track_seig_sgpd,
             fragment_sgpd.as_ref(),
-            &track_encryption.tenc_box,
+            track_encryption,
         )?;
-        runs.push(SeigSampleRun {
+        runs.push(EncryptionRun {
             sample_count: entry.sample_count,
-            kid,
+            info,
         });
     }
     Ok(Some(runs))
 }
 
-/// `sbgp` の `group_description_index` を実効 KID に解決する
+/// `sbgp` の `group_description_index` を、そのグループの実効 KID と実効 constant IV に解決する
 ///
-/// `0` はグループに属さないサンプルとして `tenc` の既定 KID を使う。`1..=0x10000` は
+/// `0` はグループに属さないサンプルとして `tenc` の既定値を使う。`1..=0x10000` は
 /// track-level の `sgpd`、`0x10001` 以上は fragment-local の `sgpd` の 1 始まり
 /// エントリー番号として解決する (ISO/IEC 14496-12:2022 8.9.4)。
+///
+/// 実効 KID と実効 constant IV が `tenc` の既定値と同じ場合はそれぞれ [`None`] に
+/// 正規化する。
 fn resolve_sbgp_group_description_index(
     group_description_index: u32,
     track_seig_sgpd: Option<&SgpdBox>,
     fragment_sgpd: Option<&SgpdBox>,
-    tenc_box: &TencBox,
-) -> Result<Option<[u8; 16]>, DemuxError> {
+    track_encryption: &TrackEncryption,
+) -> Result<SampleEncryptionInfo, DemuxError> {
+    // グループに属さないサンプルは `tenc` の既定値を使う
     if group_description_index == 0 {
-        return Ok(None);
+        return Ok(SampleEncryptionInfo {
+            iv: Vec::new(),
+            subsamples: Vec::new(),
+            kid: None,
+            constant_iv: None,
+        });
     }
     let (sgpd_box, entry_index, scope) = if group_description_index <= 0x1_0000 {
         let sgpd_box = track_seig_sgpd.ok_or_else(|| {
@@ -1121,21 +1161,51 @@ fn resolve_sbgp_group_description_index(
             "'sbgp' refers to a 'sgpd' entry that is not a 'seig' entry",
         )));
     };
-    check_seig_entry_against_tenc(seig_entry, tenc_box)?;
-    // 実効 KID が tenc の既定 KID と同じ場合は None に正規化する
-    if seig_entry.kid == tenc_box.default_kid {
-        Ok(None)
+    check_seig_entry_against_tenc(
+        seig_entry,
+        &track_encryption.tenc_box,
+        track_encryption.scheme_type,
+    )?;
+    // 実効 KID / constant IV が tenc の既定値と同じ場合は None に正規化する
+    let kid = if seig_entry.kid == track_encryption.tenc_box.default_kid {
+        None
     } else {
-        Ok(Some(seig_entry.kid))
-    }
+        Some(seig_entry.kid)
+    };
+    let constant_iv = match &seig_entry.constant_iv {
+        Some(constant_iv)
+            if Some(constant_iv) == track_encryption.tenc_box.default_constant_iv.as_ref() =>
+        {
+            None
+        }
+        Some(constant_iv) => Some(constant_iv.clone()),
+        None => None,
+    };
+    Ok(SampleEncryptionInfo {
+        iv: Vec::new(),
+        subsamples: Vec::new(),
+        kid,
+        constant_iv,
+    })
 }
 
 /// `seig` エントリーが `tenc` の既定値と整合するかを検査する
 ///
-/// 本実装は KID の切り替えだけを対象とする。`is_protected` / IV サイズの上書き、
-/// constant IV、パターン暗号化パラメーターの上書きは対象外であり、`tenc` の既定値と
-/// 異なる場合は [`crate::ErrorKind::Unsupported`] を返す。
-fn check_seig_entry_against_tenc(entry: &SeigEntry, tenc_box: &TencBox) -> Result<(), DemuxError> {
+/// 本実装は KID と constant IV の切り替えだけを対象とする。`is_protected` /
+/// `Per_Sample_IV_Size` / パターン暗号化パラメーターの上書きは対象外であり、
+/// `tenc` の既定値と異なる場合は [`crate::ErrorKind::Unsupported`] を返す。
+///
+/// constant IV は `cbcs` のときだけ受け付ける (`cbc1` / `cenc` / `cens` のスキーム定義では
+/// constant IV が認められていない)。KID の切り替えは、per-sample IV かつ `tenc` に
+/// パターン値を持たないトラックと、`cbcs` の constant IV トラックだけで受け付ける。
+///
+/// なお、ここでの扱いは ISO/IEC 23001-7:2023 6 と同 8.2 に基づくものであり、
+/// 将来の改訂で変わる可能性がある。
+fn check_seig_entry_against_tenc(
+    entry: &SeigEntry,
+    tenc_box: &TencBox,
+    scheme_type: [u8; 4],
+) -> Result<(), DemuxError> {
     if entry.is_protected != tenc_box.default_is_protected {
         return Err(DemuxError::DecodeError(Error::unsupported(format!(
             "'seig' is_protected {} does not match tenc default_is_protected {}",
@@ -1148,13 +1218,8 @@ fn check_seig_entry_against_tenc(entry: &SeigEntry, tenc_box: &TencBox) -> Resul
             entry.per_sample_iv_size, tenc_box.default_per_sample_iv_size,
         ))));
     }
-    if entry.constant_iv.is_some() {
-        return Err(DemuxError::DecodeError(Error::unsupported(
-            "'seig' constant IV is not supported",
-        )));
-    }
-    // `seig` のパターン暗号化パラメーターは常に 0 / 0 であり、`tenc` に 0 以外の
-    // パターン値がある場合はそれを上書きして復号結果が変わってしまう
+    // `tenc` にパターン値が無い場合は 0 / 0 と比較する。`seig` のパターン値が
+    // `tenc` と異なると復号結果が変わってしまうため、上書きは対象外とする
     let crypt_byte_block = tenc_box
         .default_crypt_byte_block
         .map(|v| v.get())
@@ -1163,36 +1228,84 @@ fn check_seig_entry_against_tenc(entry: &SeigEntry, tenc_box: &TencBox) -> Resul
         .default_skip_byte_block
         .map(|v| v.get())
         .unwrap_or(0);
-    if crypt_byte_block != 0 || skip_byte_block != 0 {
-        return Err(DemuxError::DecodeError(Error::unsupported(
-            "'seig' pattern encryption parameters are not supported",
-        )));
+    if entry.crypt_byte_block.get() != crypt_byte_block
+        || entry.skip_byte_block.get() != skip_byte_block
+    {
+        return Err(DemuxError::DecodeError(Error::unsupported(format!(
+            "'seig' pattern encryption parameters ({}, {}) do not match tenc ({crypt_byte_block}, {skip_byte_block})",
+            entry.crypt_byte_block.get(),
+            entry.skip_byte_block.get(),
+        ))));
+    }
+    if let Some(constant_iv) = &entry.constant_iv {
+        // スキーム定義で constant IV が認められているのは `cbcs` だけである
+        if scheme_type != *b"cbcs" {
+            return Err(DemuxError::DecodeError(Error::unsupported(format!(
+                "'seig' constant IV is only supported for the 'cbcs' scheme, got '{}'",
+                BoxType::Normal(scheme_type),
+            ))));
+        }
+        // `seig` の constant IV はサンプルごとの IV と排他であり、
+        // Per_Sample_IV_Size は 0 でなければならない
+        if entry.per_sample_iv_size != 0 {
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "'seig' constant IV requires Per_Sample_IV_Size 0",
+            )));
+        }
+        if constant_iv.len() != 8 && constant_iv.len() != 16 {
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "'seig' constant IV must be 8 or 16 bytes",
+            )));
+        }
+    }
+    // KID の切り替えを許可するのは、per-sample IV かつ `tenc` にパターン値を持たない
+    // トラックと、`cbcs` の constant IV トラックだけである
+    if entry.kid != tenc_box.default_kid {
+        let per_sample_iv_rotation =
+            entry.per_sample_iv_size != 0 && crypt_byte_block == 0 && skip_byte_block == 0;
+        let constant_iv_rotation = entry.per_sample_iv_size == 0 && scheme_type == *b"cbcs";
+        if !per_sample_iv_rotation && !constant_iv_rotation {
+            return Err(DemuxError::DecodeError(Error::unsupported(
+                "'seig' KID rotation is only supported for per-sample IV tracks without tenc pattern encryption parameters and for 'cbcs' constant IV tracks",
+            )));
+        }
     }
     Ok(())
 }
 
-/// `seig` サンプルグループから解決した実効 KID をサンプルごとの暗号化情報に反映する
+/// `seig` サンプルグループから解決した実効 KID と実効 constant IV を、
+/// サンプルごとの暗号化情報に反映する
 ///
-/// `runs` に含まれないサンプルは `tenc` の既定 KID (`kid: None`) のままになる。
+/// `TrafEncryptionInfos::Constant` で既定値と異なるサンプルがあれば、run 単位の
+/// [`TrafEncryptionInfos::Runs`] を構築する。`runs` に含まれないサンプルは `tenc` の
+/// 既定値 (`kid: None` / `constant_iv: None`) のままになる。
 fn apply_seig_sample_runs(
     encryption_infos: &mut TrafEncryptionInfos,
-    runs: &[SeigSampleRun],
+    runs: &[EncryptionRun],
 ) -> Result<(), DemuxError> {
     match encryption_infos {
         TrafEncryptionInfos::None => {
-            if runs.iter().any(|run| run.kid.is_some()) {
+            if runs
+                .iter()
+                .any(|run| run.info.kid.is_some() || run.info.constant_iv.is_some())
+            {
                 return Err(DemuxError::DecodeError(Error::unsupported(
-                    "'seig' KID rotation requires a CENC encrypted track",
+                    "'seig' KID or constant IV rotation requires a CENC encrypted track",
                 )));
             }
         }
-        TrafEncryptionInfos::Constant(_) => {
-            // constant IV のトラックは per-sample IV ではないため、KID の切り替えを
-            // `SampleEncryptionInfo::kid` として表現できない
-            if runs.iter().any(|run| run.kid.is_some()) {
-                return Err(DemuxError::DecodeError(Error::unsupported(
-                    "'seig' KID rotation requires per-sample IV",
-                )));
+        TrafEncryptionInfos::Constant(info) => {
+            // すべてのサンプルが `tenc` の既定値と同じ場合は、全サンプルで同じ
+            // 暗号化情報を共有する `Constant` のままにしてメモリを確保しない
+            if runs
+                .iter()
+                .any(|run| run.info.kid.is_some() || run.info.constant_iv.is_some())
+            {
+                let base = info.clone();
+                *encryption_infos = TrafEncryptionInfos::Runs {
+                    base,
+                    runs: runs.to_vec(),
+                };
             }
         }
         TrafEncryptionInfos::PerSample(infos) => {
@@ -1214,10 +1327,18 @@ fn apply_seig_sample_runs(
                     )));
                 };
                 for info in target {
-                    info.kid = run.kid;
+                    info.kid = run.info.kid;
+                    info.constant_iv = run.info.constant_iv.clone();
                 }
                 sample_index = end;
             }
+        }
+        TrafEncryptionInfos::Runs { .. } => {
+            // この関数は暗号化情報を組み立てた直後に 1 回だけ呼ぶため、
+            // 既に `Runs` になっている状態には到達しない
+            return Err(DemuxError::DecodeError(Error::invalid_data(
+                "'seig' sample runs are already applied",
+            )));
         }
     }
     Ok(())
@@ -1330,6 +1451,9 @@ const MAX_PER_SAMPLE_AUX_INFO_SAMPLES: usize = 1_048_576;
 /// [`SampleEncryptionInfo`] を確保しない。`trun` の `sample_count` は宣言値であり、
 /// 実際のサンプルデータの範囲を検査する前にサンプル数分の `Vec` を確保すると、
 /// 小さな入力から巨大なメモリを確保できてしまうためである。
+///
+/// `seig` サンプルグループで KID または constant IV が切り替わる場合は、
+/// `sbgp` のエントリー数分の run だけを持つ [`TrafEncryptionInfos::Runs`] を使う。
 #[derive(Debug, Clone)]
 enum TrafEncryptionInfos {
     /// 暗号化されていない (すべてのサンプルの `encryption_info` が `None`)
@@ -1338,19 +1462,19 @@ enum TrafEncryptionInfos {
     /// すべてのサンプルが同じ暗号化情報を持つ (constant IV によるサンプル全体暗号化)
     Constant(SampleEncryptionInfo),
 
+    /// `seig` サンプルグループの run ごとに異なる暗号化情報を持つ
+    Runs {
+        /// `sbgp` の範囲外 (index 0) のサンプルに使う情報
+        ///
+        /// `sbgp` の `sample_count` の合計がサンプル数より少ない場合の余りを表す。
+        base: SampleEncryptionInfo,
+
+        /// `sbgp` のエントリー順の run
+        runs: Vec<EncryptionRun>,
+    },
+
     /// サンプルごとに異なる暗号化情報を持つ
     PerSample(Vec<SampleEncryptionInfo>),
-}
-
-impl TrafEncryptionInfos {
-    /// サンプル位置を指定して暗号化情報を返す
-    fn get(&self, sample_index: usize) -> Option<&SampleEncryptionInfo> {
-        match self {
-            Self::None => None,
-            Self::Constant(info) => Some(info),
-            Self::PerSample(infos) => infos.get(sample_index),
-        }
-    }
 }
 
 /// `traf` のサンプルごとの暗号化情報を、`senc` または `saiz` / `saio` から解決する
@@ -1411,6 +1535,7 @@ fn resolve_traf_encryption(
             iv: Vec::new(),
             subsamples: Vec::new(),
             kid: None,
+            constant_iv: None,
         });
         apply_seig_sample_runs(
             &mut encryption_infos,
@@ -1479,6 +1604,7 @@ fn resolve_traf_encryption(
                 iv: sample.iv,
                 subsamples: sample.subsamples,
                 kid: None,
+                constant_iv: None,
             })
             .collect();
         let mut encryption_infos = TrafEncryptionInfos::PerSample(samples);
@@ -1586,6 +1712,7 @@ fn resolve_traf_encryption(
             iv: sample.iv,
             subsamples: sample.subsamples,
             kid: None,
+            constant_iv: None,
         });
     }
     let mut encryption_infos = TrafEncryptionInfos::PerSample(samples);

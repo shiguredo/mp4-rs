@@ -591,7 +591,7 @@ pub struct Subsample {
 ///
 /// `senc` (ISO/IEC 23001-7:2023 7.2.1) の 1 サンプル分、および `saiz` が指す
 /// Sample Auxiliary Information (SAI) の内容と、`seig` サンプルグループから解決した
-/// 実効 KID を表す。
+/// 実効 KID / 実効 constant IV を表す。
 /// 入力データの形式は将来の改訂で変わる可能性がある。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SampleEncryptionInfo {
@@ -611,6 +611,14 @@ pub struct SampleEncryptionInfo {
     /// `tenc.default_kid` と異なる場合だけ `Some` になり、同じ値が指定された場合は
     /// [`None`] に正規化する。
     pub kid: Option<[u8; 16]>,
+
+    /// 実効 constant IV
+    ///
+    /// [`None`] は `tenc` の `default_constant_iv` を使うことを表す。実効 constant IV が
+    /// `tenc.default_constant_iv` と異なる場合だけ `Some` になり、同じ値が指定された
+    /// 場合は [`None`] に正規化する。長さは 8 / 16 バイトである。
+    /// constant IV を使わないトラックでは [`None`] にする。
+    pub constant_iv: Option<Vec<u8>>,
 }
 
 /// `senc` (ISO/IEC 23001-7:2023 7.2.1) の 1 サンプル分の SAI
@@ -1263,17 +1271,35 @@ pub(crate) const SEIG_GROUPING_TYPE: [u8; 4] = *b"seig";
 /// `skip_byte_block` 4 bit、`is_protected` 8 bit、`Per_Sample_IV_Size` 8 bit、
 /// KID 16 バイト) に、条件付きで constant IV が続く。
 ///
-/// `multi_key_flag == 1`、`crypt_byte_block` / `skip_byte_block` が 0 以外の入力の
-/// デコードは [`crate::ErrorKind::Unsupported`] を返す。`is_protected` が 0 / 1 以外、
-/// `Per_Sample_IV_Size` が 0 / 8 / 16 以外、constant IV が切り詰められている入力の
+/// `crypt_byte_block` / `skip_byte_block` はパターン暗号化のパラメーターであり、
+/// 同じトラックの `tenc` (ISO/IEC 23001-7:2023 8.2) と同じ値でなければならない。
+/// 本ライブラリは `seig` によるパターン値の上書きを対象外としているため、`tenc` と
+/// 異なる値の `seig` はサンプルグループの解決時に
+/// [`crate::ErrorKind::Unsupported`] として拒否する。
+///
+/// `multi_key_flag == 1` のデコードは [`crate::ErrorKind::Unsupported`] を返す。
+/// `is_protected` が 0 / 1 以外、`Per_Sample_IV_Size` が 0 / 8 / 16 以外、
+/// constant IV の長さが 8 / 16 以外、constant IV が切り詰められている入力の
 /// デコードは [`crate::ErrorKind::InvalidData`] を返す。
 ///
 /// 定義済みフィールドの後ろに追加バイトがあっても無視し、消費バイト数を返す
 /// ([`SeigEntry::decode()`])。仕様では将来の拡張を読み飛ばす必要がある。
-/// なお、ここでの扱いは ISO/IEC 23001-7:2023 に基づくものであり、将来の改訂で
-/// 変わる可能性がある。
+/// なお、ここでの扱いは ISO/IEC 23001-7:2023 6 に基づくものであり、パターン値の
+/// 解釈を含めて将来の改訂で変わる可能性がある。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SeigEntry {
+    /// パターン暗号化の暗号化ブロック数
+    ///
+    /// 同じトラックの `tenc` の `default_crypt_byte_block`
+    /// (ISO/IEC 23001-7:2023 8.2) と同じ値でなければならない。
+    pub crypt_byte_block: Uint<u8, 4>,
+
+    /// パターン暗号化のスキップブロック数
+    ///
+    /// 同じトラックの `tenc` の `default_skip_byte_block`
+    /// (ISO/IEC 23001-7:2023 8.2) と同じ値でなければならない。
+    pub skip_byte_block: Uint<u8, 4>,
+
     /// サンプルが保護されるか (0 または 1)
     pub is_protected: u8,
 
@@ -1285,7 +1311,8 @@ pub struct SeigEntry {
 
     /// constant IV
     ///
-    /// `is_protected == 1 && per_sample_iv_size == 0` の場合だけ存在する。
+    /// `is_protected == 1 && per_sample_iv_size == 0` の場合だけ存在し、長さは
+    /// 8 / 16 バイトでなければならない。
     pub constant_iv: Option<Vec<u8>>,
 }
 
@@ -1298,9 +1325,9 @@ impl SeigEntry {
     /// 返り値の第 2 要素は消費したバイト数であり、定義済みフィールドの後ろに追加バイトが
     /// あってもそれは消費せず、無視する。
     ///
-    /// `multi_key_flag == 1`、`crypt_byte_block` / `skip_byte_block` が 0 以外の入力は
-    /// [`crate::ErrorKind::Unsupported`] を返す。`is_protected` が 0 / 1 以外、
-    /// `Per_Sample_IV_Size` が 0 / 8 / 16 以外、固定前置や constant IV が切り詰められた
+    /// `multi_key_flag == 1` の入力は [`crate::ErrorKind::Unsupported`] を返す。
+    /// `is_protected` が 0 / 1 以外、`Per_Sample_IV_Size` が 0 / 8 / 16 以外、
+    /// constant IV の長さが 8 / 16 以外、固定前置や constant IV が切り詰められた
     /// 入力は [`crate::ErrorKind::InvalidData`] を返す。
     ///
     /// なお、ここでの扱いは ISO/IEC 23001-7:2023 6 に基づくものであり、将来の改訂で
@@ -1316,13 +1343,10 @@ impl SeigEntry {
         if multi_key_flag != 0 {
             return Err(Error::unsupported("SeigEntry multi_key_flag must be 0"));
         }
-        let crypt_byte_block = payload[1] >> 4;
-        let skip_byte_block = payload[1] & 0x0F;
-        if crypt_byte_block != 0 || skip_byte_block != 0 {
-            return Err(Error::unsupported(
-                "SeigEntry crypt_byte_block and skip_byte_block must be 0",
-            ));
-        }
+        // 4 bit フィールドは上位・下位 4 bit に分けて読む。
+        // 4 bit を超える値は原理的に現れないため、範囲検査は不要
+        let crypt_byte_block = Uint::new(payload[1] >> 4);
+        let skip_byte_block = Uint::new(payload[1] & 0x0F);
 
         let is_protected = payload[2];
         if is_protected > 1 {
@@ -1343,6 +1367,11 @@ impl SeigEntry {
                 .get(offset)
                 .ok_or_else(|| Error::invalid_data("SeigEntry constant_IV_size is missing"))?;
             offset += 1;
+            if constant_iv_size != 8 && constant_iv_size != 16 {
+                return Err(Error::invalid_data(
+                    "SeigEntry constant_IV_size must be 8 or 16",
+                ));
+            }
             let end = offset
                 .checked_add(usize::from(constant_iv_size))
                 .ok_or_else(|| Error::invalid_data("SeigEntry constant IV size overflow"))?;
@@ -1360,6 +1389,8 @@ impl SeigEntry {
 
         Ok((
             Self {
+                crypt_byte_block,
+                skip_byte_block,
                 is_protected,
                 per_sample_iv_size,
                 kid,
@@ -1371,14 +1402,18 @@ impl SeigEntry {
 
     /// `seig` エントリーをバイト列に変換する
     ///
-    /// `multi_key_flag` と `crypt_byte_block` / `skip_byte_block` は常に 0 を書き込む。
-    /// [`SeigEntry::constant_iv`] は、`is_protected == 1 && per_sample_iv_size == 0` の
-    /// 場合だけ設定すること。その長さが `u8::MAX` を超える場合はパニックする
-    /// ([`SgpdBox`] のエンコードは、書き込む前に長さを検査する)。
+    /// 先頭 2 バイトは `multi_key_flag = 0` / reserved = 0 と
+    /// `(crypt_byte_block << 4) | skip_byte_block` を書き込む。
+    /// [`SeigEntry::constant_iv`] は、`is_protected == 1 && per_sample_iv_size == 0`
+    /// の場合だけ設定すること。
+    ///
+    /// [`Uint::new()`] は値を検証しないため、パターン値が 4 bit、constant IV の長さが
+    /// 8 / 16 バイトであることは呼び出し側が保証すること。定型的な検査は
+    /// [`SgpdBox`] のエンコード時に行われる。constant IV の長さが `u8::MAX` を
+    /// 超える場合はパニックする。
     pub fn encode_to_vec(&self) -> Vec<u8> {
-        // 先頭 2 バイトは multi_key_flag = 0 / reserved = 0 と
-        // crypt_byte_block = 0 / skip_byte_block = 0 を表す
-        let mut bytes = vec![0x00, 0x00, self.is_protected, self.per_sample_iv_size];
+        let pattern = (self.crypt_byte_block.get() << 4) | self.skip_byte_block.get();
+        let mut bytes = vec![0x00, pattern, self.is_protected, self.per_sample_iv_size];
         bytes.extend_from_slice(&self.kid);
         if let Some(constant_iv) = &self.constant_iv {
             let size = u8::try_from(constant_iv.len())
@@ -1402,13 +1437,24 @@ fn check_seig_entry_for_encode(entry: &SeigEntry) -> Result<()> {
             "SeigEntry per_sample_iv_size must be 0, 8, or 16",
         ));
     }
+    // `Uint::new()` は範囲を検証しないため、隣接フィールドを侵食しないようここで検査する
+    if entry.crypt_byte_block.get() > 0x0F {
+        return Err(Error::invalid_input(
+            "SeigEntry crypt_byte_block exceeds 4 bits",
+        ));
+    }
+    if entry.skip_byte_block.get() > 0x0F {
+        return Err(Error::invalid_input(
+            "SeigEntry skip_byte_block exceeds 4 bits",
+        ));
+    }
     if entry.is_protected == 1 && entry.per_sample_iv_size == 0 {
         let constant_iv = entry.constant_iv.as_ref().ok_or_else(|| {
             Error::invalid_input("SeigEntry constant_iv is required when constant IV is used")
         })?;
-        if u8::try_from(constant_iv.len()).is_err() {
+        if constant_iv.len() != 8 && constant_iv.len() != 16 {
             return Err(Error::invalid_input(
-                "SeigEntry constant_iv exceeds u8::MAX bytes",
+                "SeigEntry constant_iv must be 8 or 16 bytes",
             ));
         }
     } else if entry.constant_iv.is_some() {
